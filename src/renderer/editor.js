@@ -1,4 +1,4 @@
-import { EditorState } from '@codemirror/state'
+import { EditorState, Compartment } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, drawSelection, dropCursor, highlightActiveLine } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
@@ -22,28 +22,53 @@ const fjordHighlight = HighlightStyle.define([
   { tag: tags.processingInstruction, color: 'var(--text3)' },
 ])
 
-const fjordTheme = EditorView.theme({
+const fjordThemeDark = EditorView.theme({
   '&': {
     height: '100%',
-    backgroundColor: 'var(--bg0)',
+    backgroundColor: 'var(--surface-bg-0)',
     color: 'var(--text2)',
   },
   '.cm-scroller': {
-    fontFamily: 'var(--mono)',
-    fontSize: '13px',
-    lineHeight: '1.75',
-    padding: '20px 24px',
+    fontFamily: 'var(--editor-font)',
+    fontSize: 'var(--editor-font-size)',
+    lineHeight: 'var(--editor-line-height)',
+    padding: '24px 28px 28px',
     overflowX: 'auto',
   },
   '.cm-content': { caretColor: 'var(--text1)' },
+  '.cm-line': { padding: '0 2px' },
   '.cm-cursor': { borderLeftColor: 'var(--text1)' },
-  '.cm-activeLine': { backgroundColor: 'transparent' },
+  '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.015)' },
   '.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(91,127,166,0.25) !important' },
   '.cm-gutters': { display: 'none' },
   '.cm-focused': { outline: 'none' },
 }, { dark: true })
 
-export function createEditor({ parent, doc = '', onChange }) {
+const fjordThemeLight = EditorView.theme({
+  '&': {
+    height: '100%',
+    backgroundColor: 'var(--surface-bg-0)',
+    color: 'var(--text2)',
+  },
+  '.cm-scroller': {
+    fontFamily: 'var(--editor-font)',
+    fontSize: 'var(--editor-font-size)',
+    lineHeight: 'var(--editor-line-height)',
+    padding: '24px 28px 28px',
+    overflowX: 'auto',
+  },
+  '.cm-content': { caretColor: 'var(--text1)' },
+  '.cm-line': { padding: '0 2px' },
+  '.cm-cursor': { borderLeftColor: 'var(--text1)' },
+  '.cm-activeLine': { backgroundColor: 'rgba(53,42,30,0.035)' },
+  '.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(58,106,154,0.15) !important' },
+  '.cm-gutters': { display: 'none' },
+  '.cm-focused': { outline: 'none' },
+}, { dark: false })
+
+export const themeCompartment = new Compartment()
+
+export function createEditor({ parent, doc = '', onChange, onSelectionChange, onPaste, isDark = true }) {
   const state = EditorState.create({
     doc,
     extensions: [
@@ -54,16 +79,38 @@ export function createEditor({ parent, doc = '', onChange }) {
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage, codeLanguages: languages }),
       syntaxHighlighting(fjordHighlight),
-      fjordTheme,
+      themeCompartment.of(isDark ? fjordThemeDark : fjordThemeLight),
       EditorView.updateListener.of(update => {
         if (update.docChanged && onChange) {
           onChange(update.state.doc.toString())
+        }
+        if ((update.docChanged || update.selectionSet || update.focusChanged) && onSelectionChange) {
+          onSelectionChange(update.state)
         }
       }),
     ],
   })
 
   const view = new EditorView({ state, parent })
+
+  // Handle paste events for images
+  if (onPaste) {
+    parent.addEventListener('paste', async (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+
+      for (let item of items) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          if (file && onPaste) {
+            await onPaste(file, view)
+          }
+        }
+      }
+    })
+  }
+
   return view
 }
 
@@ -72,5 +119,12 @@ export function updateEditorDoc(view, doc) {
   if (current === doc) return
   view.dispatch({
     changes: { from: 0, to: current.length, insert: doc },
+  })
+}
+
+export function updateEditorTheme(view, isDark) {
+  const newTheme = isDark ? fjordThemeDark : fjordThemeLight
+  view.dispatch({
+    effects: themeCompartment.reconfigure(newTheme),
   })
 }

@@ -8,9 +8,24 @@
     "dev": "concurrently \"npm run watch\" \"wait-on dist/renderer.js && electron .\"",
     "watch": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --watch --loader:.js=jsx",
     "build": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --loader:.js=jsx --minify",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder",
+    "version:check": "node scripts/semver.js check",
+    "version:current": "node scripts/semver.js current",
+    "version:set": "node scripts/semver.js set",
+    "version:patch": "node scripts/semver.js bump patch",
+    "version:minor": "node scripts/semver.js bump minor",
+    "version:major": "node scripts/semver.js bump major",
+    "version:prepatch": "node scripts/semver.js bump prepatch",
+    "version:preminor": "node scripts/semver.js bump preminor",
+    "version:premajor": "node scripts/semver.js bump premajor",
+    "version:prerelease": "node scripts/semver.js bump prerelease"
   },
-  "keywords": ["markdown", "editor", "electron", "nordic"],
+  "keywords": [
+    "markdown",
+    "editor",
+    "electron",
+    "nordic"
+  ],
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^8.2.2",
@@ -26,6 +41,7 @@
     "@codemirror/language-data": "^6.4.1",
     "@codemirror/state": "^6.4.1",
     "@codemirror/view": "^6.25.1",
+    "@toast-ui/editor": "^3.2.2",
     "chokidar": "^3.6.0",
     "rehype-stringify": "^10.0.0",
     "remark-gfm": "^4.0.0",
@@ -36,9 +52,23 @@
   "build": {
     "appId": "com.fjordmark.app",
     "productName": "Fjordmark",
-    "mac": { "category": "public.app-category.productivity" },
-    "linux": { "target": "AppImage" },
-    "win": { "target": "nsis" },
-    "files": ["dist/**", "src/main/**", "public/**", "package.json"]
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "public/icon.svg"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "public/icon.svg"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon.svg"
+    },
+    "files": [
+      "dist/**",
+      "src/main/**",
+      "public/**",
+      "package.json"
+    ]
   }
 }
