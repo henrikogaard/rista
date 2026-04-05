@@ -959,10 +959,6 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
-.ic.img-lbl { width: auto; padding: 0 9px; gap: 6px; }
-.ic.img-lbl .lbl { font-size: 11px; color: var(--text3); font-family: var(--font); transition: color 0.1s; }
-.ic.img-lbl:hover .lbl, .ic.img-lbl.active .lbl { color: inherit; }
-
 .tb-sep { width: 1px; height: 14px; background: rgba(255,255,255,0.06); margin: 0 8px; flex-shrink: 0; opacity: 0.7; }
 
 /* Dropdown */

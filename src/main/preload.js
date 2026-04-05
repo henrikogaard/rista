@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('fjord', {
   // Folder picker
   openFolder: () => ipcRenderer.invoke('dialog:openFolder'),
   newMarkdownFile: (folderPath) => ipcRenderer.invoke('dialog:newMarkdownFile', folderPath),
+  pickImageFile: () => ipcRenderer.invoke('dialog:pickImageFile'),
 
   // File system
   readFolder: (p) => ipcRenderer.invoke('fs:readFolder', p),

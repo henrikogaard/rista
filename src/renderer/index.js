@@ -716,9 +716,8 @@ function renderEditorToolbar(pane) {
       <div class="ic" title="Table" data-action="insert-table">
         <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="2" y1="7" x2="14" y2="7"/><line x1="7" y1="3" x2="7" y2="13"/></svg>
       </div>
-      <div class="ic img-lbl" title="Image" data-action="insert-image">
+      <div class="ic" title="Image" data-action="insert-image">
         <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 10l3.5-3.5 2.5 2.5 2-2 4 4"/><circle cx="11.5" cy="5.5" r="1" fill="currentColor" stroke="none"/></svg>
-        <span class="lbl">Add</span>
       </div>
       <div class="ic" title="Find & Replace" data-action="toggle-find-replace">
         <svg viewBox="0 0 16 16"><circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
@@ -2039,7 +2038,12 @@ function insertLink() {
   openCommandDialog('link', { text: selected })
 }
 
-function insertImage() {
+async function insertImage() {
+  const picked = await window.fjord?.pickImageFile?.()
+  if (picked?.path) {
+    insertImageReference(picked.path, picked.name)
+    return
+  }
   openCommandDialog('image')
 }
 
@@ -2072,6 +2076,64 @@ function formatCalloutLabel(type) {
   return String(type || 'note')
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, letter => letter.toUpperCase()) || 'Note'
+}
+
+function insertImageReference(filePath, fileName = '') {
+  const pane = state.focusedPane
+  const tab = getTabForPane(pane)
+  const alt = stripFileExtension(fileName || lastPathSegment(filePath) || 'Image')
+  const imagePath = tab?.path ? toRelativePath(tab.path, filePath) : normalizePathSeparators(filePath)
+
+  if (paneUsesWysiwyg(pane) && richEditors[pane]) {
+    focusPane(pane)
+    richEditors[pane].focus()
+    richEditors[pane].exec('addImage', { imageUrl: imagePath, altText: alt || 'Image' })
+    return
+  }
+
+  insertMarkdownAtSelection(pane, `![${alt || 'Image'}](${imagePath})`, imagePath.length + 1)
+}
+
+function normalizePathSeparators(value = '') {
+  return String(value).replace(/\\/g, '/')
+}
+
+function lastPathSegment(value = '') {
+  const normalized = normalizePathSeparators(value)
+  const parts = normalized.split('/').filter(Boolean)
+  return parts[parts.length - 1] || ''
+}
+
+function stripFileExtension(value = '') {
+  return String(value).replace(/\.[^.]+$/, '')
+}
+
+function directoryPath(filePath = '') {
+  const normalized = normalizePathSeparators(filePath)
+  const index = normalized.lastIndexOf('/')
+  return index >= 0 ? normalized.slice(0, index) : ''
+}
+
+function toRelativePath(fromFilePath, toFilePath) {
+  const fromDir = directoryPath(fromFilePath)
+  const fromParts = normalizePathSeparators(fromDir).split('/').filter(Boolean)
+  const toParts = normalizePathSeparators(toFilePath).split('/').filter(Boolean)
+
+  if (!fromParts.length) return normalizePathSeparators(toFilePath)
+
+  let shared = 0
+  while (
+    shared < fromParts.length &&
+    shared < toParts.length &&
+    fromParts[shared] === toParts[shared]
+  ) {
+    shared += 1
+  }
+
+  const upward = Array.from({ length: fromParts.length - shared }, () => '..')
+  const downward = toParts.slice(shared)
+  const joined = [...upward, ...downward].join('/')
+  return joined || `./${lastPathSegment(toFilePath)}`
 }
 
 // ── Icons ─────────────────────────────────────────────────────────

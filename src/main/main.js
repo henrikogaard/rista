@@ -147,6 +147,22 @@ ipcMain.handle('dialog:newMarkdownFile', async (_, folderPath) => {
   }
 })
 
+ipcMain.handle('dialog:pickImageFile', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'] },
+      ],
+    })
+    if (result.canceled || !result.filePaths.length) return null
+    const filePath = result.filePaths[0]
+    return { path: filePath, name: path.basename(filePath) }
+  } catch {
+    return null
+  }
+})
+
 // ── IPC: Read folder tree ─────────────────────────────────────────
 ipcMain.handle('fs:readFolder', async (_, folderPath) => {
   return readFolderTree(folderPath)
