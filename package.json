@@ -1,0 +1,44 @@
+{
+  "name": "fjordmark",
+  "version": "0.1.0",
+  "description": "A local-first Markdown editor. Nordic. Fast. Yours.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently \"npm run watch\" \"wait-on dist/renderer.js && electron .\"",
+    "watch": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --watch --loader:.js=jsx",
+    "build": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --loader:.js=jsx --minify",
+    "package": "npm run build && electron-builder"
+  },
+  "keywords": ["markdown", "editor", "electron", "nordic"],
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.9.1",
+    "esbuild": "^0.20.0",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.3.3",
+    "@codemirror/lang-markdown": "^6.2.4",
+    "@codemirror/language": "^6.10.1",
+    "@codemirror/language-data": "^6.4.1",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.25.1",
+    "chokidar": "^3.6.0",
+    "rehype-stringify": "^10.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.0",
+    "unified": "^11.0.4"
+  },
+  "build": {
+    "appId": "com.fjordmark.app",
+    "productName": "Fjordmark",
+    "mac": { "category": "public.app-category.productivity" },
+    "linux": { "target": "AppImage" },
+    "win": { "target": "nsis" },
+    "files": ["dist/**", "src/main/**", "public/**", "package.json"]
+  }
+}
