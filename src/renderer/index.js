@@ -101,7 +101,7 @@ function paneUsesMarkdown(pane = state.focusedPane) {
 
 function getWysiwygMountSlot(pane = state.focusedPane) {
   const paneView = getPaneView(pane)
-  if (paneView === 'wysiwyg') return 'left'
+  if (paneView === 'wysiwyg') return 'single'
   if (paneView !== 'split') return null
   if (getSplitEditableView(pane) !== 'wysiwyg') return null
   return getSplitPreviewSide(pane) === 'left' ? 'right' : 'left'
@@ -774,18 +774,23 @@ function buildEditorUI() {
           </div>
           ${renderEditorToolbar('primary')}
           <div class="panes-main" id="panes-main-primary">
-            <div class="pane" id="pane-left-primary">
-              <div class="view-slot" id="view-slot-left-primary">
-                <div class="preview-pane preview-pane--slot" id="preview-left-primary"></div>
+            <div class="single-surface" id="single-surface-primary">
+              <div class="preview-pane preview-pane--single" id="preview-single-primary"></div>
+              <div class="cm-host" id="cm-host-primary"></div>
+            </div>
+            <div class="split-layout" id="split-layout-primary">
+              <div class="pane" id="pane-left-primary">
+                <div class="view-slot" id="view-slot-left-primary">
+                  <div class="preview-pane preview-pane--slot" id="preview-left-primary"></div>
+                </div>
+              </div>
+              <div class="split-resizer" id="split-resizer-primary" data-pane="primary" title="Resize split view"></div>
+              <div class="pane" id="pane-right-primary">
+                <div class="view-slot" id="view-slot-right-primary">
+                  <div class="preview-pane preview-pane--slot" id="preview-right-primary"></div>
+                </div>
               </div>
             </div>
-            <div class="split-resizer" id="split-resizer-primary" data-pane="primary" title="Resize split view"></div>
-            <div class="pane" id="pane-right-primary">
-              <div class="view-slot" id="view-slot-right-primary">
-                <div class="preview-pane preview-pane--slot" id="preview-right-primary"></div>
-              </div>
-            </div>
-            <div class="cm-host" id="cm-host-primary"></div>
           </div>
         </section>
         <div class="workspace-resizer hidden" id="workspace-resizer" title="Resize document split"></div>
@@ -796,18 +801,23 @@ function buildEditorUI() {
           </div>
           ${renderEditorToolbar('secondary')}
           <div class="panes-main" id="panes-main-secondary">
-            <div class="pane" id="pane-left-secondary">
-              <div class="view-slot" id="view-slot-left-secondary">
-                <div class="preview-pane preview-pane--slot" id="preview-left-secondary"></div>
+            <div class="single-surface" id="single-surface-secondary">
+              <div class="preview-pane preview-pane--single" id="preview-single-secondary"></div>
+              <div class="cm-host" id="cm-host-secondary"></div>
+            </div>
+            <div class="split-layout" id="split-layout-secondary">
+              <div class="pane" id="pane-left-secondary">
+                <div class="view-slot" id="view-slot-left-secondary">
+                  <div class="preview-pane preview-pane--slot" id="preview-left-secondary"></div>
+                </div>
+              </div>
+              <div class="split-resizer" id="split-resizer-secondary" data-pane="secondary" title="Resize split view"></div>
+              <div class="pane" id="pane-right-secondary">
+                <div class="view-slot" id="view-slot-right-secondary">
+                  <div class="preview-pane preview-pane--slot" id="preview-right-secondary"></div>
+                </div>
               </div>
             </div>
-            <div class="split-resizer" id="split-resizer-secondary" data-pane="secondary" title="Resize split view"></div>
-            <div class="pane" id="pane-right-secondary">
-              <div class="view-slot" id="view-slot-right-secondary">
-                <div class="preview-pane preview-pane--slot" id="preview-right-secondary"></div>
-              </div>
-            </div>
-            <div class="cm-host" id="cm-host-secondary"></div>
           </div>
           <div class="workspace-pane__empty" id="workspace-secondary-empty">
             Open another markdown file to compare side by side
@@ -884,7 +894,7 @@ function destroyRichEditor(pane) {
     richEditors[pane].destroy()
     richEditors[pane] = null
   }
-  document.querySelectorAll(`#view-slot-left-${pane} .wysiwyg-editor, #view-slot-right-${pane} .wysiwyg-editor`).forEach(node => {
+  document.querySelectorAll(`#single-surface-${pane} .wysiwyg-editor, #view-slot-left-${pane} .wysiwyg-editor, #view-slot-right-${pane} .wysiwyg-editor`).forEach(node => {
     node.remove()
   })
   richEditorMountTarget[pane] = null
@@ -897,7 +907,7 @@ function ensureRichEditorMounted(pane) {
     return null
   }
 
-  const slotHost = $(`view-slot-${slot}-${pane}`)
+  const slotHost = slot === 'single' ? $(`single-surface-${pane}`) : $(`view-slot-${slot}-${pane}`)
   if (!slotHost) return null
 
   const mountTarget = `${pane}:${slot}`
@@ -992,26 +1002,31 @@ function syncSplitLayout() {
     const tab = getTabForPane(pane)
     const paneView = getPaneView(pane)
     const splitView = getSplitView(pane)
-    const panesMain = $(`panes-main-${pane}`)
+    const singleSurface = $(`single-surface-${pane}`)
+    const splitLayout = $(`split-layout-${pane}`)
     const leftPane = $(`pane-left-${pane}`)
     const rightPane = $(`pane-right-${pane}`)
     const splitResizer = $(`split-resizer-${pane}`)
     const sourceLabel = $(`pl-source-${pane}`)
     const previewLabel = $(`pl-preview-${pane}`)
     if (!active || !tab) return
-    if (panesMain) panesMain.dataset.layout = paneView === 'split' ? 'split' : 'single'
-    if (leftPane) leftPane.classList.toggle('hidden', false)
-    if (rightPane) rightPane.classList.toggle('hidden', paneView !== 'split')
-    if (leftPane) leftPane.style.display = 'flex'
-    if (rightPane) rightPane.style.display = paneView === 'split' ? 'flex' : 'none'
-    if (splitResizer) splitResizer.style.display = paneView === 'split' ? '' : 'none'
-    if (leftPane) leftPane.style.flex = paneView === 'split' ? '0 0 var(--split-ratio)' : '1 1 100%'
-    if (rightPane) rightPane.style.flex = paneView === 'split' ? '1 1 calc(100% - var(--split-ratio))' : '0 0 0'
-    placePaneView(pane, 'left', paneView === 'split' ? splitView.left : paneView)
+    if (singleSurface) singleSurface.style.display = paneView === 'split' ? 'none' : 'flex'
+    if (splitLayout) splitLayout.style.display = paneView === 'split' ? 'flex' : 'none'
     if (paneView === 'split') {
+      if (leftPane) leftPane.classList.toggle('hidden', false)
+      if (rightPane) rightPane.classList.toggle('hidden', false)
+      if (leftPane) leftPane.style.display = 'flex'
+      if (rightPane) rightPane.style.display = 'flex'
+      if (splitResizer) splitResizer.style.display = ''
+      if (leftPane) leftPane.style.flex = '0 0 var(--split-ratio)'
+      if (rightPane) rightPane.style.flex = '1 1 calc(100% - var(--split-ratio))'
+      placePaneView(pane, 'left', splitView.left)
       placePaneView(pane, 'right', splitView.right)
     } else {
+      if (splitResizer) splitResizer.style.display = 'none'
+      placePaneView(pane, 'left', null)
       placePaneView(pane, 'right', null)
+      placeStandaloneView(pane, paneView)
     }
     if (sourceLabel) {
       sourceLabel.style.display = ''
@@ -1027,29 +1042,38 @@ function syncSplitLayout() {
   })
 }
 
+function placeStandaloneView(pane, viewType) {
+  const surface = $(`single-surface-${pane}`)
+  if (!surface) return
+
+  const preview = $(`preview-single-${pane}`)
+  const cmHost = $(`cm-host-${pane}`)
+
+  if (preview) preview.style.display = viewType === 'preview' ? 'block' : 'none'
+
+  if (viewType === 'markdown' && cmHost) {
+    surface.appendChild(cmHost)
+    cmHost.style.display = 'block'
+    queueMicrotask(() => editorViews[pane]?.requestMeasure?.())
+  } else if (cmHost) {
+    surface.appendChild(cmHost)
+    cmHost.style.display = 'none'
+  }
+}
+
 function placePaneView(pane, slot, viewType) {
   const slotHost = $(`view-slot-${slot}-${pane}`)
   if (!slotHost) return
 
   const preview = $(`preview-${slot}-${pane}`)
   const cmHost = $(`cm-host-${pane}`)
-  const staleCmHosts = slotHost.querySelectorAll('.cm-host')
-  const staleWysiwygHosts = slotHost.querySelectorAll('.wysiwyg-editor')
-
-  staleCmHosts.forEach(node => {
-    if (node !== cmHost || viewType !== 'markdown') node.remove()
-  })
-  staleWysiwygHosts.forEach(node => {
-    if (viewType !== 'wysiwyg') node.remove()
-  })
 
   if (preview) preview.style.display = viewType === 'preview' ? 'block' : 'none'
 
   if (viewType === 'markdown' && cmHost) {
     slotHost.appendChild(cmHost)
     cmHost.style.display = 'block'
-  } else if (cmHost) {
-    cmHost.style.display = 'none'
+    queueMicrotask(() => editorViews[pane]?.requestMeasure?.())
   }
 }
 
@@ -1662,7 +1686,7 @@ function handleAppCommand(command) {
 // ── Preview ───────────────────────────────────────────────────────
 async function refreshPreview(pane, markdown) {
   const html = await renderMarkdown(markdown)
-  ;['left', 'right'].forEach(slot => {
+  ;['single', 'left', 'right'].forEach(slot => {
     const p = $(`preview-${slot}-${pane}`)
     if (p) p.innerHTML = html
   })

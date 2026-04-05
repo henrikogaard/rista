@@ -26,7 +26,7 @@ const fjordThemeDark = EditorView.theme({
   '&': {
     height: '100%',
     backgroundColor: 'var(--surface-bg-0)',
-    color: 'var(--text2)',
+    color: 'var(--editor-text-color)',
   },
   '.cm-scroller': {
     fontFamily: 'var(--editor-font)',
@@ -35,9 +35,9 @@ const fjordThemeDark = EditorView.theme({
     padding: '24px 28px 28px',
     overflowX: 'auto',
   },
-  '.cm-content': { caretColor: 'var(--text1)' },
-  '.cm-line': { padding: '0 2px' },
-  '.cm-cursor': { borderLeftColor: 'var(--text1)' },
+  '.cm-content': { caretColor: 'var(--editor-text-color)' },
+  '.cm-line': { padding: '0 2px', color: 'var(--editor-text-color)' },
+  '.cm-cursor': { borderLeftColor: 'var(--editor-text-color)' },
   '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.015)' },
   '.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(91,127,166,0.25) !important' },
   '.cm-gutters': { display: 'none' },
@@ -48,7 +48,7 @@ const fjordThemeLight = EditorView.theme({
   '&': {
     height: '100%',
     backgroundColor: 'var(--surface-bg-0)',
-    color: 'var(--text2)',
+    color: 'var(--editor-text-color)',
   },
   '.cm-scroller': {
     fontFamily: 'var(--editor-font)',
@@ -57,9 +57,9 @@ const fjordThemeLight = EditorView.theme({
     padding: '24px 28px 28px',
     overflowX: 'auto',
   },
-  '.cm-content': { caretColor: 'var(--text1)' },
-  '.cm-line': { padding: '0 2px' },
-  '.cm-cursor': { borderLeftColor: 'var(--text1)' },
+  '.cm-content': { caretColor: 'var(--editor-text-color)' },
+  '.cm-line': { padding: '0 2px', color: 'var(--editor-text-color)' },
+  '.cm-cursor': { borderLeftColor: 'var(--editor-text-color)' },
   '.cm-activeLine': { backgroundColor: 'rgba(53,42,30,0.035)' },
   '.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(58,106,154,0.15) !important' },
   '.cm-gutters': { display: 'none' },
