@@ -22,11 +22,13 @@ contextBridge.exposeInMainWorld('fjord', {
 
   // File change events
   onFileChange: (cb) => {
-    ipcRenderer.on('fs:change', (_, data) => cb(data))
-    return () => ipcRenderer.removeAllListeners('fs:change')
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('fs:change', listener)
+    return () => ipcRenderer.removeListener('fs:change', listener)
   },
   onCommand: (cb) => {
-    ipcRenderer.on('app:command', (_, data) => cb(data))
-    return () => ipcRenderer.removeAllListeners('app:command')
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('app:command', listener)
+    return () => ipcRenderer.removeListener('app:command', listener)
   },
 })

@@ -8,6 +8,85 @@ let watcher = null
 const appIconPath = path.join(__dirname, '../../public/icon.svg')
 const aboutIconPath = path.join(__dirname, '../../public/icon.png')
 
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function buildExportHtml({ title, html, theme = 'dark', settings = {} }) {
+  const isLight = theme === 'light'
+  const bg = isLight ? '#f7f2e8' : '#0d0e10'
+  const surface = isLight ? '#fffaf0' : '#121417'
+  const text = isLight ? '#221d18' : '#dddfe6'
+  const muted = isLight ? '#5f564b' : '#7a7d8a'
+  const border = isLight ? 'rgba(34,29,24,0.12)' : 'rgba(255,255,255,0.08)'
+  const accent = isLight ? '#5c7695' : '#5b7fa6'
+  const previewFont = settings.previewFontCustom || settings.previewFont || "'DM Sans', system-ui, sans-serif"
+  const previewFontSize = settings.previewFontSize || 13
+  const previewLineHeight = settings.previewLineHeight || 1.75
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root {
+      --bg: ${bg};
+      --surface: ${surface};
+      --text: ${text};
+      --muted: ${muted};
+      --border: ${border};
+      --accent: ${accent};
+      --font: ${previewFont};
+      --font-size: ${previewFontSize}px;
+      --line-height: ${previewLineHeight};
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    body { font-family: var(--font); font-size: var(--font-size); line-height: var(--line-height); }
+    .page {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 56px 72px;
+      background: var(--surface);
+    }
+    .preview-pane { color: var(--text); }
+    .preview-pane h1 { font-size: 1.7em; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin: 0 0 14px; }
+    .preview-pane h2 { font-size: 1.3em; font-weight: 600; margin: 24px 0 8px; }
+    .preview-pane h3 { font-size: 1.08em; font-weight: 600; color: var(--muted); margin: 18px 0 6px; }
+    .preview-pane p { margin: 0 0 12px; white-space: pre-wrap; }
+    .preview-pane ul, .preview-pane ol { padding-left: 18px; margin: 0 0 12px; }
+    .preview-pane li { margin: 4px 0; }
+    .preview-pane code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: rgba(127,127,127,0.14); padding: 1px 5px; border-radius: 4px; color: var(--accent); }
+    .preview-pane pre { background: rgba(127,127,127,0.1); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin: 12px 0; overflow-x: auto; }
+    .preview-pane pre code { background: transparent; padding: 0; color: var(--muted); }
+    .preview-pane blockquote { border-left: 2px solid var(--border); margin: 14px 0; padding: 3px 0 3px 14px; color: var(--muted); }
+    .preview-pane a { color: var(--accent); text-decoration: none; }
+    .preview-pane img { max-width: 100%; border-radius: 4px; margin: 8px 0; }
+    .preview-pane hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+    .preview-pane table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+    .preview-pane th { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--muted); text-align: left; font-weight: 600; }
+    .preview-pane td { padding: 5px 10px; border-bottom: 1px solid var(--border); }
+    .preview-pane .callout { margin: 16px 0; padding: 12px 14px 12px 16px; border-left: 2px solid var(--accent); background: rgba(127,127,127,0.08); }
+    .preview-pane .callout__title { margin: 0 0 8px; font-size: 0.86em; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .preview-pane .callout__body > :last-child { margin-bottom: 0; }
+    @page { margin: 18mm 16mm; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <article class="preview-pane">${html}</article>
+  </main>
+</body>
+</html>`
+}
+
 function sendRendererCommand(command) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('app:command', { command })
@@ -259,20 +338,36 @@ ipcMain.handle('fs:stat', async (_, filePath) => {
 })
 
 // ── IPC: Export to PDF ────────────────────────────────────────────
-ipcMain.handle('export:pdf', async (_, fileName) => {
+ipcMain.handle('export:pdf', async (_, payload) => {
   try {
+    const fileName = typeof payload === 'string' ? payload : payload?.fileName
     const savePath = await dialog.showSaveDialog(mainWindow, {
       defaultPath: `${fileName.replace(/\.md$/, '')}.pdf`,
       filters: [{ name: 'PDF files', extensions: ['pdf'] }],
     })
     if (savePath.canceled || !savePath.filePath) return false
 
-    // Render the preview pane to PDF
-    const pdfData = await mainWindow.webContents.printToPDF({
+    const printWindow = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        sandbox: true,
+      },
+    })
+    const html = buildExportHtml({
+      title: fileName,
+      html: payload?.html || '',
+      theme: payload?.theme || 'dark',
+      settings: payload?.settings || {},
+    })
+
+    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+
+    const pdfData = await printWindow.webContents.printToPDF({
       marginsType: 1,
       pageSize: 'A4',
-      printBackground: false,
+      printBackground: true,
     })
+    printWindow.destroy()
     fs.writeFileSync(savePath.filePath, pdfData)
     return true
   } catch (err) {

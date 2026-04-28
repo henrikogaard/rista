@@ -25,6 +25,16 @@ Broken or unstable:
 
 ## Most Recent Changes
 
+### 0. Planning and architecture docs
+- Added planning documents under `docs/`:
+  - `PRODUCT-ROADMAP.md`
+  - `PROJECT-BOARD.md`
+  - `ARCHITECTURE-PLAN.md`
+  - `ARCHITECTURE.md`
+  - `TEST-CASES.md`
+  - `NEXT-SPRINT.md`
+- These now define the roadmap, architecture direction, regression checklist, and short-term execution order
+
 ### 1. Callout support
 - Added Obsidian-style callout rendering in `src/renderer/markdown.js`
 - Added preview callout styling in `src/renderer/styles/main.css`
@@ -87,6 +97,24 @@ Broken or unstable:
   - changing modes from split view can scramble the UI layout
 - The recorded symptom matched the worklog diagnosis: split mode allowed state drift between high-level pane mode and slot-level split assignments
 
+### 9. Surface-layout rewrite
+- Reworked pane rendering so each workspace pane now has:
+  - a dedicated standalone container
+  - a dedicated split layout container
+- This removed the previous pattern where standalone modes reused split slots
+- Current direction:
+  - standalone `markdown`, `preview`, and `wysiwyg` use `single-surface-*`
+  - split mode uses `split-layout-*`
+
+### 10. Foundation cleanup batch
+- Fixed explorer active-file highlighting to use full file paths instead of filenames
+- Extracted tree rendering helpers into `src/renderer/tree-view.js`
+- Fixed preload unsubscribe behavior so individual listeners can be removed safely
+- Rebuilt PDF export to generate a document-only print window from rendered Markdown instead of printing the full app shell
+- Latest verified command after these changes:
+  - `npm run build`
+  - passes successfully
+
 ## Important Current Architecture
 
 ### Workspace model
@@ -123,10 +151,10 @@ Broken or unstable:
 
 Based on the latest fix and the user recording:
 
-1. WYSIWYG still needs manual validation across repeated toggles between standalone and split modes.
-2. The single-pane and split-pane logic are still too entangled.
-3. Preview content may still be duplicated or squeezed if mount/unmount transitions are not fully clearing old DOM state.
-4. Dual-workspace mode needs dedicated testing because each workspace pane now carries its own split editor state.
+1. The new standalone vs split rendering path needs a full manual QA pass using `docs/TEST-CASES.md`.
+2. WYSIWYG still needs repeated validation across standalone/split transitions.
+3. Dual-workspace mode still needs deliberate testing after the surface rewrite.
+4. PDF export should be visually reviewed to confirm the new document-only print layout feels good.
 
 ## Best Next Step
 
@@ -134,7 +162,7 @@ Do not add new editor modes or UI polish until the current renderer path is manu
 
 Recommended next move:
 
-1. Manually verify these transitions in single-pane mode:
+1. Run the `docs/TEST-CASES.md` regression pass, focusing first on:
    - `markdown -> split`
    - `wysiwyg -> split`
    - `split -> markdown`
@@ -152,17 +180,17 @@ Recommended next move:
    - secondary pane only
    - switching focused pane between the two
 
-4. If any layout residue remains, inspect:
+4. If the pane flows are stable, start the next sprint foundation work:
+   - continue splitting `src/renderer/index.js`
+   - centralize pane/workspace transition helpers
+   - improve watcher/tree refresh scope
+
+5. If WYSIWYG or split still misbehaves after QA, inspect:
    - `syncSplitLayout`
+   - `placeStandaloneView`
    - `placePaneView`
    - `ensureRichEditorMounted`
-   - DOM ownership of `cm-host-*`
-   - DOM ownership of `.wysiwyg-editor`
-
-5. If WYSIWYG still misbehaves after this state cleanup, the next refactor should likely separate:
-   - standalone rendering logic
-   - split rendering logic
-   instead of sharing the same placement path for both
+   - split/standalone ownership of `cm-host-*` and `.wysiwyg-editor`
 
 ## Build Status
 

@@ -2,6 +2,7 @@ import { initTheme, toggleTheme, getTheme } from './theme.js'
 import { createEditor, updateEditorDoc, updateEditorTheme } from './editor.js'
 import { renderMarkdown, extractHeadings, getStats } from './markdown.js'
 import { applySettings, getSettings, updateSetting, resetSettings, FONT_OPTIONS } from './settings.js'
+import { collectFolderPaths, renderFileTree, highlightTreeFiles } from './tree-view.js'
 import { undo, redo } from '@codemirror/commands'
 import ToastEditor from '@toast-ui/editor'
 
@@ -1173,34 +1174,17 @@ function handleToolbarClick(event) {
 
 // ── File tree ─────────────────────────────────────────────────────
 function renderTree(items, container, depth = 0) {
-  container.innerHTML = ''
-  items.forEach(item => {
-    if (item.type === 'folder') {
-      const isOpen = state.expandedFolders.has(item.path)
-      const f = el('div', `tree-folder${isOpen ? ' open' : ''}`)
-      f.style.paddingLeft = `${10 + depth * 14}px`
-      f.title = item.name
-      f.innerHTML = `<svg viewBox="0 0 6 10"><path d="M1 1l4 4-4 4" stroke-width="1.5" stroke="currentColor" fill="none" stroke-linecap="round"/></svg>${item.name}`
-      const children = el('div')
-      children.style.display = isOpen ? 'block' : 'none'
-      if (item.children) renderTree(item.children, children, depth + 1)
-      f.addEventListener('click', () => {
-        const nextOpen = !f.classList.contains('open')
-        f.classList.toggle('open', nextOpen)
-        children.style.display = nextOpen ? 'block' : 'none'
-        if (nextOpen) state.expandedFolders.add(item.path)
-        else state.expandedFolders.delete(item.path)
-      })
-      container.appendChild(f)
-      container.appendChild(children)
-    } else {
-      const fi = el('div', 'tree-file')
-      fi.style.paddingLeft = `${24 + depth * 14}px`
-      fi.title = item.name
-      fi.innerHTML = `<div class="tree-file__dot"></div>${item.name}`
-      fi.addEventListener('click', () => openFile(item))
-      container.appendChild(fi)
-    }
+  renderFileTree({
+    items,
+    container,
+    expandedPaths: state.expandedFolders,
+    activePaths: new Set([state.activeTab?.path, state.secondaryTab?.path].filter(Boolean)),
+    onToggleFolder: (folderPath, nextOpen) => {
+      if (nextOpen) state.expandedFolders.add(folderPath)
+      else state.expandedFolders.delete(folderPath)
+    },
+    onOpenFile: openFile,
+    depth,
   })
 }
 
@@ -1324,16 +1308,6 @@ function focusPane(pane) {
   updateActiveMetrics()
 }
 
-function collectFolderPaths(items, result = []) {
-  items.forEach(item => {
-    if (item.type === 'folder') {
-      result.push(item.path)
-      if (item.children) collectFolderPaths(item.children, result)
-    }
-  })
-  return result
-}
-
 function collapseAllFolders() {
   state.expandedFolders.clear()
   renderTree(state.tree, $('file-tree'))
@@ -1341,12 +1315,7 @@ function collapseAllFolders() {
 }
 
 function highlightActiveFile() {
-  document.querySelectorAll('.tree-file').forEach(f => f.classList.remove('active'))
-  const openNames = new Set([state.activeTab?.name, state.secondaryTab?.name].filter(Boolean))
-  if (openNames.size === 0) return
-  document.querySelectorAll('.tree-file').forEach(f => {
-    if (openNames.has(f.textContent.trim())) f.classList.add('active')
-  })
+  highlightTreeFiles(new Set([state.activeTab?.path, state.secondaryTab?.path].filter(Boolean)))
 }
 
 // ── Open folder ───────────────────────────────────────────────────
@@ -2291,7 +2260,13 @@ async function exportToPdf() {
     return
   }
   try {
-    const success = await window.fjord.exportPdf(tab.name)
+    const html = await renderMarkdown(tab.content || '')
+    const success = await window.fjord.exportPdf({
+      fileName: tab.name,
+      html,
+      theme: getTheme(),
+      settings: getSettings(),
+    })
     if (success) {
       // Success notification could be added here
     } else {
