@@ -2063,3 +2063,38 @@ body.is-resizing-split .workspace-resizer::before {
   background: rgba(53,42,30,0.05);
   border-color: rgba(53,42,30,0.08);
 }
+
+/* ── Zen Mode ─────────────────────────────────────────────────── */
+[data-zen="true"] .titlebar,
+[data-zen="true"] .sidebar,
+[data-zen="true"] .sidebar-resizer,
+[data-zen="true"] .tab-bar,
+[data-zen="true"] .workspace-toolbar,
+[data-zen="true"] .pane-label-row,
+[data-zen="true"] .statusbar,
+[data-zen="true"] .insights-panel,
+[data-zen="true"] .find-replace-bar,
+[data-zen="true"] .workspace-resizer,
+[data-zen="true"] .pane-header {
+  display: none !important;
+}
+[data-zen="true"] .editor-area {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; justify-content: center;
+  background: var(--bg0);
+}
+[data-zen="true"] .pane {
+  max-width: 700px; width: 100%;
+}
+[data-zen="true"] .pane.secondary-pane {
+  display: none !important;
+}
+.zen-exit-hint {
+  position: fixed; top: 12px; right: 16px; z-index: 200;
+  padding: 6px 14px;
+  background: var(--bg2); color: var(--text3);
+  font-size: 11px; font-family: var(--font);
+  cursor: pointer;
+  opacity: 0; transition: opacity 0.3s ease;
+}
+.zen-exit-hint:hover { color: var(--text1); }

@@ -7,6 +7,7 @@ import { getFocusedTab } from './state.js'
 import { registerEnsureRichEditorMounted, registerFocusPane, closeCommandDialog } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
 import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette } from './command-palette.js'
+import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
@@ -113,6 +114,7 @@ registerTabCallbacks({
 
 // ── Boot ─────────────────────────────────────────────────────────
 buildShell()
+buildZenExitHint()
 syncFolderUi()
 
 // ── Command palette ──────────────────────────────────────────────
@@ -127,11 +129,14 @@ registerCommands([
   { id: 'find-replace',    label: 'Find & Replace',       description: 'Search within the editor',       shortcut: '\u2318F',   action: () => toggleFindReplace() },
   { id: 'save',            label: 'Save',                 description: 'Save the active file',           shortcut: '\u2318S',   action: () => saveActive() },
   { id: 'settings',        label: 'Settings',             description: 'Open settings panel',            shortcut: '\u2318,',   action: () => toggleSettingsPanel() },
+  { id: 'toggle-zen',      label: 'Toggle Zen Mode',      description: 'Distraction-free writing',       shortcut: '\u21e7\u2318\u23ce', action: () => toggleZenMode() },
 ])
 
 // ── Keyboard shortcuts ───────────────────────────────────────────
 document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey
+  if (mod && e.shiftKey && e.key === 'Enter') { e.preventDefault(); toggleZenMode(); return }
+  if (e.key === 'Escape' && state.zenMode) { e.preventDefault(); exitZenMode(); return }
   if (mod && e.key === 'k') { e.preventDefault(); toggleCommandPalette(); return }
   if (e.key === 'Escape' && state.commandPaletteOpen) { e.preventDefault(); closePalette(); return }
   if (mod && e.key === 's') { e.preventDefault(); saveActive() }

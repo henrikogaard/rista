@@ -49,6 +49,8 @@ export const state = {
   settingsOpen: false,
   commandDialog: null,
   commandPaletteOpen: false,
+  zenMode: false,
+  _zenMouseHandler: null,
 }
 
 // ── Refs ──────────────────────────────────────────────────────────
