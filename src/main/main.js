@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { execFile } = require('child_process')
 const chokidar = require('chokidar')
+const { autoUpdater } = require('electron-updater')
 
 let mainWindow
 let watcher = null
@@ -188,6 +189,26 @@ app.whenReady().then(() => {
     if (!appIcon.isEmpty()) app.dock.setIcon(appIcon)
   }
   createWindow()
+
+  // Auto-update
+  setTimeout(() => {
+    try { autoUpdater.checkForUpdatesAndNotify() } catch {}
+  }, 5000)
+  setInterval(() => {
+    try { autoUpdater.checkForUpdatesAndNotify() } catch {}
+  }, 4 * 60 * 60 * 1000)
+
+  autoUpdater.on('update-available', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:command', { command: 'update:available' })
+    }
+  })
+  autoUpdater.on('update-downloaded', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:command', { command: 'update:ready' })
+    }
+  })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -197,10 +218,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
+// ── macOS open-file event (double-click .md in Finder) ────────────
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app:command', { command: 'file:open', path: filePath })
+  }
+})
+
 ipcMain.handle('app:meta', async () => ({
   name: app.getName(),
   version: app.getVersion(),
 }))
+
+// ── IPC: Set represented file (macOS proxy icon) ──────────────────
+ipcMain.handle('window:setRepresentedFile', async (_, filePath) => {
+  if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setRepresentedFilename(filePath || '')
+  }
+})
 
 // ── IPC: Open folder ──────────────────────────────────────────────
 ipcMain.handle('dialog:openFolder', async () => {
@@ -362,6 +398,22 @@ ipcMain.handle('fs:writeImageFile', async (_, dirPath, base64Data, fileName) => 
   }
 })
 
+// ── IPC: Read templates ───────────────────────────────────────────
+ipcMain.handle('fs:readTemplates', async (_, folderPath) => {
+  const templatesDir = path.join(folderPath, '_templates')
+  try {
+    if (!fs.existsSync(templatesDir)) return []
+    const files = fs.readdirSync(templatesDir).filter(f => f.endsWith('.md'))
+    return files.map(f => ({
+      name: f.replace(/\.md$/, ''),
+      path: path.join(templatesDir, f),
+      content: fs.readFileSync(path.join(templatesDir, f), 'utf-8'),
+    }))
+  } catch {
+    return []
+  }
+})
+
 // ── IPC: Export to PDF ────────────────────────────────────────────
 ipcMain.handle('export:pdf', async (_, payload) => {
   try {
@@ -399,6 +451,124 @@ ipcMain.handle('export:pdf', async (_, payload) => {
     console.error('PDF export error:', err)
     return false
   }
+})
+
+// ── IPC: Export to HTML ───────────────────────────────────────────
+ipcMain.handle('export:html', async (_, payload) => {
+  try {
+    const fileName = payload?.fileName || 'export'
+    const savePath = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: `${fileName.replace(/\.md$/, '')}.html`,
+      filters: [{ name: 'HTML files', extensions: ['html'] }],
+    })
+    if (savePath.canceled || !savePath.filePath) return false
+    const html = buildExportHtml({
+      title: fileName,
+      html: payload?.html || '',
+      theme: payload?.theme || 'dark',
+      settings: payload?.settings || {},
+    })
+    fs.writeFileSync(savePath.filePath, html, 'utf-8')
+    return true
+  } catch (err) {
+    console.error('HTML export error:', err)
+    return false
+  }
+})
+
+// ── IPC: Export to DOCX ───────────────────────────────────────────
+ipcMain.handle('export:docx', async (_, base64Data, fileName) => {
+  try {
+    const savePath = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: `${fileName}.docx`,
+      filters: [{ name: 'Word documents', extensions: ['docx'] }],
+    })
+    if (savePath.canceled || !savePath.filePath) return false
+    const buffer = Buffer.from(base64Data, 'base64')
+    fs.writeFileSync(savePath.filePath, buffer)
+    return true
+  } catch (err) {
+    console.error('DOCX export error:', err)
+    return false
+  }
+})
+
+// ── IPC: Settings export ──────────────────────────────────────────
+ipcMain.handle('settings:export', async (_, jsonString) => {
+  const savePath = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: 'fjordmark-settings.json',
+    filters: [{ name: 'JSON files', extensions: ['json'] }],
+  })
+  if (savePath.canceled || !savePath.filePath) return false
+  fs.writeFileSync(savePath.filePath, jsonString, 'utf-8')
+  return true
+})
+
+// ── IPC: Settings import ──────────────────────────────────────────
+ipcMain.handle('settings:import', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [{ name: 'JSON files', extensions: ['json'] }],
+  })
+  if (result.canceled || !result.filePaths.length) return null
+  return fs.readFileSync(result.filePaths[0], 'utf-8')
+})
+
+// ── IPC: Rename file ──────────────────────────────────────────────
+ipcMain.handle('fs:renameFile', async (_, oldPath, newPath) => {
+  try {
+    fs.renameSync(oldPath, newPath)
+    return true
+  } catch {
+    return false
+  }
+})
+
+// ── IPC: Trash file ──────────────────────────────────────────────
+ipcMain.handle('fs:trashFile', async (_, filePath) => {
+  try {
+    await shell.trashItem(filePath)
+    return true
+  } catch {
+    return false
+  }
+})
+
+// ── IPC: Duplicate file ──────────────────────────────────────────
+ipcMain.handle('fs:duplicateFile', async (_, filePath) => {
+  try {
+    const ext = path.extname(filePath)
+    const base = path.basename(filePath, ext)
+    const dir = path.dirname(filePath)
+    let copyPath = path.join(dir, `${base}-copy${ext}`)
+    let counter = 1
+    while (fs.existsSync(copyPath)) {
+      counter++
+      copyPath = path.join(dir, `${base}-copy-${counter}${ext}`)
+    }
+    fs.copyFileSync(filePath, copyPath)
+    return { path: copyPath, name: path.basename(copyPath) }
+  } catch {
+    return null
+  }
+})
+
+// ── IPC: Create file ─────────────────────────────────────────────
+ipcMain.handle('fs:createFile', async (_, filePath) => {
+  try {
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, '', 'utf-8')
+    }
+    return { path: filePath, name: path.basename(filePath) }
+  } catch {
+    return null
+  }
+})
+
+// ── IPC: Reveal in Finder / Explorer ─────────────────────────────
+ipcMain.handle('fs:showInFolder', async (_, filePath) => {
+  shell.showItemInFolder(filePath)
+  return true
 })
 
 // ── IPC: Render D2 diagram ────────────────────────────────────────

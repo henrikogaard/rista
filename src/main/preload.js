@@ -18,9 +18,24 @@ contextBridge.exposeInMainWorld('fjord', {
   stat: (p) => ipcRenderer.invoke('fs:stat', p),
   createDir: (p) => ipcRenderer.invoke('fs:createDir', p),
   writeImageFile: (dirPath, base64Data, fileName) => ipcRenderer.invoke('fs:writeImageFile', dirPath, base64Data, fileName),
+  renameFile: (oldPath, newPath) => ipcRenderer.invoke('fs:renameFile', oldPath, newPath),
+  trashFile: (p) => ipcRenderer.invoke('fs:trashFile', p),
+  duplicateFile: (p) => ipcRenderer.invoke('fs:duplicateFile', p),
+  createFile: (p) => ipcRenderer.invoke('fs:createFile', p),
+  showInFolder: (p) => ipcRenderer.invoke('fs:showInFolder', p),
+  readTemplates: (folderPath) => ipcRenderer.invoke('fs:readTemplates', folderPath),
+
+  // Window
+  setRepresentedFile: (p) => ipcRenderer.invoke('window:setRepresentedFile', p),
 
   // Export
   exportPdf: (fileName) => ipcRenderer.invoke('export:pdf', fileName),
+  exportHtml: (payload) => ipcRenderer.invoke('export:html', payload),
+  saveDocx: (base64Data, fileName) => ipcRenderer.invoke('export:docx', base64Data, fileName),
+
+  // Settings
+  exportSettings: (jsonString) => ipcRenderer.invoke('settings:export', jsonString),
+  importSettings: () => ipcRenderer.invoke('settings:import'),
 
   // Diagram rendering
   renderD2: (source, themeId) => ipcRenderer.invoke('render:d2', source, themeId),
