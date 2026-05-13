@@ -3,6 +3,7 @@ import { renderMarkdown, extractHeadings, getStats } from './markdown.js'
 import { processDiagrams } from './diagrams.js'
 import { getTheme } from './theme.js'
 import { getSettings } from './settings.js'
+import { formatGoalStatus, isGoalReached } from './word-goals.js'
 
 // ── Preview ───────────────────────────────────────────────────────
 export async function refreshPreview(pane, markdown) {
@@ -36,7 +37,19 @@ export function updateActiveMetrics() {
   }
   const stats = getStats(markdown)
   if (words) words.textContent = `${stats.words} words`
+  const goalText = formatGoalStatus(stats.words, tab?.path)
+  if (goalText && words) {
+    words.textContent = goalText
+    if (isGoalReached(stats.words, tab?.path)) {
+      words.classList.add('goal-reached')
+      setTimeout(() => words.classList.remove('goal-reached'), 3000)
+    }
+  }
   if (lines) lines.textContent = `${markdown.split('\n').length} lines`
+  const readTime = $('st-readtime')
+  if (readTime) {
+    readTime.textContent = stats.readMin < 1 ? '< 1 min read' : `~${stats.readMin} min read`
+  }
   renderStatsPopover(stats)
   renderTocPopover(extractHeadings(markdown))
 }
@@ -66,8 +79,12 @@ export function renderStatsPopover(s) {
   c.innerHTML = `
     <div class="stat-card"><div class="num">${s.words}</div><div class="row"><span class="lbl">Words</span></div></div>
     <div class="stat-card"><div class="num">${s.chars}</div><div class="row"><span class="lbl">Characters</span></div></div>
+    <div class="stat-card"><div class="num">${s.sentences || 0}</div><div class="row"><span class="lbl">Sentences</span></div></div>
     <div class="stat-card"><div class="num">${s.paragraphs}</div><div class="row"><span class="lbl">Paragraphs</span></div></div>
     <div class="stat-card"><div class="num" style="font-size:15px">${s.readMin < 1 ? '< 1' : s.readMin} min</div><div class="row"><span class="lbl">Read time</span></div></div>
+    <div class="stat-card"><div class="num">${s.avgSentenceLen || 0}</div><div class="row"><span class="lbl">Avg words/sentence</span></div></div>
+    <div class="stat-card"><div class="num">${s.avgWordLen || 0}</div><div class="row"><span class="lbl">Avg word length</span></div></div>
+    <div class="stat-card"><div class="num">${s.fkGrade || 0}</div><div class="row"><span class="lbl">FK Grade Level</span></div></div>
   `
 }
 
@@ -110,6 +127,23 @@ export async function exportToPdf() {
     }
   } catch (err) {
     alert('Error exporting PDF: ' + err.message)
+  }
+}
+
+// ── HTML Export ─────────────────────────────────────────────────────
+export async function exportToHtml() {
+  const tab = getFocusedTab()
+  if (!tab) return
+  try {
+    const html = await renderMarkdown(tab.content || '')
+    await window.fjord.exportHtml({
+      fileName: tab.name,
+      html,
+      theme: getTheme(),
+      settings: getSettings(),
+    })
+  } catch (err) {
+    alert('Error exporting HTML: ' + err.message)
   }
 }
 

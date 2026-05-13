@@ -85,6 +85,20 @@ export const DEFAULT_SETTINGS = {
   previewFontSize: 13,
   previewLineHeight: 1.75,
   previewTextColor: '',
+  typewriterScrolling: false,
+  spellcheck: false,
+  vimMode: false,
+  autoSaveDelay: 800,
+  tabIndentation: 'spaces',
+  indentWidth: 2,
+  softWrap: true,
+  showLineNumbers: false,
+  showStatusBar: true,
+  defaultViewMode: 'split',
+  readingSpeed: 200,
+  zenParagraphDimming: false,
+  zenColumnWidth: 700,
+  showMinimap: false,
 }
 
 const NUMERIC_KEYS = new Set([
@@ -101,6 +115,10 @@ const NUMERIC_KEYS = new Set([
   'editorLineHeight',
   'previewFontSize',
   'previewLineHeight',
+  'autoSaveDelay',
+  'indentWidth',
+  'readingSpeed',
+  'zenColumnWidth',
 ])
 
 function clamp(value, min, max) {
@@ -191,6 +209,20 @@ function sanitize(settings) {
   next.previewFontCustom = String(next.previewFontCustom || '').trim()
   next.editorTextColor = sanitizeColor(next.editorTextColor)
   next.previewTextColor = sanitizeColor(next.previewTextColor)
+  next.typewriterScrolling = Boolean(next.typewriterScrolling)
+  next.spellcheck = Boolean(next.spellcheck)
+  next.vimMode = Boolean(next.vimMode)
+  next.autoSaveDelay = clamp(Number(next.autoSaveDelay) || 800, 200, 5000)
+  next.tabIndentation = ['spaces', 'tabs'].includes(next.tabIndentation) ? next.tabIndentation : 'spaces'
+  next.indentWidth = [2, 4, 8].includes(Number(next.indentWidth)) ? Number(next.indentWidth) : 2
+  next.softWrap = next.softWrap !== false
+  next.showLineNumbers = Boolean(next.showLineNumbers)
+  next.showStatusBar = next.showStatusBar !== false
+  next.defaultViewMode = ['markdown', 'split', 'preview'].includes(next.defaultViewMode) ? next.defaultViewMode : 'split'
+  next.readingSpeed = clamp(Number(next.readingSpeed) || 200, 100, 500)
+  next.zenParagraphDimming = Boolean(next.zenParagraphDimming)
+  next.zenColumnWidth = clamp(Number(next.zenColumnWidth) || 700, 500, 900)
+  next.showMinimap = Boolean(next.showMinimap)
 
   return next
 }
