@@ -1,11 +1,12 @@
 import { initTheme } from './theme.js'
 import { applySettings } from './settings.js'
 import { initDiagrams } from './diagrams.js'
-import { getTheme } from './theme.js'
+import { getTheme, toggleTheme } from './theme.js'
 import { state } from './state.js'
 import { getFocusedTab } from './state.js'
 import { registerEnsureRichEditorMounted, registerFocusPane, closeCommandDialog } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
+import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette } from './command-palette.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
@@ -114,9 +115,25 @@ registerTabCallbacks({
 buildShell()
 syncFolderUi()
 
+// ── Command palette ──────────────────────────────────────────────
+registerCommandPaletteCallbacks({ openFile })
+
+registerCommands([
+  { id: 'toggle-sidebar',  label: 'Toggle Sidebar',       description: 'Show or hide the sidebar',       shortcut: '\u2318B',   action: () => toggleSidebar() },
+  { id: 'toggle-toolbar',  label: 'Toggle Toolbar',       description: 'Show or hide the toolbar',       shortcut: '\u2318\\',  action: () => toggleToolbar() },
+  { id: 'toggle-theme',    label: 'Toggle Theme',         description: 'Switch between dark and light',  shortcut: '',          action: () => toggleTheme() },
+  { id: 'new-file',        label: 'New File',             description: 'Create a new markdown file',     shortcut: '\u2318N',   action: () => createNewFile() },
+  { id: 'open-folder',     label: 'Open Folder',          description: 'Open a project folder',          shortcut: '',          action: () => openFolder() },
+  { id: 'find-replace',    label: 'Find & Replace',       description: 'Search within the editor',       shortcut: '\u2318F',   action: () => toggleFindReplace() },
+  { id: 'save',            label: 'Save',                 description: 'Save the active file',           shortcut: '\u2318S',   action: () => saveActive() },
+  { id: 'settings',        label: 'Settings',             description: 'Open settings panel',            shortcut: '\u2318,',   action: () => toggleSettingsPanel() },
+])
+
 // ── Keyboard shortcuts ───────────────────────────────────────────
 document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey
+  if (mod && e.key === 'k') { e.preventDefault(); toggleCommandPalette(); return }
+  if (e.key === 'Escape' && state.commandPaletteOpen) { e.preventDefault(); closePalette(); return }
   if (mod && e.key === 's') { e.preventDefault(); saveActive() }
   if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveActiveAs() }
   if (mod && e.key === 'n') { e.preventDefault(); createNewFile() }

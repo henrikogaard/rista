@@ -48,6 +48,7 @@ export const state = {
   },
   settingsOpen: false,
   commandDialog: null,
+  commandPaletteOpen: false,
 }
 
 // ── Refs ──────────────────────────────────────────────────────────
