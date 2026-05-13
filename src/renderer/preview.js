@@ -115,25 +115,37 @@ export async function exportToPdf() {
 
 // ── Image Paste Handler ─────────────────────────────────────────────
 export async function handleImagePaste(file, view, pane = state.focusedPane, onEditorChange) {
-  if (!getTabForPane(pane)) return
+  const tab = getTabForPane(pane)
+  if (!tab) return
 
-  // Convert image to base64
   const reader = new FileReader()
-  reader.onload = (e) => {
-    const base64 = e.target.result
+  reader.onload = async (e) => {
+    const base64Full = e.target.result
+    const base64Data = base64Full.split(',')[1]
     const ext = file.type.split('/')[1] || 'png'
-    const fileName = `image-${Date.now()}.${ext}`
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const fileName = `image-${timestamp}.${ext}`
 
-    // Insert markdown image syntax at cursor
+    // Determine _assets/ directory next to the current .md file
+    const filePath = tab.path
+    if (!filePath) return
+
+    const lastSlash = filePath.lastIndexOf('/') !== -1 ? filePath.lastIndexOf('/') : filePath.lastIndexOf('\\')
+    const dirPath = filePath.substring(0, lastSlash)
+    const assetsDir = dirPath + '/_assets'
+
+    const result = await window.fjord.writeImageFile(assetsDir, base64Data, fileName)
+    if (!result) return
+
+    const relativePath = '_assets/' + fileName
+    const markdown = `![${fileName}](${relativePath})`
     const pos = view.state.selection.main.head
-    const markdown = `![](data:${file.type};base64,${base64.split(',')[1]})`
 
     view.dispatch({
       changes: { from: pos, to: pos, insert: markdown },
       selection: { anchor: pos + markdown.length },
     })
 
-    // Update editor content
     onEditorChange(pane, view.state.doc.toString())
   }
   reader.readAsDataURL(file)

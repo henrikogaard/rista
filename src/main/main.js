@@ -338,6 +338,30 @@ ipcMain.handle('fs:stat', async (_, filePath) => {
   }
 })
 
+// ── IPC: Create directory ─────────────────────────────────────────
+ipcMain.handle('fs:createDir', async (_, dirPath) => {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true })
+    return true
+  } catch {
+    return false
+  }
+})
+
+// ── IPC: Write image file ─────────────────────────────────────────
+ipcMain.handle('fs:writeImageFile', async (_, dirPath, base64Data, fileName) => {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true })
+    const filePath = path.join(dirPath, fileName)
+    const buffer = Buffer.from(base64Data, 'base64')
+    fs.writeFileSync(filePath, buffer)
+    return { path: filePath, name: fileName }
+  } catch (err) {
+    console.error('Image write error:', err)
+    return null
+  }
+})
+
 // ── IPC: Export to PDF ────────────────────────────────────────────
 ipcMain.handle('export:pdf', async (_, payload) => {
   try {

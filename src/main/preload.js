@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('fjord', {
   saveFileAs: (currentPath, content, folderPath) => ipcRenderer.invoke('fs:saveFileAs', currentPath, content, folderPath),
   watchFolder: (p) => ipcRenderer.invoke('fs:watchFolder', p),
   stat: (p) => ipcRenderer.invoke('fs:stat', p),
+  createDir: (p) => ipcRenderer.invoke('fs:createDir', p),
+  writeImageFile: (dirPath, base64Data, fileName) => ipcRenderer.invoke('fs:writeImageFile', dirPath, base64Data, fileName),
 
   // Export
   exportPdf: (fileName) => ipcRenderer.invoke('export:pdf', fileName),
