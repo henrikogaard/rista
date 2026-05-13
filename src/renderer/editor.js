@@ -5,6 +5,8 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
+import { vim } from '@replit/codemirror-vim'
+import { selectNextOccurrence } from '@codemirror/search'
 
 // ── Minimal highlight style matching Fjordmark palette ──
 const fjordHighlight = HighlightStyle.define([
@@ -68,7 +70,33 @@ const fjordThemeLight = EditorView.theme({
 
 export const themeCompartment = new Compartment()
 
-export function createEditor({ parent, doc = '', onChange, onSelectionChange, onPaste, isDark = true }) {
+export const typewriterCompartment = new Compartment()
+
+export const spellcheckCompartment = new Compartment()
+
+const spellcheckOn = EditorView.contentAttributes.of({ spellcheck: 'true' })
+const spellcheckOff = EditorView.contentAttributes.of({ spellcheck: 'false' })
+
+export const vimCompartment = new Compartment()
+const vimOff = []
+
+const typewriterExtension = EditorView.updateListener.of(update => {
+  if (!update.docChanged && !update.selectionSet) return
+  const view = update.view
+  const head = update.state.selection.main.head
+  const coords = view.coordsAtPos(head)
+  if (!coords) return
+  const editorRect = view.dom.getBoundingClientRect()
+  const targetY = editorRect.top + editorRect.height / 2
+  const diff = coords.top - targetY
+  if (Math.abs(diff) > 10) {
+    view.scrollDOM.scrollBy({ top: diff, behavior: 'smooth' })
+  }
+})
+
+const typewriterOff = []
+
+export function createEditor({ parent, doc = '', onChange, onSelectionChange, onPaste, onRichPaste, isDark = true, typewriterEnabled = false, spellcheckEnabled = false, vimEnabled = false }) {
   const state = EditorState.create({
     doc,
     extensions: [
@@ -76,10 +104,13 @@ export function createEditor({ parent, doc = '', onChange, onSelectionChange, on
       drawSelection(),
       dropCursor(),
       EditorView.lineWrapping,
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+      keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, ...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage, codeLanguages: languages }),
       syntaxHighlighting(fjordHighlight),
       themeCompartment.of(isDark ? fjordThemeDark : fjordThemeLight),
+      typewriterCompartment.of(typewriterEnabled ? typewriterExtension : typewriterOff),
+      spellcheckCompartment.of(spellcheckEnabled ? spellcheckOn : spellcheckOff),
+      vimCompartment.of(vimEnabled ? vim() : vimOff),
       EditorView.updateListener.of(update => {
         if (update.docChanged && onChange) {
           onChange(update.state.doc.toString())
@@ -93,19 +124,53 @@ export function createEditor({ parent, doc = '', onChange, onSelectionChange, on
 
   const view = new EditorView({ state, parent })
 
-  // Handle paste events for images
-  if (onPaste) {
+  // Handle paste events for images and rich text
+  if (onPaste || onRichPaste) {
     parent.addEventListener('paste', async (e) => {
       const items = e.clipboardData?.items
       if (!items) return
 
+      // Check for images first
       for (let item of items) {
         if (item.kind === 'file' && item.type.startsWith('image/')) {
           e.preventDefault()
           const file = item.getAsFile()
-          if (file && onPaste) {
-            await onPaste(file, view)
-          }
+          if (file && onPaste) await onPaste(file, view)
+          return
+        }
+      }
+
+      // Check for rich text (HTML) - convert to Markdown
+      const htmlData = e.clipboardData?.getData('text/html')
+      if (htmlData && onRichPaste) {
+        e.preventDefault()
+        onRichPaste(htmlData, view)
+      }
+    })
+  }
+
+  // Handle drag-and-drop images
+  if (onPaste) {
+    parent.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) {
+        e.preventDefault()
+        parent.classList.add('drag-over')
+      }
+    })
+
+    parent.addEventListener('dragleave', (e) => {
+      parent.classList.remove('drag-over')
+    })
+
+    parent.addEventListener('drop', async (e) => {
+      parent.classList.remove('drag-over')
+      const files = e.dataTransfer?.files
+      if (!files) return
+
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          e.preventDefault()
+          await onPaste(file, view)
         }
       }
     })
@@ -126,5 +191,23 @@ export function updateEditorTheme(view, isDark) {
   const newTheme = isDark ? fjordThemeDark : fjordThemeLight
   view.dispatch({
     effects: themeCompartment.reconfigure(newTheme),
+  })
+}
+
+export function updateTypewriterMode(view, enabled) {
+  view.dispatch({
+    effects: typewriterCompartment.reconfigure(enabled ? typewriterExtension : typewriterOff),
+  })
+}
+
+export function updateSpellcheck(view, enabled) {
+  view.dispatch({
+    effects: spellcheckCompartment.reconfigure(enabled ? spellcheckOn : spellcheckOff),
+  })
+}
+
+export function updateVimMode(view, enabled) {
+  view.dispatch({
+    effects: vimCompartment.reconfigure(enabled ? vim() : vimOff),
   })
 }

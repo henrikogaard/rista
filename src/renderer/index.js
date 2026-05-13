@@ -1,13 +1,18 @@
 import { initTheme } from './theme.js'
 import { applySettings } from './settings.js'
+import { initKeybindings, matchesBinding } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
 import { state } from './state.js'
 import { getFocusedTab } from './state.js'
+import { setDocumentGoal, setSessionGoal } from './word-goals.js'
+import { getStats } from './markdown.js'
 import { registerEnsureRichEditorMounted, registerFocusPane, closeCommandDialog } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
 import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette } from './command-palette.js'
 import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
+import { exportToHtml } from './preview.js'
+import { exportToDocx } from './export-docx.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
@@ -37,6 +42,7 @@ import {
 import {
   registerTabCallbacks,
   openFolder,
+  openFolderPath,
   createNewFile,
   openFile,
   loadFileIntoTab,
@@ -62,6 +68,7 @@ import {
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
+initKeybindings()
 initDiagrams(getTheme())
 
 // ── Cross-module callback registration ───────────────────────────
@@ -73,6 +80,7 @@ registerShellCallbacks({
   toggleWorkspaceSplit,
   toggleSidebar,
   openFolder,
+  openRecentProject: (folderPath) => openFolderPath(folderPath),
   collapseAllFolders,
   startSidebarResize,
   handleAppCommand,
@@ -112,6 +120,37 @@ registerTabCallbacks({
   focusPane,
 })
 
+// ── Templates ────────────────────────────────────────────────────
+const BUILT_IN_TEMPLATES = [
+  { name: 'Blog Post', content: '# {{title}}\n\n*{{date}}*\n\n' },
+  { name: 'Meeting Notes', content: '# Meeting Notes — {{date}}\n\n## Attendees\n\n- \n\n## Agenda\n\n1. \n\n## Notes\n\n\n\n## Action Items\n\n- [ ] ' },
+  { name: 'Daily Note', content: '# {{date}}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n' },
+  { name: 'README', content: '# Project Name\n\n## Description\n\n\n\n## Installation\n\n```bash\nnpm install\n```\n\n## Usage\n\n## License\n\nMIT' },
+  { name: 'Changelog', content: '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- \n\n### Changed\n\n### Fixed\n' },
+]
+
+async function getAvailableTemplates() {
+  const builtIn = [...BUILT_IN_TEMPLATES]
+  if (state.folderPath && window.fjord.readTemplates) {
+    try {
+      const userTemplates = await window.fjord.readTemplates(state.folderPath)
+      return [...builtIn, ...userTemplates]
+    } catch { /* ignore */ }
+  }
+  return builtIn
+}
+
+function resolveTemplateVars(content) {
+  const now = new Date()
+  const date = now.toISOString().split('T')[0]
+  let resolved = content.replace(/\{\{date\}\}/g, date)
+  if (resolved.includes('{{title}}')) {
+    const title = prompt('Title:') || 'Untitled'
+    resolved = resolved.replace(/\{\{title\}\}/g, title)
+  }
+  return resolved.replace(/\{\{cursor\}\}/g, '')
+}
+
 // ── Boot ─────────────────────────────────────────────────────────
 buildShell()
 buildZenExitHint()
@@ -130,22 +169,58 @@ registerCommands([
   { id: 'save',            label: 'Save',                 description: 'Save the active file',           shortcut: '\u2318S',   action: () => saveActive() },
   { id: 'settings',        label: 'Settings',             description: 'Open settings panel',            shortcut: '\u2318,',   action: () => toggleSettingsPanel() },
   { id: 'toggle-zen',      label: 'Toggle Zen Mode',      description: 'Distraction-free writing',       shortcut: '\u21e7\u2318\u23ce', action: () => toggleZenMode() },
+  { id: 'set-doc-goal', label: 'Set Document Word Goal', description: 'Set a word count target for this document', shortcut: '', action: () => {
+    const target = prompt('Target word count:')
+    if (target) setDocumentGoal(getFocusedTab()?.path, parseInt(target, 10))
+  }},
+  { id: 'set-session-goal', label: 'Set Session Word Goal', description: 'Set a word target for this session', shortcut: '', action: () => {
+    const target = prompt('Session word target:')
+    if (target) setSessionGoal(parseInt(target, 10), getStats(getFocusedTab()?.content || '').words)
+  }},
+  { id: 'clear-doc-goal', label: 'Clear Document Word Goal', description: 'Remove the word count target', shortcut: '', action: () => {
+    setDocumentGoal(getFocusedTab()?.path, null)
+  }},
+  { id: 'export-html', label: 'Export to HTML', description: 'Save as standalone HTML file', shortcut: '', action: () => exportToHtml() },
+  { id: 'export-docx', label: 'Export to DOCX', description: 'Save as Word document', shortcut: '', action: () => exportToDocx() },
+  { id: 'print', label: 'Print', description: 'Print the preview', shortcut: '', action: () => window.print() },
+  { id: 'new-from-template', label: 'New File from Template', description: 'Create a file from a template', shortcut: '', action: async () => {
+    const templates = await getAvailableTemplates()
+    const names = templates.map(t => t.name)
+    const choice = prompt('Choose template:\n' + names.map((n, i) => `${i + 1}. ${n}`).join('\n'))
+    if (!choice) return
+    const idx = parseInt(choice, 10) - 1
+    const template = Number.isFinite(idx) && templates[idx] ? templates[idx] : templates.find(t => t.name.toLowerCase() === choice.toLowerCase())
+    if (!template) { alert('Template not found'); return }
+    if (!state.folderPath) { alert('Open a folder first'); return }
+    const fileName = prompt('File name:', `${template.name.toLowerCase().replace(/\s+/g, '-')}.md`)
+    if (!fileName) return
+    const content = resolveTemplateVars(template.content)
+    const fullPath = state.folderPath + '/' + fileName
+    await window.fjord.createFile(fullPath)
+    await window.fjord.writeFile(fullPath, content)
+    await refreshTree()
+    await openFile({ path: fullPath, name: fileName })
+  }},
 ])
 
 // ── Keyboard shortcuts ───────────────────────────────────────────
 document.addEventListener('keydown', e => {
-  const mod = e.metaKey || e.ctrlKey
-  if (mod && e.shiftKey && e.key === 'Enter') { e.preventDefault(); toggleZenMode(); return }
-  if (e.key === 'Escape' && state.zenMode) { e.preventDefault(); exitZenMode(); return }
-  if (mod && e.key === 'k') { e.preventDefault(); toggleCommandPalette(); return }
-  if (e.key === 'Escape' && state.commandPaletteOpen) { e.preventDefault(); closePalette(); return }
-  if (mod && e.key === 's') { e.preventDefault(); saveActive() }
-  if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); saveActiveAs() }
-  if (mod && e.key === 'n') { e.preventDefault(); createNewFile() }
-  if (mod && e.key === 'b') { e.preventDefault(); toggleSidebar() }
-  if (mod && e.key === '\\') { e.preventDefault(); toggleToolbar() }
-  if (mod && e.key === 'f') { e.preventDefault(); toggleFindReplace() }
-  if (mod && e.key === ',') { e.preventDefault(); toggleSettingsPanel() }
-  if (e.key === 'Escape' && state.commandDialog) { e.preventDefault(); closeCommandDialog() }
-  if (e.key === 'Escape' && state.settingsOpen) { e.preventDefault(); closeSettingsPanel() }
+  // Escape handlers (not customizable)
+  if (e.key === 'Escape') {
+    if (state.zenMode) { e.preventDefault(); exitZenMode(); return }
+    if (state.commandPaletteOpen) { e.preventDefault(); closePalette(); return }
+    if (state.commandDialog) { e.preventDefault(); closeCommandDialog(); return }
+    if (state.settingsOpen) { e.preventDefault(); closeSettingsPanel(); return }
+  }
+
+  // Customizable shortcuts via keybindings registry
+  if (matchesBinding(e, 'zen-mode')) { e.preventDefault(); toggleZenMode(); return }
+  if (matchesBinding(e, 'command-palette')) { e.preventDefault(); toggleCommandPalette(); return }
+  if (matchesBinding(e, 'save-as')) { e.preventDefault(); saveActiveAs(); return }
+  if (matchesBinding(e, 'save')) { e.preventDefault(); saveActive(); return }
+  if (matchesBinding(e, 'new-file')) { e.preventDefault(); createNewFile(); return }
+  if (matchesBinding(e, 'toggle-sidebar')) { e.preventDefault(); toggleSidebar(); return }
+  if (matchesBinding(e, 'toggle-toolbar')) { e.preventDefault(); toggleToolbar(); return }
+  if (matchesBinding(e, 'find-replace')) { e.preventDefault(); toggleFindReplace(); return }
+  if (matchesBinding(e, 'settings')) { e.preventDefault(); toggleSettingsPanel(); return }
 })
