@@ -1,13 +1,21 @@
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import remarkEmoji from 'remark-emoji'
 import remarkRehype from 'remark-rehype'
+import rehypeKatex from 'rehype-katex'
+import rehypeHighlight from 'rehype-highlight'
 import rehypeStringify from 'rehype-stringify'
 
 const processor = unified()
   .use(remarkParse)
   .use(remarkGfm)
+  .use(remarkMath)
+  .use(remarkEmoji)
   .use(remarkRehype, { allowDangerousHtml: true })
+  .use(rehypeKatex)
+  .use(rehypeHighlight, { detect: false, ignoreMissing: true })
   .use(rehypeStringify, { allowDangerousHtml: true })
 
 export async function renderMarkdown(markdown) {
@@ -264,5 +272,29 @@ export function getStats(markdown) {
   const chars = text.replace(/\s/g, '').length
   const paragraphs = markdown.split(/\n\n+/).filter(p => p.trim()).length
   const readMin = Math.ceil(words / 200) || 0
-  return { words, chars, paragraphs, readMin }
+
+  // Sentence detection (basic: split on . ! ? followed by space or end)
+  const sentences = text.split(/[.!?]+(?:\s|$)/).filter(s => s.trim()).length
+  const avgSentenceLen = sentences > 0 ? Math.round(words / sentences * 10) / 10 : 0
+  const avgWordLen = words > 0 ? Math.round(chars / words * 10) / 10 : 0
+
+  // Flesch-Kincaid Grade Level (approximate)
+  const syllables = countSyllables(text)
+  const fkGrade = words > 0 && sentences > 0
+    ? Math.round((0.39 * (words / sentences) + 11.8 * (syllables / words) - 15.59) * 10) / 10
+    : 0
+
+  return { words, chars, paragraphs, readMin, sentences, avgSentenceLen, avgWordLen, fkGrade }
+}
+
+function countSyllables(text) {
+  const words = text.toLowerCase().split(/\s+/).filter(Boolean)
+  let total = 0
+  for (const word of words) {
+    const cleaned = word.replace(/[^a-z]/g, '')
+    if (!cleaned) continue
+    let count = cleaned.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, '').match(/[aeiouy]{1,2}/g)
+    total += (count ? count.length : 1)
+  }
+  return total
 }
