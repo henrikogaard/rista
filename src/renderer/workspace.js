@@ -3,8 +3,9 @@ import { createEditor, updateEditorDoc } from './editor.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, syncingRichEditor, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab } from './state.js'
 import { chevronIcon } from './icons.js'
 import { getTheme } from './theme.js'
-import { updateSetting } from './settings.js'
+import { updateSetting, getSettings } from './settings.js'
 import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste } from './preview.js'
+import { htmlToMarkdown } from './markdown.js'
 import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, replaceOne, replaceAll } from './find-replace.js'
 import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, syncToWysiwyg } from './commands.js'
 
@@ -181,6 +182,7 @@ export function buildEditorUI() {
             <div class="single-surface" id="single-surface-primary">
               <div class="preview-pane preview-pane--single" id="preview-single-primary"></div>
               <div class="cm-host" id="cm-host-primary"></div>
+              <div class="minimap" id="minimap-primary" style="display:none"></div>
             </div>
             <div class="split-layout" id="split-layout-primary">
               <div class="pane" id="pane-left-primary">
@@ -208,6 +210,7 @@ export function buildEditorUI() {
             <div class="single-surface" id="single-surface-secondary">
               <div class="preview-pane preview-pane--single" id="preview-single-secondary"></div>
               <div class="cm-host" id="cm-host-secondary"></div>
+              <div class="minimap" id="minimap-secondary" style="display:none"></div>
             </div>
             <div class="split-layout" id="split-layout-secondary">
               <div class="pane" id="pane-left-secondary">
@@ -289,7 +292,19 @@ export function mountEditor(pane) {
     onChange: content => _callbacks.onEditorChange?.(pane, content),
     onSelectionChange: editorState => onEditorSelectionChange(pane, editorState),
     onPaste: file => handleImagePaste(file, editorViews[pane], pane, (p, c) => _callbacks.onEditorChange?.(p, c)),
+    onRichPaste: (html, editorView) => {
+      const md = htmlToMarkdown(html)
+      const pos = editorView.state.selection.main.head
+      editorView.dispatch({
+        changes: { from: pos, to: pos, insert: md },
+        selection: { anchor: pos + md.length },
+      })
+      _callbacks.onEditorChange?.(pane, editorView.state.doc.toString())
+    },
     isDark: getTheme() === 'dark',
+    typewriterEnabled: getSettings().typewriterScrolling,
+    spellcheckEnabled: getSettings().spellcheck,
+    vimEnabled: getSettings().vimMode,
   })
 }
 
@@ -385,6 +400,32 @@ export function maybeRefreshWysiwygPane(pane) {
   if (!paneUsesWysiwyg(pane)) return
   ensureRichEditorMounted(pane)
   syncToWysiwyg(pane)
+}
+
+// ── Minimap ──────────────────────────────────────────────────────
+export function updateMinimap(pane) {
+  const minimap = $(`minimap-${pane}`)
+  const editor = editorViews[pane]
+  if (!minimap || !editor || !getSettings().showMinimap) {
+    if (minimap) minimap.style.display = 'none'
+    return
+  }
+  minimap.style.display = 'block'
+
+  const doc = editor.state.doc.toString()
+  const lines = doc.split('\n')
+  const linesHtml = lines.map(line => {
+    const len = Math.min(line.length, 80)
+    return `<div class="minimap-line" style="width:${len * 0.6}px"></div>`
+  }).join('')
+
+  const scrollTop = editor.scrollDOM.scrollTop
+  const scrollHeight = editor.scrollDOM.scrollHeight
+  const clientHeight = editor.scrollDOM.clientHeight
+  const ratio = scrollTop / (scrollHeight || 1)
+  const viewRatio = clientHeight / (scrollHeight || 1)
+
+  minimap.innerHTML = linesHtml + `<div class="minimap-viewport" style="top:${ratio * 100}%;height:${viewRatio * 100}%"></div>`
 }
 
 // ── Workspace layout sync ────────────────────────────────────────
