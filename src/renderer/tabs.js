@@ -4,6 +4,26 @@ import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, s
 import { refreshPreview, updateActiveMetrics, exportToPdf } from './preview.js'
 import { updateSetting } from './settings.js'
 import { buildWelcome } from './shell.js'
+import { addRecentProject, removeRecentProject } from './recent-projects.js'
+import { showContextMenu } from './context-menu.js'
+import { saveSession, loadSession } from './session-restore.js'
+
+let _sessionTimer = null
+function persistSession() {
+  clearTimeout(_sessionTimer)
+  _sessionTimer = setTimeout(() => {
+    if (!state.folderPath) return
+    saveSession(state.folderPath, {
+      tabs: state.tabGroups.primary.map(t => ({ path: t.path, pinned: t.pinned || false })),
+      secondaryTabs: state.tabGroups.secondary.map(t => ({ path: t.path, pinned: t.pinned || false })),
+      activeTabPath: state.activeTab?.path || null,
+      secondaryTabPath: state.secondaryTab?.path || null,
+      workspaceMode: state.workspaceMode,
+      sidebarVisible: state.sidebarVisible,
+      toolbarVisible: state.toolbarVisible,
+    })
+  }, 500)
+}
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -96,6 +116,7 @@ export async function openFolder() {
   const p = await window.fjord.openFolder()
   if (!p) return
   state.folderPath = p
+  addRecentProject(p)
   state.tabs = []
   state.tabGroups.primary = []
   state.tabGroups.secondary = []
@@ -115,6 +136,69 @@ export async function openFolder() {
   await window.fjord.watchFolder(p)
   await refreshTree()
   showWelcomeScreen()
+
+  // Try restoring session
+  const session = loadSession(state.folderPath)
+  if (session && session.tabs?.length) {
+    for (const saved of session.tabs) {
+      try {
+        const content = await window.fjord.readFile(saved.path)
+        if (content !== null && content !== undefined) {
+          const tab = { path: saved.path, name: saved.path.split('/').pop(), content, dirty: false, pinned: saved.pinned || false }
+          state.tabs.push(tab)
+          addTabToPane(tab, 'primary')
+        }
+      } catch {}
+    }
+    if (session.activeTabPath) {
+      const activeTab = state.tabs.find(t => t.path === session.activeTabPath)
+      if (activeTab) activateTab(activeTab)
+    }
+  }
+}
+
+export async function openFolderPath(folderPath) {
+  if (!window.fjord || !folderPath) return
+  state.folderPath = folderPath
+  addRecentProject(folderPath)
+  state.tabs = []
+  state.tabGroups.primary = []
+  state.tabGroups.secondary = []
+  state.splitSnapshot = {
+    primary: [],
+    secondary: [],
+    activePrimary: null,
+    activeSecondary: null,
+    focusedPane: 'primary',
+  }
+  state.activeTab = null
+  state.secondaryTab = null
+  state.focusedPane = 'primary'
+  state.workspaceMode = 'single'
+  state.expandedFolders.clear()
+  syncFolderUi()
+  await window.fjord.watchFolder(folderPath)
+  await refreshTree()
+  showWelcomeScreen()
+
+  // Try restoring session
+  const session = loadSession(state.folderPath)
+  if (session && session.tabs?.length) {
+    for (const saved of session.tabs) {
+      try {
+        const content = await window.fjord.readFile(saved.path)
+        if (content !== null && content !== undefined) {
+          const tab = { path: saved.path, name: saved.path.split('/').pop(), content, dirty: false, pinned: saved.pinned || false }
+          state.tabs.push(tab)
+          addTabToPane(tab, 'primary')
+        }
+      } catch {}
+    }
+    if (session.activeTabPath) {
+      const activeTab = state.tabs.find(t => t.path === session.activeTabPath)
+      if (activeTab) activateTab(activeTab)
+    }
+  }
 }
 
 export async function createNewFile() {
@@ -141,7 +225,7 @@ export async function openFile(item) {
   }
 
   const content = await window.fjord.readFile(item.path)
-  const tab = { path: item.path, name: item.name, content, dirty: false }
+  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false }
   state.tabs.push(tab)
   activateTab(tab, targetPane)
 }
@@ -180,6 +264,8 @@ export function activateTab(tab, pane = 'primary') {
   renderTabs()
   highlightActiveFile()
   updateActiveMetrics()
+  if (window.fjord.setRepresentedFile) window.fjord.setRepresentedFile(tab.path)
+  persistSession()
 }
 
 export function renderTabs() {
@@ -190,23 +276,31 @@ export function renderTabs() {
     container.dataset.pane = pane
 
     const group = getGroupTabs(pane)
-    group.forEach(tab => {
+    const sortedGroup = [...group].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+    sortedGroup.forEach(tab => {
       const isFocused = pane === state.focusedPane && getTabForPane(pane) === tab
-      const t = el('div', `tab${isFocused ? ' active' : ''}`)
+      const t = el('div', `tab${isFocused ? ' active' : ''}${tab.pinned ? ' pinned' : ''}`)
       t.draggable = state.workspaceMode === 'dual'
       t.dataset.pane = pane
       t.title = tab.name
       t.innerHTML = `
         <div class="tab__dot"></div>
         <span class="tab__name">${tab.name}${tab.dirty ? ' ·' : ''}</span>
-        <div class="tab__close">✕</div>
+        ${tab.pinned ? '<span class="tab__pin">&#128204;</span>' : '<div class="tab__close">✕</div>'}
       `
       t.addEventListener('click', () => activateTab(tab, pane))
       t.addEventListener('dragstart', event => handleTabDragStart(event, tab, pane))
       t.addEventListener('dragend', handleTabDragEnd)
-      t.querySelector('.tab__close').addEventListener('click', event => {
-        event.stopPropagation()
-        closeTab(tab, pane)
+      const closeBtn = t.querySelector('.tab__close')
+      if (closeBtn) {
+        closeBtn.addEventListener('click', event => {
+          event.stopPropagation()
+          closeTab(tab, pane)
+        })
+      }
+      t.addEventListener('contextmenu', (e) => {
+        e.preventDefault()
+        showTabContextMenu(e.clientX, e.clientY, tab, pane)
       })
       container.appendChild(t)
     })
@@ -220,6 +314,7 @@ export function renderTabs() {
 
 export function closeTab(tab, pane = getTabPane(tab)) {
   if (!pane) return
+  if (tab.pinned) return  // Don't close pinned tabs
   const group = getGroupTabs(pane)
   const idx = group.indexOf(tab)
   if (idx < 0) return
@@ -252,6 +347,7 @@ export function closeTab(tab, pane = getTabPane(tab)) {
 
   if (!state.activeTab && !state.secondaryTab) {
     showWelcomeScreen()
+    persistSession()
   } else {
     if (state.focusedPane === 'secondary' && !state.secondaryTab) state.focusedPane = 'primary'
     _callbacks.syncWorkspaceUi?.()
@@ -260,7 +356,44 @@ export function closeTab(tab, pane = getTabPane(tab)) {
     renderTabs()
     highlightActiveFile()
     updateActiveMetrics()
+    persistSession()
   }
+}
+
+export function togglePinTab(tab) {
+  if (!tab) return
+  tab.pinned = !tab.pinned
+  renderTabs()
+}
+
+function showTabContextMenu(x, y, tab, pane) {
+  const items = [
+    { label: 'Close', action: () => closeTab(tab, pane) },
+    { label: 'Close Others', action: () => {
+      const group = [...getGroupTabs(pane)]
+      for (const t of group) {
+        if (t !== tab && !t.pinned) closeTab(t, pane)
+      }
+    }},
+    { label: 'Close All', action: () => {
+      const group = [...getGroupTabs(pane)]
+      for (const t of group) {
+        if (!t.pinned) closeTab(t, pane)
+      }
+    }},
+    { label: 'Close to the Right', action: () => {
+      const group = getGroupTabs(pane)
+      const idx = group.indexOf(tab)
+      const toClose = group.slice(idx + 1).filter(t => !t.pinned)
+      for (const t of toClose) closeTab(t, pane)
+    }},
+    { separator: true },
+    { label: tab.pinned ? 'Unpin' : 'Pin', action: () => togglePinTab(tab) },
+    { separator: true },
+    { label: 'Copy Path', action: () => navigator.clipboard.writeText(tab.path) },
+    { label: 'Reveal in Finder', action: () => window.fjord.showInFolder(tab.path) },
+  ]
+  showContextMenu(x, y, items)
 }
 
 export function moveTabToPane(tab, fromPane, toPane) {
@@ -332,6 +465,30 @@ export function showWelcomeScreen() {
   if (!wrapper) return
   wrapper.innerHTML = buildWelcome()
   $('welcome-open-btn')?.addEventListener('click', openFolder)
+  // Wire recent projects click handlers
+  const welcomeEl = $('welcome')
+  if (welcomeEl) {
+    welcomeEl.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('[data-remove-path]')
+      if (removeBtn) {
+        e.stopPropagation()
+        removeRecentProject(removeBtn.dataset.removePath)
+        const item = removeBtn.closest('.recent-item')
+        if (item) item.remove()
+        const remaining = welcomeEl.querySelectorAll('.recent-item')
+        if (remaining.length === 0) {
+          const recentSection = welcomeEl.querySelector('.recent-projects')
+          if (recentSection) recentSection.remove()
+        }
+        return
+      }
+      const recentItem = e.target.closest('.recent-item')
+      if (recentItem) {
+        const folderPath = recentItem.dataset.path
+        if (folderPath) openFolderPath(folderPath)
+      }
+    })
+  }
   renderTabs()
   updateActiveMetrics()
 }
@@ -432,4 +589,18 @@ export function handleAppCommand(command) {
   if (command === 'file:save-as') saveActiveAs()
   if (command === 'file:export-pdf') exportToPdf()
   if (command === 'file:close-tab' && getFocusedTab()) closeTab(getFocusedTab())
+  if (command === 'update:available') {
+    const updateEl = $('st-update')
+    if (updateEl) {
+      updateEl.textContent = 'Update available'
+      updateEl.style.display = 'inline'
+    }
+  }
+  if (command === 'update:ready') {
+    const updateEl = $('st-update')
+    if (updateEl) {
+      updateEl.textContent = 'Update ready — restart to install'
+      updateEl.style.display = 'inline'
+    }
+  }
 }

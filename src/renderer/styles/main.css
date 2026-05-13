@@ -2098,3 +2098,114 @@ body.is-resizing-split .workspace-resizer::before {
   opacity: 0; transition: opacity 0.3s ease;
 }
 .zen-exit-hint:hover { color: var(--text1); }
+
+/* ── Recent Projects ──────────────────────────────────────────── */
+.recent-projects { margin-top: 20px; max-width: 360px; }
+.recent-header { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.recent-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; cursor: pointer;
+  font-size: 12px; color: var(--text2);
+}
+.recent-item:hover { background: rgba(255,255,255,0.03); }
+.recent-name { color: var(--text1); font-weight: 500; flex-shrink: 0; }
+.recent-path { color: var(--text3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.recent-time { color: var(--text3); font-size: 10px; flex-shrink: 0; }
+.recent-remove { color: var(--text3); cursor: pointer; font-size: 14px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
+.recent-item:hover .recent-remove { opacity: 1; }
+.recent-remove:hover { color: var(--red); }
+[data-theme="light"] .recent-item:hover { background: rgba(0,0,0,0.03); }
+
+/* ── Drag-and-drop image indicator ────────────────────────────── */
+.cm-host.drag-over {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Context Menu ─────────────────────────────────────────────── */
+.context-menu {
+  position: fixed; z-index: 10000;
+  min-width: 180px; padding: 4px 0;
+  background: var(--bg1); border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+  font-size: 12px; font-family: var(--font);
+}
+.context-menu-item {
+  padding: 6px 14px; cursor: pointer;
+  color: var(--text2);
+}
+.context-menu-item:hover {
+  background: var(--accent-dim); color: var(--text1);
+}
+.context-menu-separator {
+  height: 1px; margin: 4px 8px;
+  background: var(--border);
+}
+
+/* ── Pinned Tabs ──────────────────────────────────────────────── */
+.tab.pinned { border-left: 2px solid var(--accent); }
+.tab__pin { font-size: 10px; opacity: 0.5; padding: 0 2px; }
+
+/* ── Code Block Syntax Highlighting ───────────────────────────── */
+.preview-pane .hljs { color: var(--text2); background: transparent; }
+.preview-pane .hljs-keyword,
+.preview-pane .hljs-selector-tag { color: var(--accent-hi); }
+.preview-pane .hljs-string,
+.preview-pane .hljs-attr { color: var(--green); }
+.preview-pane .hljs-number,
+.preview-pane .hljs-literal { color: var(--amber); }
+.preview-pane .hljs-comment,
+.preview-pane .hljs-quote { color: var(--text3); font-style: italic; }
+.preview-pane .hljs-function .hljs-title,
+.preview-pane .hljs-title { color: var(--text1); }
+.preview-pane .hljs-type,
+.preview-pane .hljs-built_in { color: var(--accent); }
+.preview-pane .hljs-params { color: var(--text2); }
+.preview-pane .hljs-meta { color: var(--text3); }
+.preview-pane .hljs-addition { color: var(--green); }
+.preview-pane .hljs-deletion { color: var(--red); }
+
+/* ── KaTeX overrides ──────────────────────────────────────────── */
+.preview-pane .katex { color: var(--text1); font-size: 1em; }
+.preview-pane .katex-display { margin: 12px 0; }
+.preview-pane .katex .katex-html { color: var(--text1); }
+
+/* ── Footnotes ────────────────────────────────────────────────── */
+.preview-pane .footnotes { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 0.9em; color: var(--text2); }
+.preview-pane .footnotes ol { padding-left: 18px; }
+.preview-pane sup a { color: var(--accent); text-decoration: none; font-size: 0.85em; }
+
+/* ── Word Goals ───────────────────────────────────────────────── */
+.goal-reached { color: var(--green) !important; transition: color 0.3s; }
+
+/* ── Minimap ──────────────────────────────────────────────────── */
+.minimap {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  width: 60px; overflow: hidden;
+  background: rgba(255,255,255,0.02);
+  cursor: pointer;
+}
+.minimap-line {
+  height: 2px; margin: 1px 4px;
+  background: var(--text3); opacity: 0.15;
+}
+.minimap-viewport {
+  position: absolute; left: 0; right: 0;
+  background: rgba(255,255,255,0.06);
+  pointer-events: none;
+}
+
+/* ── Print ────────────────────────────────────────────────────── */
+@media print {
+  .titlebar, .sidebar, .sidebar-resizer, .tab-bar,
+  .workspace-toolbar, .pane-label-row, .statusbar,
+  .insights-panel, .find-replace-bar, .workspace-resizer,
+  .pane-header, .zen-exit-hint, .command-palette-overlay,
+  .context-menu, .settings-overlay, .settings-panel,
+  .command-dialog-overlay, .command-dialog { display: none !important; }
+  .editor-area { position: static !important; }
+  .pane { max-width: 100% !important; }
+  .cm-host { display: none !important; }
+  .preview-pane { display: block !important; color: #000 !important; }
+  body { background: #fff !important; }
+}

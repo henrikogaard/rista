@@ -26,6 +26,8 @@ export function renderFileTree({
       folder.className = `tree-folder${isOpen ? ' open' : ''}`
       folder.style.paddingLeft = `${10 + depth * 14}px`
       folder.title = item.name
+      folder.dataset.path = item.path
+      folder.dataset.type = 'folder'
       folder.innerHTML = `<svg viewBox="0 0 6 10"><path d="M1 1l4 4-4 4" stroke-width="1.5" stroke="currentColor" fill="none" stroke-linecap="round"/></svg>${item.name}`
 
       const children = document.createElement('div')
@@ -57,6 +59,7 @@ export function renderFileTree({
     const file = document.createElement('div')
     file.className = 'tree-file'
     file.dataset.path = item.path
+    file.dataset.type = 'file'
     file.style.paddingLeft = `${24 + depth * 14}px`
     file.title = item.path
     file.innerHTML = `<div class="tree-file__dot"></div>${item.name}`

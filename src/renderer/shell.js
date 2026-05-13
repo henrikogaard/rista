@@ -1,11 +1,13 @@
 import { state, $, settingsValue } from './state.js'
 import { toggleTheme, getTheme } from './theme.js'
-import { applySettings, getSettings, updateSetting, resetSettings, FONT_OPTIONS } from './settings.js'
+import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
 import { sunIcon, moonIcon, gearIcon, closeIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
+import { showContextMenu } from './context-menu.js'
+import { renderRecentProjectsHtml, removeRecentProject } from './recent-projects.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -24,6 +26,7 @@ export function buildWelcome() {
             <svg viewBox="0 0 16 16"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
             Open folder…
           </div>
+          ${renderRecentProjectsHtml()}
         `}
       </div>
     </div>
@@ -156,6 +159,50 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
+// ── File context menu ─────────────────────────────────────────────
+function showFileContextMenu(x, y, filePath, isFolder) {
+  const fileName = filePath.split('/').pop() || filePath.split('\\').pop()
+  const items = []
+
+  if (isFolder) {
+    items.push({ label: 'New File\u2026', action: async () => {
+      const name = prompt('File name:', 'untitled.md')
+      if (!name) return
+      const fullPath = filePath + '/' + name
+      const result = await window.fjord.createFile(fullPath)
+      if (result) _callbacks.refreshTree?.()
+    }})
+    items.push({ separator: true })
+  }
+
+  items.push({ label: 'Rename\u2026', action: async () => {
+    const newName = prompt('Rename to:', fileName)
+    if (!newName || newName === fileName) return
+    const dir = filePath.substring(0, filePath.lastIndexOf('/'))
+    const newPath = dir + '/' + newName
+    const ok = await window.fjord.renameFile(filePath, newPath)
+    if (ok) _callbacks.refreshTree?.()
+  }})
+
+  if (!isFolder) {
+    items.push({ label: 'Duplicate', action: async () => {
+      const result = await window.fjord.duplicateFile(filePath)
+      if (result) _callbacks.refreshTree?.()
+    }})
+  }
+
+  items.push({ label: 'Move to Trash', action: async () => {
+    const ok = await window.fjord.trashFile(filePath)
+    if (ok) _callbacks.refreshTree?.()
+  }})
+
+  items.push({ separator: true })
+  items.push({ label: 'Copy Path', action: () => navigator.clipboard.writeText(filePath) })
+  items.push({ label: 'Reveal in Finder', action: () => window.fjord.showInFolder(filePath) })
+
+  showContextMenu(x, y, items)
+}
+
 // ── Build app shell ───────────────────────────────────────────────
 export function buildShell() {
   document.getElementById('root').innerHTML = `
@@ -215,7 +262,9 @@ export function buildShell() {
         <div class="st"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
         <div class="st" id="st-words">—</div>
         <div class="st" id="st-lines">—</div>
+        <div class="st" id="st-readtime">—</div>
         <div class="st" id="st-cursor">Ln 1, Col 1</div>
+        <span class="st" id="st-update" style="display:none;color:var(--green)"></span>
         <div class="st" style="margin-left:auto;color:var(--text3)">fjordmark</div>
       </div>
 
@@ -262,6 +311,21 @@ export function buildShell() {
             ${renderRangeSetting('editorFontSize', 'Editor size', 12, 18, 1, 'px')}
             ${renderRangeSetting('editorLineHeight', 'Editor spacing', 1.4, 2.1, 0.05, '')}
             ${renderTextSetting('editorTextColor', 'Editor text color', 'Optional hex color, e.g. #e7ecf7')}
+            ${renderToggleSetting('typewriterScrolling', 'Typewriter scrolling', 'Keep cursor vertically centered while typing')}
+            ${renderToggleSetting('spellcheck', 'Spellcheck', 'Enable browser spellcheck in the editor')}
+            ${renderToggleSetting('vimMode', 'Vim mode', 'Enable Vim keybindings in the editor')}
+            ${renderToggleSetting('softWrap', 'Soft wrap', 'Wrap long lines instead of horizontal scrolling')}
+            ${renderToggleSetting('showLineNumbers', 'Show line numbers', 'Display line numbers in the editor gutter')}
+            ${renderRangeSetting('autoSaveDelay', 'Auto-save delay', 200, 5000, 100, 'ms')}
+            ${renderSelectSetting('tabIndentation', 'Indentation style', [
+              { value: 'spaces', label: 'Spaces' },
+              { value: 'tabs', label: 'Tabs' },
+            ])}
+            ${renderSelectSetting('indentWidth', 'Indent width', [
+              { value: '2', label: '2' },
+              { value: '4', label: '4' },
+              { value: '8', label: '8' },
+            ])}
           </section>
 
           <section class="settings-group">
@@ -272,10 +336,34 @@ export function buildShell() {
             ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
             ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
           </section>
+
+          <section class="settings-group">
+            <div class="settings-group__title">Behavior</div>
+            ${renderToggleSetting('showStatusBar', 'Show status bar', 'Display the bottom status bar')}
+            ${renderSelectSetting('defaultViewMode', 'Default view mode', [
+              { value: 'markdown', label: 'Markdown' },
+              { value: 'split', label: 'Split' },
+              { value: 'preview', label: 'Preview' },
+            ])}
+            ${renderRangeSetting('readingSpeed', 'Reading speed', 100, 500, 10, 'wpm')}
+          </section>
+
+          <section class="settings-group">
+            <div class="settings-group__title">Zen Mode</div>
+            ${renderToggleSetting('zenParagraphDimming', 'Paragraph dimming', 'Dim paragraphs except the one with the cursor')}
+            ${renderRangeSetting('zenColumnWidth', 'Column width', 500, 900, 10, 'px')}
+          </section>
+
+          <section class="settings-group">
+            <div class="settings-group__title">Extras</div>
+            ${renderToggleSetting('showMinimap', 'Show minimap', 'Display a document overview on the right edge')}
+          </section>
         </div>
 
         <div class="settings-panel__footer">
           <div class="settings-panel__meta" id="settings-app-meta">Fjordmark</div>
+          <button class="settings-btn settings-btn--muted" id="settings-export-btn">Export</button>
+          <button class="settings-btn settings-btn--muted" id="settings-import-btn">Import</button>
           <button class="settings-btn settings-btn--muted" id="settings-reset-btn">Reset</button>
           <button class="settings-btn" id="settings-done-btn">Done</button>
         </div>
@@ -314,6 +402,20 @@ export function buildShell() {
     resetSettings()
     syncSettingsForm()
   })
+  $('settings-export-btn')?.addEventListener('click', async () => {
+    await window.fjord.exportSettings(JSON.stringify(getSettings()))
+  })
+  $('settings-import-btn')?.addEventListener('click', async () => {
+    const raw = await window.fjord.importSettings()
+    if (!raw) return
+    try {
+      const parsed = JSON.parse(raw)
+      setSettings(parsed)
+      syncSettingsForm()
+    } catch {
+      alert('Invalid settings file')
+    }
+  })
   $('settings-overlay').addEventListener('click', closeSettingsPanel)
   $('settings-panel').addEventListener('input', handleSettingsInput)
   $('command-dialog-close').addEventListener('click', closeCommandDialog)
@@ -349,6 +451,32 @@ export function buildShell() {
   $('collapse-all-btn')?.addEventListener('click', () => _callbacks.collapseAllFolders?.())
   $('sidebar-resizer')?.addEventListener('pointerdown', e => _callbacks.startSidebarResize?.(e))
   $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
+
+  // Recent projects click handlers (delegation from welcome)
+  const welcomeEl = $('welcome')
+  if (welcomeEl) {
+    welcomeEl.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('[data-remove-path]')
+      if (removeBtn) {
+        e.stopPropagation()
+        removeRecentProject(removeBtn.dataset.removePath)
+        const item = removeBtn.closest('.recent-item')
+        if (item) item.remove()
+        // Hide the "Recent" header if no more items
+        const remaining = welcomeEl.querySelectorAll('.recent-item')
+        if (remaining.length === 0) {
+          const recentSection = welcomeEl.querySelector('.recent-projects')
+          if (recentSection) recentSection.remove()
+        }
+        return
+      }
+      const recentItem = e.target.closest('.recent-item')
+      if (recentItem) {
+        const folderPath = recentItem.dataset.path
+        if (folderPath) _callbacks.openRecentProject?.(folderPath)
+      }
+    })
+  }
 
   // Watch for file changes from main process
   if (window.fjord) {
