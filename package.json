@@ -43,6 +43,7 @@
     "@codemirror/view": "^6.25.1",
     "@toast-ui/editor": "^3.2.2",
     "chokidar": "^3.6.0",
+    "mermaid": "^11.15.0",
     "rehype-stringify": "^10.0.0",
     "remark-gfm": "^4.0.0",
     "remark-parse": "^11.0.0",

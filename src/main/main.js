@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const { execFile } = require('child_process')
 const chokidar = require('chokidar')
 
 let mainWindow
@@ -374,4 +375,33 @@ ipcMain.handle('export:pdf', async (_, payload) => {
     console.error('PDF export error:', err)
     return false
   }
+})
+
+// ── IPC: Render D2 diagram ────────────────────────────────────────
+ipcMain.handle('render:d2', async (_, source, themeId = 0) => {
+  return new Promise((resolve) => {
+    const args = ['-', '-', '--theme', String(themeId)]
+    try {
+      const child = execFile('d2', args, {
+        timeout: 5000,
+        maxBuffer: 1024 * 1024 * 4,
+        env: { ...process.env },
+      }, (error, stdout, stderr) => {
+        if (error) {
+          if (error.code === 'ENOENT') {
+            return resolve({ error: 'D2 is not installed. Install from https://d2lang.com' })
+          }
+          if (error.killed) {
+            return resolve({ error: 'D2 rendering timed out' })
+          }
+          return resolve({ error: stderr || error.message })
+        }
+        resolve({ svg: stdout })
+      })
+      child.stdin.write(source)
+      child.stdin.end()
+    } catch (err) {
+      resolve({ error: err.message })
+    }
+  })
 })

@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('fjord', {
   // Export
   exportPdf: (fileName) => ipcRenderer.invoke('export:pdf', fileName),
 
+  // Diagram rendering
+  renderD2: (source, themeId) => ipcRenderer.invoke('render:d2', source, themeId),
+
   // File change events
   onFileChange: (cb) => {
     const listener = (_, data) => cb(data)
