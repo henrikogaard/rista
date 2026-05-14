@@ -45,7 +45,12 @@ export async function exportToDocx() {
 
   const blob = await Packer.toBlob(doc)
   const arrayBuffer = await blob.arrayBuffer()
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+  const bytes = new Uint8Array(arrayBuffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i])
+  }
+  const base64 = btoa(binary)
 
   const fileName = tab.name.replace(/\.md$/, '')
   await window.fjord.saveDocx(base64, fileName)

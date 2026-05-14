@@ -1,6 +1,6 @@
 import { state, $, settingsValue } from './state.js'
 import { toggleTheme, getTheme } from './theme.js'
-import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS } from './settings.js'
+import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
 import { sunIcon, moonIcon, gearIcon, closeIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
@@ -159,6 +159,45 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
+function handleGlobalControlPointerDown(event) {
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle')
+  if (!control) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  if (control.id === 'toolbar-toggle') _callbacks.toggleToolbar?.()
+  if (control.id === 'pane-split-toggle') _callbacks.togglePaneSplitView?.()
+  if (control.id === 'workspace-split-toggle') _callbacks.toggleWorkspaceSplit?.()
+  if (control.id === 'settings-btn') toggleSettingsPanel()
+  if (control.id === 'theme-btn') toggleAppTheme()
+  if (control.id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
+}
+
+function toggleAppTheme() {
+  const t = toggleTheme()
+  const settings = getSettings()
+  const presetKey = t === 'light' ? settings.lightThemePreset : settings.darkThemePreset
+  const preset = THEME_PRESETS[t].find(option => option.value === presetKey) || THEME_PRESETS[t][0]
+  setSettings(preset.atmosphere)
+  syncSettingsForm()
+  clearDiagramCache()
+  initDiagrams(t)
+  $('theme-btn').innerHTML = t === 'dark' ? sunIcon() : moonIcon()
+  PANE_KEYS.forEach(pane => {
+    if (editorViews[pane]) updateEditorTheme(editorViews[pane], t === 'dark')
+    if (richEditors[pane]) {
+      const markdown = richEditors[pane].getMarkdown()
+      _callbacks.destroyRichEditor?.(pane)
+      _callbacks.ensureRichEditorMounted?.(pane)
+      if (richEditors[pane]) {
+        syncingRichEditor[pane] = true
+        richEditors[pane].setMarkdown(markdown)
+        syncingRichEditor[pane] = false
+      }
+    }
+  })
+}
+
 // ── File context menu ─────────────────────────────────────────────
 function showFileContextMenu(x, y, filePath, isFolder) {
   const fileName = filePath.split('/').pop() || filePath.split('\\').pop()
@@ -211,23 +250,7 @@ export function buildShell() {
       <!-- Titlebar -->
       <div class="titlebar" id="titlebar">
         <div class="titlebar__spacer"></div>
-        <div class="titlebar__right">
-          <div class="theme-btn" id="toolbar-toggle" title="Hide toolbars">
-            <svg viewBox="0 0 16 16"><path d="M2 4.5h12M2 8h12M2 11.5h12"/></svg>
-          </div>
-          <div class="theme-btn" id="workspace-split-toggle" title="Toggle split view">
-            <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><line x1="8" y1="3" x2="8" y2="13"/></svg>
-          </div>
-          <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings">
-            ${gearIcon()}
-          </div>
-          <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle theme">
-            ${sunIcon()}
-          </div>
-          <div class="ic" id="sidebar-toggle" title="Toggle sidebar">
-            <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="6" y1="3" x2="6" y2="13"/></svg>
-          </div>
-        </div>
+        <div class="titlebar__drag"></div>
       </div>
 
       <!-- Layout -->
@@ -265,7 +288,27 @@ export function buildShell() {
         <div class="st" id="st-readtime">—</div>
         <div class="st" id="st-cursor">Ln 1, Col 1</div>
         <span class="st" id="st-update" style="display:none;color:var(--green)"></span>
-        <div class="st" style="margin-left:auto;color:var(--text3)">fjordmark</div>
+        <div class="app-controls" id="app-controls">
+          <div class="theme-btn" id="toolbar-toggle" title="Hide toolbars">
+            <svg viewBox="0 0 16 16"><path d="M2 4.5h12M2 8h12M2 11.5h12"/></svg>
+          </div>
+          <div class="theme-btn" id="pane-split-toggle" title="Toggle editor split view">
+            <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><line x1="8" y1="3" x2="8" y2="13"/></svg>
+          </div>
+          <div class="theme-btn" id="workspace-split-toggle" title="Toggle split workspace">
+            <svg viewBox="0 0 16 16"><rect x="1.75" y="3" width="12.5" height="10" rx="1.5"/><line x1="6" y1="3" x2="6" y2="13"/><line x1="10" y1="3" x2="10" y2="13"/></svg>
+          </div>
+          <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle theme">
+            ${sunIcon()}
+          </div>
+          <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings">
+            ${gearIcon()}
+          </div>
+          <div class="theme-btn" id="sidebar-toggle" title="Toggle sidebar">
+            <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="6" y1="3" x2="6" y2="13"/></svg>
+          </div>
+        </div>
+        <div class="st st-brand">fjordmark</div>
       </div>
 
       <div class="settings-overlay" id="settings-overlay"></div>
@@ -281,6 +324,12 @@ export function buildShell() {
         </div>
 
         <div class="settings-panel__body">
+          <section class="settings-group">
+            <div class="settings-group__title">Theme</div>
+            ${renderSelectSetting('darkThemePreset', 'Dark preset', THEME_PRESETS.dark)}
+            ${renderSelectSetting('lightThemePreset', 'Light preset', THEME_PRESETS.light)}
+          </section>
+
           <section class="settings-group">
             <div class="settings-group__title">Atmosphere</div>
             ${renderToggleSetting('ambientBackground', 'Show ambient background', 'Keep the aurora background visible while editing')}
@@ -393,9 +442,7 @@ export function buildShell() {
   `
 
   // Wire up controls
-  $('settings-btn').addEventListener('click', toggleSettingsPanel)
-  $('toolbar-toggle').addEventListener('click', () => _callbacks.toggleToolbar?.())
-  $('workspace-split-toggle').addEventListener('click', () => _callbacks.toggleWorkspaceSplit?.())
+  $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)
   $('settings-done-btn').addEventListener('click', closeSettingsPanel)
   $('settings-reset-btn').addEventListener('click', () => {
@@ -423,30 +470,10 @@ export function buildShell() {
   $('command-dialog-overlay').addEventListener('click', closeCommandDialog)
   $('command-dialog-form').addEventListener('submit', submitCommandDialog)
 
-  $('theme-btn').addEventListener('click', () => {
-    const t = toggleTheme()
-    applySettings(getSettings())
-    clearDiagramCache()
-    initDiagrams(t)
-    $('theme-btn').innerHTML = t === 'dark' ? sunIcon() : moonIcon()
-    PANE_KEYS.forEach(pane => {
-      if (editorViews[pane]) updateEditorTheme(editorViews[pane], t === 'dark')
-      if (richEditors[pane]) {
-        const markdown = richEditors[pane].getMarkdown()
-        _callbacks.destroyRichEditor?.(pane)
-        _callbacks.ensureRichEditorMounted?.(pane)
-        if (richEditors[pane]) {
-          syncingRichEditor[pane] = true
-          richEditors[pane].setMarkdown(markdown)
-          syncingRichEditor[pane] = false
-        }
-      }
-    })
-  })
   $('theme-btn').innerHTML = getTheme() === 'dark' ? sunIcon() : moonIcon()
   _callbacks.syncToolbarToggle?.()
+  _callbacks.syncPaneSplitToggle?.()
 
-  $('sidebar-toggle').addEventListener('click', () => _callbacks.toggleSidebar?.())
   $('open-folder-btn').addEventListener('click', () => _callbacks.openFolder?.())
   $('collapse-all-btn')?.addEventListener('click', () => _callbacks.collapseAllFolders?.())
   $('sidebar-resizer')?.addEventListener('pointerdown', e => _callbacks.startSidebarResize?.(e))
@@ -486,7 +513,7 @@ export function buildShell() {
       syncAppMeta()
     }).catch(() => {})
 
-    window.fjord.onCommand?.(({ command }) => _callbacks.handleAppCommand?.(command))
+    window.fjord.onCommand?.(data => _callbacks.handleAppCommand?.(data.command, data))
 
     window.fjord.onFileChange(({ event, path: p }) => {
       const tab = state.tabs.find(t => t.path === p)

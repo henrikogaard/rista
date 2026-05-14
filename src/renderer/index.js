@@ -33,7 +33,9 @@ import {
   maybeRefreshWysiwygPane,
   mountEditor,
   syncToolbarToggle,
+  syncPaneSplitToggle,
   toggleToolbar,
+  togglePaneSplitView,
   toggleSidebar,
   toggleWorkspaceSplit,
 } from './workspace.js'
@@ -77,6 +79,7 @@ registerFocusPane(focusPane)
 
 registerShellCallbacks({
   toggleToolbar,
+  togglePaneSplitView,
   toggleWorkspaceSplit,
   toggleSidebar,
   openFolder,
@@ -89,6 +92,7 @@ registerShellCallbacks({
   destroyRichEditor,
   ensureRichEditorMounted,
   syncToolbarToggle,
+  syncPaneSplitToggle,
 })
 
 registerWorkspaceCallbacks({

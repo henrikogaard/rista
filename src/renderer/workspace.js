@@ -15,10 +15,22 @@ export function registerWorkspaceCallbacks(cbs) { Object.assign(_callbacks, cbs)
 
 // ── Toolbar UI sync ──────────────────────────────────────────────
 export function syncWorkspaceSplitToggle() {
-  $('workspace-split-toggle')?.classList.toggle('active', state.workspaceMode === 'dual')
   document.querySelectorAll('.workspace-toolbar [data-action="toggle-workspace-split"]').forEach(node => {
     node.classList.toggle('active', state.workspaceMode === 'dual')
   })
+}
+
+export function syncPaneSplitToggle() {
+  const node = $('pane-split-toggle')
+  if (!node) return
+  const split = getPaneView(state.focusedPane) === 'split'
+  node.classList.toggle('active', split)
+  node.title = split ? 'Exit editor split view' : 'Enter editor split view'
+}
+
+export function syncSplitToggles() {
+  syncWorkspaceSplitToggle()
+  syncPaneSplitToggle()
 }
 
 export function syncToolbarToggle() {
@@ -129,9 +141,6 @@ export function renderEditorToolbar(pane) {
       </div>
 
       <div class="workspace-toolbar__right">
-        <div class="ic${state.workspaceMode === 'dual' ? ' active' : ''}" data-action="toggle-workspace-split" title="Toggle split workspace">
-          <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><line x1="8" y1="3" x2="8" y2="13"/></svg>
-        </div>
         <div class="vseg">
           <div class="vb${paneView === 'markdown' ? ' active' : ''}" data-action="set-view" data-view="markdown">MD</div>
           <div class="vb${paneView === 'split' ? ' active' : ''}" data-action="set-view" data-view="split">Split</div>
@@ -306,6 +315,12 @@ export function mountEditor(pane) {
     spellcheckEnabled: getSettings().spellcheck,
     vimEnabled: getSettings().vimMode,
   })
+
+  // Wire minimap updates
+  if (editorViews[pane]) {
+    editorViews[pane].scrollDOM.addEventListener('scroll', () => updateMinimap(pane))
+    updateMinimap(pane)
+  }
 }
 
 export function destroyRichEditor(pane) {
@@ -439,7 +454,7 @@ export function syncWorkspaceUi() {
   if (primaryPane) primaryPane.style.flexBasis = dual ? 'var(--document-split-ratio)' : '100%'
   if (secondaryPane) secondaryPane.classList.toggle('hidden', !dual)
   if (workspaceResizer) workspaceResizer.classList.toggle('hidden', !dual)
-  syncWorkspaceSplitToggle()
+  syncSplitToggles()
   if (secondaryEmpty) secondaryEmpty.style.display = dual && !state.secondaryTab ? 'flex' : 'none'
 
   PANE_KEYS.forEach(pane => {
@@ -459,6 +474,7 @@ export function syncFocusedPaneUi() {
     const workspace = $(`workspace-${pane}`)
     workspace?.classList.toggle('focused', state.focusedPane === pane)
   })
+  syncPaneSplitToggle()
 }
 
 export function syncSplitLayout() {
@@ -691,6 +707,7 @@ export function setPaneView(pane, view) {
   // syncSplitLayout handles mounting + syncing WYSIWYG via maybeRefreshWysiwygPane.
   // Calling syncToWysiwyg before layout is ready can cause mount into hidden containers.
   syncSplitLayout()
+  syncPaneSplitToggle()
   if (view === 'wysiwyg') {
     // Focus the WYSIWYG editor after layout is settled
     queueMicrotask(() => richEditors[pane]?.focus())
@@ -722,6 +739,12 @@ export function toggleToolbar() {
     node.textContent = state.toolbarVisible ? 'hide toolbar' : 'show toolbar'
   })
   syncToolbarToggle()
+}
+
+export function togglePaneSplitView() {
+  const pane = state.focusedPane || 'primary'
+  const currentView = getPaneView(pane)
+  setPaneView(pane, currentView === 'split' ? getSplitEditableView(pane) : 'split')
 }
 
 export function toggleSidebar() {
@@ -807,5 +830,3 @@ export function toggleWorkspaceSplit() {
   refreshAllPreviews()
   updateActiveMetrics()
 }
-
-

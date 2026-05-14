@@ -582,13 +582,17 @@ export async function saveActiveAs() {
 }
 
 // ── App commands ─────────────────────────────────────────────────
-export function handleAppCommand(command) {
+export function handleAppCommand(command, data) {
   if (command === 'file:new') createNewFile()
   if (command === 'file:open-folder') openFolder()
   if (command === 'file:save') saveActive()
   if (command === 'file:save-as') saveActiveAs()
   if (command === 'file:export-pdf') exportToPdf()
   if (command === 'file:close-tab' && getFocusedTab()) closeTab(getFocusedTab())
+  if (command === 'file:open' && data?.path) {
+    const name = data.path.split('/').pop()
+    openFile({ path: data.path, name })
+  }
   if (command === 'update:available') {
     const updateEl = $('st-update')
     if (updateEl) {

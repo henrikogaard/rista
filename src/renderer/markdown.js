@@ -266,12 +266,13 @@ export function extractHeadings(markdown) {
 }
 
 // Word / char / paragraph count
-export function getStats(markdown) {
+export function getStats(markdown, readingSpeed = 200) {
   const text = markdown.replace(/```[\s\S]*?```/g, '').replace(/`[^`]+`/g, '').replace(/[#*_~\[\]]/g, '')
   const words = text.trim() ? text.trim().split(/\s+/).length : 0
   const chars = text.replace(/\s/g, '').length
   const paragraphs = markdown.split(/\n\n+/).filter(p => p.trim()).length
-  const readMin = Math.ceil(words / 200) || 0
+  const wpm = Math.max(50, Math.min(1000, readingSpeed || 200))
+  const readMin = Math.ceil(words / wpm) || 0
 
   // Sentence detection (basic: split on . ! ? followed by space or end)
   const sentences = text.split(/[.!?]+(?:\s|$)/).filter(s => s.trim()).length

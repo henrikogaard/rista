@@ -159,7 +159,8 @@ function createWindow() {
     height: 800,
     minWidth: 600,
     minHeight: 400,
-    titleBarStyle: 'hiddenInset',  // macOS: traffic lights inset
+    titleBarStyle: 'hidden',
+    trafficLightPosition: { x: 14, y: 12 },
     backgroundColor: '#0d0e10',
     icon: appIcon.isEmpty() ? undefined : appIcon,
     webPreferences: {
@@ -359,7 +360,9 @@ ipcMain.handle('fs:watchFolder', async (_, folderPath) => {
   })
   watcher.on('all', (event, changedPath) => {
     if (!changedPath.endsWith('.md')) return
-    mainWindow.webContents.send('fs:change', { event, path: changedPath })
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('fs:change', { event, path: changedPath })
+    }
   })
   return true
 })

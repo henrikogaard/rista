@@ -56,6 +56,204 @@ export const FONT_OPTIONS = {
   ],
 }
 
+export const THEME_PRESETS = {
+  dark: [
+    {
+      value: 'nordic-night',
+      label: 'Nordic Night',
+      bg: ['#0d0e10', '#111214', '#161719', '#1c1d20', '#252729', '#2e3033'],
+      text: ['#dddfe6', '#7a7d8a', '#484b57'],
+      accent: '#5b7fa6',
+      green: '#4a9966',
+      red: '#c0504d',
+      amber: '#c8903a',
+      atmosphere: { ambientIntensity: 42, surfaceOpacity: 82, surfaceBlur: 18 },
+    },
+    {
+      value: 'deep-fjord',
+      label: 'Deep Fjord',
+      bg: ['#071013', '#0b171b', '#102126', '#162b31', '#203940', '#2b4850'],
+      text: ['#d9e7e8', '#789096', '#415962'],
+      accent: '#4d8fa3',
+      green: '#4e9a72',
+      red: '#bc5a55',
+      amber: '#c58d3e',
+      atmosphere: { ambientIntensity: 50, surfaceOpacity: 84, surfaceBlur: 20 },
+    },
+    {
+      value: 'graphite',
+      label: 'Graphite',
+      bg: ['#0c0c0d', '#121214', '#19191b', '#202124', '#2a2b2f', '#34363b'],
+      text: ['#e2e2e5', '#85868d', '#50515a'],
+      accent: '#7a8798',
+      green: '#65936f',
+      red: '#bd5d58',
+      amber: '#b88b45',
+      atmosphere: { ambientIntensity: 24, surfaceOpacity: 88, surfaceBlur: 14 },
+    },
+    {
+      value: 'gruvbox-dark',
+      label: 'Gruvbox Dark',
+      bg: ['#1d2021', '#282828', '#32302f', '#3c3836', '#504945', '#665c54'],
+      text: ['#ebdbb2', '#a89984', '#7c6f64'],
+      accent: '#d79921',
+      green: '#98971a',
+      red: '#cc241d',
+      amber: '#d65d0e',
+      atmosphere: { ambientIntensity: 24, surfaceOpacity: 88, surfaceBlur: 12 },
+    },
+    {
+      value: 'everforest-dark',
+      label: 'Everforest Dark',
+      bg: ['#1e2326', '#272e33', '#2e383c', '#374145', '#414b50', '#4f5b58'],
+      text: ['#d3c6aa', '#9da9a0', '#7a8478'],
+      accent: '#7fbbb3',
+      green: '#a7c080',
+      red: '#e67e80',
+      amber: '#dbbc7f',
+      atmosphere: { ambientIntensity: 32, surfaceOpacity: 86, surfaceBlur: 16 },
+    },
+    {
+      value: 'ayu-dark',
+      label: 'Ayu Dark',
+      bg: ['#0b0e14', '#11151c', '#151a23', '#1b212c', '#242b38', '#303746'],
+      text: ['#bfbdb6', '#747b84', '#4d5560'],
+      accent: '#ffb454',
+      green: '#aad94c',
+      red: '#f07178',
+      amber: '#ff8f40',
+      atmosphere: { ambientIntensity: 30, surfaceOpacity: 86, surfaceBlur: 14 },
+    },
+    {
+      value: 'ayu-mirage',
+      label: 'Ayu Mirage',
+      bg: ['#171b24', '#1f2430', '#242936', '#2a3040', '#343d4f', '#414b60'],
+      text: ['#cccac2', '#8a9199', '#5c6570'],
+      accent: '#ffcc66',
+      green: '#bbe67e',
+      red: '#f28779',
+      amber: '#ffd580',
+      atmosphere: { ambientIntensity: 36, surfaceOpacity: 85, surfaceBlur: 18 },
+    },
+    {
+      value: 'pine',
+      label: 'Pine',
+      bg: ['#0b100d', '#101813', '#172119', '#1e2a21', '#29382d', '#35483b'],
+      text: ['#dce6dd', '#7e8f83', '#4b5b50'],
+      accent: '#6f9479',
+      green: '#5ba06b',
+      red: '#bc5e55',
+      amber: '#c59a45',
+      atmosphere: { ambientIntensity: 38, surfaceOpacity: 84, surfaceBlur: 18 },
+    },
+    {
+      value: 'aubergine',
+      label: 'Aubergine',
+      bg: ['#110d13', '#18121b', '#211828', '#2a2033', '#382b43', '#463754'],
+      text: ['#e6dde9', '#918099', '#5b4b66'],
+      accent: '#8c78ad',
+      green: '#60966f',
+      red: '#c16068',
+      amber: '#c49250',
+      atmosphere: { ambientIntensity: 46, surfaceOpacity: 83, surfaceBlur: 20 },
+    },
+  ],
+  light: [
+    {
+      value: 'nordic-paper',
+      label: 'Nordic Paper',
+      bg: ['#e9e6df', '#e2ddd4', '#d8d1c7', '#ccc3b7', '#b8aea0', '#a69b8c'],
+      text: ['#221d18', '#5f564b', '#938879'],
+      accent: '#5c7695',
+      green: '#527a5b',
+      red: '#a14e4a',
+      amber: '#9a7032',
+      atmosphere: { ambientIntensity: 30, surfaceOpacity: 88, surfaceBlur: 16 },
+    },
+    {
+      value: 'snow',
+      label: 'Snow',
+      bg: ['#f4f6f5', '#edf1f0', '#e4e9e8', '#d7dfdd', '#c6d0ce', '#b6c2bf'],
+      text: ['#17201f', '#53615f', '#879592'],
+      accent: '#587d8d',
+      green: '#4f7f62',
+      red: '#a45750',
+      amber: '#99753a',
+      atmosphere: { ambientIntensity: 22, surfaceOpacity: 92, surfaceBlur: 12 },
+    },
+    {
+      value: 'gruvbox-light',
+      label: 'Gruvbox Light',
+      bg: ['#fbf1c7', '#f2e5bc', '#ebdbb2', '#d5c4a1', '#bdae93', '#a89984'],
+      text: ['#3c3836', '#665c54', '#928374'],
+      accent: '#b57614',
+      green: '#79740e',
+      red: '#9d0006',
+      amber: '#af3a03',
+      atmosphere: { ambientIntensity: 22, surfaceOpacity: 92, surfaceBlur: 12 },
+    },
+    {
+      value: 'everforest-light',
+      label: 'Everforest Light',
+      bg: ['#f3ead3', '#efdfc0', '#e6d5b8', '#d8caac', '#c8b99a', '#b9aa8d'],
+      text: ['#5c6a72', '#708089', '#939f91'],
+      accent: '#3a94c5',
+      green: '#8da101',
+      red: '#f85552',
+      amber: '#dfa000',
+      atmosphere: { ambientIntensity: 28, surfaceOpacity: 90, surfaceBlur: 14 },
+    },
+    {
+      value: 'ayu-light',
+      label: 'Ayu Light',
+      bg: ['#fafafa', '#f3f4f5', '#e7e8ea', '#d8d9dc', '#c7c9cc', '#b8bac0'],
+      text: ['#5c6166', '#828c99', '#abb0b6'],
+      accent: '#ff9940',
+      green: '#86b300',
+      red: '#f07171',
+      amber: '#f2ae49',
+      atmosphere: { ambientIntensity: 18, surfaceOpacity: 92, surfaceBlur: 10 },
+    },
+    {
+      value: 'warm-linen',
+      label: 'Warm Linen',
+      bg: ['#efe7dc', '#e7dccd', '#ddd0be', '#d1c0aa', '#bfac93', '#ae9a81'],
+      text: ['#251d15', '#655547', '#9b8977'],
+      accent: '#8a6f4f',
+      green: '#617c55',
+      red: '#a85a4d',
+      amber: '#a27638',
+      atmosphere: { ambientIntensity: 28, surfaceOpacity: 90, surfaceBlur: 16 },
+    },
+    {
+      value: 'mist',
+      label: 'Mist',
+      bg: ['#e6e9ea', '#dde2e4', '#d2d9dc', '#c4cdd1', '#b1bdc2', '#a1afb5'],
+      text: ['#1a2023', '#536064', '#839096'],
+      accent: '#5d748f',
+      green: '#577d67',
+      red: '#9d5857',
+      amber: '#96743d',
+      atmosphere: { ambientIntensity: 34, surfaceOpacity: 88, surfaceBlur: 18 },
+    },
+    {
+      value: 'sage',
+      label: 'Sage',
+      bg: ['#e4e7dc', '#dce1d3', '#d2d8c6', '#c3ccb5', '#b1bda1', '#9fac90'],
+      text: ['#1d2318', '#5a654e', '#8b967d'],
+      accent: '#667f5d',
+      green: '#5f835e',
+      red: '#9f5b50',
+      amber: '#92773a',
+      atmosphere: { ambientIntensity: 26, surfaceOpacity: 90, surfaceBlur: 14 },
+    },
+  ],
+}
+
+function getPreset(theme, value) {
+  return THEME_PRESETS[theme].find(preset => preset.value === value) || THEME_PRESETS[theme][0]
+}
+
 export const DEFAULT_SETTINGS = {
   ambientBackground: true,
   ambientIntensity: 42,
@@ -88,6 +286,8 @@ export const DEFAULT_SETTINGS = {
   typewriterScrolling: false,
   spellcheck: false,
   vimMode: false,
+  darkThemePreset: 'nordic-night',
+  lightThemePreset: 'nordic-paper',
   autoSaveDelay: 800,
   tabIndentation: 'spaces',
   indentWidth: 2,
@@ -156,25 +356,23 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-function getThemePalette() {
+function getThemePalette(settings) {
   const theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'
-  if (theme === 'light') {
-    return {
-      theme,
-      text1: '#221d18',
-      text2: '#5f564b',
-      text3: '#938879',
-      accent: '#5c7695',
-    }
-  }
-
+  const preset = getPreset(theme, theme === 'light' ? settings.lightThemePreset : settings.darkThemePreset)
   return {
     theme,
-    text1: '#dddfe6',
-    text2: '#7a7d8a',
-    text3: '#484b57',
-    accent: '#5b7fa6',
+    preset,
+    text1: preset.text[0],
+    text2: preset.text[1],
+    text3: preset.text[2],
+    accent: preset.accent,
   }
+}
+
+function setHexRgb(root, name, hex) {
+  const { r, g, b } = hexToRgb(hex)
+  root.style.setProperty(`--${name}`, hex)
+  root.style.setProperty(`--${name}-rgb`, `${r},${g},${b}`)
 }
 
 function sanitize(settings) {
@@ -212,6 +410,8 @@ function sanitize(settings) {
   next.typewriterScrolling = Boolean(next.typewriterScrolling)
   next.spellcheck = Boolean(next.spellcheck)
   next.vimMode = Boolean(next.vimMode)
+  next.darkThemePreset = THEME_PRESETS.dark.some(preset => preset.value === next.darkThemePreset) ? next.darkThemePreset : DEFAULT_SETTINGS.darkThemePreset
+  next.lightThemePreset = THEME_PRESETS.light.some(preset => preset.value === next.lightThemePreset) ? next.lightThemePreset : DEFAULT_SETTINGS.lightThemePreset
   next.autoSaveDelay = clamp(Number(next.autoSaveDelay) || 800, 200, 5000)
   next.tabIndentation = ['spaces', 'tabs'].includes(next.tabIndentation) ? next.tabIndentation : 'spaces'
   next.indentWidth = [2, 4, 8].includes(Number(next.indentWidth)) ? Number(next.indentWidth) : 2
@@ -240,7 +440,7 @@ export function getSettings() {
 export function applySettings(settings = getSettings()) {
   const next = sanitize(settings)
   const root = document.documentElement
-  const palette = getThemePalette()
+  const palette = getThemePalette(next)
   const contrast = next.contrastBoost / 100
   const contrastTarget = palette.theme === 'light' ? '#000000' : '#ffffff'
   const baseText1 = mixHex(palette.text1, contrastTarget, contrast * 0.58)
@@ -254,6 +454,11 @@ export function applySettings(settings = getSettings()) {
   const text1 = next.textColor || baseText1
   const text2 = next.mutedTextColor || baseText2
   const text3 = next.subtleTextColor || baseText3
+
+  palette.preset.bg.forEach((hex, index) => setHexRgb(root, `bg${index}`, hex))
+  root.style.setProperty('--green', palette.preset.green)
+  root.style.setProperty('--red', palette.preset.red)
+  root.style.setProperty('--amber', palette.preset.amber)
 
   root.style.setProperty('--ambient-opacity', next.ambientBackground ? String(next.ambientIntensity / 100) : '0')
   root.style.setProperty('--surface-opacity', String(next.surfaceOpacity / 100))
@@ -299,6 +504,11 @@ export function setSettings(partial) {
 
 export function updateSetting(key, value) {
   const nextValue = NUMERIC_KEYS.has(key) ? Number(value) : value
+  if (key === 'darkThemePreset' || key === 'lightThemePreset') {
+    const theme = key === 'darkThemePreset' ? 'dark' : 'light'
+    const preset = getPreset(theme, nextValue)
+    return setSettings({ [key]: nextValue, ...preset.atmosphere })
+  }
   return setSettings({ [key]: nextValue })
 }
 

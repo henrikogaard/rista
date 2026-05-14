@@ -178,7 +178,7 @@ function relativePath(filePath) {
 function selectResult(result) {
   closeCommandPalette()
   if (result.type === 'file' && _callbacks.openFile) {
-    _callbacks.openFile(result.item.path)
+    _callbacks.openFile(result.item)
   } else if (result.type === 'command' && result.item.action) {
     result.item.action()
   }

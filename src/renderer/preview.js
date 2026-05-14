@@ -31,11 +31,11 @@ export function updateActiveMetrics() {
   if (!tab) {
     if (words) words.textContent = '—'
     if (lines) lines.textContent = '—'
-    renderStatsPopover(getStats(''))
+    renderStatsPopover(getStats('', getSettings().readingSpeed))
     renderTocPopover([])
     return
   }
-  const stats = getStats(markdown)
+  const stats = getStats(markdown, getSettings().readingSpeed)
   if (words) words.textContent = `${stats.words} words`
   const goalText = formatGoalStatus(stats.words, tab?.path)
   if (goalText && words) {
