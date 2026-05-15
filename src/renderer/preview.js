@@ -4,6 +4,13 @@ import { processDiagrams } from './diagrams.js'
 import { getTheme } from './theme.js'
 import { getSettings } from './settings.js'
 import { formatGoalStatus, isGoalReached } from './word-goals.js'
+import { renderInspectorContent } from './inspector.js'
+import { resolveWikilink, getLinkIndex } from './link-index.js'
+
+let _wikilinkCallback = null
+export function registerWikilinkCallback(fn) {
+  _wikilinkCallback = fn
+}
 
 // ── Preview ───────────────────────────────────────────────────────
 export async function refreshPreview(pane, markdown) {
@@ -11,7 +18,22 @@ export async function refreshPreview(pane, markdown) {
   const theme = getTheme()
   ;['single', 'left', 'right'].forEach(slot => {
     const p = $(`preview-${slot}-${pane}`)
-    if (p) p.innerHTML = html
+    if (p) {
+      p.innerHTML = html
+      // Wire up wikilink clicks
+      p.querySelectorAll('a.wikilink').forEach(link => {
+        link.addEventListener('click', (e) => {
+          e.preventDefault()
+          const targetName = link.dataset.wikilink
+          if (!targetName) return
+          const allPaths = getLinkIndex().allPaths
+          const target = resolveWikilink(targetName, allPaths, state.folderPath)
+          if (target) {
+            _wikilinkCallback?.(target)
+          }
+        })
+      })
+    }
   })
   // Render D2 and Mermaid diagram blocks as SVGs
   const diagramPromises = ['single', 'left', 'right'].map(slot => {

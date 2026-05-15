@@ -8,8 +8,90 @@ import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeStringify from 'rehype-stringify'
 
+// ── Wikilink remark plugin ───────────────────────────────────────
+function remarkWikilinks() {
+  return (tree) => {
+    const visit = (node) => {
+      if (node.type === 'text' && node.value) {
+        const parts = []
+        const regex = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
+        let lastIndex = 0
+        let match
+        while ((match = regex.exec(node.value)) !== null) {
+          if (match.index > lastIndex) {
+            parts.push({ type: 'text', value: node.value.slice(lastIndex, match.index) })
+          }
+          const linkText = (match[2] || match[1]).trim()
+          const target = match[1].trim()
+          parts.push({
+            type: 'link',
+            url: '#',
+            data: {
+              hProperties: {
+                class: 'wikilink',
+                'data-wikilink': target,
+              },
+            },
+            children: [{ type: 'text', value: linkText }],
+          })
+          lastIndex = match.index + match[0].length
+        }
+        if (lastIndex < node.value.length) {
+          parts.push({ type: 'text', value: node.value.slice(lastIndex) })
+        }
+        if (parts.length > 0) {
+          node.type = 'paragraph'
+          node.children = parts
+          delete node.value
+        }
+      }
+      if (node.children) {
+        for (let i = 0; i < node.children.length; i++) {
+          const child = node.children[i]
+          if (child.type === 'text') {
+            const parts = []
+            const regex = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
+            let lastIndex = 0
+            let match
+            while ((match = regex.exec(child.value)) !== null) {
+              if (match.index > lastIndex) {
+                parts.push({ type: 'text', value: child.value.slice(lastIndex, match.index) })
+              }
+              const linkText = (match[2] || match[1]).trim()
+              const target = match[1].trim()
+              parts.push({
+                type: 'link',
+                url: '#',
+                data: {
+                  hProperties: {
+                    class: 'wikilink',
+                    'data-wikilink': target,
+                  },
+                },
+                children: [{ type: 'text', value: linkText }],
+              })
+              lastIndex = match.index + match[0].length
+            }
+            if (lastIndex < child.value.length) {
+              parts.push({ type: 'text', value: child.value.slice(lastIndex) })
+            }
+            if (parts.length > 1) {
+              node.children.splice(i, 1, ...parts)
+              i += parts.length - 1
+            }
+          } else {
+            visit(child)
+          }
+        }
+      }
+    }
+    visit(tree)
+  }
+}
+
 const processor = unified()
   .use(remarkParse)
+  .use(remarkWikilinks)
   .use(remarkGfm)
   .use(remarkMath)
   .use(remarkEmoji)

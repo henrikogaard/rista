@@ -1,4 +1,4 @@
-import { EditorState, Compartment } from '@codemirror/state'
+import { EditorState, Compartment, Annotation } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, drawSelection, dropCursor, highlightActiveLine } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
@@ -7,6 +7,8 @@ import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { vim } from '@replit/codemirror-vim'
 import { selectNextOccurrence } from '@codemirror/search'
+import { autocompletion, CompletionContext } from '@codemirror/autocomplete'
+import { getAllMdFileNames } from './link-index.js'
 
 // ── Minimal highlight style matching Fjordmark palette ──
 const fjordHighlight = HighlightStyle.define([
@@ -80,6 +82,38 @@ const spellcheckOff = EditorView.contentAttributes.of({ spellcheck: 'false' })
 export const vimCompartment = new Compartment()
 const vimOff = []
 
+const programmaticDocUpdate = Annotation.define()
+
+const wikilinkCompletion = autocompletion({
+  override: [
+    (context) => {
+      const word = context.matchBefore(/\[\[[^\]]*/)
+      if (!word || (word.from === word.to && !context.explicit)) return null
+      const query = word.text.slice(2).toLowerCase()
+      const names = getAllMdFileNames()
+      const options = names
+        .filter(name => name.toLowerCase().includes(query))
+        .map(name => ({
+          label: name,
+          apply: (view, _completion, from, to) => {
+            const insert = `[[${name}]]`
+            view.dispatch({
+              changes: { from, to, insert },
+              selection: { anchor: from + insert.length },
+            })
+          },
+        }))
+      return {
+        from: word.from,
+        options,
+        filter: false,
+      }
+    },
+  ],
+  defaultKeymap: true,
+  icons: false,
+})
+
 const typewriterExtension = EditorView.updateListener.of(update => {
   if (!update.docChanged && !update.selectionSet) return
   const view = update.view
@@ -107,12 +141,14 @@ export function createEditor({ parent, doc = '', onChange, onSelectionChange, on
       keymap.of([{ key: 'Mod-d', run: selectNextOccurrence }, ...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage, codeLanguages: languages }),
       syntaxHighlighting(fjordHighlight),
+      wikilinkCompletion,
       themeCompartment.of(isDark ? fjordThemeDark : fjordThemeLight),
       typewriterCompartment.of(typewriterEnabled ? typewriterExtension : typewriterOff),
       spellcheckCompartment.of(spellcheckEnabled ? spellcheckOn : spellcheckOff),
       vimCompartment.of(vimEnabled ? vim() : vimOff),
       EditorView.updateListener.of(update => {
-        if (update.docChanged && onChange) {
+        const isProgrammatic = update.transactions.some(transaction => transaction.annotation(programmaticDocUpdate))
+        if (update.docChanged && onChange && !isProgrammatic) {
           onChange(update.state.doc.toString())
         }
         if ((update.docChanged || update.selectionSet || update.focusChanged) && onSelectionChange) {
@@ -184,6 +220,7 @@ export function updateEditorDoc(view, doc) {
   if (current === doc) return
   view.dispatch({
     changes: { from: 0, to: current.length, insert: doc },
+    annotations: programmaticDocUpdate.of(true),
   })
 }
 

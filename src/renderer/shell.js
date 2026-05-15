@@ -2,16 +2,25 @@ import { state, $, settingsValue } from './state.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, closeIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
 import { showContextMenu } from './context-menu.js'
-import { renderRecentProjectsHtml, removeRecentProject } from './recent-projects.js'
+import { buildAgentsSidebar, toggleSidebarMode } from './agents-sidebar.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
 export function registerShellCallbacks(cbs) { Object.assign(_callbacks, cbs) }
+
+const SETTINGS_TABS = [
+  { id: 'theme', label: 'Theme' },
+  { id: 'editor', label: 'Editor' },
+  { id: 'preview', label: 'Preview' },
+  { id: 'behavior', label: 'Behavior' },
+]
+
+let activeSettingsTab = 'theme'
 
 // ── Welcome screen HTML ──────────────────────────────────────────
 export function buildWelcome() {
@@ -95,6 +104,50 @@ export function renderToggleSetting(key, label, description) {
   `
 }
 
+export function renderSettingsTabs() {
+  return `
+    <nav class="settings-tabs" aria-label="Settings sections">
+      ${SETTINGS_TABS.map(tab => `
+        <div
+          class="settings-tab${tab.id === activeSettingsTab ? ' active' : ''}"
+          data-settings-tab="${tab.id}"
+          role="button"
+          tabindex="0"
+        >${tab.label}</div>
+      `).join('')}
+    </nav>
+  `
+}
+
+export function renderPresetPicker(key, label, presets) {
+  const current = settingsValue(key)
+  return `
+    <section class="settings-field settings-field--presets">
+      <div class="settings-field__row">
+        <span class="settings-field__label">${label}</span>
+        <span class="settings-field__value">${presets.find(preset => preset.value === current)?.label || presets[0]?.label || ''}</span>
+      </div>
+      <div class="settings-preset-grid" data-preset-group="${key}">
+        ${presets.map(preset => `
+          <div
+            class="settings-preset${preset.value === current ? ' active' : ''}"
+            data-preset-setting="${key}"
+            data-preset-value="${preset.value}"
+            role="button"
+            tabindex="0"
+            aria-label="Use ${escapeAttribute(preset.label)} preset"
+          >
+            <span class="settings-swatch settings-swatch--${escapeAttribute(preset.value)}">
+              <span></span><span></span><span></span>
+            </span>
+            <span class="settings-preset__label">${preset.label}</span>
+          </div>
+        `).join('')}
+      </div>
+    </section>
+  `
+}
+
 function escapeAttribute(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -118,9 +171,45 @@ function handleSettingsInput(event) {
   if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
 }
 
+function handleSettingsClick(event) {
+  const tab = event.target.closest('[data-settings-tab]')
+  if (tab) {
+    setSettingsTab(tab.dataset.settingsTab)
+    return
+  }
+
+  const preset = event.target.closest('[data-preset-setting]')
+  if (preset) {
+    updateSetting(preset.dataset.presetSetting, preset.dataset.presetValue)
+    syncSettingsForm()
+  }
+}
+
+function handleSettingsKeydown(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  const target = event.target.closest('[data-settings-tab], [data-preset-setting]')
+  if (!target) return
+  event.preventDefault()
+  target.click()
+}
+
 function updateSettingValueLabel(key, value, unit) {
   const label = $(`${key}-value`)
   if (label) label.textContent = formatSettingValue(value, unit)
+}
+
+function setSettingsTab(tabId) {
+  activeSettingsTab = SETTINGS_TABS.some(tab => tab.id === tabId) ? tabId : 'theme'
+  syncSettingsTabs()
+}
+
+function syncSettingsTabs() {
+  document.querySelectorAll('[data-settings-tab]').forEach(node => {
+    node.classList.toggle('active', node.dataset.settingsTab === activeSettingsTab)
+  })
+  document.querySelectorAll('[data-settings-section]').forEach(node => {
+    node.classList.toggle('active', node.dataset.settingsSection === activeSettingsTab)
+  })
 }
 
 function syncSettingsForm() {
@@ -134,6 +223,18 @@ function syncSettingsForm() {
       updateSettingValueLabel(key, settings[key], input.dataset.unit || '')
     }
   })
+  document.querySelectorAll('#settings-panel [data-preset-setting]').forEach(node => {
+    const key = node.dataset.presetSetting
+    node.classList.toggle('active', node.dataset.presetValue === settings[key])
+  })
+  document.querySelectorAll('[data-preset-group]').forEach(group => {
+    const key = group.dataset.presetGroup
+    const valueLabel = group.closest('.settings-field')?.querySelector('.settings-field__value')
+    const theme = key === 'lightThemePreset' ? 'light' : 'dark'
+    const preset = THEME_PRESETS[theme].find(option => option.value === settings[key])
+    if (valueLabel && preset) valueLabel.textContent = preset.label
+  })
+  syncSettingsTabs()
 }
 
 export function toggleSettingsPanel() {
@@ -143,6 +244,7 @@ export function toggleSettingsPanel() {
 export function openSettingsPanel() {
   state.settingsOpen = true
   $('app')?.classList.add('settings-open')
+  setSettingsTab(activeSettingsTab)
   syncSettingsForm()
 }
 
@@ -160,17 +262,29 @@ function syncAppMeta() {
 }
 
 function handleGlobalControlPointerDown(event) {
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle')
   if (!control) return
   event.preventDefault()
   event.stopPropagation()
+  performGlobalControl(control.id)
+}
 
-  if (control.id === 'toolbar-toggle') _callbacks.toggleToolbar?.()
-  if (control.id === 'pane-split-toggle') _callbacks.togglePaneSplitView?.()
-  if (control.id === 'workspace-split-toggle') _callbacks.toggleWorkspaceSplit?.()
-  if (control.id === 'settings-btn') toggleSettingsPanel()
-  if (control.id === 'theme-btn') toggleAppTheme()
-  if (control.id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
+function performGlobalControl(id) {
+  if (id === 'toolbar-toggle') _callbacks.toggleToolbar?.()
+  if (id === 'pane-split-toggle') _callbacks.togglePaneSplitView?.()
+  if (id === 'workspace-split-toggle') _callbacks.toggleWorkspaceSplit?.()
+  if (id === 'settings-btn') toggleSettingsPanel()
+  if (id === 'theme-btn') toggleAppTheme()
+  if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
+  if (id === 'terminal-toggle') _callbacks.toggleTerminal?.()
+}
+
+function handleGlobalControlKeydown(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle')
+  if (!control) return
+  event.preventDefault()
+  performGlobalControl(control.id)
 }
 
 function toggleAppTheme() {
@@ -260,13 +374,17 @@ export function buildShell() {
         <div class="sidebar" id="sidebar">
           <div class="sidebar__header">
             <span class="sidebar__label" id="sidebar-label">Explorer</span>
-            <div class="sidebar__collapse-all" id="collapse-all-btn" title="Collapse all">Collapse all</div>
+            <div class="sidebar__header-actions">
+              <div class="sidebar__mode-toggle" id="sidebar-mode-toggle" title="Toggle Agents" role="button" tabindex="0">Aa</div>
+              <div class="sidebar__collapse-all" id="collapse-all-btn" title="Collapse all">Collapse all</div>
+            </div>
           </div>
           <div class="sidebar__open-btn" id="open-folder-btn">
             <svg viewBox="0 0 16 16"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
             Open folder…
           </div>
           <div class="file-tree" id="file-tree"></div>
+          ${buildAgentsSidebar()}
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
 
@@ -282,33 +400,41 @@ export function buildShell() {
 
       <!-- Statusbar -->
       <div class="statusbar">
-        <div class="st"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
-        <div class="st" id="st-words">—</div>
-        <div class="st" id="st-lines">—</div>
-        <div class="st" id="st-readtime">—</div>
-        <div class="st" id="st-cursor">Ln 1, Col 1</div>
-        <span class="st" id="st-update" style="display:none;color:var(--green)"></span>
-        <div class="app-controls" id="app-controls">
-          <div class="theme-btn" id="toolbar-toggle" title="Hide toolbars">
-            <svg viewBox="0 0 16 16"><path d="M2 4.5h12M2 8h12M2 11.5h12"/></svg>
-          </div>
-          <div class="theme-btn" id="pane-split-toggle" title="Toggle editor split view">
-            <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><line x1="8" y1="3" x2="8" y2="13"/></svg>
-          </div>
-          <div class="theme-btn" id="workspace-split-toggle" title="Toggle split workspace">
-            <svg viewBox="0 0 16 16"><rect x="1.75" y="3" width="12.5" height="10" rx="1.5"/><line x1="6" y1="3" x2="6" y2="13"/><line x1="10" y1="3" x2="10" y2="13"/></svg>
-          </div>
-          <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle theme">
-            ${sunIcon()}
-          </div>
-          <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings">
-            ${gearIcon()}
-          </div>
-          <div class="theme-btn" id="sidebar-toggle" title="Toggle sidebar">
-            <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="6" y1="3" x2="6" y2="13"/></svg>
-          </div>
+        <div class="statusbar__metrics">
+          <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
+          <div class="st" id="st-words">—</div>
+          <div class="st" id="st-lines">—</div>
+          <div class="st st--optional" id="st-readtime">—</div>
+          <div class="st st--cursor" id="st-cursor">Ln 1, Col 1</div>
+          <span class="st st--update" id="st-update" hidden></span>
         </div>
-        <div class="st st-brand">fjordmark</div>
+        <div class="statusbar__controls">
+          <div class="app-controls" id="app-controls" aria-label="Global controls">
+            <div class="theme-btn" id="sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar" role="button" tabindex="0">
+              ${sidebarIcon()}
+            </div>
+            <div class="theme-btn" id="toolbar-toggle" title="Toggle toolbars" aria-label="Toggle toolbars" role="button" tabindex="0">
+              ${toolbarIcon()}
+            </div>
+            <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle theme" aria-label="Toggle theme" role="button" tabindex="0">
+              ${sunIcon()}
+            </div>
+            <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings" aria-label="Open settings" role="button" tabindex="0">
+              ${gearIcon()}
+            </div>
+            <div class="app-controls__sep"></div>
+            <div class="theme-btn" id="pane-split-toggle" title="Pane split" aria-label="Toggle pane split" role="button" tabindex="0">
+              ${editorSplitIcon()}
+            </div>
+            <div class="theme-btn" id="workspace-split-toggle" title="Workspace" aria-label="Toggle workspace split" role="button" tabindex="0">
+              ${workspaceSplitIcon()}
+            </div>
+            <div class="theme-btn" id="terminal-toggle" title="Terminal" aria-label="Toggle terminal" role="button" tabindex="0">
+              ${terminalIcon()}
+            </div>
+          </div>
+          <div class="st st-brand">fjordmark</div>
+        </div>
       </div>
 
       <div class="settings-overlay" id="settings-overlay"></div>
@@ -324,89 +450,97 @@ export function buildShell() {
         </div>
 
         <div class="settings-panel__body">
-          <section class="settings-group">
-            <div class="settings-group__title">Theme</div>
-            ${renderSelectSetting('darkThemePreset', 'Dark preset', THEME_PRESETS.dark)}
-            ${renderSelectSetting('lightThemePreset', 'Light preset', THEME_PRESETS.light)}
-          </section>
+          ${renderSettingsTabs()}
 
-          <section class="settings-group">
-            <div class="settings-group__title">Atmosphere</div>
-            ${renderToggleSetting('ambientBackground', 'Show ambient background', 'Keep the aurora background visible while editing')}
-            ${renderRangeSetting('ambientIntensity', 'Background strength', 0, 100, 1, '%')}
-            ${renderRangeSetting('surfaceOpacity', 'Translucency', 45, 100, 1, '%')}
-            ${renderRangeSetting('surfaceBlur', 'Glass blur', 0, 32, 1, 'px')}
-          </section>
+          <div class="settings-page active" data-settings-section="theme">
+            <section class="settings-group">
+              <div class="settings-group__title">Theme presets</div>
+              ${renderPresetPicker('darkThemePreset', 'Dark preset', THEME_PRESETS.dark)}
+              ${renderPresetPicker('lightThemePreset', 'Light preset', THEME_PRESETS.light)}
+            </section>
 
-          <section class="settings-group">
-            <div class="settings-group__title">Interface</div>
-            ${renderRangeSetting('contrastBoost', 'Contrast boost', 0, 40, 1, '%')}
-            ${renderTextSetting('textColor', 'Primary text color', 'Optional hex color, e.g. #f2f5ff')}
-            ${renderTextSetting('mutedTextColor', 'Secondary text color', 'Optional hex color, e.g. #a7b0c0')}
-            ${renderTextSetting('subtleTextColor', 'Subtle text color', 'Optional hex color, e.g. #6d7483')}
-            ${renderTextSetting('accentColor', 'Accent color', 'Optional hex color, e.g. #7ba3cc')}
-            ${renderSelectSetting('uiFont', 'App font preset', FONT_OPTIONS.ui)}
-            ${renderTextSetting('uiFontCustom', 'Custom app font stack', "Example: 'Atkinson Hyperlegible', system-ui, sans-serif")}
-            ${renderRangeSetting('uiFontSize', 'App size', 11, 16, 1, 'px')}
-            ${renderSelectSetting('explorerFont', 'Explorer font preset', FONT_OPTIONS.explorer)}
-            ${renderTextSetting('explorerFontCustom', 'Custom explorer font stack', "Example: 'Inter', system-ui, sans-serif")}
-            ${renderRangeSetting('explorerFontSize', 'Explorer size', 11, 16, 1, 'px')}
-          </section>
+            <section class="settings-group settings-group--compact">
+              <div class="settings-group__title">Atmosphere</div>
+              ${renderToggleSetting('ambientBackground', 'Ambient background', 'Keep the aurora field visible while editing')}
+              ${renderRangeSetting('ambientIntensity', 'Background strength', 0, 100, 1, '%')}
+              ${renderRangeSetting('surfaceOpacity', 'Surface opacity', 45, 100, 1, '%')}
+              ${renderRangeSetting('surfaceBlur', 'Surface blur', 0, 32, 1, 'px')}
+              ${renderRangeSetting('contrastBoost', 'Contrast boost', 0, 40, 1, '%')}
+            </section>
 
-          <section class="settings-group">
-            <div class="settings-group__title">Editor</div>
-            ${renderSelectSetting('editorFont', 'Editor font preset', FONT_OPTIONS.editor)}
-            ${renderTextSetting('editorFontCustom', 'Custom editor font stack', "Example: 'JetBrains Mono', 'SF Mono', monospace")}
-            ${renderRangeSetting('editorFontSize', 'Editor size', 12, 18, 1, 'px')}
-            ${renderRangeSetting('editorLineHeight', 'Editor spacing', 1.4, 2.1, 0.05, '')}
-            ${renderTextSetting('editorTextColor', 'Editor text color', 'Optional hex color, e.g. #e7ecf7')}
-            ${renderToggleSetting('typewriterScrolling', 'Typewriter scrolling', 'Keep cursor vertically centered while typing')}
-            ${renderToggleSetting('spellcheck', 'Spellcheck', 'Enable browser spellcheck in the editor')}
-            ${renderToggleSetting('vimMode', 'Vim mode', 'Enable Vim keybindings in the editor')}
-            ${renderToggleSetting('softWrap', 'Soft wrap', 'Wrap long lines instead of horizontal scrolling')}
-            ${renderToggleSetting('showLineNumbers', 'Show line numbers', 'Display line numbers in the editor gutter')}
-            ${renderRangeSetting('autoSaveDelay', 'Auto-save delay', 200, 5000, 100, 'ms')}
-            ${renderSelectSetting('tabIndentation', 'Indentation style', [
-              { value: 'spaces', label: 'Spaces' },
-              { value: 'tabs', label: 'Tabs' },
-            ])}
-            ${renderSelectSetting('indentWidth', 'Indent width', [
-              { value: '2', label: '2' },
-              { value: '4', label: '4' },
-              { value: '8', label: '8' },
-            ])}
-          </section>
+            <details class="settings-advanced">
+              <summary>Advanced color overrides</summary>
+              <div class="settings-advanced__body">
+                ${renderTextSetting('textColor', 'Primary text color', 'Optional hex color, e.g. #f2f5ff')}
+                ${renderTextSetting('mutedTextColor', 'Secondary text color', 'Optional hex color, e.g. #a7b0c0')}
+                ${renderTextSetting('subtleTextColor', 'Subtle text color', 'Optional hex color, e.g. #6d7483')}
+                ${renderTextSetting('accentColor', 'Accent color', 'Optional hex color, e.g. #7ba3cc')}
+              </div>
+            </details>
+          </div>
 
-          <section class="settings-group">
-            <div class="settings-group__title">Preview</div>
-            ${renderSelectSetting('previewFont', 'Preview font preset', FONT_OPTIONS.preview)}
-            ${renderTextSetting('previewFontCustom', 'Custom preview font stack', "Example: 'Source Serif 4', Georgia, serif")}
-            ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
-            ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
-            ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
-          </section>
+          <div class="settings-page" data-settings-section="editor">
+            <section class="settings-group">
+              <div class="settings-group__title">Interface type</div>
+              ${renderSelectSetting('uiFont', 'App font preset', FONT_OPTIONS.ui)}
+              ${renderTextSetting('uiFontCustom', 'Custom app font stack', "Example: 'Atkinson Hyperlegible', system-ui, sans-serif")}
+              ${renderRangeSetting('uiFontSize', 'App size', 11, 16, 1, 'px')}
+              ${renderSelectSetting('explorerFont', 'Explorer font preset', FONT_OPTIONS.explorer)}
+              ${renderTextSetting('explorerFontCustom', 'Custom explorer font stack', "Example: 'Inter', system-ui, sans-serif")}
+              ${renderRangeSetting('explorerFontSize', 'Explorer size', 11, 16, 1, 'px')}
+            </section>
 
-          <section class="settings-group">
-            <div class="settings-group__title">Behavior</div>
-            ${renderToggleSetting('showStatusBar', 'Show status bar', 'Display the bottom status bar')}
-            ${renderSelectSetting('defaultViewMode', 'Default view mode', [
-              { value: 'markdown', label: 'Markdown' },
-              { value: 'split', label: 'Split' },
-              { value: 'preview', label: 'Preview' },
-            ])}
-            ${renderRangeSetting('readingSpeed', 'Reading speed', 100, 500, 10, 'wpm')}
-          </section>
+            <section class="settings-group">
+              <div class="settings-group__title">Markdown editor</div>
+              ${renderSelectSetting('editorFont', 'Editor font preset', FONT_OPTIONS.editor)}
+              ${renderTextSetting('editorFontCustom', 'Custom editor font stack', "Example: 'JetBrains Mono', 'SF Mono', monospace")}
+              ${renderRangeSetting('editorFontSize', 'Editor size', 12, 18, 1, 'px')}
+              ${renderRangeSetting('editorLineHeight', 'Editor spacing', 1.4, 2.1, 0.05, '')}
+              ${renderTextSetting('editorTextColor', 'Editor text color', 'Optional hex color, e.g. #e7ecf7')}
+              ${renderToggleSetting('typewriterScrolling', 'Typewriter scrolling', 'Keep cursor vertically centered while typing')}
+              ${renderToggleSetting('spellcheck', 'Spellcheck', 'Enable browser spellcheck in the editor')}
+              ${renderToggleSetting('vimMode', 'Vim mode', 'Enable Vim keybindings in the editor')}
+              ${renderToggleSetting('softWrap', 'Soft wrap', 'Wrap long lines instead of horizontal scrolling')}
+              ${renderToggleSetting('showLineNumbers', 'Show line numbers', 'Display line numbers in the editor gutter')}
+              ${renderRangeSetting('autoSaveDelay', 'Auto-save delay', 200, 5000, 100, 'ms')}
+              ${renderSelectSetting('tabIndentation', 'Indentation style', [
+                { value: 'spaces', label: 'Spaces' },
+                { value: 'tabs', label: 'Tabs' },
+              ])}
+              ${renderSelectSetting('indentWidth', 'Indent width', [
+                { value: '2', label: '2' },
+                { value: '4', label: '4' },
+                { value: '8', label: '8' },
+              ])}
+            </section>
+          </div>
 
-          <section class="settings-group">
-            <div class="settings-group__title">Zen Mode</div>
-            ${renderToggleSetting('zenParagraphDimming', 'Paragraph dimming', 'Dim paragraphs except the one with the cursor')}
-            ${renderRangeSetting('zenColumnWidth', 'Column width', 500, 900, 10, 'px')}
-          </section>
+          <div class="settings-page" data-settings-section="preview">
+            <section class="settings-group">
+              <div class="settings-group__title">Preview typography</div>
+              ${renderSelectSetting('previewFont', 'Preview font preset', FONT_OPTIONS.preview)}
+              ${renderTextSetting('previewFontCustom', 'Custom preview font stack', "Example: 'Source Serif 4', Georgia, serif")}
+              ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
+              ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
+              ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
+            </section>
+          </div>
 
-          <section class="settings-group">
-            <div class="settings-group__title">Extras</div>
-            ${renderToggleSetting('showMinimap', 'Show minimap', 'Display a document overview on the right edge')}
-          </section>
+          <div class="settings-page" data-settings-section="behavior">
+            <section class="settings-group">
+              <div class="settings-group__title">Behavior</div>
+              ${renderToggleSetting('showStatusBar', 'Show status bar', 'Display the bottom status bar')}
+              ${renderSelectSetting('defaultViewMode', 'Default view mode', [
+                { value: 'markdown', label: 'Markdown' },
+                { value: 'split', label: 'Split' },
+                { value: 'preview', label: 'Preview' },
+              ])}
+              ${renderRangeSetting('readingSpeed', 'Reading speed', 100, 500, 10, 'wpm')}
+              ${renderToggleSetting('zenParagraphDimming', 'Zen paragraph dimming', 'Dim paragraphs except the one with the cursor')}
+              ${renderRangeSetting('zenColumnWidth', 'Zen column width', 500, 900, 10, 'px')}
+              ${renderToggleSetting('showMinimap', 'Show minimap', 'Display a document overview on the right edge')}
+            </section>
+          </div>
         </div>
 
         <div class="settings-panel__footer">
@@ -443,6 +577,7 @@ export function buildShell() {
 
   // Wire up controls
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
+  $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)
   $('settings-done-btn').addEventListener('click', closeSettingsPanel)
   $('settings-reset-btn').addEventListener('click', () => {
@@ -469,6 +604,8 @@ export function buildShell() {
   $('command-dialog-cancel').addEventListener('click', closeCommandDialog)
   $('command-dialog-overlay').addEventListener('click', closeCommandDialog)
   $('command-dialog-form').addEventListener('submit', submitCommandDialog)
+  $('settings-panel').addEventListener('click', handleSettingsClick)
+  $('settings-panel').addEventListener('keydown', handleSettingsKeydown)
 
   $('theme-btn').innerHTML = getTheme() === 'dark' ? sunIcon() : moonIcon()
   _callbacks.syncToolbarToggle?.()
@@ -476,8 +613,34 @@ export function buildShell() {
 
   $('open-folder-btn').addEventListener('click', () => _callbacks.openFolder?.())
   $('collapse-all-btn')?.addEventListener('click', () => _callbacks.collapseAllFolders?.())
+  $('sidebar-mode-toggle')?.addEventListener('click', () => {
+    toggleSidebarMode()
+  })
+  $('sidebar-mode-toggle')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      toggleSidebarMode()
+    }
+  })
   $('sidebar-resizer')?.addEventListener('pointerdown', e => _callbacks.startSidebarResize?.(e))
   $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
+
+  // Agents sidebar event delegation
+  const agentsSidebar = $('agents-sidebar')
+  if (agentsSidebar) {
+    agentsSidebar.addEventListener('click', (e) => {
+      const newBtn = e.target.closest('#agents-new-btn')
+      if (newBtn) {
+        _callbacks.createAgentSession?.()
+        return
+      }
+      const card = e.target.closest('.agent-card')
+      if (card) {
+        const sessionPath = card.dataset.sessionPath
+        if (sessionPath) _callbacks.openAgentSession?.(sessionPath)
+      }
+    })
+  }
 
   // Recent projects click handlers (delegation from welcome)
   const welcomeEl = $('welcome')
@@ -516,9 +679,7 @@ export function buildShell() {
     window.fjord.onCommand?.(data => _callbacks.handleAppCommand?.(data.command, data))
 
     window.fjord.onFileChange(({ event, path: p }) => {
-      const tab = state.tabs.find(t => t.path === p)
-      if (tab && !tab.dirty) _callbacks.loadFileIntoTab?.(tab)
-      _callbacks.refreshTree?.()
+      _callbacks.handleExternalFileChange?.({ event, path: p })
     })
   }
 }

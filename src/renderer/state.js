@@ -41,11 +41,8 @@ export const state = {
   },
   toolbarVisible: true,
   sidebarVisible: true,
-  insightsOpen: false,
-  insightsSections: {
-    stats: true,
-    headings: true,
-  },
+  sidebarMode: 'explorer', // 'explorer' | 'agents'
+  inspectorOpen: false,
   settingsOpen: false,
   commandDialog: null,
   commandPaletteOpen: false,

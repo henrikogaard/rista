@@ -6,8 +6,14 @@ import { getTheme } from './theme.js'
 import { updateSetting, getSettings } from './settings.js'
 import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste } from './preview.js'
 import { htmlToMarkdown } from './markdown.js'
+import { toggleCommandPalette } from './command-palette.js'
 import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, replaceOne, replaceAll } from './find-replace.js'
 import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, syncToWysiwyg } from './commands.js'
+import { buildInspector, setInspectorTab, handleInspectorClick as handleInspectorClickInner } from './inspector.js'
+import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
+import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
+import { buildTerminalDrawer, toggleTerminalDrawer, handleTerminalInput, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
+import { buildGraphModal, openGraphModal, closeGraphModal } from './graph-modal.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -18,6 +24,12 @@ export function syncWorkspaceSplitToggle() {
   document.querySelectorAll('.workspace-toolbar [data-action="toggle-workspace-split"]').forEach(node => {
     node.classList.toggle('active', state.workspaceMode === 'dual')
   })
+  const globalToggle = $('workspace-split-toggle')
+  if (globalToggle) {
+    globalToggle.classList.toggle('active', state.workspaceMode === 'dual')
+    globalToggle.title = state.workspaceMode === 'dual' ? 'Workspace: dual' : 'Workspace: single'
+    globalToggle.setAttribute('aria-pressed', state.workspaceMode === 'dual' ? 'true' : 'false')
+  }
 }
 
 export function syncPaneSplitToggle() {
@@ -25,7 +37,8 @@ export function syncPaneSplitToggle() {
   if (!node) return
   const split = getPaneView(state.focusedPane) === 'split'
   node.classList.toggle('active', split)
-  node.title = split ? 'Exit editor split view' : 'Enter editor split view'
+  node.title = split ? 'Pane split: on' : 'Pane split: off'
+  node.setAttribute('aria-pressed', split ? 'true' : 'false')
 }
 
 export function syncSplitToggles() {
@@ -38,6 +51,7 @@ export function syncToolbarToggle() {
   if (!node) return
   node.classList.toggle('active', state.toolbarVisible)
   node.title = state.toolbarVisible ? 'Hide toolbars' : 'Show toolbars'
+  node.setAttribute('aria-pressed', state.toolbarVisible ? 'true' : 'false')
 }
 
 // ── Split slot selector HTML ─────────────────────────────────────
@@ -147,15 +161,14 @@ export function renderEditorToolbar(pane) {
           <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg">WYSIWYG</div>
           <div class="vb${paneView === 'preview' ? ' active' : ''}" data-action="set-view" data-view="preview">Preview</div>
         </div>
-        <div class="ic${state.insightsOpen ? ' active' : ''}" data-action="toggle-insights" title="Document insights">
-          <svg viewBox="0 0 16 16"><rect x="2" y="9" width="3" height="5" rx="0.5" fill="currentColor" stroke="none"/><rect x="6.5" y="5" width="3" height="9" rx="0.5" fill="currentColor" stroke="none"/><rect x="11" y="2" width="3" height="12" rx="0.5" fill="currentColor" stroke="none"/><line x1="2" y1="4" x2="14" y2="4"/><line x1="5" y1="8" x2="14" y2="8"/></svg>
+        <div class="ic${state.inspectorOpen ? ' active' : ''}" data-action="toggle-inspector" title="Inspector" aria-label="Toggle inspector">
+          <svg viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="6" height="6" rx="1" fill="currentColor" stroke="none"/><rect x="8.5" y="1.5" width="6" height="6" rx="1" fill="currentColor" stroke="none" opacity="0.5"/><rect x="1.5" y="8.5" width="6" height="6" rx="1" fill="currentColor" stroke="none" opacity="0.5"/><rect x="8.5" y="8.5" width="6" height="6" rx="1" fill="currentColor" stroke="none"/></svg>
         </div>
       </div>
     </div>
     <div class="workspace-pane-row${state.toolbarVisible ? '' : ' hidden'}" data-pane="${pane}">
       <div class="pane-label" id="pl-source-${pane}">${paneView === 'split' ? renderSplitSlotSelector(pane, 'left') : 'source'}</div>
       <div class="pane-label" id="pl-preview-${pane}">${paneView === 'split' ? renderSplitSlotSelector(pane, 'right') : 'preview'}</div>
-      <div class="hide-toolbar-btn" data-action="toggle-toolbar">${state.toolbarVisible ? 'hide toolbar' : 'show toolbar'}</div>
     </div>
   `
 }
@@ -178,6 +191,8 @@ export function buildEditorUI() {
       <div class="find-count" id="find-count"></div>
       <button class="find-btn" id="find-close-btn" style="margin-left:auto">Close</button>
     </div>
+    <!-- Search Panel -->
+    ${buildSearchPanel()}
     <!-- Panes -->
     <div class="panes" id="panes">
       <div class="panes-workspace" id="panes-workspace">
@@ -236,35 +251,16 @@ export function buildEditorUI() {
             </div>
           </div>
           <div class="workspace-pane__empty" id="workspace-secondary-empty">
-            Open another markdown file to compare side by side
+            <div class="workspace-pane__empty-title">Split workspace</div>
+            <div class="workspace-pane__empty-copy">Open another markdown file to compare, reference, or edit beside the current note.</div>
+            <div class="workspace-pane__empty-action" data-action="open-secondary-file" role="button" tabindex="0">Quick open</div>
           </div>
         </section>
       </div>
-      <aside class="insights-panel" id="insights-panel">
-        <div class="insights-panel__header">
-          <div class="insights-panel__title">Document Insights</div>
-          <div class="ic" id="insights-close-btn" data-action="toggle-insights" title="Close insights">
-            <svg viewBox="0 0 16 16"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg>
-          </div>
-        </div>
-        <div class="insights-panel__body">
-          <section class="insights-section${state.insightsSections.stats ? ' open' : ''}" id="insights-section-stats">
-            <button class="insights-section__header" data-action="toggle-insights-section" data-section="stats">
-              <span class="insights-section__title">Statistics</span>
-              <span class="insights-section__chevron">${chevronIcon()}</span>
-            </button>
-            <div class="stats-grid" id="stats-content"></div>
-          </section>
-          <section class="insights-section${state.insightsSections.headings ? ' open' : ''}" id="insights-section-headings">
-            <button class="insights-section__header" data-action="toggle-insights-section" data-section="headings">
-              <span class="insights-section__title">Headings</span>
-              <span class="insights-section__chevron">${chevronIcon()}</span>
-            </button>
-            <div id="toc-content"></div>
-          </section>
-        </div>
-      </aside>
+      ${buildInspector()}
     </div>
+    ${buildTerminalDrawer()}
+    ${buildGraphModal()}
   `
 
   mountEditor('primary')
@@ -446,11 +442,13 @@ export function updateMinimap(pane) {
 // ── Workspace layout sync ────────────────────────────────────────
 export function syncWorkspaceUi() {
   const dual = state.workspaceMode === 'dual'
+  const app = $('app')
   const secondaryPane = $('workspace-secondary')
   const secondaryEmpty = $('workspace-secondary-empty')
   const workspaceResizer = $('workspace-resizer')
   const primaryPane = $('workspace-primary')
 
+  if (app) app.dataset.workspaceMode = state.workspaceMode
   if (primaryPane) primaryPane.style.flexBasis = dual ? 'var(--document-split-ratio)' : '100%'
   if (secondaryPane) secondaryPane.classList.toggle('hidden', !dual)
   if (workspaceResizer) workspaceResizer.classList.toggle('hidden', !dual)
@@ -461,9 +459,31 @@ export function syncWorkspaceUi() {
     const tab = getTabForPane(pane)
     const empty = $(`workspace-${pane}-empty`)
     const panesMain = $(`panes-main-${pane}`)
+    const toolbar = document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)
+    const paneRow = document.querySelector(`.workspace-pane-row[data-pane="${pane}"]`)
     if (pane === 'secondary' && !dual) return
     if (panesMain) panesMain.style.display = tab ? 'flex' : 'none'
     if (empty && pane === 'secondary') empty.style.display = tab ? 'none' : 'flex'
+    if (toolbar) toolbar.style.display = tab && !tab.isAttachment ? 'flex' : 'none'
+    if (paneRow) paneRow.style.display = tab && state.toolbarVisible && !tab.isAttachment ? 'flex' : 'none'
+
+    // Handle attachment tabs: hide editor/preview, show only attachment preview
+    if (tab?.isAttachment) {
+      const singleSurface = $(`single-surface-${pane}`)
+      const splitLayout = $(`split-layout-${pane}`)
+      const cmHost = $(`cm-host-${pane}`)
+      if (singleSurface) {
+        singleSurface.style.display = 'flex'
+        // Hide children except attachment preview
+        Array.from(singleSurface.children).forEach(child => {
+          if (!child.classList.contains('attachment-preview')) {
+            child.style.display = 'none'
+          }
+        })
+      }
+      if (splitLayout) splitLayout.style.display = 'none'
+      if (cmHost) cmHost.style.display = 'none'
+    }
   })
 }
 
@@ -577,7 +597,18 @@ export function wireEditorUiEvents() {
   document.querySelectorAll('.workspace-pane-row').forEach(node => {
     node.addEventListener('click', handleToolbarClick)
   })
-  $('insights-panel')?.addEventListener('click', handleToolbarClick)
+  document.querySelectorAll('.workspace-pane__empty').forEach(node => {
+    node.addEventListener('click', handleToolbarClick)
+    node.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      const control = event.target.closest('[data-action]')
+      if (!control) return
+      event.preventDefault()
+      control.click()
+    })
+  })
+  $('inspector')?.addEventListener('click', onInspectorClick)
+  $('inspector-close-btn')?.addEventListener('click', toggleInspector)
   document.querySelectorAll('.workspace-pane').forEach(node => {
     node.addEventListener('pointerdown', () => focusPane(node.dataset.pane))
   })
@@ -586,6 +617,12 @@ export function wireEditorUiEvents() {
     node.addEventListener('dragleave', e => _callbacks.handleTabDragLeave?.(e))
     node.addEventListener('drop', e => _callbacks.handleTabDrop?.(e))
   })
+  handleSearchInput(path => _callbacks.openFile?.(path))
+  handleTerminalInput()
+}
+
+function onInspectorClick(event) {
+  handleInspectorClickInner(event, path => _callbacks.openFile?.(path))
 }
 
 export function handleToolbarClick(event) {
@@ -612,8 +649,8 @@ export function handleToolbarClick(event) {
   if (action === 'set-split-view') setSplitPaneView(pane || state.focusedPane, control.dataset.slot, control.dataset.slotView)
   if (action === 'toggle-toolbar') toggleToolbar()
   if (action === 'toggle-workspace-split') toggleWorkspaceSplit()
-  if (action === 'toggle-insights') toggleInsightsPanel()
-  if (action === 'toggle-insights-section') toggleInsightsSection(control.dataset.section)
+  if (action === 'open-secondary-file') { focusPane('secondary'); toggleCommandPalette() }
+  if (action === 'toggle-inspector') toggleInspector()
 }
 
 // ── Resize handlers ──────────────────────────────────────────────
@@ -735,9 +772,6 @@ export function toggleToolbar() {
   document.querySelectorAll('.workspace-pane-row').forEach(node => {
     node.classList.toggle('hidden', !state.toolbarVisible)
   })
-  document.querySelectorAll('.hide-toolbar-btn').forEach(node => {
-    node.textContent = state.toolbarVisible ? 'hide toolbar' : 'show toolbar'
-  })
   syncToolbarToggle()
 }
 
@@ -751,6 +785,8 @@ export function toggleSidebar() {
   state.sidebarVisible = !state.sidebarVisible
   const sb = $('sidebar')
   if (sb) sb.classList.toggle('collapsed', !state.sidebarVisible)
+  const control = $('sidebar-toggle')
+  if (control) control.setAttribute('aria-pressed', state.sidebarVisible ? 'true' : 'false')
 }
 
 export function toggleDd(id) {
@@ -762,18 +798,12 @@ export function toggleDd(id) {
   if (!was) menu.classList.add('open')
 }
 
-export function toggleInsightsPanel() {
-  state.insightsOpen = !state.insightsOpen
-  $('insights-panel')?.classList.toggle('open', state.insightsOpen)
-  document.querySelectorAll('[data-action="toggle-insights"]').forEach(node => {
-    node.classList.toggle('active', state.insightsOpen)
+export function toggleInspector() {
+  state.inspectorOpen = !state.inspectorOpen
+  $('inspector')?.classList.toggle('open', state.inspectorOpen)
+  document.querySelectorAll('[data-action="toggle-inspector"]').forEach(node => {
+    node.classList.toggle('active', state.inspectorOpen)
   })
-}
-
-export function toggleInsightsSection(section) {
-  if (!section || !(section in state.insightsSections)) return
-  state.insightsSections[section] = !state.insightsSections[section]
-  $(`insights-section-${section}`)?.classList.toggle('open', state.insightsSections[section])
 }
 
 export function toggleWorkspaceSplit() {
@@ -799,11 +829,11 @@ export function toggleWorkspaceSplit() {
     } else {
       if (!state.activeTab && state.tabs[0]) state.activeTab = state.tabs[0]
       state.tabGroups.primary = state.activeTab ? [state.activeTab, ...state.tabs.filter(tab => tab !== state.activeTab)] : []
-      state.tabGroups.secondary = state.activeTab ? [state.activeTab] : []
-      state.secondaryTab = state.activeTab
+      state.tabGroups.secondary = []
+      state.secondaryTab = null
       state.focusedPane = 'secondary'
     }
-    ensureEditorForPane('secondary')
+    if (state.secondaryTab) ensureEditorForPane('secondary')
   } else {
     storeSplitSnapshot()
     const mergedActiveTab = getFocusedTab() || state.activeTab || state.secondaryTab

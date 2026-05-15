@@ -2,13 +2,16 @@ import { collectFolderPaths, renderFileTree, highlightTreeFiles } from './tree-v
 import { updateEditorDoc } from './editor.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, saveTimers, draggedTab, setDraggedTab, getTabForPane, setTabForPane, getFocusedTab, getGroupTabs, addTabToPane, removeTabFromPane, getTabPane, isTabOpenAnywhere, cleanSplitSnapshot, storeSplitSnapshot } from './state.js'
 import { refreshPreview, updateActiveMetrics, exportToPdf } from './preview.js'
-import { updateSetting } from './settings.js'
+import { getSettings, updateSetting } from './settings.js'
 import { buildWelcome } from './shell.js'
 import { addRecentProject, removeRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
+import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex } from './link-index.js'
+import { renderInspectorContent } from './inspector.js'
 
 let _sessionTimer = null
+let _treeRefreshTimer = null
 function persistSession() {
   clearTimeout(_sessionTimer)
   _sessionTimer = setTimeout(() => {
@@ -23,6 +26,55 @@ function persistSession() {
       toolbarVisible: state.toolbarVisible,
     })
   }, 500)
+}
+
+function scheduleAutoSave(pane, tab) {
+  clearTimeout(saveTimers[pane])
+  saveTimers[pane] = setTimeout(() => saveTab(tab), getSettings().autoSaveDelay)
+}
+
+export function scheduleTreeRefresh() {
+  clearTimeout(_treeRefreshTimer)
+  _treeRefreshTimer = setTimeout(() => refreshTree(), 120)
+}
+
+function clearExternalConflict(tab) {
+  if (!tab) return
+  tab.externalConflict = false
+  tab.externalContent = null
+  tab.externalEvent = null
+  if (!state.tabs.some(t => t.externalConflict)) clearStatusNotice()
+}
+
+function confirmExternalOverwrite(tab, confirmOverwrite = false) {
+  if (!tab?.externalConflict) return true
+  if (tab.externalContent === tab.content) {
+    clearExternalConflict(tab)
+    return true
+  }
+  if (!confirmOverwrite) return false
+  return confirm(`External changes detected for "${tab.name}". Saving now will overwrite the version on disk. Continue?`)
+}
+
+function showStatusNotice(message, tone = 'info', { sticky = false } = {}) {
+  const node = $('st-update')
+  if (!node) return
+  node.textContent = message
+  node.dataset.tone = tone
+  node.hidden = false
+  if (!sticky) {
+    window.setTimeout(() => {
+      if (node.textContent === message && !state.tabs.some(tab => tab.externalConflict)) clearStatusNotice()
+    }, 4200)
+  }
+}
+
+function clearStatusNotice() {
+  const node = $('st-update')
+  if (!node) return
+  node.textContent = ''
+  node.removeAttribute('data-tone')
+  node.hidden = true
 }
 
 // ── Callback registration ────────────────────────────────────────
@@ -135,6 +187,7 @@ export async function openFolder() {
   syncFolderUi()
   await window.fjord.watchFolder(p)
   await refreshTree()
+  rebuildLinkIndex().catch(() => {})
   showWelcomeScreen()
 
   // Try restoring session
@@ -179,6 +232,7 @@ export async function openFolderPath(folderPath) {
   syncFolderUi()
   await window.fjord.watchFolder(folderPath)
   await refreshTree()
+  rebuildLinkIndex().catch(() => {})
   showWelcomeScreen()
 
   // Try restoring session
@@ -224,8 +278,12 @@ export async function openFile(item) {
     return
   }
 
-  const content = await window.fjord.readFile(item.path)
-  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false }
+  const isAttachment = item.path && (/\.(png|jpe?g|gif|svg|webp|bmp|pdf)$/i).test(item.path)
+  let content = ''
+  if (!isAttachment) {
+    content = await window.fjord.readFile(item.path)
+  }
+  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false, isAttachment }
   state.tabs.push(tab)
   activateTab(tab, targetPane)
 }
@@ -234,6 +292,7 @@ export async function loadFileIntoTab(tab) {
   if (!window.fjord) return
   tab.content = await window.fjord.readFile(tab.path)
   tab.dirty = false
+  clearExternalConflict(tab)
   PANE_KEYS.forEach(pane => {
     if (getTabForPane(pane) === tab) {
       if (editorViews[pane]) updateEditorDoc(editorViews[pane], tab.content)
@@ -256,14 +315,21 @@ export function activateTab(tab, pane = 'primary') {
   setTabForPane(pane, tab)
   _callbacks.focusPane?.(pane)
   _callbacks.ensureEditorForPane?.(pane)
-  if (editorViews[pane]) updateEditorDoc(editorViews[pane], tab.content)
-  refreshPreview(pane, tab.content)
-  _callbacks.maybeRefreshWysiwygPane?.(pane)
+
+  if (tab.isAttachment) {
+    _callbacks.renderAttachmentPreview?.(pane, tab)
+  } else {
+    if (editorViews[pane]) updateEditorDoc(editorViews[pane], tab.content)
+    refreshPreview(pane, tab.content)
+    _callbacks.maybeRefreshWysiwygPane?.(pane)
+  }
+
   _callbacks.syncWorkspaceUi?.()
   _callbacks.syncSplitLayout?.()
   renderTabs()
   highlightActiveFile()
   updateActiveMetrics()
+  renderInspectorContent()
   if (window.fjord.setRepresentedFile) window.fjord.setRepresentedFile(tab.path)
   persistSession()
 }
@@ -282,12 +348,15 @@ export function renderTabs() {
       const t = el('div', `tab${isFocused ? ' active' : ''}${tab.pinned ? ' pinned' : ''}`)
       t.draggable = state.workspaceMode === 'dual'
       t.dataset.pane = pane
-      t.title = tab.name
+      t.title = tab.externalConflict
+        ? `${tab.name} — external changes detected`
+        : tab.name
       t.innerHTML = `
         <div class="tab__dot"></div>
-        <span class="tab__name">${tab.name}${tab.dirty ? ' ·' : ''}</span>
+        <span class="tab__name">${tab.name}${tab.externalConflict ? ' !' : tab.dirty ? ' ·' : ''}</span>
         ${tab.pinned ? '<span class="tab__pin">&#128204;</span>' : '<div class="tab__close">✕</div>'}
       `
+      t.classList.toggle('conflict', Boolean(tab.externalConflict))
       t.addEventListener('click', () => activateTab(tab, pane))
       t.addEventListener('dragstart', event => handleTabDragStart(event, tab, pane))
       t.addEventListener('dragend', handleTabDragEnd)
@@ -368,6 +437,11 @@ export function togglePinTab(tab) {
 
 function showTabContextMenu(x, y, tab, pane) {
   const items = [
+    ...(tab.externalConflict ? [
+      { label: 'Reload from Disk', action: () => reloadExternalChanges(tab) },
+      { label: 'Overwrite Disk', action: () => overwriteExternalChanges(tab) },
+      { separator: true },
+    ] : []),
     { label: 'Close', action: () => closeTab(tab, pane) },
     { label: 'Close Others', action: () => {
       const group = [...getGroupTabs(pane)]
@@ -394,6 +468,20 @@ function showTabContextMenu(x, y, tab, pane) {
     { label: 'Reveal in Finder', action: () => window.fjord.showInFolder(tab.path) },
   ]
   showContextMenu(x, y, items)
+}
+
+export async function reloadExternalChanges(tab) {
+  if (!tab || !window.fjord) return false
+  await loadFileIntoTab(tab)
+  showStatusNotice(`Reloaded ${tab.name}`, 'success')
+  return true
+}
+
+export async function overwriteExternalChanges(tab) {
+  if (!tab) return false
+  const ok = await saveTab(tab, { confirmOverwrite: true })
+  if (ok) showStatusNotice(`Saved ${tab.name}`, 'success')
+  return ok
 }
 
 export function moveTabToPane(tab, fromPane, toPane) {
@@ -501,9 +589,7 @@ export function onEditorChange(pane, content) {
   tab.dirty = true
   syncTabRepresentations(tab, pane, { source: 'markdown' })
 
-  // Auto-save after 800ms idle
-  clearTimeout(saveTimers[pane])
-  saveTimers[pane] = setTimeout(() => saveTab(tab), 800)
+  scheduleAutoSave(pane, tab)
 }
 
 export function onRichEditorChange(pane) {
@@ -528,8 +614,7 @@ export function onRichEditorChange(pane) {
   syncingRichEditor[pane] = false
   syncTabRepresentations(tab, pane, { source: 'wysiwyg' })
 
-  clearTimeout(saveTimers[pane])
-  saveTimers[pane] = setTimeout(() => saveTab(tab), 800)
+  scheduleAutoSave(pane, tab)
 }
 
 export function syncTabRepresentations(tab, sourcePane, { source } = {}) {
@@ -546,17 +631,26 @@ export function syncTabRepresentations(tab, sourcePane, { source } = {}) {
   updateActiveMetrics()
 }
 
-export async function saveTab(tab) {
+export async function saveTab(tab, options = {}) {
   if (!tab || !window.fjord) return
+  if (!confirmExternalOverwrite(tab, Boolean(options.confirmOverwrite))) return false
   const ok = await window.fjord.writeFile(tab.path, tab.content)
-  if (ok) { tab.dirty = false; renderTabs() }
+  if (ok) {
+    const hadConflict = Boolean(tab.externalConflict)
+    tab.dirty = false
+    clearExternalConflict(tab)
+    renderTabs()
+    if (hadConflict) showStatusNotice(`Saved ${tab.name}`, 'success')
+    updateLinkIndexForFile(tab.path, tab.content)
+    renderInspectorContent()
+  }
+  return ok
 }
 
 export async function saveActive() {
   const tab = getFocusedTab()
   if (!tab) return
-  const ok = await window.fjord.writeFile(tab.path, tab.content)
-  if (ok) { tab.dirty = false; renderTabs() }
+  return saveTab(tab, { confirmOverwrite: true })
 }
 
 export async function saveActiveAs() {
@@ -573,6 +667,7 @@ export async function saveActiveAs() {
     tab.path = saved.path
     tab.name = saved.name
     tab.dirty = false
+    clearExternalConflict(tab)
     activateTab(tab, state.focusedPane)
     renderTabs()
     return
@@ -607,4 +702,23 @@ export function handleAppCommand(command, data) {
       updateEl.style.display = 'inline'
     }
   }
+}
+
+export async function handleExternalFileChange({ event, path: changedPath } = {}) {
+  if (!changedPath) return
+
+  const tab = state.tabs.find(t => t.path === changedPath)
+  if (tab) {
+    if (tab.dirty) {
+      tab.externalConflict = true
+      tab.externalEvent = event
+      tab.externalContent = await window.fjord.readFile(changedPath)
+      showStatusNotice(`External change: ${tab.name}`, 'warning', { sticky: true })
+      renderTabs()
+    } else {
+      await loadFileIntoTab(tab)
+    }
+  }
+
+  scheduleTreeRefresh()
 }

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('fjord', {
   // File system
   readFolder: (p) => ipcRenderer.invoke('fs:readFolder', p),
   readFile: (p) => ipcRenderer.invoke('fs:readFile', p),
+  readFileBase64: (p) => ipcRenderer.invoke('fs:readFileBase64', p),
   writeFile: (p, content) => ipcRenderer.invoke('fs:writeFile', p, content),
   saveFileAs: (currentPath, content, folderPath) => ipcRenderer.invoke('fs:saveFileAs', currentPath, content, folderPath),
   watchFolder: (p) => ipcRenderer.invoke('fs:watchFolder', p),
@@ -24,6 +25,12 @@ contextBridge.exposeInMainWorld('fjord', {
   createFile: (p) => ipcRenderer.invoke('fs:createFile', p),
   showInFolder: (p) => ipcRenderer.invoke('fs:showInFolder', p),
   readTemplates: (folderPath) => ipcRenderer.invoke('fs:readTemplates', folderPath),
+
+  // Terminal
+  runTerminalCommand: (command, cwd) => ipcRenderer.invoke('terminal:run', command, cwd),
+
+  // Web clipper
+  importContent: (payload) => ipcRenderer.invoke('clipper:import', payload),
 
   // Window
   setRepresentedFile: (p) => ipcRenderer.invoke('window:setRepresentedFile', p),

@@ -13,6 +13,12 @@ import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette
 import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
 import { exportToHtml } from './preview.js'
 import { exportToDocx } from './export-docx.js'
+import { toggleSearchPanel, openSearchPanel } from './search-panel.js'
+import { registerWikilinkCallback } from './preview.js'
+import { renderAttachmentPreview } from './attachment-preview.js'
+import { toggleTerminalDrawer } from './terminal-drawer.js'
+import { openGraphModal } from './graph-modal.js'
+import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
@@ -82,6 +88,8 @@ registerShellCallbacks({
   togglePaneSplitView,
   toggleWorkspaceSplit,
   toggleSidebar,
+  toggleSidebarMode,
+  toggleTerminal: toggleTerminalDrawer,
   openFolder,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   collapseAllFolders,
@@ -89,10 +97,19 @@ registerShellCallbacks({
   handleAppCommand,
   loadFileIntoTab,
   refreshTree,
+  handleExternalFileChange,
   destroyRichEditor,
   ensureRichEditorMounted,
   syncToolbarToggle,
   syncPaneSplitToggle,
+  createAgentSession: async () => {
+    const session = await createSession()
+    if (session) renderAgentsList()
+  },
+  openAgentSession: (sessionPath) => {
+    // Open session JSON as a note for now (could be a special UI later)
+    openFile({ path: sessionPath, name: sessionPath.split('/').pop() })
+  },
 })
 
 registerWorkspaceCallbacks({
@@ -108,7 +125,10 @@ registerWorkspaceCallbacks({
   handleTabDragOver,
   handleTabDragLeave,
   handleTabDrop,
+  renderAttachmentPreview,
 })
+
+registerWikilinkCallback(openFile)
 
 registerTabCallbacks({
   buildEditorUI,
@@ -170,6 +190,7 @@ registerCommands([
   { id: 'new-file',        label: 'New File',             description: 'Create a new markdown file',     shortcut: '\u2318N',   action: () => createNewFile() },
   { id: 'open-folder',     label: 'Open Folder',          description: 'Open a project folder',          shortcut: '',          action: () => openFolder() },
   { id: 'find-replace',    label: 'Find & Replace',       description: 'Search within the editor',       shortcut: '\u2318F',   action: () => toggleFindReplace() },
+  { id: 'project-search',  label: 'Project Search',       description: 'Search across all project files', shortcut: '\u21e7\u2318F', action: () => openSearchPanel() },
   { id: 'save',            label: 'Save',                 description: 'Save the active file',           shortcut: '\u2318S',   action: () => saveActive() },
   { id: 'settings',        label: 'Settings',             description: 'Open settings panel',            shortcut: '\u2318,',   action: () => toggleSettingsPanel() },
   { id: 'toggle-zen',      label: 'Toggle Zen Mode',      description: 'Distraction-free writing',       shortcut: '\u21e7\u2318\u23ce', action: () => toggleZenMode() },
@@ -205,6 +226,17 @@ registerCommands([
     await refreshTree()
     await openFile({ path: fullPath, name: fileName })
   }},
+  { id: 'import-content', label: 'Import Content', description: 'Create a note from external content', shortcut: '', action: async () => {
+    if (!state.folderPath) { alert('Open a folder first'); return }
+    const title = prompt('Title:') || 'Untitled'
+    const body = prompt('Body (Markdown):') || ''
+    const sourceUrl = prompt('Source URL:') || ''
+    const result = await window.fjord.importContent({ folderPath: state.folderPath, title, body, sourceUrl })
+    if (result.error) { alert('Import failed: ' + result.error); return }
+    await refreshTree()
+    await openFile({ path: result.path, name: result.name })
+  }},
+  { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
 ])
 
 // ── Keyboard shortcuts ───────────────────────────────────────────
@@ -226,5 +258,7 @@ document.addEventListener('keydown', e => {
   if (matchesBinding(e, 'toggle-sidebar')) { e.preventDefault(); toggleSidebar(); return }
   if (matchesBinding(e, 'toggle-toolbar')) { e.preventDefault(); toggleToolbar(); return }
   if (matchesBinding(e, 'find-replace')) { e.preventDefault(); toggleFindReplace(); return }
+  if (matchesBinding(e, 'project-search')) { e.preventDefault(); openSearchPanel(); return }
+  if (matchesBinding(e, 'terminal')) { e.preventDefault(); toggleTerminalDrawer(); return }
   if (matchesBinding(e, 'settings')) { e.preventDefault(); toggleSettingsPanel(); return }
 })

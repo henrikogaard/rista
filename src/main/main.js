@@ -602,3 +602,53 @@ ipcMain.handle('render:d2', async (_, source, themeId = 0) => {
     }
   })
 })
+
+// ── IPC: Read file as base64 (for attachments) ───────────────────
+ipcMain.handle('fs:readFileBase64', async (_, filePath) => {
+  try {
+    const buffer = fs.readFileSync(filePath)
+    return { data: buffer.toString('base64'), mimeType: 'application/octet-stream' }
+  } catch (err) {
+    return { error: err.message }
+  }
+})
+
+// ── IPC: Run terminal command ────────────────────────────────────
+ipcMain.handle('terminal:run', async (_, command, cwd) => {
+  return new Promise((resolve) => {
+    const { spawn } = require('child_process')
+    const [cmd, ...args] = command.split(' ')
+    const child = spawn(cmd, args, { cwd: cwd || process.cwd(), shell: true })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (data) => { stdout += data })
+    child.stderr.on('data', (data) => { stderr += data })
+    child.on('close', (code) => {
+      resolve({ stdout, stderr, code })
+    })
+    child.on('error', (err) => {
+      resolve({ stdout, stderr, code: -1, error: err.message })
+    })
+  })
+})
+
+// ── IPC: Import external content as Markdown ─────────────────────
+ipcMain.handle('clipper:import', async (_, { folderPath, title, body, sourceUrl }) => {
+  try {
+    const safeTitle = (title || 'untitled').replace(/[^a-zA-Z0-9\-_\s]/g, '').trim() || 'untitled'
+    let fileName = `${safeTitle}.md`
+    let filePath = path.join(folderPath, fileName)
+    let counter = 1
+    while (fs.existsSync(filePath)) {
+      fileName = `${safeTitle}-${counter}.md`
+      filePath = path.join(folderPath, fileName)
+      counter++
+    }
+    const frontmatter = `---\ntitle: ${title || 'Untitled'}\nsource: ${sourceUrl || ''}\nimported: ${new Date().toISOString()}\n---\n\n`
+    const content = frontmatter + (body || '')
+    fs.writeFileSync(filePath, content, 'utf-8')
+    return { path: filePath, name: fileName }
+  } catch (err) {
+    return { error: err.message }
+  }
+})

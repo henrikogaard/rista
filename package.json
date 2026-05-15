@@ -8,6 +8,7 @@
     "dev": "concurrently \"npm run watch\" \"wait-on dist/renderer.js && electron .\"",
     "watch": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --watch --loader:.js=jsx",
     "build": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --loader:.js=jsx --minify",
+    "test": "node --test tests/*.test.js",
     "package": "npm run build && electron-builder",
     "version:check": "node scripts/semver.js check",
     "version:current": "node scripts/semver.js current",
@@ -35,6 +36,7 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.2",
     "@codemirror/commands": "^6.3.3",
     "@codemirror/lang-markdown": "^6.2.4",
     "@codemirror/language": "^6.10.1",

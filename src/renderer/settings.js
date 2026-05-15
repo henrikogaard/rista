@@ -58,11 +58,11 @@ export const FONT_OPTIONS = {
 
 export const THEME_PRESETS = {
   dark: [
-    {
+  {
       value: 'nordic-night',
       label: 'Nordic Night',
       bg: ['#0d0e10', '#111214', '#161719', '#1c1d20', '#252729', '#2e3033'],
-      text: ['#dddfe6', '#7a7d8a', '#484b57'],
+      text: ['#dddfe6', '#8a8d99', '#484b57'],
       accent: '#5b7fa6',
       green: '#4a9966',
       red: '#c0504d',
@@ -73,7 +73,7 @@ export const THEME_PRESETS = {
       value: 'deep-fjord',
       label: 'Deep Fjord',
       bg: ['#071013', '#0b171b', '#102126', '#162b31', '#203940', '#2b4850'],
-      text: ['#d9e7e8', '#789096', '#415962'],
+      text: ['#d9e7e8', '#7e969e', '#415962'],
       accent: '#4d8fa3',
       green: '#4e9a72',
       red: '#bc5a55',
@@ -84,7 +84,7 @@ export const THEME_PRESETS = {
       value: 'graphite',
       label: 'Graphite',
       bg: ['#0c0c0d', '#121214', '#19191b', '#202124', '#2a2b2f', '#34363b'],
-      text: ['#e2e2e5', '#85868d', '#50515a'],
+      text: ['#e2e2e5', '#8c8d94', '#50515a'],
       accent: '#7a8798',
       green: '#65936f',
       red: '#bd5d58',
@@ -95,7 +95,7 @@ export const THEME_PRESETS = {
       value: 'gruvbox-dark',
       label: 'Gruvbox Dark',
       bg: ['#1d2021', '#282828', '#32302f', '#3c3836', '#504945', '#665c54'],
-      text: ['#ebdbb2', '#a89984', '#7c6f64'],
+      text: ['#ebdbb2', '#b09c8a', '#7c6f64'],
       accent: '#d79921',
       green: '#98971a',
       red: '#cc241d',
@@ -106,7 +106,7 @@ export const THEME_PRESETS = {
       value: 'everforest-dark',
       label: 'Everforest Dark',
       bg: ['#1e2326', '#272e33', '#2e383c', '#374145', '#414b50', '#4f5b58'],
-      text: ['#d3c6aa', '#9da9a0', '#7a8478'],
+      text: ['#d3c6aa', '#a5b1a8', '#7a8478'],
       accent: '#7fbbb3',
       green: '#a7c080',
       red: '#e67e80',
@@ -117,7 +117,7 @@ export const THEME_PRESETS = {
       value: 'ayu-dark',
       label: 'Ayu Dark',
       bg: ['#0b0e14', '#11151c', '#151a23', '#1b212c', '#242b38', '#303746'],
-      text: ['#bfbdb6', '#747b84', '#4d5560'],
+      text: ['#bfbdb6', '#7e8590', '#4d5560'],
       accent: '#ffb454',
       green: '#aad94c',
       red: '#f07178',
@@ -128,7 +128,7 @@ export const THEME_PRESETS = {
       value: 'ayu-mirage',
       label: 'Ayu Mirage',
       bg: ['#171b24', '#1f2430', '#242936', '#2a3040', '#343d4f', '#414b60'],
-      text: ['#cccac2', '#8a9199', '#5c6570'],
+      text: ['#cccac2', '#9299a1', '#5c6570'],
       accent: '#ffcc66',
       green: '#bbe67e',
       red: '#f28779',
@@ -139,7 +139,7 @@ export const THEME_PRESETS = {
       value: 'pine',
       label: 'Pine',
       bg: ['#0b100d', '#101813', '#172119', '#1e2a21', '#29382d', '#35483b'],
-      text: ['#dce6dd', '#7e8f83', '#4b5b50'],
+      text: ['#dce6dd', '#849585', '#4b5b50'],
       accent: '#6f9479',
       green: '#5ba06b',
       red: '#bc5e55',
@@ -150,7 +150,7 @@ export const THEME_PRESETS = {
       value: 'aubergine',
       label: 'Aubergine',
       bg: ['#110d13', '#18121b', '#211828', '#2a2033', '#382b43', '#463754'],
-      text: ['#e6dde9', '#918099', '#5b4b66'],
+      text: ['#e6dde9', '#9789a2', '#5b4b66'],
       accent: '#8c78ad',
       green: '#60966f',
       red: '#c16068',
@@ -163,7 +163,7 @@ export const THEME_PRESETS = {
       value: 'nordic-paper',
       label: 'Nordic Paper',
       bg: ['#e9e6df', '#e2ddd4', '#d8d1c7', '#ccc3b7', '#b8aea0', '#a69b8c'],
-      text: ['#221d18', '#5f564b', '#938879'],
+      text: ['#221d18', '#454038', '#938879'],
       accent: '#5c7695',
       green: '#527a5b',
       red: '#a14e4a',
@@ -174,7 +174,7 @@ export const THEME_PRESETS = {
       value: 'snow',
       label: 'Snow',
       bg: ['#f4f6f5', '#edf1f0', '#e4e9e8', '#d7dfdd', '#c6d0ce', '#b6c2bf'],
-      text: ['#17201f', '#53615f', '#879592'],
+      text: ['#17201f', '#3b4745', '#879592'],
       accent: '#587d8d',
       green: '#4f7f62',
       red: '#a45750',
@@ -185,7 +185,7 @@ export const THEME_PRESETS = {
       value: 'gruvbox-light',
       label: 'Gruvbox Light',
       bg: ['#fbf1c7', '#f2e5bc', '#ebdbb2', '#d5c4a1', '#bdae93', '#a89984'],
-      text: ['#3c3836', '#665c54', '#928374'],
+      text: ['#3c3836', '#524a42', '#928374'],
       accent: '#b57614',
       green: '#79740e',
       red: '#9d0006',
@@ -196,7 +196,7 @@ export const THEME_PRESETS = {
       value: 'everforest-light',
       label: 'Everforest Light',
       bg: ['#f3ead3', '#efdfc0', '#e6d5b8', '#d8caac', '#c8b99a', '#b9aa8d'],
-      text: ['#5c6a72', '#708089', '#939f91'],
+      text: ['#5c6a72', '#5a6870', '#939f91'],
       accent: '#3a94c5',
       green: '#8da101',
       red: '#f85552',
@@ -207,7 +207,7 @@ export const THEME_PRESETS = {
       value: 'ayu-light',
       label: 'Ayu Light',
       bg: ['#fafafa', '#f3f4f5', '#e7e8ea', '#d8d9dc', '#c7c9cc', '#b8bac0'],
-      text: ['#5c6166', '#828c99', '#abb0b6'],
+      text: ['#5c6166', '#6a727d', '#abb0b6'],
       accent: '#ff9940',
       green: '#86b300',
       red: '#f07171',
@@ -218,7 +218,7 @@ export const THEME_PRESETS = {
       value: 'warm-linen',
       label: 'Warm Linen',
       bg: ['#efe7dc', '#e7dccd', '#ddd0be', '#d1c0aa', '#bfac93', '#ae9a81'],
-      text: ['#251d15', '#655547', '#9b8977'],
+      text: ['#251d15', '#574c40', '#9b8977'],
       accent: '#8a6f4f',
       green: '#617c55',
       red: '#a85a4d',
@@ -229,7 +229,7 @@ export const THEME_PRESETS = {
       value: 'mist',
       label: 'Mist',
       bg: ['#e6e9ea', '#dde2e4', '#d2d9dc', '#c4cdd1', '#b1bdc2', '#a1afb5'],
-      text: ['#1a2023', '#536064', '#839096'],
+      text: ['#1a2023', '#434e52', '#839096'],
       accent: '#5d748f',
       green: '#577d67',
       red: '#9d5857',
@@ -240,7 +240,7 @@ export const THEME_PRESETS = {
       value: 'sage',
       label: 'Sage',
       bg: ['#e4e7dc', '#dce1d3', '#d2d8c6', '#c3ccb5', '#b1bda1', '#9fac90'],
-      text: ['#1d2318', '#5a654e', '#8b967d'],
+      text: ['#1d2318', '#4d5744', '#8b967d'],
       accent: '#667f5d',
       green: '#5f835e',
       red: '#9f5b50',
@@ -259,7 +259,7 @@ export const DEFAULT_SETTINGS = {
   ambientIntensity: 42,
   surfaceOpacity: 82,
   surfaceBlur: 18,
-  contrastBoost: 0,
+  contrastBoost: 15,
   sidebarWidth: 220,
   splitRatio: 50,
   documentSplitRatio: 50,
@@ -444,8 +444,8 @@ export function applySettings(settings = getSettings()) {
   const contrast = next.contrastBoost / 100
   const contrastTarget = palette.theme === 'light' ? '#000000' : '#ffffff'
   const baseText1 = mixHex(palette.text1, contrastTarget, contrast * 0.58)
-  const baseText2 = mixHex(palette.text2, contrastTarget, contrast * 0.46)
-  const baseText3 = mixHex(palette.text3, contrastTarget, contrast * 0.34)
+  const baseText2 = mixHex(palette.text2, contrastTarget, contrast * 0.50)
+  const baseText3 = mixHex(palette.text3, contrastTarget, contrast * 0.44)
   const accent = next.accentColor || palette.accent
   const accentHi = palette.theme === 'light'
     ? mixHex(accent, '#000000', 0.2)
@@ -467,7 +467,8 @@ export function applySettings(settings = getSettings()) {
   root.style.setProperty('--surface-bg-1', `rgba(var(--bg1-rgb), ${Math.max(0.28, next.surfaceOpacity / 100 - 0.12).toFixed(2)})`)
   root.style.setProperty('--surface-bg-2', `rgba(var(--bg2-rgb), ${Math.max(0.32, next.surfaceOpacity / 100 - 0.08).toFixed(2)})`)
   root.style.setProperty('--surface-bg-3', `rgba(var(--bg3-rgb), ${Math.max(0.38, next.surfaceOpacity / 100 - 0.02).toFixed(2)})`)
-  root.style.setProperty('--surface-edge', `rgba(255,255,255, ${Math.max(0.03, next.surfaceOpacity / 100 * 0.09).toFixed(2)})`)
+  const edgeRgb = palette.theme === 'light' ? '53,42,30' : '255,255,255'
+  root.style.setProperty('--surface-edge', `rgba(${edgeRgb}, ${Math.max(0.03, next.surfaceOpacity / 100 * 0.09).toFixed(2)})`)
   root.style.setProperty('--text1', text1)
   root.style.setProperty('--text2', text2)
   root.style.setProperty('--text3', text3)
@@ -492,6 +493,7 @@ export function applySettings(settings = getSettings()) {
   root.style.setProperty('--preview-font', next.previewFontCustom || next.previewFont)
   root.style.setProperty('--preview-font-size', `${next.previewFontSize}px`)
   root.style.setProperty('--preview-line-height', String(next.previewLineHeight))
+  root.dataset.statusbar = next.showStatusBar ? 'true' : 'false'
   return next
 }
 

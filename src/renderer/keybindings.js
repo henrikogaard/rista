@@ -7,6 +7,8 @@ const defaultBindings = {
   'toggle-sidebar': 'Mod+B',
   'toggle-toolbar': 'Mod+\\',
   'find-replace': 'Mod+F',
+  'project-search': 'Mod+Shift+F',
+  'terminal': 'Mod+J',
   'settings': 'Mod+,',
   'command-palette': 'Mod+K',
   'zen-mode': 'Mod+Shift+Enter',
