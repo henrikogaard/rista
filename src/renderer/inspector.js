@@ -56,7 +56,7 @@ export function syncInspectorTabs() {
 export function renderInspectorContent() {
   const body = $('inspector-body')
   if (!body) return
-  const markdown = state.tabs.find(t => t.path === state.activeTab)?.content || ''
+  const markdown = state.activeTab?.content || ''
 
   switch (activeTab) {
     case 'outline':
@@ -89,7 +89,7 @@ function renderOutlineContent(markdown) {
 }
 
 function renderLinksContent() {
-  const tab = state.tabs.find(t => t.path === state.activeTab)
+  const tab = state.activeTab
   if (!tab?.path) {
     return `<div class="inspector-empty"><span>No file open</span></div>`
   }
@@ -168,7 +168,8 @@ export function handleInspectorClick(event, openFileFn) {
 
   const link = event.target.closest('.inspector-link[data-link-path]')
   if (link && link.dataset.linkPath) {
-    openFileFn?.(link.dataset.linkPath)
+    const linkPath = link.dataset.linkPath
+    openFileFn?.({ path: linkPath, name: linkPath.split('/').pop() })
     return
   }
 }

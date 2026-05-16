@@ -29,3 +29,7 @@ export function chevronIcon() {
 export function terminalIcon() {
   return `<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><path d="M4 6l2.5 2L4 10" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><line x1="7.5" y1="10" x2="12" y2="10" stroke="currentColor"/></svg>`
 }
+
+export function inspectorIcon() {
+  return `<svg viewBox="0 0 16 16"><rect x="1" y="1.5" width="9" height="13" rx="1.5" fill="none" stroke="currentColor"/><line x1="12" y1="3" x2="15" y2="3" stroke="currentColor" stroke-linecap="round"/><line x1="12" y1="6" x2="15" y2="6" stroke="currentColor" stroke-linecap="round"/><line x1="12" y1="9" x2="15" y2="9" stroke="currentColor" stroke-linecap="round"/></svg>`
+}

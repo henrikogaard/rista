@@ -61,8 +61,8 @@
   --border3: rgba(255,255,255,0.16);
 
   --text1: #dddfe6;
-  --text2: #7a7d8a;
-  --text3: #484b57;
+  --text2: #8e91a0;
+  --text3: #5a5e6e;
 
   --accent:    #5b7fa6;
   --accent-hi: #7ba3cc;
@@ -1305,6 +1305,7 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   text-transform: uppercase;
   color: var(--text2);
   flex-shrink: 0;
+  display: none;
 }
 .workspace-tabs {
   flex: 1;
@@ -1411,7 +1412,7 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   border-bottom-color: transparent;
 }
 .app[data-workspace-mode="dual"] .workspace-pane__label {
-  display: none;
+  display: block;
 }
 .app[data-workspace-mode="dual"] .workspace-pane.focused .workspace-pane__header {
   border-bottom-color: rgba(255,255,255,0.04);
