@@ -18,6 +18,7 @@ import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview } from './attachment-preview.js'
 import { toggleTerminalDrawer } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
+import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
@@ -237,6 +238,7 @@ registerCommands([
     await openFile({ path: result.path, name: result.name })
   }},
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
+  { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
 ])
 
 // ── Keyboard shortcuts ───────────────────────────────────────────
@@ -246,6 +248,7 @@ document.addEventListener('keydown', e => {
     if (state.zenMode) { e.preventDefault(); exitZenMode(); return }
     if (state.commandPaletteOpen) { e.preventDefault(); closePalette(); return }
     if (state.commandDialog) { e.preventDefault(); closeCommandDialog(); return }
+    if (document.querySelector('.diagram-builder.open')) { e.preventDefault(); closeDiagramBuilder(); return }
     if (state.settingsOpen) { e.preventDefault(); closeSettingsPanel(); return }
   }
 

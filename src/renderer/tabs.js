@@ -17,8 +17,8 @@ function persistSession() {
   _sessionTimer = setTimeout(() => {
     if (!state.folderPath) return
     saveSession(state.folderPath, {
-      tabs: state.tabGroups.primary.map(t => ({ path: t.path, pinned: t.pinned || false })),
-      secondaryTabs: state.tabGroups.secondary.map(t => ({ path: t.path, pinned: t.pinned || false })),
+      tabs: state.tabGroups.primary.filter(t => !t.preview).map(t => ({ path: t.path, pinned: t.pinned || false })),
+      secondaryTabs: state.tabGroups.secondary.filter(t => !t.preview).map(t => ({ path: t.path, pinned: t.pinned || false })),
       activeTabPath: state.activeTab?.path || null,
       secondaryTabPath: state.secondaryTab?.path || null,
       workspaceMode: state.workspaceMode,
@@ -93,6 +93,7 @@ export function renderTree(items, container, depth = 0) {
       else state.expandedFolders.delete(folderPath)
     },
     onOpenFile: openFile,
+    onOpenFilePreview: (item) => openFile(item, { preview: true }),
     depth,
   })
 }
@@ -267,15 +268,22 @@ export async function createNewFile() {
 }
 
 // ── Open file ────────────────────────────────────────────────────
-export async function openFile(item) {
+export async function openFile(item, { preview = false } = {}) {
   if (!window.fjord) return
   if (!$('workspace-primary')) _callbacks.buildEditorUI?.()
   const targetPane = state.workspaceMode === 'dual' ? state.focusedPane : 'primary'
 
   const existing = state.tabs.find(t => t.path === item.path)
   if (existing) {
+    if (!preview && existing.preview) existing.preview = false
     activateTab(existing, targetPane)
     return
+  }
+
+  if (preview) {
+    const group = getGroupTabs(targetPane)
+    const existingPreview = group.find(t => t.preview)
+    if (existingPreview) closeTab(existingPreview, targetPane)
   }
 
   const isAttachment = item.path && (/\.(png|jpe?g|gif|svg|webp|bmp|pdf)$/i).test(item.path)
@@ -283,7 +291,7 @@ export async function openFile(item) {
   if (!isAttachment) {
     content = await window.fjord.readFile(item.path)
   }
-  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false, isAttachment }
+  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false, isAttachment, preview }
   state.tabs.push(tab)
   activateTab(tab, targetPane)
 }
@@ -345,7 +353,7 @@ export function renderTabs() {
     const sortedGroup = [...group].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
     sortedGroup.forEach(tab => {
       const isFocused = pane === state.focusedPane && getTabForPane(pane) === tab
-      const t = el('div', `tab${isFocused ? ' active' : ''}${tab.pinned ? ' pinned' : ''}`)
+      const t = el('div', `tab${isFocused ? ' active' : ''}${tab.pinned ? ' pinned' : ''}${tab.preview ? ' preview' : ''}`)
       t.draggable = state.workspaceMode === 'dual'
       t.dataset.pane = pane
       t.title = tab.externalConflict
@@ -358,6 +366,9 @@ export function renderTabs() {
       `
       t.classList.toggle('conflict', Boolean(tab.externalConflict))
       t.addEventListener('click', () => activateTab(tab, pane))
+      t.addEventListener('dblclick', () => {
+        if (tab.preview) { tab.preview = false; renderTabs() }
+      })
       t.addEventListener('dragstart', event => handleTabDragStart(event, tab, pane))
       t.addEventListener('dragend', handleTabDragEnd)
       const closeBtn = t.querySelector('.tab__close')
@@ -585,6 +596,7 @@ export function showWelcomeScreen() {
 export function onEditorChange(pane, content) {
   const tab = getTabForPane(pane)
   if (!tab) return
+  if (tab.preview) tab.preview = false
   tab.content = content
   tab.dirty = true
   syncTabRepresentations(tab, pane, { source: 'markdown' })
@@ -597,6 +609,7 @@ export function onRichEditorChange(pane) {
   const tab = getTabForPane(pane)
   const editor = richEditors[pane]
   if (!tab || !editor) return
+  if (tab.preview) tab.preview = false
 
   let markdown
   try {

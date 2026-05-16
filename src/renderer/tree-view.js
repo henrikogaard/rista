@@ -15,6 +15,7 @@ export function renderFileTree({
   activePaths,
   onToggleFolder,
   onOpenFile,
+  onOpenFilePreview,
   depth = 0,
 }) {
   container.innerHTML = ''
@@ -40,6 +41,7 @@ export function renderFileTree({
           activePaths,
           onToggleFolder,
           onOpenFile,
+          onOpenFilePreview,
           depth: depth + 1,
         })
       }
@@ -64,7 +66,19 @@ export function renderFileTree({
     file.title = item.path
     file.innerHTML = `<div class="tree-file__dot"></div>${item.name}`
     file.classList.toggle('active', activePaths.has(item.path))
-    file.addEventListener('click', () => onOpenFile(item))
+    let clickTimer = null
+    file.addEventListener('click', () => {
+      if (clickTimer) return
+      clickTimer = setTimeout(() => {
+        clickTimer = null
+        if (onOpenFilePreview) onOpenFilePreview(item)
+        else onOpenFile(item)
+      }, 200)
+    })
+    file.addEventListener('dblclick', () => {
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null }
+      onOpenFile(item)
+    })
     container.appendChild(file)
   })
 }

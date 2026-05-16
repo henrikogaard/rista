@@ -306,6 +306,22 @@ export function insertTable() {
   openCommandDialog('table', { columns: 3, rows: 2 })
 }
 
+export function insertCodeBlock() {
+  const pane = state.focusedPane
+  if (runWysiwygCommand(() => {
+    richEditors[pane].exec('codeBlock')
+  })) return
+  insertMarkdownAtSelection(pane, '\n```\n\n```\n', 5)
+}
+
+export function insertHorizontalRule() {
+  const pane = state.focusedPane
+  if (runWysiwygCommand(() => {
+    richEditors[pane].exec('horizontalRule')
+  })) return
+  insertMarkdownAtSelection(pane, '\n---\n')
+}
+
 export function insertCallout(type) {
   const pane = state.focusedPane
   const label = formatCalloutLabel(type)

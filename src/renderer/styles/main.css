@@ -2475,6 +2475,9 @@ body.is-resizing-split .workspace-resizer::before {
 .tab.pinned { border-left: 2px solid var(--accent); }
 .tab__pin { font-size: 10px; opacity: 0.5; padding: 0 2px; }
 
+/* ── Preview (ephemeral) Tabs ────────────────────────────────── */
+.tab.preview .tab__name { font-style: italic; }
+
 /* ── Code Block Syntax Highlighting ───────────────────────────── */
 .preview-pane .hljs { color: var(--text2); background: transparent; }
 .preview-pane .hljs-keyword,
@@ -3308,6 +3311,152 @@ body.is-resizing-split .workspace-resizer::before {
 [data-theme="light"] .agent-card:hover {
   background: rgba(53,42,30,0.03);
   border-color: rgba(53,42,30,0.1);
+}
+
+/* ── Diagram Builder ─────────────────────────────────────────── */
+.diagram-builder-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 8, 11, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+  z-index: 80;
+}
+.diagram-builder-overlay.open { opacity: 1; pointer-events: auto; }
+
+.diagram-builder {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: min(780px, calc(100vw - 40px));
+  max-height: calc(100vh - 60px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.985);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  z-index: 81;
+}
+.diagram-builder.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.diagram-builder__panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-bg-2);
+  border: 1px solid var(--surface-edge);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(calc(var(--surface-blur) * 0.7));
+  max-height: calc(100vh - 60px);
+}
+
+.diagram-builder__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--surface-edge);
+}
+
+.diagram-builder__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--surface-edge);
+}
+
+.diagram-builder__body {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  overflow-y: auto;
+  min-height: 280px;
+}
+
+.diagram-builder__controls {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.diagram-builder__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.diagram-builder__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diagram-builder__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diagram-builder__add-btn {
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.diagram-builder__add-btn:hover { color: var(--accent-hi); }
+
+.diagram-builder__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diagram-builder__input--sm {
+  padding: 6px 8px !important;
+  font-size: 11.5px !important;
+}
+
+.diagram-builder__remove-btn {
+  font-size: 14px;
+  color: var(--text3);
+  cursor: pointer;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.diagram-builder__remove-btn:hover { color: var(--red); }
+
+.diagram-builder__preview {
+  flex: 1;
+  min-width: 260px;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-bg-1);
+  border: 1px solid var(--surface-edge);
+  padding: 12px;
+  overflow: auto;
+}
+.diagram-builder__preview svg { max-width: 100%; height: auto; }
+.diagram-builder__preview--error {
+  color: var(--red);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.diagram-builder__close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ── Print ────────────────────────────────────────────────────── */

@@ -8,7 +8,8 @@ import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToP
 import { htmlToMarkdown } from './markdown.js'
 import { toggleCommandPalette } from './command-palette.js'
 import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, replaceOne, replaceAll } from './find-replace.js'
-import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, syncToWysiwyg } from './commands.js'
+import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, insertCodeBlock, insertHorizontalRule, syncToWysiwyg } from './commands.js'
+import { openDiagramBuilder } from './diagram-builder.js'
 import { buildInspector, setInspectorTab, handleInspectorClick as handleInspectorClickInner } from './inspector.js'
 import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
 import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
@@ -139,8 +140,14 @@ export function renderEditorToolbar(pane) {
       <div class="ic" title="Inline code" data-action="wrap-inline" data-before="\`" data-after="\`">
         <svg viewBox="0 0 16 16"><path d="M5.5 5L2 8l3.5 3M10.5 5L14 8l-3.5 3"/></svg>
       </div>
+      <div class="ic" title="Code block" data-action="insert-code-block">
+        <svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="none"/><path d="M5.5 6L4 8l1.5 2M10.5 6L12 8l-2 2"/></svg>
+      </div>
       <div class="ic" title="Link" data-action="insert-link">
         <svg viewBox="0 0 16 16"><path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/></svg>
+      </div>
+      <div class="ic" title="Horizontal rule" data-action="insert-horizontal-rule">
+        <svg viewBox="0 0 16 16"><line x1="2" y1="8" x2="14" y2="8" stroke-width="2"/></svg>
       </div>
       <div class="tb-sep"></div>
 
@@ -149,6 +156,9 @@ export function renderEditorToolbar(pane) {
       </div>
       <div class="ic" title="Image" data-action="insert-image">
         <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 10l3.5-3.5 2.5 2.5 2-2 4 4"/><circle cx="11.5" cy="5.5" r="1" fill="currentColor" stroke="none"/></svg>
+      </div>
+      <div class="ic" title="Diagram" data-action="insert-diagram">
+        <svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="5" height="3.5" rx="0.8"/><rect x="9.5" y="5" width="5" height="3.5" rx="0.8"/><rect x="5" y="10.5" width="5" height="3.5" rx="0.8"/><path d="M4 5.5V8.5L7.5 10.5M12 8.5V9.5L9.5 10.5" fill="none"/></svg>
       </div>
       <div class="ic" title="Find & Replace" data-action="toggle-find-replace">
         <svg viewBox="0 0 16 16"><circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
@@ -643,6 +653,9 @@ export function handleToolbarClick(event) {
   if (action === 'insert-image') insertImage()
   if (action === 'insert-table') insertTable()
   if (action === 'insert-callout') insertCallout(control.dataset.calloutType || 'note')
+  if (action === 'insert-code-block') insertCodeBlock()
+  if (action === 'insert-horizontal-rule') insertHorizontalRule()
+  if (action === 'insert-diagram') openDiagramBuilder()
   if (action === 'toggle-find-replace') toggleFindReplace()
   if (action === 'export-pdf') exportToPdf()
   if (action === 'set-view') setPaneView(pane || state.focusedPane, control.dataset.view)
