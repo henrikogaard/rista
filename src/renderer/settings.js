@@ -62,7 +62,7 @@ export const THEME_PRESETS = {
       value: 'nordic-night',
       label: 'Nordic Night',
       bg: ['#0d0e10', '#111214', '#161719', '#1c1d20', '#252729', '#2e3033'],
-      text: ['#dddfe6', '#8a8d99', '#484b57'],
+      text: ['#dddfe6', '#8e91a0', '#5a5e6e'],
       accent: '#5b7fa6',
       green: '#4a9966',
       red: '#c0504d',

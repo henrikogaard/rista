@@ -697,6 +697,12 @@ export function handleAppCommand(command, data) {
   if (command === 'file:save-as') saveActiveAs()
   if (command === 'file:export-pdf') exportToPdf()
   if (command === 'file:close-tab' && getFocusedTab()) closeTab(getFocusedTab())
+  if (command === 'view:toggle-sidebar') _callbacks.toggleSidebar?.()
+  if (command === 'view:toggle-toolbar') _callbacks.toggleToolbar?.()
+  if (command === 'view:toggle-inspector') _callbacks.toggleInspector?.()
+  if (command === 'view:toggle-terminal') _callbacks.toggleTerminal?.()
+  if (command === 'view:toggle-zen') _callbacks.toggleZen?.()
+  if (command === 'view:settings') _callbacks.toggleSettings?.()
   if (command === 'file:open' && data?.path) {
     const name = data.path.split('/').pop()
     openFile({ path: data.path, name })

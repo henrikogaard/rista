@@ -2,12 +2,13 @@ import { state, $, settingsValue } from './state.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, inspectorIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
 import { showContextMenu } from './context-menu.js'
 import { buildAgentsSidebar, toggleSidebarMode } from './agents-sidebar.js'
+import { renderRecentProjectsHtml, removeRecentProject } from './recent-projects.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -262,7 +263,7 @@ function syncAppMeta() {
 }
 
 function handleGlobalControlPointerDown(event) {
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle')
   if (!control) return
   event.preventDefault()
   event.stopPropagation()
@@ -277,11 +278,12 @@ function performGlobalControl(id) {
   if (id === 'theme-btn') toggleAppTheme()
   if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
   if (id === 'terminal-toggle') _callbacks.toggleTerminal?.()
+  if (id === 'inspector-toggle') _callbacks.toggleInspector?.()
 }
 
 function handleGlobalControlKeydown(event) {
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle')
   if (!control) return
   event.preventDefault()
   performGlobalControl(control.id)
@@ -431,6 +433,9 @@ export function buildShell() {
             </div>
             <div class="theme-btn" id="terminal-toggle" title="Terminal" aria-label="Toggle terminal" role="button" tabindex="0">
               ${terminalIcon()}
+            </div>
+            <div class="theme-btn" id="inspector-toggle" title="Inspector" aria-label="Toggle inspector" role="button" tabindex="0">
+              ${inspectorIcon()}
             </div>
           </div>
           <div class="st st-brand">fjordmark</div>

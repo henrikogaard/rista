@@ -132,16 +132,71 @@ function buildAppMenu() {
     },
   ]
 
+  const viewSubmenu = [
+    {
+      label: 'Toggle Sidebar',
+      accelerator: 'CmdOrCtrl+B',
+      click: () => sendRendererCommand('view:toggle-sidebar'),
+    },
+    {
+      label: 'Toggle Toolbar',
+      accelerator: 'CmdOrCtrl+\\',
+      click: () => sendRendererCommand('view:toggle-toolbar'),
+    },
+    {
+      label: 'Toggle Inspector',
+      click: () => sendRendererCommand('view:toggle-inspector'),
+    },
+    {
+      label: 'Toggle Terminal',
+      accelerator: 'CmdOrCtrl+`',
+      click: () => sendRendererCommand('view:toggle-terminal'),
+    },
+    { type: 'separator' },
+    {
+      label: 'Zen Mode',
+      accelerator: 'CmdOrCtrl+Shift+Enter',
+      click: () => sendRendererCommand('view:toggle-zen'),
+    },
+    { type: 'separator' },
+    { role: 'resetZoom' },
+    { role: 'zoomIn' },
+    { role: 'zoomOut' },
+    { type: 'separator' },
+    { role: 'togglefullscreen' },
+    { type: 'separator' },
+    { role: 'toggleDevTools' },
+  ]
+
   const template = []
 
   if (process.platform === 'darwin') {
-    template.push({ role: 'appMenu' })
+    template.push({
+      role: 'appMenu',
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        {
+          label: 'Settings…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => sendRendererCommand('view:settings'),
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    })
   }
 
   template.push(
     { label: 'File', submenu: fileSubmenu },
     { role: 'editMenu' },
-    { role: 'viewMenu' },
+    { label: 'View', submenu: viewSubmenu },
     { role: 'windowMenu' }
   )
 

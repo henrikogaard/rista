@@ -45,6 +45,7 @@ import {
   togglePaneSplitView,
   toggleSidebar,
   toggleWorkspaceSplit,
+  toggleInspector,
 } from './workspace.js'
 
 // ── Tabs (file/tab operations, editor changes, saves) ────────────
@@ -72,6 +73,7 @@ import {
   saveActive,
   saveActiveAs,
   handleAppCommand,
+  handleExternalFileChange,
 } from './tabs.js'
 
 // ── Init theme before any paint ──────────────────────────────────
@@ -91,6 +93,7 @@ registerShellCallbacks({
   toggleSidebar,
   toggleSidebarMode,
   toggleTerminal: toggleTerminalDrawer,
+  toggleInspector,
   openFolder,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   collapseAllFolders,
@@ -143,6 +146,12 @@ registerTabCallbacks({
   mountEditor,
   destroyRichEditor,
   focusPane,
+  toggleSidebar,
+  toggleToolbar,
+  toggleInspector,
+  toggleTerminal: toggleTerminalDrawer,
+  toggleZen: toggleZenMode,
+  toggleSettings: toggleSettingsPanel,
 })
 
 // ── Templates ────────────────────────────────────────────────────

@@ -59,7 +59,7 @@ export function syncToolbarToggle() {
 export function renderSplitSlotSelector(pane, slot) {
   const splitView = getSplitView(pane)
   const currentView = splitView[slot] || 'preview'
-  const currentLabel = currentView === 'markdown' ? 'MD' : currentView === 'wysiwyg' ? 'WYSIWYG' : 'Preview'
+  const currentLabel = currentView === 'markdown' ? 'MD' : currentView === 'wysiwyg' ? 'Rich Text' : 'Preview'
   return `
     <div class="split-slot-control" data-pane="${pane}">
       <div class="split-slot-control__label">${slot === 'left' ? 'left' : 'right'}</div>
@@ -70,7 +70,7 @@ export function renderSplitSlotSelector(pane, slot) {
         </div>
         <div class="dd-menu dd-menu--compact" id="ddm-sv-${pane}-${slot}">
           <div class="dd-item${currentView === 'markdown' ? ' active' : ''}" data-action="set-split-view" data-slot="${slot}" data-slot-view="markdown">Markdown</div>
-          <div class="dd-item${currentView === 'wysiwyg' ? ' active' : ''}" data-action="set-split-view" data-slot="${slot}" data-slot-view="wysiwyg">WYSIWYG</div>
+          <div class="dd-item${currentView === 'wysiwyg' ? ' active' : ''}" data-action="set-split-view" data-slot="${slot}" data-slot-view="wysiwyg">Rich Text</div>
           <div class="dd-item${currentView === 'preview' ? ' active' : ''}" data-action="set-split-view" data-slot="${slot}" data-slot-view="preview">Preview</div>
         </div>
       </div>
@@ -168,11 +168,8 @@ export function renderEditorToolbar(pane) {
         <div class="vseg">
           <div class="vb${paneView === 'markdown' ? ' active' : ''}" data-action="set-view" data-view="markdown">MD</div>
           <div class="vb${paneView === 'split' ? ' active' : ''}" data-action="set-view" data-view="split">Split</div>
-          <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg">WYSIWYG</div>
+          <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg">Rich Text</div>
           <div class="vb${paneView === 'preview' ? ' active' : ''}" data-action="set-view" data-view="preview">Preview</div>
-        </div>
-        <div class="ic${state.inspectorOpen ? ' active' : ''}" data-action="toggle-inspector" title="Inspector" aria-label="Toggle inspector">
-          <svg viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="6" height="6" rx="1" fill="currentColor" stroke="none"/><rect x="8.5" y="1.5" width="6" height="6" rx="1" fill="currentColor" stroke="none" opacity="0.5"/><rect x="1.5" y="8.5" width="6" height="6" rx="1" fill="currentColor" stroke="none" opacity="0.5"/><rect x="8.5" y="8.5" width="6" height="6" rx="1" fill="currentColor" stroke="none"/></svg>
         </div>
       </div>
     </div>
@@ -627,7 +624,7 @@ export function wireEditorUiEvents() {
     node.addEventListener('dragleave', e => _callbacks.handleTabDragLeave?.(e))
     node.addEventListener('drop', e => _callbacks.handleTabDrop?.(e))
   })
-  handleSearchInput(path => _callbacks.openFile?.(path))
+  handleSearchInput(path => _callbacks.openFile?.({ path, name: path.split('/').pop() }))
   handleTerminalInput()
 }
 
@@ -817,6 +814,7 @@ export function toggleInspector() {
   document.querySelectorAll('[data-action="toggle-inspector"]').forEach(node => {
     node.classList.toggle('active', state.inspectorOpen)
   })
+  $('inspector-toggle')?.classList.toggle('active', state.inspectorOpen)
 }
 
 export function toggleWorkspaceSplit() {
