@@ -457,6 +457,7 @@ export function buildShell() {
 
         <div class="settings-panel__body">
           ${renderSettingsTabs()}
+          <div class="settings-panel__content">
 
           <div class="settings-page active" data-settings-section="theme">
             <section class="settings-group">
@@ -575,6 +576,7 @@ export function buildShell() {
               ${renderTextSetting('aiModel', 'Model', 'Leave empty for provider default')}
               ${renderTextSetting('aiBaseUrl', 'Base URL', 'Leave empty for provider default')}
             </section>
+          </div>
           </div>
         </div>
 
