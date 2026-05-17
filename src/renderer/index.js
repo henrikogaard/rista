@@ -26,6 +26,7 @@ import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
+import { initAiChatPanel } from './ai-chat.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
@@ -105,6 +106,8 @@ registerRightPanel('graph', {
   },
   onClose: () => destroyGraph(),
 })
+
+initAiChatPanel(openFile, closeRightPanel)
 
 registerRightPanel('calendar', {
   build: () => `<div class="right-panel__header"><span>Calendar</span><div class="right-panel__close" id="calendar-close-btn" role="button" tabindex="0">&times;</div></div><div class="right-panel__body" id="calendar-panel-body"></div>`,

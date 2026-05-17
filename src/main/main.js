@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const http = require('http')
+const https = require('https')
 const { execFile } = require('child_process')
 const chokidar = require('chokidar')
 const { autoUpdater } = require('electron-updater')
@@ -128,6 +130,10 @@ function buildAppMenu() {
       label: 'Export to PDF…',
       accelerator: 'CmdOrCtrl+E',
       click: () => sendRendererCommand('file:export-pdf'),
+    },
+    {
+      label: 'Export as Website…',
+      click: () => sendRendererCommand('file:export-website'),
     },
     { type: 'separator' },
     {
@@ -703,6 +709,119 @@ ipcMain.handle('terminal:run', async (_, command, cwd) => {
       resolve({ stdout, stderr, code: -1, error: err.message })
     })
   })
+})
+
+// ── IPC: AI Chat ─────────────────────────────────────────────────
+ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages }) => {
+  return new Promise((resolve) => {
+    let url, headers, body
+
+    if (provider === 'anthropic') {
+      url = new URL(`${baseUrl}/v1/messages`)
+      headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      }
+      body = JSON.stringify({
+        model,
+        max_tokens: 4096,
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
+      })
+    } else if (provider === 'openai') {
+      url = new URL(`${baseUrl}/v1/chat/completions`)
+      headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      }
+      body = JSON.stringify({ model, messages })
+    } else if (provider === 'ollama') {
+      url = new URL(`${baseUrl}/api/chat`)
+      headers = { 'Content-Type': 'application/json' }
+      body = JSON.stringify({ model, messages, stream: false })
+    } else {
+      return resolve({ error: `Unknown provider: ${provider}` })
+    }
+
+    const transport = url.protocol === 'https:' ? https : http
+    const req = transport.request(url, { method: 'POST', headers }, (res) => {
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data)
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            const errMsg = json.error?.message || json.error?.type || JSON.stringify(json.error) || `HTTP ${res.statusCode}`
+            return resolve({ error: errMsg })
+          }
+          let text = ''
+          if (provider === 'anthropic') {
+            text = json.content?.[0]?.text || ''
+          } else if (provider === 'openai') {
+            text = json.choices?.[0]?.message?.content || ''
+          } else if (provider === 'ollama') {
+            text = json.message?.content || ''
+          }
+          resolve({ text })
+        } catch (err) {
+          resolve({ error: `Failed to parse response: ${err.message}` })
+        }
+      })
+    })
+    req.on('error', (err) => resolve({ error: err.message }))
+    req.setTimeout(60000, () => {
+      req.destroy()
+      resolve({ error: 'Request timed out' })
+    })
+    req.write(body)
+    req.end()
+  })
+})
+
+// ── IPC: Pick export folder ──────────────────────────────────────
+ipcMain.handle('dialog:pickExportFolder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose export destination',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (result.canceled || !result.filePaths.length) return null
+  return result.filePaths[0]
+})
+
+// ── IPC: Export as static site ───────────────────────────────────
+ipcMain.handle('export:site', async (_, { outputDir, files }) => {
+  try {
+    if (!outputDir || !files?.length) return false
+    fs.mkdirSync(outputDir, { recursive: true })
+    for (const file of files) {
+      const filePath = path.join(outputDir, file.name)
+      fs.writeFileSync(filePath, file.html, 'utf-8')
+    }
+    return true
+  } catch (err) {
+    console.error('Site export error:', err)
+    return false
+  }
+})
+
+// ── IPC: List directory entries ──────────────────────────────────
+ipcMain.handle('fs:listDir', async (_, dirPath) => {
+  try {
+    if (!fs.existsSync(dirPath)) return []
+    return fs.readdirSync(dirPath)
+  } catch {
+    return []
+  }
+})
+
+// ── IPC: Delete file ─────────────────────────────────────────────
+ipcMain.handle('fs:deleteFile', async (_, filePath) => {
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+    return true
+  } catch {
+    return false
+  }
 })
 
 // ── IPC: Import external content as Markdown ─────────────────────

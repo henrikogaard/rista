@@ -19,6 +19,7 @@ const SETTINGS_TABS = [
   { id: 'editor', label: 'Editor' },
   { id: 'preview', label: 'Preview' },
   { id: 'behavior', label: 'Behavior' },
+  { id: 'ai', label: 'AI' },
 ]
 
 let activeSettingsTab = 'theme'
@@ -562,6 +563,29 @@ export function buildShell() {
               <div class="settings-group__title">Daily notes</div>
               ${renderTextSetting('dailyNotesFolder', 'Daily notes folder', 'Subfolder for daily notes, e.g. daily')}
               ${renderTextSetting('dailyNoteTemplate', 'Daily note template', 'Template for new daily notes. Use {{date}} for the date.')}
+            </section>
+          </div>
+
+          <div class="settings-page" data-settings-section="ai">
+            <section class="settings-group">
+              <div class="settings-group__title">AI provider</div>
+              ${renderSelectSetting('aiProvider', 'Provider', [
+                { value: 'anthropic', label: 'Anthropic' },
+                { value: 'openai', label: 'OpenAI' },
+                { value: 'ollama', label: 'Ollama' },
+              ])}
+              <label class="settings-field">
+                <span class="settings-field__label">API key</span>
+                <input
+                  class="settings-input"
+                  type="password"
+                  placeholder="sk-..."
+                  value="${escapeAttribute(settingsValue('aiApiKey') || '')}"
+                  data-setting="aiApiKey"
+                >
+              </label>
+              ${renderTextSetting('aiModel', 'Model', 'Leave empty for provider default')}
+              ${renderTextSetting('aiBaseUrl', 'Base URL', 'Leave empty for provider default')}
             </section>
           </div>
         </div>

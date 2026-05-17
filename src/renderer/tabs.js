@@ -9,6 +9,8 @@ import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
 import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex } from './link-index.js'
 import { refreshRightPanel } from './right-panel.js'
+import { saveSnapshot } from './history.js'
+import { exportAsWebsite } from './publish.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -685,6 +687,7 @@ export async function saveTab(tab, options = {}) {
     if (hadConflict) showStatusNotice(`Saved ${tab.name}`, 'success')
     updateLinkIndexForFile(tab.path, tab.content)
     refreshRightPanel()
+    saveSnapshot(tab.path, tab.content).catch(() => {})
   }
   return ok
 }
@@ -726,6 +729,7 @@ export function handleAppCommand(command, data) {
   if (command === 'file:save') saveActive()
   if (command === 'file:save-as') saveActiveAs()
   if (command === 'file:export-pdf') exportToPdf()
+  if (command === 'file:export-website') exportAsWebsite()
   if (command === 'file:close-tab' && getFocusedTab()) closeTab(getFocusedTab())
   if (command === 'view:toggle-sidebar') _callbacks.toggleSidebar?.()
   if (command === 'view:toggle-toolbar') _callbacks.toggleToolbar?.()

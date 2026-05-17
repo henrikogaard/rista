@@ -301,6 +301,11 @@ export const DEFAULT_SETTINGS = {
   showMinimap: false,
   dailyNotesFolder: 'daily',
   dailyNoteTemplate: '# {{date}}\n\n',
+  maxHistorySnapshots: 50,
+  aiProvider: 'openai',
+  aiApiKey: '',
+  aiModel: '',
+  aiBaseUrl: '',
 }
 
 const NUMERIC_KEYS = new Set([
@@ -321,6 +326,7 @@ const NUMERIC_KEYS = new Set([
   'indentWidth',
   'readingSpeed',
   'zenColumnWidth',
+  'maxHistorySnapshots',
 ])
 
 function clamp(value, min, max) {
@@ -427,6 +433,11 @@ function sanitize(settings) {
   next.showMinimap = Boolean(next.showMinimap)
   next.dailyNotesFolder = String(next.dailyNotesFolder || 'daily').trim().replace(/^\/+|\/+$/g, '') || 'daily'
   next.dailyNoteTemplate = String(next.dailyNoteTemplate ?? DEFAULT_SETTINGS.dailyNoteTemplate)
+  next.maxHistorySnapshots = clamp(Number(next.maxHistorySnapshots) || 50, 5, 500)
+  next.aiProvider = ['anthropic', 'openai', 'ollama'].includes(next.aiProvider) ? next.aiProvider : 'openai'
+  next.aiApiKey = String(next.aiApiKey || '')
+  next.aiModel = String(next.aiModel || '')
+  next.aiBaseUrl = String(next.aiBaseUrl || '')
 
   return next
 }

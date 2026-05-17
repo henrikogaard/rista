@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('fjord', {
   createFile: (p) => ipcRenderer.invoke('fs:createFile', p),
   showInFolder: (p) => ipcRenderer.invoke('fs:showInFolder', p),
   readTemplates: (folderPath) => ipcRenderer.invoke('fs:readTemplates', folderPath),
+  listDir: (p) => ipcRenderer.invoke('fs:listDir', p),
+  deleteFile: (p) => ipcRenderer.invoke('fs:deleteFile', p),
 
   // Terminal
   runTerminalCommand: (command, cwd) => ipcRenderer.invoke('terminal:run', command, cwd),
@@ -39,10 +41,15 @@ contextBridge.exposeInMainWorld('fjord', {
   exportPdf: (fileName) => ipcRenderer.invoke('export:pdf', fileName),
   exportHtml: (payload) => ipcRenderer.invoke('export:html', payload),
   saveDocx: (base64Data, fileName) => ipcRenderer.invoke('export:docx', base64Data, fileName),
+  exportSite: (params) => ipcRenderer.invoke('export:site', params),
+  pickExportFolder: () => ipcRenderer.invoke('dialog:pickExportFolder'),
 
   // Settings
   exportSettings: (jsonString) => ipcRenderer.invoke('settings:export', jsonString),
   importSettings: () => ipcRenderer.invoke('settings:import'),
+
+  // AI Chat
+  aiChat: (params) => ipcRenderer.invoke('ai:chat', params),
 
   // Diagram rendering
   renderD2: (source, themeId) => ipcRenderer.invoke('render:d2', source, themeId),

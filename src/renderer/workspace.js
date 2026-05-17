@@ -16,6 +16,7 @@ import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel
 import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
 import { buildTerminalDrawer, toggleTerminalDrawer, handleTerminalInput, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
 import { buildGraphModal, openGraphModal, closeGraphModal } from './graph-modal.js'
+import { showAiContextMenu } from './ai-actions.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -617,6 +618,17 @@ export function wireEditorUiEvents() {
   })
   document.querySelectorAll('.workspace-pane').forEach(node => {
     node.addEventListener('pointerdown', () => focusPane(node.dataset.pane))
+  })
+  document.querySelectorAll('.cm-host').forEach(host => {
+    host.addEventListener('contextmenu', (e) => {
+      const pane = host.id.replace('cm-host-', '')
+      const view = editorViews[pane]
+      if (!view) return
+      const sel = view.state.selection.main
+      if (sel.from === sel.to) return
+      e.preventDefault()
+      showAiContextMenu(e.clientX, e.clientY, view)
+    })
   })
   document.querySelectorAll('.workspace-tabs').forEach(node => {
     node.addEventListener('dragover', e => _callbacks.handleTabDragOver?.(e))
