@@ -55,12 +55,19 @@ function renderMessages() {
   if (!container) return
 
   let html = ''
-  for (const msg of _messages) {
-    const cls = msg.role === 'user' ? 'ai-chat__msg--user' : 'ai-chat__msg--assistant'
-    html += `<div class="ai-chat__msg ${cls}">${escapeHtml(msg.content)}</div>`
-  }
-  if (_sending) {
-    html += `<div class="ai-chat__msg ai-chat__msg--typing">Thinking...</div>`
+  if (_messages.length === 0 && !_sending) {
+    html = `<div class="ai-chat__empty">
+      Ask anything about the current note.
+      <div class="ai-chat__empty-hint">Enter to send · Shift+Enter for newline</div>
+    </div>`
+  } else {
+    for (const msg of _messages) {
+      const cls = msg.role === 'user' ? 'ai-chat__msg--user' : 'ai-chat__msg--assistant'
+      html += `<div class="ai-chat__msg ${cls}">${escapeHtml(msg.content)}</div>`
+    }
+    if (_sending) {
+      html += `<div class="ai-chat__msg ai-chat__msg--typing">Thinking</div>`
+    }
   }
   container.innerHTML = html
   container.scrollTop = container.scrollHeight
