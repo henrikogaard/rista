@@ -44,15 +44,20 @@ async function runAiAction(action, selectedText, view) {
 
   try {
     const result = await window.fjord.aiChat({ provider, apiKey: settings.aiApiKey, model, baseUrl, messages })
-    if (!result || !result.content) return
+    if (result?.error) {
+      alert('AI error: ' + result.error)
+      return
+    }
+    const text = result?.text
+    if (!text) return
 
     const { from, to } = view.state.selection.main
     if (action.id === 'explain') {
-      view.dispatch({ changes: { from: to, to, insert: '\n\n> ' + result.content.replace(/\n/g, '\n> ') } })
+      view.dispatch({ changes: { from: to, to, insert: '\n\n> ' + text.replace(/\n/g, '\n> ') } })
     } else {
       view.dispatch({
-        changes: { from, to, insert: result.content },
-        selection: { anchor: from + result.content.length },
+        changes: { from, to, insert: text },
+        selection: { anchor: from + text.length },
       })
     }
   } catch (err) {

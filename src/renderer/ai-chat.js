@@ -1,4 +1,4 @@
-import { state, $ } from './state.js'
+import { state, $, getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 import { PROVIDERS } from './ai-providers.js'
 import { registerRightPanel } from './right-panel.js'
@@ -70,7 +70,7 @@ function renderMessages() {
 }
 
 function getNoteContext() {
-  const tab = state.activeTab
+  const tab = getFocusedTab()
   if (!tab) return ''
   return tab.content || ''
 }
@@ -91,6 +91,7 @@ async function sendMessage() {
 
   _messages.push({ role: 'user', content: text })
   input.value = ''
+  input.style.height = 'auto'
   _sending = true
   renderMessages()
   updateSendButton()
@@ -99,8 +100,7 @@ async function sendMessage() {
   const systemPrompt = `You are a writing assistant. The user is working on a markdown note. Here is the current note content:\n\n${noteContent}\n\nHelp them with their writing.`
 
   const apiMessages = [
-    { role: 'user', content: systemPrompt },
-    { role: 'assistant', content: 'I have read your note. How can I help?' },
+    { role: 'system', content: systemPrompt },
     ..._messages,
   ]
 

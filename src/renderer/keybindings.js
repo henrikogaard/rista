@@ -13,7 +13,7 @@ const defaultBindings = {
   'quick-open': 'Mod+P',
   'command-palette': 'Mod+K',
   'zen-mode': 'Mod+Shift+Enter',
-  'daily-note': 'Mod+D',
+  'daily-note': 'Mod+Shift+D',
 }
 
 let overrides = {}

@@ -2731,6 +2731,13 @@ body.is-resizing-split .workspace-resizer::before {
   line-height: 1.5;
 }
 
+/* ── History ───────────────────────────── */
+.history-list { display: flex; flex-direction: column; gap: 2px; }
+.history-item { padding: 6px 10px; cursor: pointer; border-radius: 4px; }
+.history-item:hover { background: var(--accent-dim); }
+.history-item__time { font-size: 11px; color: var(--text2); }
+.history-item__meta { font-size: 10px; color: var(--text3); margin-top: 1px; }
+
 /* ── Tags ──────────────────────────────── */
 .tag-pill {
   display: inline-block;

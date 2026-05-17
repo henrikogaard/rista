@@ -144,6 +144,7 @@ export function getAllTagNames() {
 
 export function extractWikilinks(content) {
   const links = new Set()
+  WIKILINK_RE.lastIndex = 0
   let m
   while ((m = WIKILINK_RE.exec(content)) !== null) {
     links.add(m[1].trim())

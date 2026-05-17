@@ -152,6 +152,10 @@ export function checkTableAtCursor(view) {
   if (isInsideTable(view.state, pos)) {
     const range = getTableRange(view.state, pos)
     if (range) {
+      // Avoid teardown/rebuild on every keystroke: only show if the table changed
+      if (_toolbarEl && _activeView === view && _tableRange && _tableRange.from === range.from && _tableRange.to === range.to) {
+        return
+      }
       showTableToolbar(view, range)
       return
     }

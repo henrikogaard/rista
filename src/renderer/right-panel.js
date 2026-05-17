@@ -45,6 +45,9 @@ export function openRightPanel(id) {
   const hooks = _panels.get(id)
   if (!hooks) return
 
+  const container = $('right-panel-container')
+  if (!container) return  // Editor UI not built yet — bail without mutating state
+
   // Close current panel if different
   if (state.rightPanel && state.rightPanel !== id) {
     const prevHooks = _panels.get(state.rightPanel)
@@ -52,9 +55,6 @@ export function openRightPanel(id) {
   }
 
   state.rightPanel = id
-  const container = $('right-panel-container')
-  if (!container) return
-
   container.innerHTML = hooks.build()
   container.classList.add('open')
   hooks.onOpen?.()

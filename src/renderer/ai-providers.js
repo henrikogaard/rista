@@ -2,8 +2,8 @@
 export const PROVIDERS = {
   anthropic: {
     label: 'Anthropic',
-    defaultModel: 'claude-sonnet-4-20250514',
-    models: ['claude-sonnet-4-20250514', 'claude-haiku-4-20250414'],
+    defaultModel: 'claude-sonnet-4-5-20250929',
+    models: ['claude-opus-4-5-20251029', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
     defaultBaseUrl: 'https://api.anthropic.com',
   },
   openai: {

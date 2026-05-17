@@ -295,7 +295,7 @@ registerCommands([
   }},
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
   { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
-  { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⌘D', action: () => createDailyNote() },
+  { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⇧⌘D', action: () => createDailyNote() },
 ])
 
 // ── Keyboard shortcuts ───────────────────────────────────────────

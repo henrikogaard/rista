@@ -122,7 +122,7 @@ function buildAppMenu() {
     },
     {
       label: 'Daily Note',
-      accelerator: 'CmdOrCtrl+D',
+      accelerator: 'CmdOrCtrl+Shift+D',
       click: () => sendRendererCommand('file:daily-note'),
     },
     { type: 'separator' },
@@ -723,11 +723,12 @@ ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       }
-      body = JSON.stringify({
-        model,
-        max_tokens: 4096,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
-      })
+      // Anthropic Messages API: `system` is a top-level field, not a message role.
+      const systemParts = messages.filter(m => m.role === 'system').map(m => m.content)
+      const conversation = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }))
+      const payload = { model, max_tokens: 4096, messages: conversation }
+      if (systemParts.length) payload.system = systemParts.join('\n\n')
+      body = JSON.stringify(payload)
     } else if (provider === 'openai') {
       url = new URL(`${baseUrl}/v1/chat/completions`)
       headers = {

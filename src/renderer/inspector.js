@@ -1,8 +1,9 @@
-import { state, $ } from './state.js'
+import { state, $, getFocusedTab } from './state.js'
 import { getOutgoingLinks, getBacklinks, getAllMdFileNames, getTagsForFile, getAllTagNames, getFilesForTag } from './link-index.js'
 import { getStats, extractHeadings } from './markdown.js'
 import { getSettings } from './settings.js'
 import { registerRightPanel } from './right-panel.js'
+import { getSnapshots, loadSnapshot, relativeTime, formatSize } from './history.js'
 
 // ── Inspector Panel ──────────────────────────────────────────────
 // Registered as a right panel via the shared right-panel system.
@@ -11,6 +12,7 @@ const TABS = [
   { id: 'outline', label: 'Outline', icon: outlineIcon },
   { id: 'links', label: 'Links', icon: linksIcon },
   { id: 'tags', label: 'Tags', icon: tagsIcon },
+  { id: 'history', label: 'History', icon: historyIcon },
   { id: 'stats', label: 'Stats', icon: statsIcon },
   { id: 'ai', label: 'AI', icon: aiIcon },
 ]
@@ -58,7 +60,7 @@ export function syncInspectorTabs() {
 export function renderInspectorContent() {
   const body = $('inspector-body')
   if (!body) return
-  const markdown = state.activeTab?.content || ''
+  const markdown = getFocusedTab()?.content || ''
 
   switch (activeTab) {
     case 'outline':
@@ -70,6 +72,9 @@ export function renderInspectorContent() {
     case 'tags':
       body.innerHTML = renderTagsContent()
       break
+    case 'history':
+      renderHistoryContent(body)
+      return
     case 'stats':
       body.innerHTML = renderStatsContent(markdown)
       break
@@ -94,7 +99,7 @@ function renderOutlineContent(markdown) {
 }
 
 function renderLinksContent() {
-  const tab = state.activeTab
+  const tab = getFocusedTab()
   if (!tab?.path) {
     return `<div class="inspector-empty"><span>No file open</span></div>`
   }
@@ -157,7 +162,7 @@ function renderStatsContent(markdown) {
 }
 
 function renderTagsContent() {
-  const tab = state.activeTab
+  const tab = getFocusedTab()
   if (!tab?.path) {
     return `<div class="inspector-empty"><span>No file open</span></div>`
   }
@@ -198,6 +203,35 @@ function renderTagsContent() {
   return html
 }
 
+async function renderHistoryContent(body) {
+  const tab = getFocusedTab()
+  if (!tab?.path) {
+    body.innerHTML = `<div class="inspector-empty"><span>No file open</span></div>`
+    return
+  }
+
+  body.innerHTML = `<div class="inspector-empty"><span>Loading history...</span></div>`
+
+  const snapshots = await getSnapshots(tab.path)
+  if (!snapshots.length) {
+    body.innerHTML = `<div class="inspector-empty"><span>No history yet</span><p class="inspector-empty__sub">Snapshots are saved automatically each time you save.</p></div>`
+    return
+  }
+
+  let html = `<div class="inspector-section__title">Snapshots (${snapshots.length})</div>`
+  html += `<div class="history-list">`
+  for (const snapshot of snapshots) {
+    html += `
+      <div class="history-item" data-snapshot-path="${escapeAttr(snapshot.path)}" role="button" tabindex="0">
+        <div class="history-item__time">${escapeHtml(relativeTime(snapshot.timestamp))}</div>
+        <div class="history-item__meta">${escapeHtml(snapshot.timestampStr)} &middot; ${escapeHtml(formatSize(snapshot.size))}</div>
+      </div>
+    `
+  }
+  html += `</div>`
+  body.innerHTML = html
+}
+
 function renderAiContent() {
   return `
     <div class="inspector-empty inspector-empty--ai">
@@ -214,6 +248,18 @@ export function handleInspectorClick(event, openFileFn) {
     return
   }
 
+  const historyItem = event.target.closest('.history-item[data-snapshot-path]')
+  if (historyItem) {
+    const snapshotPath = historyItem.dataset.snapshotPath
+    loadSnapshot(snapshotPath).then(content => {
+      if (content != null) {
+        const name = snapshotPath.split(/[/\\]/).pop()
+        openFileFn?.({ path: snapshotPath, name: `[snapshot] ${name}` })
+      }
+    })
+    return
+  }
+
   const link = event.target.closest('.inspector-link[data-link-path]')
   if (link && link.dataset.linkPath) {
     const linkPath = link.dataset.linkPath
@@ -221,11 +267,18 @@ export function handleInspectorClick(event, openFileFn) {
     return
   }
 
-  // Tag click (pill or list item)
+  // Tag click (pill or list item) — open the first file with this tag,
+  // or no-op if only the current file has it.
   const tagEl = event.target.closest('[data-tag]')
   if (tagEl) {
     const tag = tagEl.dataset.tag
-    console.log('[inspector] tag clicked:', tag, 'files:', getFilesForTag(tag))
+    const files = getFilesForTag(tag)
+    const current = getFocusedTab()?.path
+    const others = files.filter(p => p !== current)
+    if (others.length > 0) {
+      const path = others[0]
+      openFileFn?.({ path, name: path.split(/[/\\]/).pop() })
+    }
     return
   }
 }
@@ -256,6 +309,10 @@ function linksIcon() {
 
 function tagsIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M2 7.5V3a1 1 0 0 1 1-1h4.5L14 8.5 8.5 14 2 7.5z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5.5" cy="5.5" r="1" fill="currentColor"/></svg>`
+}
+
+function historyIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M8 3.5v5l3.5 2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>`
 }
 
 function statsIcon() {

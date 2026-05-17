@@ -9,8 +9,14 @@ const HISTORY_DIR = '.fjordmark/history'
 
 function getHistoryDir(filePath) {
   if (!state.folderPath) return null
-  const basename = filePath.split(/[/\\]/).pop().replace(/\.md$/i, '')
-  return `${state.folderPath}/${HISTORY_DIR}/${basename}`
+  // Use the path relative to folderPath, with separators replaced by __,
+  // so files with the same basename in different folders don't collide.
+  let rel = filePath
+  if (filePath.startsWith(state.folderPath)) {
+    rel = filePath.slice(state.folderPath.length).replace(/^[/\\]+/, '')
+  }
+  const key = rel.replace(/\.md$/i, '').replace(/[/\\]/g, '__')
+  return `${state.folderPath}/${HISTORY_DIR}/${key}`
 }
 
 function formatTimestamp() {
