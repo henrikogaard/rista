@@ -26,19 +26,23 @@ export function registerRightPanel(id, hooks) {
 export function buildRightPanelContainer() {
   return `<div class="right-sidebar" id="right-panel-container">
     <div class="right-sidebar__resizer" data-action="right-sidebar-resize"></div>
+    <div class="right-sidebar__tabs" id="right-sidebar-tabs"></div>
+    <div class="right-sidebar__stack" id="right-sidebar-stack"></div>
   </div>`
 }
 
 const WIDGETS_KEY = 'fjordmark-right-widgets'
 const COLLAPSED_KEY = 'fjordmark-right-widgets-collapsed'
+const ORDER_KEY = 'fjordmark-right-widgets-order'
 
 function loadWidgetState() {
   try {
     const active = JSON.parse(localStorage.getItem(WIDGETS_KEY) || '[]')
     const collapsed = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]')
-    return { active, collapsed }
+    const order = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]')
+    return { active, collapsed, order }
   } catch {
-    return { active: [], collapsed: [] }
+    return { active: [], collapsed: [], order: [] }
   }
 }
 
@@ -46,6 +50,7 @@ function persistWidgetState() {
   try {
     localStorage.setItem(WIDGETS_KEY, JSON.stringify(Array.from(state.rightWidgets)))
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(state.collapsedWidgets)))
+    localStorage.setItem(ORDER_KEY, JSON.stringify(state.rightWidgetsOrder || []))
   } catch {}
 }
 
@@ -54,25 +59,51 @@ function ensureStateShape() {
     const stored = loadWidgetState()
     state.rightWidgets = new Set(stored.active)
     state.collapsedWidgets = new Set(stored.collapsed)
+    state.rightWidgetsOrder = stored.order
   }
   if (!(state.collapsedWidgets instanceof Set)) {
     state.collapsedWidgets = new Set()
+  }
+  if (!Array.isArray(state.rightWidgetsOrder)) {
+    state.rightWidgetsOrder = []
   }
 }
 
 function getActiveWidgetIds() {
   ensureStateShape()
-  // Preserve insertion order from registration but only return active ones
-  return Array.from(_widgets.keys()).filter(id => state.rightWidgets.has(id))
+  // Preserve user-defined order, fall back to registration order
+  const orderMap = new Map()
+  state.rightWidgetsOrder.forEach((id, i) => orderMap.set(id, i))
+  let nextOrder = state.rightWidgetsOrder.length
+  for (const id of _widgets.keys()) {
+    if (!orderMap.has(id)) orderMap.set(id, nextOrder++)
+  }
+  return Array.from(state.rightWidgets)
+    .filter(id => _widgets.has(id))
+    .sort((a, b) => orderMap.get(a) - orderMap.get(b))
+}
+
+function renderTabs() {
+  const tabsEl = $('right-sidebar-tabs')
+  if (!tabsEl) return
+  ensureStateShape()
+  const allIds = Array.from(_widgets.keys())
+  tabsEl.innerHTML = allIds.map(id => {
+    const hooks = _widgets.get(id)
+    const active = state.rightWidgets.has(id) ? ' active' : ''
+    const title = hooks?.title || id
+    return `<div class="right-sidebar__tab${active}" data-action="widget-tab" data-widget="${id}" title="${escapeHtml(title)}" role="button" tabindex="0">${hooks?.icon || ''}</div>`
+  }).join('')
 }
 
 function renderSidebar() {
   const container = $('right-panel-container')
-  if (!container) return
+  const stack = $('right-sidebar-stack')
+  if (!container || !stack) return
   ensureStateShape()
 
   // Unmount widgets that are no longer active
-  container.querySelectorAll('.widget').forEach(node => {
+  stack.querySelectorAll('.widget').forEach(node => {
     const id = node.dataset.widget
     if (!state.rightWidgets.has(id)) {
       const hooks = _widgets.get(id)
@@ -84,38 +115,55 @@ function renderSidebar() {
   const activeIds = getActiveWidgetIds()
   if (activeIds.length === 0) {
     container.classList.remove('open')
-    container.querySelectorAll('.widget').forEach(n => n.remove())
+    stack.replaceChildren()
+    renderTabs()
     syncRightPanelToggles()
     return
   }
   container.classList.add('open')
 
-  // Append any newly-active widgets that aren't already in the DOM
+  // Build map of existing widget nodes
+  const existing = new Map()
+  stack.querySelectorAll('.widget').forEach(node => {
+    existing.set(node.dataset.widget, node)
+  })
+
+  // Build a fresh ordered list of widget nodes, reusing existing where possible
+  const fragment = document.createDocumentFragment()
   for (const id of activeIds) {
-    if (container.querySelector(`.widget[data-widget="${id}"]`)) continue
-    const hooks = _widgets.get(id)
-    if (!hooks) continue
-    const collapsed = state.collapsedWidgets.has(id)
-    const wrapper = document.createElement('section')
-    wrapper.className = `widget${collapsed ? ' widget--collapsed' : ''}`
-    wrapper.dataset.widget = id
-    wrapper.style.flex = collapsed ? '0 0 auto' : String(hooks.flex || 1)
-    wrapper.innerHTML = `
-      <header class="widget__header" data-action="widget-toggle-collapse" data-widget="${id}">
-        ${hooks.icon ? `<span class="widget__icon">${hooks.icon}</span>` : ''}
-        <span class="widget__title">${escapeHtml(hooks.title || id)}</span>
-        <span class="widget__spacer"></span>
-        <span class="widget__caret" aria-hidden="true">▾</span>
-        <span class="widget__close" data-action="widget-close" data-widget="${id}" role="button" tabindex="0" title="Close">×</span>
-      </header>
-      <div class="widget__body">${hooks.build()}</div>
-    `
-    container.appendChild(wrapper)
-    if (!collapsed) hooks.onMount?.()
+    let node = existing.get(id)
+    if (!node) {
+      const hooks = _widgets.get(id)
+      if (!hooks) continue
+      const collapsed = state.collapsedWidgets.has(id)
+      node = document.createElement('section')
+      node.className = `widget${collapsed ? ' widget--collapsed' : ''}`
+      node.dataset.widget = id
+      node.style.flex = collapsed ? '0 0 auto' : String(hooks.flex || 1)
+      node.innerHTML = `
+        <header class="widget__header" draggable="true" data-action="widget-toggle-collapse" data-widget="${id}">
+          <span class="widget__drag-handle" aria-hidden="true">⋮⋮</span>
+          ${hooks.icon ? `<span class="widget__icon">${hooks.icon}</span>` : ''}
+          <span class="widget__title">${escapeHtml(hooks.title || id)}</span>
+          <span class="widget__spacer"></span>
+          <span class="widget__caret" aria-hidden="true">▾</span>
+          <span class="widget__close" data-action="widget-close" data-widget="${id}" role="button" tabindex="0" title="Close">×</span>
+        </header>
+        <div class="widget__body">${hooks.build()}</div>
+      `
+      fragment.appendChild(node)
+      if (!collapsed) {
+        // Mount after the node is in the live DOM
+        requestAnimationFrame(() => hooks.onMount?.())
+      }
+    } else {
+      fragment.appendChild(node)  // moves existing node
+    }
   }
+  stack.replaceChildren(fragment)
 
   // Update flex for collapse state on existing widgets too
-  container.querySelectorAll('.widget').forEach(node => {
+  stack.querySelectorAll('.widget').forEach(node => {
     const id = node.dataset.widget
     const collapsed = state.collapsedWidgets.has(id)
     const hooks = _widgets.get(id)
@@ -123,7 +171,24 @@ function renderSidebar() {
     node.style.flex = collapsed ? '0 0 auto' : String(hooks?.flex || 1)
   })
 
+  renderTabs()
   syncRightPanelToggles()
+}
+
+function setWidgetOrder(orderedIds) {
+  ensureStateShape()
+  // Keep ordering for all registered widgets so unknown ones still sort correctly
+  const known = new Set(_widgets.keys())
+  const seen = new Set()
+  const next = []
+  for (const id of orderedIds) {
+    if (known.has(id) && !seen.has(id)) { next.push(id); seen.add(id) }
+  }
+  for (const id of _widgets.keys()) {
+    if (!seen.has(id)) next.push(id)
+  }
+  state.rightWidgetsOrder = next
+  persistWidgetState()
 }
 
 export function openRightPanel(id) {
@@ -219,6 +284,12 @@ function escapeHtml(value = '') {
 // ── Event delegation ────────────────────────────────────────────
 // Wire once when this module is imported.
 document.addEventListener('click', (event) => {
+  // Tab strip click → toggle widget
+  const tab = event.target.closest('[data-action="widget-tab"]')
+  if (tab) {
+    toggleRightPanel(tab.dataset.widget)
+    return
+  }
   const closeBtn = event.target.closest('[data-action="widget-close"]')
   if (closeBtn) {
     event.stopPropagation()
@@ -234,6 +305,66 @@ document.addEventListener('click', (event) => {
 document.addEventListener('pointerdown', (event) => {
   const resizer = event.target.closest('[data-action="right-sidebar-resize"]')
   if (resizer) startRightSidebarResize(event)
+})
+
+// ── Drag-to-reorder widget headers ──────────────────────────────
+let _dragId = null
+document.addEventListener('dragstart', (event) => {
+  const header = event.target.closest('.widget__header[draggable="true"]')
+  if (!header) return
+  _dragId = header.dataset.widget
+  // Drag the whole widget visually
+  const widget = header.closest('.widget')
+  if (widget && event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', _dragId)
+    event.dataTransfer.setDragImage(widget, 10, 10)
+    widget.classList.add('widget--dragging')
+  }
+})
+document.addEventListener('dragend', (event) => {
+  const header = event.target.closest('.widget__header')
+  if (header) header.closest('.widget')?.classList.remove('widget--dragging')
+  _dragId = null
+  document.querySelectorAll('.widget--drop-above, .widget--drop-below').forEach(n => {
+    n.classList.remove('widget--drop-above', 'widget--drop-below')
+  })
+})
+document.addEventListener('dragover', (event) => {
+  if (!_dragId) return
+  const targetWidget = event.target.closest('.widget')
+  const stack = $('right-sidebar-stack')
+  if (!targetWidget || !stack || !stack.contains(targetWidget)) return
+  if (targetWidget.dataset.widget === _dragId) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  // Mark drop position
+  const rect = targetWidget.getBoundingClientRect()
+  const above = event.clientY < rect.top + rect.height / 2
+  document.querySelectorAll('.widget--drop-above, .widget--drop-below').forEach(n => {
+    n.classList.remove('widget--drop-above', 'widget--drop-below')
+  })
+  targetWidget.classList.add(above ? 'widget--drop-above' : 'widget--drop-below')
+})
+document.addEventListener('drop', (event) => {
+  if (!_dragId) return
+  const targetWidget = event.target.closest('.widget')
+  const stack = $('right-sidebar-stack')
+  if (!targetWidget || !stack || !stack.contains(targetWidget)) return
+  if (targetWidget.dataset.widget === _dragId) return
+  event.preventDefault()
+  const rect = targetWidget.getBoundingClientRect()
+  const above = event.clientY < rect.top + rect.height / 2
+
+  const current = Array.from(stack.querySelectorAll('.widget')).map(n => n.dataset.widget)
+  const from = current.indexOf(_dragId)
+  if (from === -1) return
+  current.splice(from, 1)
+  let to = current.indexOf(targetWidget.dataset.widget)
+  if (!above) to += 1
+  current.splice(to, 0, _dragId)
+  setWidgetOrder(current)
+  renderSidebar()
 })
 
 // ── Sidebar resize ──────────────────────────────────────────────

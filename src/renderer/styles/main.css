@@ -2567,6 +2567,39 @@ body.is-resizing-right-sidebar .right-sidebar__resizer {
   background: var(--accent-dim);
 }
 
+/* Tab strip at top of right sidebar */
+.right-sidebar__tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--surface-edge);
+  flex-shrink: 0;
+  background: var(--surface-bg-2);
+}
+.right-sidebar__tab {
+  width: 28px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--text3);
+  cursor: pointer;
+  transition: color 0.1s, background 0.1s;
+}
+.right-sidebar__tab:hover { color: var(--text1); background: rgba(255,255,255,0.05); }
+.right-sidebar__tab.active { color: var(--accent-hi); background: var(--accent-dim); }
+.right-sidebar__tab svg { width: 13px; height: 13px; }
+
+.right-sidebar__stack {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Each widget within the sidebar */
 .widget {
   display: flex;
@@ -2585,7 +2618,7 @@ body.is-resizing-right-sidebar .right-sidebar__resizer {
   gap: 6px;
   padding: 6px 10px;
   height: 28px;
-  cursor: pointer;
+  cursor: grab;
   font-size: 10.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2594,7 +2627,22 @@ body.is-resizing-right-sidebar .right-sidebar__resizer {
   flex-shrink: 0;
   user-select: none;
 }
+.widget__header:active { cursor: grabbing; }
 .widget__header:hover { color: var(--text1); background: rgba(255,255,255,0.02); }
+.widget__drag-handle {
+  color: var(--text3);
+  font-size: 8px;
+  letter-spacing: -1px;
+  cursor: grab;
+  margin-right: -2px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.widget__header:hover .widget__drag-handle { opacity: 0.6; }
+
+.widget--dragging { opacity: 0.4; }
+.widget--drop-above { box-shadow: inset 0 2px 0 0 var(--accent); }
+.widget--drop-below { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .widget__icon {
   display: inline-flex;
   align-items: center;
