@@ -11,6 +11,7 @@ import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, r
 import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, insertCodeBlock, insertHorizontalRule, syncToWysiwyg } from './commands.js'
 import { openDiagramBuilder } from './diagram-builder.js'
 import { buildInspector, setInspectorTab, handleInspectorClick as handleInspectorClickInner } from './inspector.js'
+import { buildRightPanelContainer, toggleRightPanel, closeRightPanel, refreshRightPanel } from './right-panel.js'
 import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
 import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
 import { buildTerminalDrawer, toggleTerminalDrawer, handleTerminalInput, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
@@ -264,7 +265,7 @@ export function buildEditorUI() {
           </div>
         </section>
       </div>
-      ${buildInspector()}
+      ${buildRightPanelContainer()}
     </div>
     ${buildTerminalDrawer()}
     ${buildGraphModal()}
@@ -614,8 +615,6 @@ export function wireEditorUiEvents() {
       control.click()
     })
   })
-  $('inspector')?.addEventListener('click', onInspectorClick)
-  $('inspector-close-btn')?.addEventListener('click', toggleInspector)
   document.querySelectorAll('.workspace-pane').forEach(node => {
     node.addEventListener('pointerdown', () => focusPane(node.dataset.pane))
   })
@@ -626,10 +625,6 @@ export function wireEditorUiEvents() {
   })
   handleSearchInput(path => _callbacks.openFile?.({ path, name: path.split('/').pop() }))
   handleTerminalInput()
-}
-
-function onInspectorClick(event) {
-  handleInspectorClickInner(event, path => _callbacks.openFile?.(path))
 }
 
 export function handleToolbarClick(event) {
@@ -809,13 +804,10 @@ export function toggleDd(id) {
 }
 
 export function toggleInspector() {
-  state.inspectorOpen = !state.inspectorOpen
-  $('inspector')?.classList.toggle('open', state.inspectorOpen)
-  document.querySelectorAll('[data-action="toggle-inspector"]').forEach(node => {
-    node.classList.toggle('active', state.inspectorOpen)
-  })
-  $('inspector-toggle')?.classList.toggle('active', state.inspectorOpen)
+  toggleRightPanel('inspector')
 }
+
+export { refreshRightPanel }
 
 export function toggleWorkspaceSplit() {
   state.workspaceMode = state.workspaceMode === 'dual' ? 'single' : 'dual'

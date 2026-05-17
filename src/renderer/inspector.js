@@ -1,14 +1,16 @@
 import { state, $ } from './state.js'
-import { getOutgoingLinks, getBacklinks, getAllMdFileNames } from './link-index.js'
+import { getOutgoingLinks, getBacklinks, getAllMdFileNames, getTagsForFile, getAllTagNames, getFilesForTag } from './link-index.js'
 import { getStats, extractHeadings } from './markdown.js'
 import { getSettings } from './settings.js'
+import { registerRightPanel } from './right-panel.js'
 
 // ── Inspector Panel ──────────────────────────────────────────────
-// Replaces the insights panel with a proper right inspector with tabs.
+// Registered as a right panel via the shared right-panel system.
 
 const TABS = [
   { id: 'outline', label: 'Outline', icon: outlineIcon },
   { id: 'links', label: 'Links', icon: linksIcon },
+  { id: 'tags', label: 'Tags', icon: tagsIcon },
   { id: 'stats', label: 'Stats', icon: statsIcon },
   { id: 'ai', label: 'AI', icon: aiIcon },
 ]
@@ -64,6 +66,9 @@ export function renderInspectorContent() {
       break
     case 'links':
       body.innerHTML = renderLinksContent()
+      break
+    case 'tags':
+      body.innerHTML = renderTagsContent()
       break
     case 'stats':
       body.innerHTML = renderStatsContent(markdown)
@@ -121,6 +126,7 @@ function renderLinksContent() {
       html += `
         <div class="inspector-link resolved" data-link-path="${escapeAttr(backlink.sourcePath)}">
           <span class="inspector-link__name">${escapeHtml(backlink.sourceName)}</span>
+          ${backlink.context ? `<span class="backlink-context">${backlink.context}</span>` : ''}
         </div>
       `
     }
@@ -150,6 +156,48 @@ function renderStatsContent(markdown) {
   `
 }
 
+function renderTagsContent() {
+  const tab = state.activeTab
+  if (!tab?.path) {
+    return `<div class="inspector-empty"><span>No file open</span></div>`
+  }
+
+  const fileTags = getTagsForFile(tab.path)
+  const allTags = getAllTagNames()
+
+  let html = ''
+
+  // Current file tags
+  html += `<div class="inspector-section__title">This file</div>`
+  if (fileTags.length) {
+    html += `<div class="inspector-tags">`
+    for (const tag of fileTags) {
+      html += `<span class="tag-pill" data-tag="${escapeAttr(tag)}">#${escapeHtml(tag)}</span>`
+    }
+    html += `</div>`
+  } else {
+    html += `<div class="inspector-empty"><span>No tags</span></div>`
+  }
+
+  // All project tags
+  if (allTags.length) {
+    html += `<div class="inspector-section__title" style="margin-top:14px">All tags</div>`
+    html += `<div class="tag-section">`
+    for (const tag of allTags) {
+      const count = getFilesForTag(tag).length
+      html += `
+        <div class="inspector-link" data-tag="${escapeAttr(tag)}">
+          <span class="inspector-link__name">#${escapeHtml(tag)}</span>
+          <span class="inspector-link__badge" style="background:var(--border2);color:var(--text3)">${count}</span>
+        </div>
+      `
+    }
+    html += `</div>`
+  }
+
+  return html
+}
+
 function renderAiContent() {
   return `
     <div class="inspector-empty inspector-empty--ai">
@@ -170,6 +218,14 @@ export function handleInspectorClick(event, openFileFn) {
   if (link && link.dataset.linkPath) {
     const linkPath = link.dataset.linkPath
     openFileFn?.({ path: linkPath, name: linkPath.split('/').pop() })
+    return
+  }
+
+  // Tag click (pill or list item)
+  const tagEl = event.target.closest('[data-tag]')
+  if (tagEl) {
+    const tag = tagEl.dataset.tag
+    console.log('[inspector] tag clicked:', tag, 'files:', getFilesForTag(tag))
     return
   }
 }
@@ -198,10 +254,53 @@ function linksIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/></svg>`
 }
 
+function tagsIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M2 7.5V3a1 1 0 0 1 1-1h4.5L14 8.5 8.5 14 2 7.5z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5.5" cy="5.5" r="1" fill="currentColor"/></svg>`
+}
+
 function statsIcon() {
   return `<svg viewBox="0 0 16 16"><rect x="2" y="9" width="3" height="5" rx="0.5" fill="currentColor" stroke="none"/><rect x="6.5" y="5" width="3" height="9" rx="0.5" fill="currentColor" stroke="none"/><rect x="11" y="2" width="3" height="12" rx="0.5" fill="currentColor" stroke="none"/></svg>`
 }
 
 function aiIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M8 1.5l2 4.5 4.5 2-4.5 2-2 4.5-2-4.5L1.5 8l4.5-2z" fill="currentColor"/></svg>`
+}
+
+// ── Register as right panel ─────────────────────────────────────
+let _openFileFn = null
+let _closeRightPanelFn = null
+
+export function initInspectorPanel(openFileFn, closeRightPanelFn) {
+  _openFileFn = openFileFn
+  _closeRightPanelFn = closeRightPanelFn
+  registerRightPanel('inspector', {
+    build: buildInspector,
+    onOpen: () => {
+      state.inspectorOpen = true
+      renderInspectorContent()
+      const container = $('right-panel-container')
+      if (container) {
+        container.addEventListener('click', _onContainerClick)
+      }
+    },
+    onClose: () => {
+      state.inspectorOpen = false
+      const container = $('right-panel-container')
+      if (container) {
+        container.removeEventListener('click', _onContainerClick)
+      }
+    },
+    onRefresh: () => {
+      renderInspectorContent()
+    },
+  })
+}
+
+function _onContainerClick(event) {
+  const closeBtn = event.target.closest('#inspector-close-btn')
+  if (closeBtn) {
+    _closeRightPanelFn?.()
+    return
+  }
+  handleInspectorClick(event, _openFileFn)
 }

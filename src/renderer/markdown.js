@@ -100,8 +100,26 @@ const processor = unified()
   .use(rehypeHighlight, { detect: false, ignoreMissing: true })
   .use(rehypeStringify, { allowDangerousHtml: true })
 
+let _transclusionResolver = null
+
+export function setTransclusionResolver(resolver) {
+  _transclusionResolver = resolver
+}
+
+function resolveTransclusions(markdown, depth = 0) {
+  if (depth >= 3 || !_transclusionResolver) return markdown
+  return markdown.replace(/^!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]$/gm, (match, noteName) => {
+    const content = _transclusionResolver(noteName.trim())
+    if (content == null) return match
+    const resolved = resolveTransclusions(content, depth + 1)
+    const safeName = escapeHtml(noteName.trim())
+    return `<div class="transclusion"><div class="transclusion__source">↗ ${safeName}</div>\n\n${resolved}\n\n</div>`
+  })
+}
+
 export async function renderMarkdown(markdown) {
-  const chunks = splitMarkdownIntoRenderChunks(markdown)
+  const expanded = resolveTransclusions(markdown)
+  const chunks = splitMarkdownIntoRenderChunks(expanded)
   const rendered = await Promise.all(chunks.map(renderChunk))
   return rendered.join('')
 }

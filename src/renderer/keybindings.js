@@ -10,8 +10,10 @@ const defaultBindings = {
   'project-search': 'Mod+Shift+F',
   'terminal': 'Mod+J',
   'settings': 'Mod+,',
+  'quick-open': 'Mod+P',
   'command-palette': 'Mod+K',
   'zen-mode': 'Mod+Shift+Enter',
+  'daily-note': 'Mod+D',
 }
 
 let overrides = {}

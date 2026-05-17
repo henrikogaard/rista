@@ -118,6 +118,11 @@ function buildAppMenu() {
       accelerator: 'CmdOrCtrl+Shift+S',
       click: () => sendRendererCommand('file:save-as'),
     },
+    {
+      label: 'Daily Note',
+      accelerator: 'CmdOrCtrl+D',
+      click: () => sendRendererCommand('file:daily-note'),
+    },
     { type: 'separator' },
     {
       label: 'Export to PDF…',
@@ -148,11 +153,24 @@ function buildAppMenu() {
       click: () => sendRendererCommand('view:toggle-inspector'),
     },
     {
+      label: 'Toggle Graph',
+      click: () => sendRendererCommand('view:toggle-graph'),
+    },
+    {
+      label: 'Toggle Calendar',
+      click: () => sendRendererCommand('view:toggle-calendar'),
+    },
+    {
       label: 'Toggle Terminal',
       accelerator: 'CmdOrCtrl+`',
       click: () => sendRendererCommand('view:toggle-terminal'),
     },
     { type: 'separator' },
+    {
+      label: 'Quick Open…',
+      accelerator: 'CmdOrCtrl+P',
+      click: () => sendRendererCommand('view:quick-open'),
+    },
     {
       label: 'Zen Mode',
       accelerator: 'CmdOrCtrl+Shift+Enter',

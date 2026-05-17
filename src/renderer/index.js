@@ -6,10 +6,10 @@ import { getTheme, toggleTheme } from './theme.js'
 import { state } from './state.js'
 import { getFocusedTab } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
-import { getStats } from './markdown.js'
+import { getStats, setTransclusionResolver } from './markdown.js'
 import { registerEnsureRichEditorMounted, registerFocusPane, closeCommandDialog } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
-import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette } from './command-palette.js'
+import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette, openCommandPaletteFiles, openCommandPaletteCommands } from './command-palette.js'
 import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
 import { exportToHtml } from './preview.js'
 import { exportToDocx } from './export-docx.js'
@@ -18,8 +18,14 @@ import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview } from './attachment-preview.js'
 import { toggleTerminalDrawer } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
+import { buildGraphView, renderGraph, destroyGraph } from './graph-view.js'
+import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
+import { getLinkIndex, resolveWikilink } from './link-index.js'
+import { registerRightPanel } from './right-panel.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
+import { toggleRightPanel, closeRightPanel } from './right-panel.js'
+import { initInspectorPanel } from './inspector.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
@@ -46,6 +52,7 @@ import {
   toggleSidebar,
   toggleWorkspaceSplit,
   toggleInspector,
+  refreshRightPanel,
 } from './workspace.js'
 
 // ── Tabs (file/tab operations, editor changes, saves) ────────────
@@ -74,6 +81,7 @@ import {
   saveActiveAs,
   handleAppCommand,
   handleExternalFileChange,
+  createDailyNote,
 } from './tabs.js'
 
 // ── Init theme before any paint ──────────────────────────────────
@@ -86,6 +94,39 @@ initDiagrams(getTheme())
 registerEnsureRichEditorMounted(ensureRichEditorMounted)
 registerFocusPane(focusPane)
 
+// ── Initialize right panel system ────────────────────────────────
+initInspectorPanel(openFile, closeRightPanel)
+
+registerRightPanel('graph', {
+  build: () => `<div class="right-panel__header"><span>Knowledge Graph</span><div class="right-panel__close" id="graph-close-btn" role="button" tabindex="0">&times;</div></div><div class="right-panel__body" id="graph-panel-body">${buildGraphView()}</div>`,
+  onOpen: () => {
+    renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
+    document.getElementById('graph-close-btn')?.addEventListener('click', closeRightPanel)
+  },
+  onClose: () => destroyGraph(),
+})
+
+registerRightPanel('calendar', {
+  build: () => `<div class="right-panel__header"><span>Calendar</span><div class="right-panel__close" id="calendar-close-btn" role="button" tabindex="0">&times;</div></div><div class="right-panel__body" id="calendar-panel-body"></div>`,
+  onOpen: () => {
+    const body = document.getElementById('calendar-panel-body')
+    if (body) {
+      const panel = buildCalendarPanel({ onDateClick: (dateStr) => createDailyNote(dateStr), folderPath: state.folderPath })
+      body.appendChild(panel)
+    }
+    document.getElementById('calendar-close-btn')?.addEventListener('click', closeRightPanel)
+  },
+  onClose: () => { document.getElementById('calendar-panel-body')?.replaceChildren() },
+})
+
+// ── Transclusion resolver ───────────────────────────────────────
+setTransclusionResolver((noteName) => {
+  const index = getLinkIndex()
+  const targetPath = resolveWikilink(noteName, index.allPaths, state.folderPath)
+  if (!targetPath) return null
+  return index.files.get(targetPath)?.content ?? null
+})
+
 registerShellCallbacks({
   toggleToolbar,
   togglePaneSplitView,
@@ -94,6 +135,7 @@ registerShellCallbacks({
   toggleSidebarMode,
   toggleTerminal: toggleTerminalDrawer,
   toggleInspector,
+  toggleRightPanel,
   openFolder,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   collapseAllFolders,
@@ -152,6 +194,8 @@ registerTabCallbacks({
   toggleTerminal: toggleTerminalDrawer,
   toggleZen: toggleZenMode,
   toggleSettings: toggleSettingsPanel,
+  toggleRightPanel,
+  openQuickOpen: openCommandPaletteFiles,
 })
 
 // ── Templates ────────────────────────────────────────────────────
@@ -248,6 +292,7 @@ registerCommands([
   }},
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
   { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
+  { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⌘D', action: () => createDailyNote() },
 ])
 
 // ── Keyboard shortcuts ───────────────────────────────────────────
@@ -263,7 +308,8 @@ document.addEventListener('keydown', e => {
 
   // Customizable shortcuts via keybindings registry
   if (matchesBinding(e, 'zen-mode')) { e.preventDefault(); toggleZenMode(); return }
-  if (matchesBinding(e, 'command-palette')) { e.preventDefault(); toggleCommandPalette(); return }
+  if (matchesBinding(e, 'quick-open')) { e.preventDefault(); openCommandPaletteFiles(); return }
+  if (matchesBinding(e, 'command-palette')) { e.preventDefault(); openCommandPaletteCommands(); return }
   if (matchesBinding(e, 'save-as')) { e.preventDefault(); saveActiveAs(); return }
   if (matchesBinding(e, 'save')) { e.preventDefault(); saveActive(); return }
   if (matchesBinding(e, 'new-file')) { e.preventDefault(); createNewFile(); return }
@@ -273,4 +319,5 @@ document.addEventListener('keydown', e => {
   if (matchesBinding(e, 'project-search')) { e.preventDefault(); openSearchPanel(); return }
   if (matchesBinding(e, 'terminal')) { e.preventDefault(); toggleTerminalDrawer(); return }
   if (matchesBinding(e, 'settings')) { e.preventDefault(); toggleSettingsPanel(); return }
+  if (matchesBinding(e, 'daily-note')) { e.preventDefault(); createDailyNote(); return }
 })

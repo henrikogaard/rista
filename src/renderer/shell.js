@@ -2,7 +2,7 @@ import { state, $, settingsValue } from './state.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, inspectorIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, inspectorIcon, graphIcon, calendarIcon, aiChatIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
@@ -263,7 +263,7 @@ function syncAppMeta() {
 }
 
 function handleGlobalControlPointerDown(event) {
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle, #graph-panel-toggle, #calendar-panel-toggle, #ai-chat-toggle')
   if (!control) return
   event.preventDefault()
   event.stopPropagation()
@@ -279,11 +279,14 @@ function performGlobalControl(id) {
   if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
   if (id === 'terminal-toggle') _callbacks.toggleTerminal?.()
   if (id === 'inspector-toggle') _callbacks.toggleInspector?.()
+  if (id === 'graph-panel-toggle') _callbacks.toggleRightPanel?.('graph')
+  if (id === 'calendar-panel-toggle') _callbacks.toggleRightPanel?.('calendar')
+  if (id === 'ai-chat-toggle') _callbacks.toggleRightPanel?.('ai-chat')
 }
 
 function handleGlobalControlKeydown(event) {
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle, #graph-panel-toggle, #calendar-panel-toggle, #ai-chat-toggle')
   if (!control) return
   event.preventDefault()
   performGlobalControl(control.id)
@@ -437,6 +440,15 @@ export function buildShell() {
             <div class="theme-btn" id="inspector-toggle" title="Inspector" aria-label="Toggle inspector" role="button" tabindex="0">
               ${inspectorIcon()}
             </div>
+            <div class="theme-btn" id="graph-panel-toggle" title="Graph" aria-label="Toggle graph panel" role="button" tabindex="0">
+              ${graphIcon()}
+            </div>
+            <div class="theme-btn" id="calendar-panel-toggle" title="Calendar" aria-label="Toggle calendar panel" role="button" tabindex="0">
+              ${calendarIcon()}
+            </div>
+            <div class="theme-btn" id="ai-chat-toggle" title="AI Chat" aria-label="Toggle AI chat panel" role="button" tabindex="0">
+              ${aiChatIcon()}
+            </div>
           </div>
           <div class="st st-brand">fjordmark</div>
         </div>
@@ -544,6 +556,12 @@ export function buildShell() {
               ${renderToggleSetting('zenParagraphDimming', 'Zen paragraph dimming', 'Dim paragraphs except the one with the cursor')}
               ${renderRangeSetting('zenColumnWidth', 'Zen column width', 500, 900, 10, 'px')}
               ${renderToggleSetting('showMinimap', 'Show minimap', 'Display a document overview on the right edge')}
+            </section>
+
+            <section class="settings-group">
+              <div class="settings-group__title">Daily notes</div>
+              ${renderTextSetting('dailyNotesFolder', 'Daily notes folder', 'Subfolder for daily notes, e.g. daily')}
+              ${renderTextSetting('dailyNoteTemplate', 'Daily note template', 'Template for new daily notes. Use {{date}} for the date.')}
             </section>
           </div>
         </div>

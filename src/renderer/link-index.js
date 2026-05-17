@@ -1,12 +1,14 @@
 import { state } from './state.js'
+import { getAllTags } from './tags.js'
 
 // ── Link Indexer ─────────────────────────────────────────────────
 // Scans all markdown files in the open folder for wikilinks [[...]]
-// and builds an index for backlinks, outgoing links, and search.
+// and builds an index for backlinks, outgoing links, tags, and search.
 
 let _index = {
   files: new Map(),      // path => { content, links: Set() }
   backlinks: new Map(),  // targetPath => Set(sourcePaths)
+  tags: new Map(),        // tag => Set(paths)
   allPaths: new Set(),   // All .md file paths
   dirty: false,
 }
@@ -14,7 +16,7 @@ let _index = {
 const WIKILINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g
 
 export function clearLinkIndex() {
-  _index = { files: new Map(), backlinks: new Map(), allPaths: new Set(), dirty: false }
+  _index = { files: new Map(), backlinks: new Map(), tags: new Map(), allPaths: new Set(), dirty: false }
 }
 
 export function getLinkIndex() {
@@ -35,6 +37,12 @@ export async function rebuildLinkIndex() {
       const content = await window.fjord.readFile(path)
       const links = extractWikilinks(content)
       _index.files.set(path, { content, links })
+      // Index tags for this file
+      const fileTags = getAllTags(content)
+      for (const tag of fileTags) {
+        if (!_index.tags.has(tag)) _index.tags.set(tag, new Set())
+        _index.tags.get(tag).add(path)
+      }
     } catch {
       _index.files.set(path, { content: '', links: new Set() })
     }
@@ -65,6 +73,17 @@ export function updateLinkIndexForFile(path, content) {
   const links = extractWikilinks(content)
   _index.files.set(path, { content, links })
   _index.dirty = true
+
+  // Update tags for this file: remove old entries, add new ones
+  for (const [tag, paths] of _index.tags) {
+    paths.delete(path)
+    if (paths.size === 0) _index.tags.delete(tag)
+  }
+  const fileTags = getAllTags(content)
+  for (const tag of fileTags) {
+    if (!_index.tags.has(tag)) _index.tags.set(tag, new Set())
+    _index.tags.get(tag).add(path)
+  }
 
   // Defer full backlink rebuild
   if (!_index._rebuildTimeout) {
@@ -97,7 +116,30 @@ export function removeFromLinkIndex(path) {
   for (const set of _index.backlinks.values()) {
     set.delete(path)
   }
+  // Remove from tags index
+  for (const [tag, paths] of _index.tags) {
+    paths.delete(path)
+    if (paths.size === 0) _index.tags.delete(tag)
+  }
   _index.dirty = true
+}
+
+// ── Tag queries ─────────────────────────────────────────────────
+export function getTagsForFile(path) {
+  const tags = []
+  for (const [tag, paths] of _index.tags) {
+    if (paths.has(path)) tags.push(tag)
+  }
+  return tags.sort()
+}
+
+export function getFilesForTag(tag) {
+  const paths = _index.tags.get(tag)
+  return paths ? Array.from(paths) : []
+}
+
+export function getAllTagNames() {
+  return Array.from(_index.tags.keys()).sort()
 }
 
 export function extractWikilinks(content) {
@@ -137,6 +179,54 @@ export function getOutgoingLinks(path) {
   })
 }
 
+export function getBacklinkContext(sourcePath, linkText) {
+  const entry = _index.files.get(sourcePath)
+  if (!entry || !entry.content) return ''
+  const content = entry.content
+  const pattern = `[[${linkText}]]`
+  const idx = content.indexOf(pattern)
+  if (idx === -1) {
+    // Try with alias: [[linkText|...]]
+    const aliasIdx = content.indexOf(`[[${linkText}|`)
+    if (aliasIdx === -1) return ''
+    return _extractContext(content, aliasIdx, linkText)
+  }
+  return _extractContext(content, idx, linkText)
+}
+
+function _extractContext(content, matchIdx, linkText) {
+  // Find the paragraph boundaries around the match
+  const before = content.lastIndexOf('\n\n', matchIdx)
+  const after = content.indexOf('\n\n', matchIdx)
+  const paraStart = before === -1 ? 0 : before + 2
+  const paraEnd = after === -1 ? content.length : after
+
+  let paragraph = content.slice(paraStart, paraEnd).replace(/\n/g, ' ').trim()
+
+  // Truncate to ~150 chars centered on the wikilink
+  const localIdx = matchIdx - paraStart
+  if (paragraph.length > 150) {
+    const center = Math.min(localIdx, paragraph.length)
+    let start = Math.max(0, center - 60)
+    let end = Math.min(paragraph.length, start + 150)
+    if (end - start < 150) start = Math.max(0, end - 150)
+    paragraph = (start > 0 ? '...' : '') + paragraph.slice(start, end).trim() + (end < content.slice(paraStart, paraEnd).replace(/\n/g, ' ').trim().length ? '...' : '')
+  }
+
+  // Wrap wikilink references in <mark> tags
+  const escaped = escapeContextHtml(paragraph)
+  const wikilinkRe = new RegExp(`\\[\\[${escapeRegExp(linkText)}(?:\\|[^\\]]+)?\\]\\]`, 'g')
+  return escaped.replace(wikilinkRe, match => `<mark>${match}</mark>`)
+}
+
+function escapeContextHtml(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 export function getBacklinks(path) {
   const backlinks = _index.backlinks.get(path)
   if (!backlinks) return []
@@ -147,10 +237,14 @@ export function getBacklinks(path) {
       const target = resolveWikilink(link, _index.allPaths, state.folderPath)
       return target === path
     })
+    const context = matchingLinks.length > 0
+      ? getBacklinkContext(sourcePath, matchingLinks[0])
+      : ''
     return {
       sourcePath,
       sourceName: sourcePath.split(/[/\\]/).pop().replace(/\.md$/i, ''),
       linkTexts: matchingLinks,
+      context,
     }
   })
 }

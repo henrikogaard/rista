@@ -9,6 +9,7 @@ import { vim } from '@replit/codemirror-vim'
 import { selectNextOccurrence } from '@codemirror/search'
 import { autocompletion, CompletionContext } from '@codemirror/autocomplete'
 import { getAllMdFileNames } from './link-index.js'
+import { checkTableAtCursor, hideTableToolbar } from './table-editor.js'
 
 // ── Minimal highlight style matching Fjordmark palette ──
 const fjordHighlight = HighlightStyle.define([
@@ -153,6 +154,9 @@ export function createEditor({ parent, doc = '', onChange, onSelectionChange, on
         }
         if ((update.docChanged || update.selectionSet || update.focusChanged) && onSelectionChange) {
           onSelectionChange(update.state)
+        }
+        if (update.selectionSet || update.docChanged) {
+          checkTableAtCursor(update.view)
         }
       }),
     ],

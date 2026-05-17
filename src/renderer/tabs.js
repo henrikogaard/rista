@@ -8,7 +8,7 @@ import { addRecentProject, removeRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
 import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex } from './link-index.js'
-import { renderInspectorContent } from './inspector.js'
+import { refreshRightPanel } from './right-panel.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -256,6 +256,35 @@ export async function openFolderPath(folderPath) {
   }
 }
 
+export async function createDailyNote(dateOverride) {
+  if (!window.fjord || !state.folderPath) {
+    alert('Open a folder first')
+    return
+  }
+  const settings = getSettings()
+  const dailyFolder = settings.dailyNotesFolder || 'daily'
+  const template = settings.dailyNoteTemplate || '# {{date}}\n\n'
+  const date = dateOverride || new Date().toISOString().split('T')[0]
+  const filename = `${date}.md`
+  const dirPath = `${state.folderPath}/${dailyFolder}`
+  const fullPath = `${dirPath}/${filename}`
+
+  // Check if file already exists using stat
+  const fileStat = await window.fjord.stat(fullPath)
+  if (fileStat) {
+    // File exists — just open it
+    await openFile({ path: fullPath, name: filename })
+    return
+  }
+
+  // Ensure directory exists, then create the file
+  await window.fjord.createDir(dirPath)
+  const content = template.replace(/\{\{date\}\}/g, date)
+  await window.fjord.writeFile(fullPath, content)
+  await refreshTree()
+  await openFile({ path: fullPath, name: filename })
+}
+
 export async function createNewFile() {
   if (!window.fjord || !state.folderPath) {
     alert('Open a folder first')
@@ -337,7 +366,7 @@ export function activateTab(tab, pane = 'primary') {
   renderTabs()
   highlightActiveFile()
   updateActiveMetrics()
-  renderInspectorContent()
+  refreshRightPanel()
   if (window.fjord.setRepresentedFile) window.fjord.setRepresentedFile(tab.path)
   persistSession()
 }
@@ -655,7 +684,7 @@ export async function saveTab(tab, options = {}) {
     renderTabs()
     if (hadConflict) showStatusNotice(`Saved ${tab.name}`, 'success')
     updateLinkIndexForFile(tab.path, tab.content)
-    renderInspectorContent()
+    refreshRightPanel()
   }
   return ok
 }
@@ -691,6 +720,7 @@ export async function saveActiveAs() {
 
 // ── App commands ─────────────────────────────────────────────────
 export function handleAppCommand(command, data) {
+  if (command === 'file:daily-note') createDailyNote()
   if (command === 'file:new') createNewFile()
   if (command === 'file:open-folder') openFolder()
   if (command === 'file:save') saveActive()
@@ -702,6 +732,9 @@ export function handleAppCommand(command, data) {
   if (command === 'view:toggle-inspector') _callbacks.toggleInspector?.()
   if (command === 'view:toggle-terminal') _callbacks.toggleTerminal?.()
   if (command === 'view:toggle-zen') _callbacks.toggleZen?.()
+  if (command === 'view:toggle-graph') _callbacks.toggleRightPanel?.('graph')
+  if (command === 'view:toggle-calendar') _callbacks.toggleRightPanel?.('calendar')
+  if (command === 'view:quick-open') _callbacks.openQuickOpen?.()
   if (command === 'view:settings') _callbacks.toggleSettings?.()
   if (command === 'file:open' && data?.path) {
     const name = data.path.split('/').pop()

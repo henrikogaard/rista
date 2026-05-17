@@ -43,6 +43,7 @@ export const state = {
   sidebarVisible: true,
   sidebarMode: 'explorer', // 'explorer' | 'agents'
   inspectorOpen: false,
+  rightPanel: null,       // string | null — active right panel id
   settingsOpen: false,
   commandDialog: null,
   commandPaletteOpen: false,

@@ -299,6 +299,8 @@ export const DEFAULT_SETTINGS = {
   zenParagraphDimming: false,
   zenColumnWidth: 700,
   showMinimap: false,
+  dailyNotesFolder: 'daily',
+  dailyNoteTemplate: '# {{date}}\n\n',
 }
 
 const NUMERIC_KEYS = new Set([
@@ -423,6 +425,8 @@ function sanitize(settings) {
   next.zenParagraphDimming = Boolean(next.zenParagraphDimming)
   next.zenColumnWidth = clamp(Number(next.zenColumnWidth) || 700, 500, 900)
   next.showMinimap = Boolean(next.showMinimap)
+  next.dailyNotesFolder = String(next.dailyNotesFolder || 'daily').trim().replace(/^\/+|\/+$/g, '') || 'daily'
+  next.dailyNoteTemplate = String(next.dailyNoteTemplate ?? DEFAULT_SETTINGS.dailyNoteTemplate)
 
   return next
 }

@@ -1,4 +1,5 @@
 import { $, el, state } from './state.js'
+import { getAllTagNames, getFilesForTag } from './link-index.js'
 
 // ── Callbacks ────────────────────────────────────────────────────
 let _callbacks = {}
@@ -23,6 +24,7 @@ let paletteEl = null
 let inputEl = null
 let resultsEl = null
 let activeIndex = 0
+let _tagFiles = null  // When set, we're browsing files for a specific tag
 
 // ── Tree helpers ─────────────────────────────────────────────────
 function flattenTree(nodes, result = []) {
@@ -75,6 +77,19 @@ function fuzzyMatch(query, text) {
 function getResults(query) {
   const trimmed = query.trim()
 
+  // Tag-files sub-mode: browsing files for a selected tag
+  if (_tagFiles) {
+    return _tagFiles
+      .map(path => {
+        const name = path.split(/[/\\]/).pop()
+        const { match, score } = fuzzyMatch(trimmed, name)
+        return { type: 'file', item: { path, name }, score, match }
+      })
+      .filter(r => r.match)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10)
+  }
+
   // Command mode: query starts with ">"
   if (trimmed.startsWith('>')) {
     const cmdQuery = trimmed.slice(1).trim()
@@ -82,6 +97,26 @@ function getResults(query) {
       .map(c => {
         const { match, score } = fuzzyMatch(cmdQuery, c.label)
         return { type: 'command', item: c, score, match }
+      })
+      .filter(r => r.match)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10)
+  }
+
+  // Tag mode: query starts with "#"
+  if (trimmed.startsWith('#')) {
+    const tagQuery = trimmed.slice(1).trim()
+    const allTags = getAllTagNames()
+    return allTags
+      .map(tag => {
+        const { match, score } = fuzzyMatch(tagQuery, tag)
+        const files = getFilesForTag(tag)
+        return {
+          type: 'tag',
+          item: { name: tag, files, count: files.length },
+          score,
+          match,
+        }
       })
       .filter(r => r.match)
       .sort((a, b) => b.score - a.score)
@@ -116,15 +151,21 @@ function renderResults(results) {
     row.dataset.index = i
 
     const icon = el('div', 'cmd-palette__icon')
-    icon.textContent = r.type === 'file' ? '#' : '>'
+    icon.textContent = r.type === 'file' ? '#' : r.type === 'tag' ? '•' : '>'
 
     const info = el('div', 'cmd-palette__info')
     const label = el('div', 'cmd-palette__label')
-    label.textContent = r.type === 'file' ? r.item.name : r.item.label
+    if (r.type === 'file') label.textContent = r.item.name
+    else if (r.type === 'tag') label.textContent = '#' + r.item.name
+    else label.textContent = r.item.label
 
     info.appendChild(label)
 
-    const desc = r.type === 'command' ? r.item.description : relativePath(r.item.path)
+    const desc = r.type === 'command'
+      ? r.item.description
+      : r.type === 'tag'
+        ? `${r.item.count} file${r.item.count === 1 ? '' : 's'}`
+        : relativePath(r.item.path)
     if (desc) {
       const descEl = el('div', 'cmd-palette__desc')
       descEl.textContent = desc
@@ -176,7 +217,31 @@ function relativePath(filePath) {
 
 // ── Select ───────────────────────────────────────────────────────
 function selectResult(result) {
+  if (result.type === 'tag') {
+    // Show files for this tag as a sub-search
+    if (inputEl) {
+      const files = result.item.files
+      if (files.length === 1) {
+        // Single file: open it directly
+        closeCommandPalette()
+        if (_callbacks.openFile) {
+          const name = files[0].split(/[/\\]/).pop()
+          _callbacks.openFile({ path: files[0], name })
+        }
+      } else {
+        // Show files with this tag: clear input and show filtered list
+        _tagFiles = files
+        inputEl.value = ''
+        inputEl.placeholder = `Files tagged #${result.item.name}...`
+        activeIndex = 0
+        renderResults(getResults(''))
+      }
+    }
+    return
+  }
+
   closeCommandPalette()
+  _tagFiles = null
   if (result.type === 'file' && _callbacks.openFile) {
     _callbacks.openFile(result.item)
   } else if (result.type === 'command' && result.item.action) {
@@ -199,7 +264,7 @@ function buildPalette() {
   inputEl = document.createElement('input')
   inputEl.type = 'text'
   inputEl.className = 'cmd-palette__input'
-  inputEl.placeholder = 'Search files or type > for commands...'
+  inputEl.placeholder = 'Search files, # for tags, > for commands...'
   inputEl.spellcheck = false
   inputEl.autocomplete = 'off'
 
@@ -250,7 +315,7 @@ function destroyPalette() {
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────
-export function openCommandPalette() {
+export function openCommandPalette(initialValue = '') {
   if (state.commandPaletteOpen) return
   state.commandPaletteOpen = true
 
@@ -258,18 +323,26 @@ export function openCommandPalette() {
   overlayEl.classList.add('open')
   paletteEl.classList.add('open')
 
-  // Reset state
   activeIndex = 0
-  if (inputEl) inputEl.value = ''
-  const results = getResults('')
+  if (inputEl) inputEl.value = initialValue
+  const results = getResults(initialValue)
   renderResults(results)
 
   requestAnimationFrame(() => inputEl?.focus())
 }
 
+export function openCommandPaletteFiles() {
+  openCommandPalette('')
+}
+
+export function openCommandPaletteCommands() {
+  openCommandPalette('>')
+}
+
 export function closeCommandPalette() {
   if (!state.commandPaletteOpen) return
   state.commandPaletteOpen = false
+  _tagFiles = null
 
   if (overlayEl) overlayEl.classList.remove('open')
   if (paletteEl) paletteEl.classList.remove('open')
