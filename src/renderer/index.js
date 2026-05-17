@@ -21,7 +21,8 @@ import { openGraphModal } from './graph-modal.js'
 import { buildGraphView, renderGraph, destroyGraph } from './graph-view.js'
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink } from './link-index.js'
-import { registerRightPanel } from './right-panel.js'
+import { registerRightPanel, initRightSidebarWidth } from './right-panel.js'
+import { graphIcon, calendarIcon } from './icons.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel } from './right-panel.js'
@@ -88,6 +89,7 @@ import {
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
+initRightSidebarWidth()
 initKeybindings()
 initDiagrams(getTheme())
 
@@ -99,27 +101,31 @@ registerFocusPane(focusPane)
 initInspectorPanel(openFile, closeRightPanel)
 
 registerRightPanel('graph', {
-  build: () => `<div class="right-panel__header"><span>Knowledge Graph</span><div class="right-panel__close" id="graph-close-btn" role="button" tabindex="0">&times;</div></div><div class="right-panel__body" id="graph-panel-body">${buildGraphView()}</div>`,
-  onOpen: () => {
+  title: 'Graph',
+  icon: graphIcon(),
+  flex: 2,
+  build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
+  onMount: () => {
     renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
-    document.getElementById('graph-close-btn')?.addEventListener('click', closeRightPanel)
   },
-  onClose: () => destroyGraph(),
+  onUnmount: () => destroyGraph(),
 })
 
 initAiChatPanel(openFile, closeRightPanel)
 
 registerRightPanel('calendar', {
-  build: () => `<div class="right-panel__header"><span>Calendar</span><div class="right-panel__close" id="calendar-close-btn" role="button" tabindex="0">&times;</div></div><div class="right-panel__body" id="calendar-panel-body"></div>`,
-  onOpen: () => {
+  title: 'Calendar',
+  icon: calendarIcon(),
+  flex: 0,
+  build: () => `<div id="calendar-panel-body" class="widget-fill"></div>`,
+  onMount: () => {
     const body = document.getElementById('calendar-panel-body')
-    if (body) {
+    if (body && !body.firstChild) {
       const panel = buildCalendarPanel({ onDateClick: (dateStr) => createDailyNote(dateStr), folderPath: state.folderPath })
       body.appendChild(panel)
     }
-    document.getElementById('calendar-close-btn')?.addEventListener('click', closeRightPanel)
   },
-  onClose: () => { document.getElementById('calendar-panel-body')?.replaceChildren() },
+  onUnmount: () => { document.getElementById('calendar-panel-body')?.replaceChildren() },
 })
 
 // ── Transclusion resolver ───────────────────────────────────────

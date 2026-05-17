@@ -21,27 +21,22 @@ let activeTab = 'outline'
 
 export function buildInspector() {
   return `
-    <aside class="inspector" id="inspector">
-      <div class="inspector__header">
-        <div class="inspector__tabs">
-          ${TABS.map(tab => `
-            <div
-              class="inspector__tab${tab.id === activeTab ? ' active' : ''}"
-              data-inspector-tab="${tab.id}"
-              role="button"
-              tabindex="0"
-              title="${tab.label}"
-            >
-              ${tab.icon()}
-            </div>
-          `).join('')}
-        </div>
-        <div class="inspector__close" id="inspector-close-btn" title="Close inspector" role="button" tabindex="0">
-          <svg viewBox="0 0 16 16"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg>
-        </div>
+    <div class="inspector">
+      <div class="inspector__tabs">
+        ${TABS.map(tab => `
+          <div
+            class="inspector__tab${tab.id === activeTab ? ' active' : ''}"
+            data-inspector-tab="${tab.id}"
+            role="button"
+            tabindex="0"
+            title="${tab.label}"
+          >
+            ${tab.icon()}
+          </div>
+        `).join('')}
       </div>
       <div class="inspector__body" id="inspector-body"></div>
-    </aside>
+    </div>
   `
 }
 
@@ -331,33 +326,31 @@ export function initInspectorPanel(openFileFn, closeRightPanelFn) {
   _openFileFn = openFileFn
   _closeRightPanelFn = closeRightPanelFn
   registerRightPanel('inspector', {
+    title: 'Inspector',
+    icon: inspectorWidgetIcon(),
+    flex: 2,
     build: buildInspector,
-    onOpen: () => {
+    onMount: () => {
       state.inspectorOpen = true
       renderInspectorContent()
       const container = $('right-panel-container')
-      if (container) {
+      if (container && !container.dataset.inspectorClickWired) {
         container.addEventListener('click', _onContainerClick)
+        container.dataset.inspectorClickWired = 'true'
       }
     },
-    onClose: () => {
+    onUnmount: () => {
       state.inspectorOpen = false
-      const container = $('right-panel-container')
-      if (container) {
-        container.removeEventListener('click', _onContainerClick)
-      }
     },
-    onRefresh: () => {
-      renderInspectorContent()
-    },
+    onRefresh: renderInspectorContent,
   })
 }
 
+function inspectorWidgetIcon() {
+  return `<svg viewBox="0 0 16 16" width="11" height="11"><rect x="1" y="1.5" width="9" height="13" rx="1.5" fill="none" stroke="currentColor"/><line x1="12" y1="3" x2="15" y2="3" stroke="currentColor" stroke-linecap="round"/><line x1="12" y1="6" x2="15" y2="6" stroke="currentColor" stroke-linecap="round"/><line x1="12" y1="9" x2="15" y2="9" stroke="currentColor" stroke-linecap="round"/></svg>`
+}
+
 function _onContainerClick(event) {
-  const closeBtn = event.target.closest('#inspector-close-btn')
-  if (closeBtn) {
-    _closeRightPanelFn?.()
-    return
-  }
+  // Inspector close button no longer exists in widget mode — widget header has its own close
   handleInspectorClick(event, _openFileFn)
 }

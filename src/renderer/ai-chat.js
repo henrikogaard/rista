@@ -37,12 +37,9 @@ function buildPanel() {
 
   return `
     <div class="ai-chat">
-      <div class="right-panel__header">
-        <span>AI Chat <span style="color:var(--text3);font-size:11px;margin-left:6px">${escapeHtml(modelLabel)}</span></span>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span class="ai-chat__clear" id="ai-chat-clear">Clear</span>
-          <div class="right-panel__close" id="ai-chat-close" role="button" tabindex="0">&times;</div>
-        </div>
+      <div class="ai-chat__model-bar">
+        <span class="ai-chat__model">${escapeHtml(modelLabel)}</span>
+        <span class="ai-chat__clear" id="ai-chat-clear" role="button" tabindex="0">Clear</span>
       </div>
       <div class="ai-chat__messages" id="ai-chat-messages"></div>
       <div class="ai-chat__input-area">
@@ -134,9 +131,6 @@ function updateSendButton() {
 function onPanelOpen() {
   renderMessages()
 
-  const closeBtn = document.getElementById('ai-chat-close')
-  closeBtn?.addEventListener('click', () => _closeRightPanelFn?.())
-
   const clearBtn = document.getElementById('ai-chat-clear')
   clearBtn?.addEventListener('click', () => {
     _messages = []
@@ -166,9 +160,16 @@ function onPanelOpen() {
 export function initAiChatPanel(openFileFn, closeRightPanelFn) {
   _closeRightPanelFn = closeRightPanelFn
   registerRightPanel('ai-chat', {
+    title: 'AI Chat',
+    icon: aiChatWidgetIcon(),
+    flex: 2,
     build: buildPanel,
-    onOpen: onPanelOpen,
-    onClose: () => {},
+    onMount: onPanelOpen,
+    onUnmount: () => {},
     onRefresh: () => renderMessages(),
   })
+}
+
+function aiChatWidgetIcon() {
+  return `<svg viewBox="0 0 16 16" width="11" height="11"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor"/><path d="M5 7l1.5 1.5L11 5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>`
 }
