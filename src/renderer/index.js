@@ -25,7 +25,7 @@ import { registerRightPanel, initRightSidebarWidth } from './right-panel.js'
 import { graphIcon, calendarIcon } from './icons.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
-import { toggleRightPanel, closeRightPanel } from './right-panel.js'
+import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel } from './ai-chat.js'
 
@@ -145,6 +145,7 @@ registerShellCallbacks({
   toggleTerminal: toggleTerminalDrawer,
   toggleInspector,
   toggleRightPanel,
+  toggleRightSidebar,
   openFolder,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   collapseAllFolders,

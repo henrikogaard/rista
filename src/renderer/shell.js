@@ -2,7 +2,7 @@ import { state, $, settingsValue } from './state.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, inspectorIcon, graphIcon, calendarIcon, aiChatIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
@@ -264,7 +264,7 @@ function syncAppMeta() {
 }
 
 function handleGlobalControlPointerDown(event) {
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle, #graph-panel-toggle, #calendar-panel-toggle, #ai-chat-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle')
   if (!control) return
   event.preventDefault()
   event.stopPropagation()
@@ -279,15 +279,12 @@ function performGlobalControl(id) {
   if (id === 'theme-btn') toggleAppTheme()
   if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
   if (id === 'terminal-toggle') _callbacks.toggleTerminal?.()
-  if (id === 'inspector-toggle') _callbacks.toggleInspector?.()
-  if (id === 'graph-panel-toggle') _callbacks.toggleRightPanel?.('graph')
-  if (id === 'calendar-panel-toggle') _callbacks.toggleRightPanel?.('calendar')
-  if (id === 'ai-chat-toggle') _callbacks.toggleRightPanel?.('ai-chat')
+  if (id === 'right-sidebar-toggle') _callbacks.toggleRightSidebar?.()
 }
 
 function handleGlobalControlKeydown(event) {
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #inspector-toggle, #graph-panel-toggle, #calendar-panel-toggle, #ai-chat-toggle')
+  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle')
   if (!control) return
   event.preventDefault()
   performGlobalControl(control.id)
@@ -438,17 +435,8 @@ export function buildShell() {
             <div class="theme-btn" id="terminal-toggle" title="Terminal" aria-label="Toggle terminal" role="button" tabindex="0">
               ${terminalIcon()}
             </div>
-            <div class="theme-btn" id="inspector-toggle" title="Inspector" aria-label="Toggle inspector" role="button" tabindex="0">
-              ${inspectorIcon()}
-            </div>
-            <div class="theme-btn" id="graph-panel-toggle" title="Graph" aria-label="Toggle graph panel" role="button" tabindex="0">
-              ${graphIcon()}
-            </div>
-            <div class="theme-btn" id="calendar-panel-toggle" title="Calendar" aria-label="Toggle calendar panel" role="button" tabindex="0">
-              ${calendarIcon()}
-            </div>
-            <div class="theme-btn" id="ai-chat-toggle" title="AI Chat" aria-label="Toggle AI chat panel" role="button" tabindex="0">
-              ${aiChatIcon()}
+            <div class="theme-btn" id="right-sidebar-toggle" title="Right sidebar" aria-label="Toggle right sidebar" role="button" tabindex="0">
+              ${rightSidebarIcon()}
             </div>
           </div>
           <div class="st st-brand">fjordmark</div>

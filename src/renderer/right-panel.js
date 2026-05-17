@@ -221,6 +221,26 @@ export function toggleRightPanel(id) {
   }
 }
 
+/**
+ * Toggle the whole sidebar: if any widget is open, close all;
+ * otherwise re-open the previously active widgets (or inspector as fallback).
+ */
+let _lastActive = null
+export function toggleRightSidebar() {
+  ensureStateShape()
+  if (state.rightWidgets.size > 0) {
+    _lastActive = Array.from(state.rightWidgets)
+    closeRightPanel()
+    return
+  }
+  if (!$('right-panel-container')) return
+  const toRestore = (_lastActive && _lastActive.length ? _lastActive : ['inspector']).filter(id => _widgets.has(id))
+  if (toRestore.length === 0 && _widgets.has('inspector')) toRestore.push('inspector')
+  toRestore.forEach(id => state.rightWidgets.add(id))
+  renderSidebar()
+  persistWidgetState()
+}
+
 export function toggleWidgetCollapse(id) {
   ensureStateShape()
   if (state.collapsedWidgets.has(id)) {
@@ -270,11 +290,8 @@ export function refreshRightPanel(id) {
 
 function syncRightPanelToggles() {
   ensureStateShape()
-  const panelIds = ['inspector', 'graph', 'calendar', 'ai-chat']
-  for (const pid of panelIds) {
-    const toggle = $(`${pid}-toggle`) || $(`${pid}-panel-toggle`)
-    if (toggle) toggle.classList.toggle('active', state.rightWidgets.has(pid))
-  }
+  const toggle = $('right-sidebar-toggle')
+  if (toggle) toggle.classList.toggle('active', state.rightWidgets.size > 0)
 }
 
 function escapeHtml(value = '') {

@@ -42,6 +42,10 @@ export function calendarIcon() {
   return `<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="11" rx="1.5" fill="none" stroke="currentColor"/><line x1="2" y1="6.5" x2="14" y2="6.5" stroke="currentColor"/><line x1="5" y1="1.5" x2="5" y2="4.5" stroke="currentColor" stroke-linecap="round"/><line x1="11" y1="1.5" x2="11" y2="4.5" stroke="currentColor" stroke-linecap="round"/><circle cx="5.5" cy="9.5" r="0.7" fill="currentColor" stroke="none"/><circle cx="8" cy="9.5" r="0.7" fill="currentColor" stroke="none"/><circle cx="10.5" cy="9.5" r="0.7" fill="currentColor" stroke="none"/></svg>`
 }
 
+export function rightSidebarIcon() {
+  return `<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.2"/><path d="M10 3v10"/><path d="M11.8 5.2h0.4M11.8 7.6h0.4M11.8 10h0.4"/></svg>`
+}
+
 export function aiChatIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M3 3h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 12H7l-3 2.5V12H3A1.5 1.5 0 0 1 1.5 10.5v-6A1.5 1.5 0 0 1 3 3z" fill="none" stroke="currentColor"/><path d="M8 5.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5L5.5 9l2.5-1z" fill="currentColor" stroke="none"/></svg>`
 }
