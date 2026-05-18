@@ -18,6 +18,7 @@ const SETTINGS_TABS = [
   { id: 'theme', label: 'Theme' },
   { id: 'editor', label: 'Editor' },
   { id: 'preview', label: 'Preview' },
+  { id: 'daily', label: 'Daily Notes' },
   { id: 'behavior', label: 'Behavior' },
   { id: 'ai', label: 'AI' },
 ]
@@ -547,11 +548,14 @@ export function buildShell() {
               ${renderRangeSetting('zenColumnWidth', 'Zen column width', 500, 900, 10, 'px')}
               ${renderToggleSetting('showMinimap', 'Show minimap', 'Display a document overview on the right edge')}
             </section>
+          </div>
 
+          <div class="settings-page" data-settings-section="daily">
             <section class="settings-group">
               <div class="settings-group__title">Daily notes</div>
-              ${renderTextSetting('dailyNotesFolder', 'Daily notes folder', 'Subfolder for daily notes, e.g. daily')}
-              ${renderTextSetting('dailyNoteTemplate', 'Daily note template', 'Template for new daily notes. Use {{date}} for the date.')}
+              <div class="settings-group__hint">Used by the Daily Note shortcut (⇧⌘D) and the calendar widget.</div>
+              ${renderTextSetting('dailyNotesFolder', 'Folder', 'Subfolder within your project, e.g. daily')}
+              ${renderTextSetting('dailyNoteTemplate', 'Template', 'Use {{date}} for the date placeholder')}
             </section>
           </div>
 

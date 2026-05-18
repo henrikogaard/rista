@@ -649,6 +649,12 @@ html, body, #root {
   letter-spacing: 0.1em;
   color: var(--text2);
 }
+.settings-group__hint {
+  font-size: 11.5px;
+  color: var(--text3);
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
 
 .settings-group--compact { gap: 10px; }
 
@@ -2576,6 +2582,20 @@ body.is-resizing-right-sidebar .right-sidebar { transition: none; }
 body.is-resizing-right-sidebar .right-sidebar__resizer {
   background: var(--accent-dim);
 }
+
+/* Resizer between stacked widgets */
+.widget-resizer {
+  height: 4px;
+  flex: 0 0 auto;
+  cursor: ns-resize;
+  background: transparent;
+  transition: background 120ms;
+}
+.widget-resizer:hover,
+body.is-resizing-widget .widget-resizer {
+  background: var(--accent-dim);
+}
+body.is-resizing-widget { cursor: ns-resize; user-select: none; }
 
 /* Tab strip at top of right sidebar */
 .right-sidebar__tabs {

@@ -34,15 +34,17 @@ export function buildRightPanelContainer() {
 const WIDGETS_KEY = 'fjordmark-right-widgets'
 const COLLAPSED_KEY = 'fjordmark-right-widgets-collapsed'
 const ORDER_KEY = 'fjordmark-right-widgets-order'
+const FLEX_KEY = 'fjordmark-right-widgets-flex'
 
 function loadWidgetState() {
   try {
     const active = JSON.parse(localStorage.getItem(WIDGETS_KEY) || '[]')
     const collapsed = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]')
     const order = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]')
-    return { active, collapsed, order }
+    const flex = JSON.parse(localStorage.getItem(FLEX_KEY) || '{}')
+    return { active, collapsed, order, flex }
   } catch {
-    return { active: [], collapsed: [], order: [] }
+    return { active: [], collapsed: [], order: [], flex: {} }
   }
 }
 
@@ -51,6 +53,7 @@ function persistWidgetState() {
     localStorage.setItem(WIDGETS_KEY, JSON.stringify(Array.from(state.rightWidgets)))
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(state.collapsedWidgets)))
     localStorage.setItem(ORDER_KEY, JSON.stringify(state.rightWidgetsOrder || []))
+    localStorage.setItem(FLEX_KEY, JSON.stringify(state.rightWidgetsFlex || {}))
   } catch {}
 }
 
@@ -60,6 +63,7 @@ function ensureStateShape() {
     state.rightWidgets = new Set(stored.active)
     state.collapsedWidgets = new Set(stored.collapsed)
     state.rightWidgetsOrder = stored.order
+    state.rightWidgetsFlex = stored.flex
   }
   if (!(state.collapsedWidgets instanceof Set)) {
     state.collapsedWidgets = new Set()
@@ -67,6 +71,17 @@ function ensureStateShape() {
   if (!Array.isArray(state.rightWidgetsOrder)) {
     state.rightWidgetsOrder = []
   }
+  if (!state.rightWidgetsFlex || typeof state.rightWidgetsFlex !== 'object') {
+    state.rightWidgetsFlex = {}
+  }
+}
+
+function getWidgetFlex(id) {
+  ensureStateShape()
+  const override = state.rightWidgetsFlex[id]
+  if (typeof override === 'number' && override > 0) return override
+  const hooks = _widgets.get(id)
+  return Number(hooks?.flex || 1)
 }
 
 function getActiveWidgetIds() {
@@ -128,18 +143,19 @@ function renderSidebar() {
     existing.set(node.dataset.widget, node)
   })
 
-  // Build a fresh ordered list of widget nodes, reusing existing where possible
+  // Build a fresh ordered list of widget nodes (interleaved with resizers),
+  // reusing existing nodes where possible.
   const fragment = document.createDocumentFragment()
-  for (const id of activeIds) {
+  activeIds.forEach((id, i) => {
     let node = existing.get(id)
     if (!node) {
       const hooks = _widgets.get(id)
-      if (!hooks) continue
+      if (!hooks) return
       const collapsed = state.collapsedWidgets.has(id)
       node = document.createElement('section')
       node.className = `widget${collapsed ? ' widget--collapsed' : ''}`
       node.dataset.widget = id
-      node.style.flex = collapsed ? '0 0 auto' : String(hooks.flex || 1)
+      node.style.flex = collapsed ? '0 0 auto' : `${getWidgetFlex(id)} 1 0`
       node.innerHTML = `
         <header class="widget__header" draggable="true" data-action="widget-toggle-collapse" data-widget="${id}">
           <span class="widget__drag-handle" aria-hidden="true">⋮⋮</span>
@@ -157,18 +173,26 @@ function renderSidebar() {
         requestAnimationFrame(() => hooks.onMount?.())
       }
     } else {
-      fragment.appendChild(node)  // moves existing node
+      fragment.appendChild(node)
     }
-  }
+    // Insert a resize handle after every widget except the last
+    if (i < activeIds.length - 1) {
+      const resizer = document.createElement('div')
+      resizer.className = 'widget-resizer'
+      resizer.dataset.action = 'widget-resize'
+      resizer.dataset.aboveWidget = id
+      resizer.dataset.belowWidget = activeIds[i + 1]
+      fragment.appendChild(resizer)
+    }
+  })
   stack.replaceChildren(fragment)
 
   // Update flex for collapse state on existing widgets too
   stack.querySelectorAll('.widget').forEach(node => {
     const id = node.dataset.widget
     const collapsed = state.collapsedWidgets.has(id)
-    const hooks = _widgets.get(id)
     node.classList.toggle('widget--collapsed', collapsed)
-    node.style.flex = collapsed ? '0 0 auto' : String(hooks?.flex || 1)
+    node.style.flex = collapsed ? '0 0 auto' : `${getWidgetFlex(id)} 1 0`
   })
 
   renderTabs()
@@ -320,9 +344,61 @@ document.addEventListener('click', (event) => {
 })
 
 document.addEventListener('pointerdown', (event) => {
-  const resizer = event.target.closest('[data-action="right-sidebar-resize"]')
-  if (resizer) startRightSidebarResize(event)
+  const sidebarResizer = event.target.closest('[data-action="right-sidebar-resize"]')
+  if (sidebarResizer) {
+    startRightSidebarResize(event)
+    return
+  }
+  const widgetResizer = event.target.closest('[data-action="widget-resize"]')
+  if (widgetResizer) startWidgetResize(event, widgetResizer)
 })
+
+function startWidgetResize(event, resizer) {
+  ensureStateShape()
+  const aboveId = resizer.dataset.aboveWidget
+  const belowId = resizer.dataset.belowWidget
+  if (!aboveId || !belowId) return
+  if (state.collapsedWidgets.has(aboveId) || state.collapsedWidgets.has(belowId)) return
+
+  const stack = $('right-sidebar-stack')
+  const aboveEl = stack?.querySelector(`.widget[data-widget="${aboveId}"]`)
+  const belowEl = stack?.querySelector(`.widget[data-widget="${belowId}"]`)
+  if (!aboveEl || !belowEl) return
+
+  event.preventDefault()
+  document.body.classList.add('is-resizing-widget')
+
+  const startY = event.clientY
+  const aboveStart = aboveEl.getBoundingClientRect().height
+  const belowStart = belowEl.getBoundingClientRect().height
+  const total = aboveStart + belowStart
+  const flexAbove = getWidgetFlex(aboveId)
+  const flexBelow = getWidgetFlex(belowId)
+  const totalFlex = flexAbove + flexBelow
+  const minPx = 60
+
+  const onMove = (e) => {
+    const delta = e.clientY - startY
+    let nextAbove = Math.max(minPx, Math.min(total - minPx, aboveStart + delta))
+    const nextBelow = total - nextAbove
+    const newFlexAbove = (nextAbove / total) * totalFlex
+    const newFlexBelow = (nextBelow / total) * totalFlex
+    state.rightWidgetsFlex[aboveId] = newFlexAbove
+    state.rightWidgetsFlex[belowId] = newFlexBelow
+    aboveEl.style.flex = `${newFlexAbove} 1 0`
+    belowEl.style.flex = `${newFlexBelow} 1 0`
+  }
+  const onUp = () => {
+    document.body.classList.remove('is-resizing-widget')
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onUp)
+    persistWidgetState()
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+}
 
 // ── Drag-to-reorder widget headers ──────────────────────────────
 let _dragId = null
