@@ -250,6 +250,65 @@ export function getBacklinks(path) {
   })
 }
 
+/**
+ * Find files that mention the target note's title in plain text, where the
+ * mention is NOT already inside a [[wikilink]]. Returns a list of
+ * { sourcePath, sourceName, context } entries with the surrounding line.
+ *
+ * Skips fenced code blocks, inline code, the source's own frontmatter, and
+ * files that already have a real link to the target (those show up in
+ * getBacklinks instead).
+ */
+export function getUnlinkedMentions(targetPath, { limit = 50 } = {}) {
+  if (!targetPath) return []
+  const targetName = targetPath.split(/[/\\]/).pop().replace(/\.md$/i, '')
+  if (!targetName) return []
+  // Word-boundary match, case-insensitive. Escape regex metacharacters in the
+  // note name so titles like "C++" don't break the pattern.
+  const escaped = targetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const mentionRe = new RegExp(`(^|[^\\w\\[\\]])${escaped}(?![\\w\\[\\]])`, 'i')
+
+  const backlinks = _index.backlinks.get(targetPath) || new Set()
+  const results = []
+
+  for (const [sourcePath, entry] of _index.files) {
+    if (sourcePath === targetPath) continue
+    if (backlinks.has(sourcePath)) continue  // already linked — covered by getBacklinks
+    const content = entry?.content || ''
+    if (!content) continue
+
+    const lines = content.split('\n')
+    let inFence = false
+    let inFrontmatter = false
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (i === 0 && /^---\s*$/.test(line)) { inFrontmatter = true; continue }
+      if (inFrontmatter) {
+        if (/^---\s*$/.test(line)) inFrontmatter = false
+        continue
+      }
+      if (/^\s*```/.test(line)) { inFence = !inFence; continue }
+      if (inFence) continue
+      // Strip inline code spans before matching so backticked names don't count
+      const stripped = line.replace(/`[^`]*`/g, '')
+      // Also strip existing wikilink targets so we only catch *plain* mentions
+      const noLinks = stripped.replace(/\[\[[^\]]+\]\]/g, '')
+      if (mentionRe.test(noLinks)) {
+        results.push({
+          sourcePath,
+          sourceName: sourcePath.split(/[/\\]/).pop().replace(/\.md$/i, ''),
+          line: i + 1,
+          context: line.trim(),
+        })
+        break  // one mention per source file is enough
+      }
+    }
+    if (results.length >= limit) break
+  }
+
+  return results
+}
+
 export function getAllMdFileNames() {
   return Array.from(_index.allPaths)
     .map(p => p.split(/[/\\]/).pop().replace(/\.md$/i, ''))

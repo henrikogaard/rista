@@ -137,3 +137,71 @@ export function getAllTags(markdown) {
 
   return Array.from(all).sort()
 }
+
+// ── Serialization ────────────────────────────────────────────────
+function needsQuoting(value) {
+  if (value === '' || value == null) return true
+  if (typeof value !== 'string') return false
+  if (/^[\s'"`#&*!|>%@,\[\]{}]/.test(value)) return true
+  if (/[:#]/.test(value)) return true
+  if (/^(true|false|yes|no|null|~)$/i.test(value)) return true
+  if (/^-?\d+(\.\d+)?$/.test(value)) return true
+  return false
+}
+
+function formatScalar(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'number') return String(value)
+  const str = String(value)
+  if (!needsQuoting(str)) return str
+  // Escape double quotes for safety
+  return `"${str.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+/**
+ * Serialize a frontmatter object back to YAML. Preserves insertion order.
+ * Arrays are emitted as block lists (one item per line) for readability.
+ */
+export function serializeFrontmatter(obj) {
+  if (!obj || typeof obj !== 'object') return ''
+  const keys = Object.keys(obj)
+  if (keys.length === 0) return ''
+  const lines = []
+  for (const key of keys) {
+    const value = obj[key]
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        lines.push(`${key}: []`)
+      } else {
+        lines.push(`${key}:`)
+        for (const item of value) {
+          lines.push(`  - ${formatScalar(item)}`)
+        }
+      }
+    } else {
+      lines.push(`${key}: ${formatScalar(value)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Replace (or insert) the frontmatter block in a markdown document.
+ * Pass `frontmatter: null` or empty object to strip frontmatter entirely.
+ */
+export function applyFrontmatter(markdown, frontmatter) {
+  const hasContent = frontmatter && Object.keys(frontmatter).length > 0
+  const yaml = hasContent ? serializeFrontmatter(frontmatter) : ''
+  const block = hasContent ? `---\n${yaml}\n---\n` : ''
+
+  if (!markdown) return block
+  const match = markdown.match(FRONTMATTER_RE)
+  if (match) {
+    const after = markdown.slice(match[0].length).replace(/^\r?\n/, '')
+    return block ? `${block}${after.startsWith('\n') ? '' : '\n'}${after}` : after
+  }
+  // No existing frontmatter — prepend
+  if (!block) return markdown
+  return `${block}\n${markdown}`
+}

@@ -11,6 +11,7 @@ export function buildGraphView() {
         <p class="graph-empty__sub">Create [[wikilinks]] between notes to see them here.</p>
       </div>
       <div class="graph-controls">
+        <div class="graph-btn" id="graph-local-btn" title="Toggle local graph (current note's neighborhood)">Local</div>
         <div class="graph-btn" id="graph-reset-btn" title="Reset view">Reset</div>
       </div>
       <div class="graph-tooltip" id="graph-tooltip" style="display:none"></div>
@@ -73,9 +74,38 @@ function getPalette() {
 }
 
 let _palette = getPalette()
+let _lastLinkIndex = null
+let _localMode = false
+let _localPath = null
+const LOCAL_HOPS = 2
+
+export function setGraphLocalMode(enabled, path) {
+  _localMode = !!enabled
+  if (path !== undefined) _localPath = path
+  if (_lastLinkIndex && _onNodeClick) {
+    // Tear down before re-render so listeners don't accumulate
+    teardownInteractive()
+    renderGraph(_lastLinkIndex, _onNodeClick)
+  }
+}
+
+export function getGraphLocalMode() {
+  return _localMode
+}
+
+function teardownInteractive() {
+  if (_animationId) { cancelAnimationFrame(_animationId); _animationId = null }
+  if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null }
+  if (_resizeListener) { window.removeEventListener('resize', _resizeListener); _resizeListener = null }
+  for (const { target, type, fn } of _listeners) {
+    try { target.removeEventListener(type, fn) } catch {}
+  }
+  _listeners = []
+}
 
 export function renderGraph(linkIndex, onNodeClick) {
   _onNodeClick = onNodeClick
+  _lastLinkIndex = linkIndex
   _canvas = document.getElementById('graph-canvas')
   const empty = document.getElementById('graph-empty')
   if (!_canvas) return
@@ -104,6 +134,36 @@ export function renderGraph(linkIndex, onNodeClick) {
       edgesByPath.get(sourcePath).add(targetPath)
       edgesByPath.get(targetPath).add(sourcePath)  // undirected for layout
     }
+  }
+
+  // Local mode: keep only the subgraph within LOCAL_HOPS of _localPath
+  if (_localMode && _localPath) {
+    const keep = new Set([_localPath])
+    let frontier = new Set([_localPath])
+    for (let hop = 0; hop < LOCAL_HOPS; hop++) {
+      const next = new Set()
+      for (const p of frontier) {
+        const neighbors = edgesByPath.get(p)
+        if (!neighbors) continue
+        for (const n of neighbors) {
+          if (!keep.has(n)) {
+            keep.add(n)
+            next.add(n)
+          }
+        }
+      }
+      frontier = next
+      if (frontier.size === 0) break
+    }
+    const filtered = new Map()
+    for (const [src, neighbors] of edgesByPath) {
+      if (!keep.has(src)) continue
+      const kept = new Set()
+      for (const n of neighbors) if (keep.has(n)) kept.add(n)
+      filtered.set(src, kept)
+    }
+    edgesByPath.clear()
+    for (const [k, v] of filtered) edgesByPath.set(k, v)
   }
 
   const pathToIdx = new Map()
@@ -279,6 +339,14 @@ export function renderGraph(linkIndex, onNodeClick) {
   if (resetBtn) {
     resetBtn.addEventListener('click', onResetClick)
     _listeners.push({ target: resetBtn, type: 'click', fn: onResetClick })
+  }
+
+  const localBtn = document.getElementById('graph-local-btn')
+  if (localBtn) {
+    localBtn.classList.toggle('graph-btn--active', _localMode)
+    const onLocalClick = () => setGraphLocalMode(!_localMode)
+    localBtn.addEventListener('click', onLocalClick)
+    _listeners.push({ target: localBtn, type: 'click', fn: onLocalClick })
   }
 
   // Animation loop

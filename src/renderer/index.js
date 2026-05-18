@@ -18,13 +18,14 @@ import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview } from './attachment-preview.js'
 import { toggleTerminalDrawer } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
-import { buildGraphView, renderGraph, destroyGraph } from './graph-view.js'
+import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink } from './link-index.js'
 import { registerRightPanel, initRightSidebarWidth } from './right-panel.js'
-import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon } from './icons.js'
+import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon } from './icons.js'
 import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
 import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
+import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
@@ -108,12 +109,29 @@ registerRightPanel('graph', {
   flex: 2,
   build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
   onMount: () => {
+    setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
     renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
   },
   onUnmount: () => destroyGraph(),
+  onRefresh: () => {
+    // When the focused tab changes, push the new path so local mode follows it
+    if (getGraphLocalMode()) {
+      setGraphLocalMode(true, getFocusedTab()?.path || null)
+    }
+  },
 })
 
 initAiChatPanel(openFile, closeRightPanel)
+
+registerRightPanel('properties', {
+  title: 'Properties',
+  icon: propertiesIcon(),
+  flex: 1,
+  build: buildPropertiesPanel,
+  onMount: mountPropertiesPanel,
+  onUnmount: () => {},
+  onRefresh: renderProperties,
+})
 
 registerRightPanel('outline', {
   title: 'Outline',

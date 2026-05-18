@@ -53,6 +53,10 @@ export function outlineIcon() {
   return `<svg viewBox="0 0 16 16"><line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" stroke-linecap="round"/><line x1="5" y1="8" x2="13" y2="8" stroke="currentColor" stroke-linecap="round"/><line x1="7" y1="12" x2="13" y2="12" stroke="currentColor" stroke-linecap="round"/></svg>`
 }
 
+export function propertiesIcon() {
+  return `<svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor"/><line x1="2" y1="6" x2="14" y2="6" stroke="currentColor"/><circle cx="5" cy="9" r="0.7" fill="currentColor"/><line x1="7.5" y1="9" x2="12" y2="9" stroke="currentColor" stroke-linecap="round"/><circle cx="5" cy="11.5" r="0.7" fill="currentColor"/><line x1="7.5" y1="11.5" x2="12" y2="11.5" stroke="currentColor" stroke-linecap="round"/></svg>`
+}
+
 export function bookmarkIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M4 2.5h8v11.5l-4-2.8-4 2.8z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>`
 }

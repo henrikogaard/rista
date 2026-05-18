@@ -1,5 +1,5 @@
 import { state, $, getFocusedTab } from './state.js'
-import { getOutgoingLinks, getBacklinks, getAllMdFileNames, getTagsForFile, getAllTagNames, getFilesForTag } from './link-index.js'
+import { getOutgoingLinks, getBacklinks, getAllMdFileNames, getTagsForFile, getAllTagNames, getFilesForTag, getUnlinkedMentions } from './link-index.js'
 import { getStats, extractHeadings } from './markdown.js'
 import { getSettings } from './settings.js'
 import { registerRightPanel } from './right-panel.js'
@@ -101,6 +101,7 @@ function renderLinksContent() {
 
   const outgoing = getOutgoingLinks(tab.path)
   const backlinks = getBacklinks(tab.path)
+  const unlinked = getUnlinkedMentions(tab.path)
 
   let html = ''
 
@@ -133,7 +134,21 @@ function renderLinksContent() {
     html += `</div>`
   }
 
-  if (!outgoing.length && !backlinks.length) {
+  if (unlinked.length) {
+    html += `<div class="inspector-section__title inspector-section__title--unlinked">Unlinked mentions</div>`
+    html += `<div class="inspector-link-list">`
+    for (const mention of unlinked) {
+      html += `
+        <div class="inspector-link unlinked" data-link-path="${escapeAttr(mention.sourcePath)}" title="Line ${mention.line}">
+          <span class="inspector-link__name">${escapeHtml(mention.sourceName)}</span>
+          ${mention.context ? `<span class="backlink-context">${escapeHtml(mention.context)}</span>` : ''}
+        </div>
+      `
+    }
+    html += `</div>`
+  }
+
+  if (!outgoing.length && !backlinks.length && !unlinked.length) {
     html = `<div class="inspector-empty"><span>No links in this note</span></div>`
   }
 
