@@ -2,11 +2,18 @@ import { state, $, getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 import { PROVIDERS } from './ai-providers.js'
 import { registerRightPanel } from './right-panel.js'
+import { TOOLS, toolsForProvider, executeToolByName, getToolSpec } from './ai-tools.js'
 
 // ── AI Chat Panel ──────────────────────────────────────────────
+// Messages use a unified shape; the main-process IPC translates per provider.
+//   { role: 'user' | 'assistant' | 'tool', content, toolCalls?, toolCallId? }
+// We additionally render local-only "system" status entries (e.g. "Reading …")
+// using role: '__status' which is excluded before sending.
+
 let _closeRightPanelFn = null
-let _messages = []  // { role: 'user'|'assistant', content: string }
+let _messages = []
 let _sending = false
+const MAX_TOOL_TURNS = 10
 
 function getProviderConfig() {
   const s = getSettings()
@@ -43,7 +50,7 @@ function buildPanel() {
       </div>
       <div class="ai-chat__messages" id="ai-chat-messages"></div>
       <div class="ai-chat__input-area">
-        <textarea class="ai-chat__textarea" id="ai-chat-input" placeholder="Ask about your note..." rows="1"></textarea>
+        <textarea class="ai-chat__textarea" id="ai-chat-input" placeholder="Ask anything about this folder…" rows="1"></textarea>
         <button class="ai-chat__send" id="ai-chat-send" type="button">Send</button>
       </div>
     </div>
@@ -55,15 +62,37 @@ function renderMessages() {
   if (!container) return
 
   let html = ''
-  if (_messages.length === 0 && !_sending) {
+  const visible = _messages.filter(m => m.role !== 'tool' && !(m.role === 'assistant' && !m.content && !m.toolCalls?.length))
+  if (visible.length === 0 && !_sending) {
     html = `<div class="ai-chat__empty">
-      Ask anything about the current note.
+      Ask anything about your notes.
+      <div class="ai-chat__empty-hint">The assistant can read, search, write, move and delete files in this folder.</div>
       <div class="ai-chat__empty-hint">Enter to send · Shift+Enter for newline</div>
     </div>`
   } else {
-    for (const msg of _messages) {
-      const cls = msg.role === 'user' ? 'ai-chat__msg--user' : 'ai-chat__msg--assistant'
-      html += `<div class="ai-chat__msg ${cls}">${escapeHtml(msg.content)}</div>`
+    for (const msg of visible) {
+      if (msg.role === '__status') {
+        html += `<div class="ai-chat__status">${escapeHtml(msg.content)}</div>`
+        continue
+      }
+      if (msg.role === 'user') {
+        html += `<div class="ai-chat__msg ai-chat__msg--user">${escapeHtml(msg.content)}</div>`
+        continue
+      }
+      // assistant: text + optional tool call markers
+      if (msg.content) {
+        html += `<div class="ai-chat__msg ai-chat__msg--assistant">${escapeHtml(msg.content)}</div>`
+      }
+      if (Array.isArray(msg.toolCalls)) {
+        for (const tc of msg.toolCalls) {
+          const summary = summarizeToolCall(tc)
+          html += `<div class="ai-chat__tool" title="${escapeHtml(JSON.stringify(tc.input || {}, null, 2))}">
+            <span class="ai-chat__tool-icon">⚒</span>
+            <span class="ai-chat__tool-name">${escapeHtml(tc.name)}</span>
+            <span class="ai-chat__tool-arg">${escapeHtml(summary)}</span>
+          </div>`
+        }
+      }
     }
     if (_sending) {
       html += `<div class="ai-chat__msg ai-chat__msg--typing">Thinking</div>`
@@ -73,10 +102,119 @@ function renderMessages() {
   container.scrollTop = container.scrollHeight
 }
 
-function getNoteContext() {
+function summarizeToolCall(tc) {
+  const input = tc.input || {}
+  if (tc.name === 'list_files') return input.folder || '(root)'
+  if (tc.name === 'read_file' || tc.name === 'delete_file' || tc.name === 'create_folder') return input.path || ''
+  if (tc.name === 'write_file') return `${input.path || ''} (${(input.content || '').length} chars)`
+  if (tc.name === 'move_file') return `${input.from || ''} → ${input.to || ''}`
+  if (tc.name === 'search_notes') return `"${input.query || ''}"`
+  return JSON.stringify(input)
+}
+
+function pushStatus(content) {
+  _messages.push({ role: '__status', content })
+  renderMessages()
+}
+
+function buildSystemPrompt() {
   const tab = getFocusedTab()
-  if (!tab) return ''
-  return tab.content || ''
+  const focusedNote = tab
+    ? `The user currently has "${tab.name}" open. Its full content:\n\n${tab.content || '(empty)'}`
+    : 'The user does not currently have a note open.'
+  const root = state.folderPath || '(no folder open)'
+  return [
+    'You are a writing assistant embedded in Fjordmark, a local-first markdown editor.',
+    `The user has the folder "${root}" open as their project.`,
+    'You can use the provided tools to read, search, write, move, and delete files inside this folder. Always inspect the project structure with list_files or search_notes before making destructive changes. Paths are RELATIVE to the project root.',
+    'Never invent file paths. Confirm by listing or searching first when unsure.',
+    'When writing markdown, preserve existing frontmatter if present.',
+    '',
+    focusedNote,
+  ].join('\n')
+}
+
+// Returns whether the user approves the destructive call.
+async function confirmDestructive(tc) {
+  const summary = summarizeToolCall(tc)
+  return window.confirm(`The AI wants to ${tc.name.replace('_', ' ')}:\n\n${summary}\n\nProceed?`)
+}
+
+async function runAgentLoop() {
+  const config = getProviderConfig()
+  if (!config) return
+  const systemPrompt = buildSystemPrompt()
+  const supportsTools = config.provider === 'anthropic' || config.provider === 'openai'
+  const tools = supportsTools ? toolsForProvider(config.provider) : undefined
+
+  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+    // Strip local-only status entries before sending
+    const apiMessages = [
+      { role: 'system', content: systemPrompt },
+      ..._messages.filter(m => m.role !== '__status'),
+    ]
+    let result
+    try {
+      result = await window.fjord.aiChat({
+        provider: config.provider,
+        apiKey: config.apiKey,
+        model: config.model,
+        baseUrl: config.baseUrl,
+        messages: apiMessages,
+        tools,
+      })
+    } catch (err) {
+      _messages.push({ role: 'assistant', content: `Error: ${err.message}` })
+      return
+    }
+    if (result.error) {
+      _messages.push({ role: 'assistant', content: `Error: ${result.error}` })
+      return
+    }
+
+    const assistantMsg = { role: 'assistant', content: result.text || '' }
+    if (Array.isArray(result.toolCalls) && result.toolCalls.length) {
+      assistantMsg.toolCalls = result.toolCalls
+    }
+    _messages.push(assistantMsg)
+    renderMessages()
+
+    if (!assistantMsg.toolCalls || assistantMsg.toolCalls.length === 0) {
+      // Done — no more tools requested
+      if (!assistantMsg.content) {
+        assistantMsg.content = '(empty response)'
+        renderMessages()
+      }
+      return
+    }
+
+    // Execute each tool, append tool_result messages
+    for (const tc of assistantMsg.toolCalls) {
+      const spec = getToolSpec(tc.name)
+      if (!spec) {
+        _messages.push({ role: 'tool', toolCallId: tc.id, content: `Unknown tool: ${tc.name}`, isError: true })
+        continue
+      }
+      if (spec.destructive) {
+        const ok = await confirmDestructive(tc)
+        if (!ok) {
+          _messages.push({ role: 'tool', toolCallId: tc.id, content: 'User declined the action.', isError: true })
+          pushStatus(`Declined: ${tc.name}`)
+          continue
+        }
+      }
+      pushStatus(`${tc.name}: ${summarizeToolCall(tc)}`)
+      try {
+        const out = await executeToolByName(tc.name, tc.input || {})
+        _messages.push({ role: 'tool', toolCallId: tc.id, content: String(out ?? '') })
+      } catch (err) {
+        _messages.push({ role: 'tool', toolCallId: tc.id, content: `Error: ${err.message}`, isError: true })
+      }
+    }
+    renderMessages()
+  }
+
+  _messages.push({ role: 'assistant', content: `(stopped after ${MAX_TOOL_TURNS} tool turns to prevent runaway)` })
 }
 
 async function sendMessage() {
@@ -100,27 +238,8 @@ async function sendMessage() {
   renderMessages()
   updateSendButton()
 
-  const noteContent = getNoteContext()
-  const systemPrompt = `You are a writing assistant. The user is working on a markdown note. Here is the current note content:\n\n${noteContent}\n\nHelp them with their writing.`
-
-  const apiMessages = [
-    { role: 'system', content: systemPrompt },
-    ..._messages,
-  ]
-
   try {
-    const result = await window.fjord.aiChat({
-      provider: config.provider,
-      apiKey: config.apiKey,
-      model: config.model,
-      baseUrl: config.baseUrl,
-      messages: apiMessages,
-    })
-    if (result.error) {
-      _messages.push({ role: 'assistant', content: `Error: ${result.error}` })
-    } else {
-      _messages.push({ role: 'assistant', content: result.text || '(empty response)' })
-    }
+    await runAgentLoop()
   } catch (err) {
     _messages.push({ role: 'assistant', content: `Error: ${err.message}` })
   }

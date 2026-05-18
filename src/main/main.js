@@ -717,7 +717,16 @@ ipcMain.handle('terminal:run', async (_, command, cwd) => {
 })
 
 // ── IPC: AI Chat ─────────────────────────────────────────────────
-ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages }) => {
+// Unified message format from renderer:
+//   { role: 'user', content: 'text' }
+//   { role: 'assistant', content: 'text' | '', toolCalls?: [{ id, name, input }] }
+//   { role: 'tool', toolCallId: 'id', content: 'result text' }
+//   { role: 'system', content: 'text' }
+//
+// Response (unified):
+//   { text: '...', toolCalls: [{ id, name, input }] | undefined, stop: 'end_turn'|'tool_use' }
+//   { error: '...' }
+ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages, tools }) => {
   return new Promise((resolve) => {
     let url, headers, body
 
@@ -730,9 +739,37 @@ ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages
       }
       // Anthropic Messages API: `system` is a top-level field, not a message role.
       const systemParts = messages.filter(m => m.role === 'system').map(m => m.content)
-      const conversation = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }))
+      const conversation = []
+      for (const m of messages) {
+        if (m.role === 'system') continue
+        if (m.role === 'assistant') {
+          const blocks = []
+          if (m.content) blocks.push({ type: 'text', text: m.content })
+          if (Array.isArray(m.toolCalls)) {
+            for (const tc of m.toolCalls) {
+              blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input || {} })
+            }
+          }
+          // Anthropic rejects empty content arrays/strings — fall back to a
+          // single whitespace text block so the conversation stays valid.
+          conversation.push({ role: 'assistant', content: blocks.length ? blocks : [{ type: 'text', text: ' ' }] })
+        } else if (m.role === 'tool') {
+          // Anthropic tool results arrive as a user message with tool_result blocks
+          const last = conversation[conversation.length - 1]
+          const block = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content || '' }
+          if (m.isError) block.is_error = true
+          if (last && last.role === 'user' && Array.isArray(last.content)) {
+            last.content.push(block)
+          } else {
+            conversation.push({ role: 'user', content: [block] })
+          }
+        } else {
+          conversation.push({ role: m.role, content: m.content })
+        }
+      }
       const payload = { model, max_tokens: 4096, messages: conversation }
       if (systemParts.length) payload.system = systemParts.join('\n\n')
+      if (Array.isArray(tools) && tools.length) payload.tools = tools
       body = JSON.stringify(payload)
     } else if (provider === 'openai') {
       url = new URL(`${baseUrl}/v1/chat/completions`)
@@ -740,11 +777,32 @@ ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       }
-      body = JSON.stringify({ model, messages })
+      const openaiMessages = messages.map(m => {
+        if (m.role === 'assistant') {
+          const msg = { role: 'assistant', content: m.content || '' }
+          if (Array.isArray(m.toolCalls) && m.toolCalls.length) {
+            msg.tool_calls = m.toolCalls.map(tc => ({
+              id: tc.id,
+              type: 'function',
+              function: { name: tc.name, arguments: JSON.stringify(tc.input || {}) },
+            }))
+          }
+          return msg
+        }
+        if (m.role === 'tool') {
+          return { role: 'tool', tool_call_id: m.toolCallId, content: m.content || '' }
+        }
+        return { role: m.role, content: m.content }
+      })
+      const payload = { model, messages: openaiMessages }
+      if (Array.isArray(tools) && tools.length) payload.tools = tools
+      body = JSON.stringify(payload)
     } else if (provider === 'ollama') {
       url = new URL(`${baseUrl}/api/chat`)
       headers = { 'Content-Type': 'application/json' }
-      body = JSON.stringify({ model, messages, stream: false })
+      // Ollama only knows {role, content} — drop tool metadata, tools unsupported here
+      const plain = messages.map(m => ({ role: m.role === 'tool' ? 'user' : m.role, content: m.content || '' }))
+      body = JSON.stringify({ model, messages: plain, stream: false })
     } else {
       return resolve({ error: `Unknown provider: ${provider}` })
     }
@@ -761,21 +819,39 @@ ipcMain.handle('ai:chat', async (_, { provider, apiKey, model, baseUrl, messages
             return resolve({ error: errMsg })
           }
           let text = ''
+          let toolCalls
+          let stop
           if (provider === 'anthropic') {
-            text = json.content?.[0]?.text || ''
+            for (const block of json.content || []) {
+              if (block.type === 'text') text += block.text || ''
+              else if (block.type === 'tool_use') {
+                toolCalls = toolCalls || []
+                toolCalls.push({ id: block.id, name: block.name, input: block.input || {} })
+              }
+            }
+            stop = json.stop_reason
           } else if (provider === 'openai') {
-            text = json.choices?.[0]?.message?.content || ''
+            const message = json.choices?.[0]?.message || {}
+            text = message.content || ''
+            if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+              toolCalls = message.tool_calls.map(tc => {
+                let input = {}
+                try { input = JSON.parse(tc.function?.arguments || '{}') } catch {}
+                return { id: tc.id, name: tc.function?.name, input }
+              })
+            }
+            stop = json.choices?.[0]?.finish_reason
           } else if (provider === 'ollama') {
             text = json.message?.content || ''
           }
-          resolve({ text })
+          resolve({ text, toolCalls, stop })
         } catch (err) {
           resolve({ error: `Failed to parse response: ${err.message}` })
         }
       })
     })
     req.on('error', (err) => resolve({ error: err.message }))
-    req.setTimeout(60000, () => {
+    req.setTimeout(120000, () => {
       req.destroy()
       resolve({ error: 'Request timed out' })
     })

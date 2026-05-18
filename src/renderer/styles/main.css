@@ -4402,6 +4402,37 @@ body.is-dragging-widget .widget-stack:empty::before {
   padding: 4px 0;
   align-self: flex-start;
 }
+.ai-chat__tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid var(--surface-edge);
+  color: var(--text2);
+  font-size: 11px;
+  font-family: var(--mono, ui-monospace, SF Mono, Menlo, monospace);
+  max-width: 92%;
+}
+.ai-chat__tool-icon { color: var(--accent); }
+.ai-chat__tool-name { color: var(--text1); font-weight: 500; }
+.ai-chat__tool-arg {
+  color: var(--text3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+.ai-chat__status {
+  align-self: center;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  color: var(--text3);
+  font-style: italic;
+  opacity: 0.8;
+}
 .ai-chat__msg--typing::after {
   content: '';
   display: inline-block;
