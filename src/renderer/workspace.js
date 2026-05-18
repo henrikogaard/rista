@@ -14,7 +14,7 @@ import { buildInspector, setInspectorTab, handleInspectorClick as handleInspecto
 import { toggleRightPanel, closeRightPanel, refreshRightPanel, restoreRightPanel } from './right-panel.js'
 import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
 import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
-import { buildTerminalDrawer, toggleTerminalDrawer, handleTerminalInput, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
+import { toggleTerminalDrawer, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
 import { buildGraphModal, openGraphModal, closeGraphModal } from './graph-modal.js'
 import { showAiContextMenu } from './ai-actions.js'
 
@@ -277,7 +277,6 @@ export function buildEditorUI() {
         </section>
       </div>
     </div>
-    ${buildTerminalDrawer()}
     ${buildGraphModal()}
   `
 
@@ -646,7 +645,6 @@ export function wireEditorUiEvents() {
     node.addEventListener('drop', e => _callbacks.handleTabDrop?.(e))
   })
   handleSearchInput(path => _callbacks.openFile?.({ path, name: path.split('/').pop() }))
-  handleTerminalInput()
 }
 
 export function handleToolbarClick(event) {

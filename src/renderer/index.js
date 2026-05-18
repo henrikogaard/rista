@@ -16,7 +16,7 @@ import { exportToDocx } from './export-docx.js'
 import { toggleSearchPanel, openSearchPanel } from './search-panel.js'
 import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview } from './attachment-preview.js'
-import { toggleTerminalDrawer } from './terminal-drawer.js'
+import { toggleTerminalDrawer, handleTerminalInput } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
 import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
@@ -330,6 +330,9 @@ function resolveTemplateVars(content) {
 // ── Boot ─────────────────────────────────────────────────────────
 buildShell()
 buildZenExitHint()
+// The terminal drawer lives in the persistent shell now, not the editor UI —
+// wire its input listener once.
+handleTerminalInput()
 // Activate default left-sidebar widgets (Files) before the editor UI exists.
 restoreRightPanel()
 syncFolderUi()

@@ -1,5 +1,6 @@
 import { state, $, settingsValue } from './state.js'
 import { buildRightPanelContainer } from './right-panel.js'
+import { buildTerminalDrawer } from './terminal-drawer.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
@@ -390,6 +391,8 @@ export function buildShell() {
         </div>
         ${buildRightPanelContainer()}
       </div>
+
+      ${buildTerminalDrawer()}
 
       <!-- Statusbar -->
       <div class="statusbar">
