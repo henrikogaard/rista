@@ -173,6 +173,11 @@ function buildAppMenu() {
     },
     { type: 'separator' },
     {
+      label: 'Toggle Theme',
+      click: () => sendRendererCommand('view:toggle-theme'),
+    },
+    { type: 'separator' },
+    {
       label: 'Quick Open…',
       accelerator: 'CmdOrCtrl+P',
       click: () => sendRendererCommand('view:quick-open'),

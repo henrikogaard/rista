@@ -97,8 +97,119 @@ export function renderTree(items, container, depth = 0) {
     },
     onOpenFile: openFile,
     onOpenFilePreview: (item) => openFile(item, { preview: true }),
+    onContextMenu: showTreeContextMenu,
     depth,
   })
+}
+
+function showTreeContextMenu(item, event) {
+  if (item.type === 'folder') {
+    showContextMenu(event.clientX, event.clientY, [
+      { label: 'New File', action: () => createFileInFolder(item.path) },
+      { label: 'New Folder', action: () => createFolderInFolder(item.path) },
+      { separator: true },
+      { label: 'Rename Folder', action: () => renameTreeItem(item) },
+      { label: 'Delete Folder', action: () => deleteTreeItem(item) },
+      { separator: true },
+      { label: 'Reveal in Finder', action: () => window.fjord.showInFolder?.(item.path) },
+      { label: 'Copy Path', action: () => navigator.clipboard.writeText(item.path) },
+    ])
+    return
+  }
+
+  const bookmarked = isBookmarked(item.path)
+  showContextMenu(event.clientX, event.clientY, [
+    { label: 'Open', action: () => openFile(item) },
+    ...(state.workspaceMode === 'dual'
+      ? [{ label: 'Open in Other Pane', action: () => openFile(item) }]
+      : []),
+    { separator: true },
+    { label: 'Rename', action: () => renameTreeItem(item) },
+    { label: 'Duplicate', action: async () => {
+      const result = await window.fjord.duplicateFile?.(item.path)
+      if (result) {
+        await refreshTree()
+        try { await rebuildLinkIndex() } catch {}
+      }
+    }},
+    { label: 'Delete', action: () => deleteTreeItem(item) },
+    { separator: true },
+    { label: bookmarked ? 'Remove Bookmark' : 'Bookmark', action: () => toggleBookmark(item.path, item.name) },
+    { label: 'Copy Path', action: () => navigator.clipboard.writeText(item.path) },
+    { label: 'Reveal in Finder', action: () => window.fjord.showInFolder?.(item.path) },
+  ])
+}
+
+async function createFileInFolder(folderPath) {
+  const name = prompt('New file name (without .md):')
+  if (!name) return
+  const sanitized = name.trim().replace(/\.md$/i, '')
+  if (!sanitized) return
+  const filePath = `${folderPath}/${sanitized}.md`
+  try {
+    const ok = await window.fjord.writeFile(filePath, '')
+    if (!ok) return
+    state.expandedFolders.add(folderPath)
+    await refreshTree()
+    try { await rebuildLinkIndex() } catch {}
+    await openFile({ path: filePath, name: `${sanitized}.md`, type: 'file' })
+  } catch {}
+}
+
+async function createFolderInFolder(folderPath) {
+  const name = prompt('New folder name:')
+  if (!name) return
+  const sanitized = name.trim()
+  if (!sanitized) return
+  const dirPath = `${folderPath}/${sanitized}`
+  try {
+    const ok = await window.fjord.createDir?.(dirPath)
+    if (!ok) return
+    state.expandedFolders.add(folderPath)
+    await refreshTree()
+  } catch {}
+}
+
+async function renameTreeItem(item) {
+  const currentName = item.name
+  const next = prompt(`Rename "${currentName}" to:`, currentName)
+  if (!next || next === currentName) return
+  const parent = item.path.replace(/[/\\][^/\\]+$/, '')
+  const newPath = `${parent}/${next}`
+  try {
+    const ok = await window.fjord.renameFile?.(item.path, newPath)
+    if (!ok) return
+    // Update any open tabs
+    for (const tab of state.tabs) {
+      if (tab.path === item.path) {
+        tab.path = newPath
+        tab.name = next
+      }
+    }
+    if (window.fjord.setRepresentedFile && state.activeTab) {
+      window.fjord.setRepresentedFile(state.activeTab.path)
+    }
+    await refreshTree()
+    renderTabs()
+    try { await rebuildLinkIndex() } catch {}
+  } catch {}
+}
+
+async function deleteTreeItem(item) {
+  const label = item.type === 'folder' ? 'folder' : 'file'
+  if (!confirm(`Move ${label} "${item.name}" to trash?`)) return
+  try {
+    const ok = await window.fjord.trashFile?.(item.path)
+    if (!ok) return
+    // Close any tabs pointing at the deleted file
+    for (const tab of [...state.tabs]) {
+      if (tab.path === item.path || tab.path.startsWith(item.path + '/')) {
+        closeTab(tab, getTabPane(tab) || 'primary')
+      }
+    }
+    await refreshTree()
+    try { await rebuildLinkIndex() } catch {}
+  } catch {}
 }
 
 export async function refreshTree() {
@@ -762,6 +873,7 @@ export function handleAppCommand(command, data) {
   if (command === 'view:toggle-toolbar') _callbacks.toggleToolbar?.()
   if (command === 'view:toggle-inspector') _callbacks.toggleInspector?.()
   if (command === 'view:toggle-terminal') _callbacks.toggleTerminal?.()
+  if (command === 'view:toggle-theme') _callbacks.toggleTheme?.()
   if (command === 'view:toggle-zen') _callbacks.toggleZen?.()
   if (command === 'view:toggle-graph') _callbacks.toggleRightPanel?.('graph')
   if (command === 'view:toggle-calendar') _callbacks.toggleRightPanel?.('calendar')

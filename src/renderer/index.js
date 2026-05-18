@@ -33,7 +33,7 @@ import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel } from './ai-chat.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
-import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel } from './shell.js'
+import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme } from './shell.js'
 
 // ── Workspace (pane layout, editor mounting, toggles) ────────────
 import {
@@ -243,6 +243,7 @@ registerTabCallbacks({
   toggleToolbar,
   toggleInspector,
   toggleTerminal: toggleTerminalDrawer,
+  toggleTheme: toggleAppTheme,
   toggleZen: toggleZenMode,
   toggleSettings: toggleSettingsPanel,
   toggleRightPanel,
@@ -291,7 +292,7 @@ registerCommandPaletteCallbacks({ openFile })
 registerCommands([
   { id: 'toggle-sidebar',  label: 'Toggle Sidebar',       description: 'Show or hide the sidebar',       shortcut: '\u2318B',   action: () => toggleSidebar() },
   { id: 'toggle-toolbar',  label: 'Toggle Toolbar',       description: 'Show or hide the toolbar',       shortcut: '\u2318\\',  action: () => toggleToolbar() },
-  { id: 'toggle-theme',    label: 'Toggle Theme',         description: 'Switch between dark and light',  shortcut: '',          action: () => toggleTheme() },
+  { id: 'toggle-theme',    label: 'Toggle Theme',         description: 'Switch between dark and light',  shortcut: '',          action: () => toggleAppTheme() },
   { id: 'new-file',        label: 'New File',             description: 'Create a new markdown file',     shortcut: '\u2318N',   action: () => createNewFile() },
   { id: 'open-folder',     label: 'Open Folder',          description: 'Open a project folder',          shortcut: '',          action: () => openFolder() },
   { id: 'find-replace',    label: 'Find & Replace',       description: 'Search within the editor',       shortcut: '\u2318F',   action: () => toggleFindReplace() },

@@ -264,8 +264,10 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
+const GLOBAL_CONTROL_SELECTOR = '#pane-split-toggle, #workspace-split-toggle, #settings-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle'
+
 function handleGlobalControlPointerDown(event) {
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle')
+  const control = event.target.closest(GLOBAL_CONTROL_SELECTOR)
   if (!control) return
   event.preventDefault()
   event.stopPropagation()
@@ -273,11 +275,9 @@ function handleGlobalControlPointerDown(event) {
 }
 
 function performGlobalControl(id) {
-  if (id === 'toolbar-toggle') _callbacks.toggleToolbar?.()
   if (id === 'pane-split-toggle') _callbacks.togglePaneSplitView?.()
   if (id === 'workspace-split-toggle') _callbacks.toggleWorkspaceSplit?.()
   if (id === 'settings-btn') toggleSettingsPanel()
-  if (id === 'theme-btn') toggleAppTheme()
   if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
   if (id === 'terminal-toggle') _callbacks.toggleTerminal?.()
   if (id === 'right-sidebar-toggle') _callbacks.toggleRightSidebar?.()
@@ -285,13 +285,13 @@ function performGlobalControl(id) {
 
 function handleGlobalControlKeydown(event) {
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const control = event.target.closest('#toolbar-toggle, #pane-split-toggle, #workspace-split-toggle, #settings-btn, #theme-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle')
+  const control = event.target.closest(GLOBAL_CONTROL_SELECTOR)
   if (!control) return
   event.preventDefault()
   performGlobalControl(control.id)
 }
 
-function toggleAppTheme() {
+export function toggleAppTheme() {
   const t = toggleTheme()
   const settings = getSettings()
   const presetKey = t === 'light' ? settings.lightThemePreset : settings.darkThemePreset
@@ -300,7 +300,8 @@ function toggleAppTheme() {
   syncSettingsForm()
   clearDiagramCache()
   initDiagrams(t)
-  $('theme-btn').innerHTML = t === 'dark' ? sunIcon() : moonIcon()
+  const themeBtn = $('theme-btn')
+  if (themeBtn) themeBtn.innerHTML = t === 'dark' ? sunIcon() : moonIcon()
   PANE_KEYS.forEach(pane => {
     if (editorViews[pane]) updateEditorTheme(editorViews[pane], t === 'dark')
     if (richEditors[pane]) {
@@ -432,14 +433,8 @@ export function buildShell() {
             <div class="theme-btn" id="workspace-split-toggle" title="Split workspace into two editors" aria-label="Split workspace" role="button" tabindex="0">
               ${workspaceSplitIcon()}
             </div>
-            <div class="theme-btn" id="toolbar-toggle" title="Toggle formatting toolbar (⌘\\)" aria-label="Toggle toolbar" role="button" tabindex="0">
-              ${toolbarIcon()}
-            </div>
             <div class="app-controls__sep"></div>
             <!-- App -->
-            <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle dark/light theme" aria-label="Toggle theme" role="button" tabindex="0">
-              ${sunIcon()}
-            </div>
             <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
               ${gearIcon()}
             </div>
@@ -652,7 +647,6 @@ export function buildShell() {
   $('settings-panel').addEventListener('click', handleSettingsClick)
   $('settings-panel').addEventListener('keydown', handleSettingsKeydown)
 
-  $('theme-btn').innerHTML = getTheme() === 'dark' ? sunIcon() : moonIcon()
   _callbacks.syncToolbarToggle?.()
   _callbacks.syncPaneSplitToggle?.()
 

@@ -9,6 +9,9 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
 }
 
+let _cachedHeadings = []
+let _activeLine = null
+
 export function buildOutlinePanel() {
   return `<div class="outline-view" id="outline-view-body"></div>`
 }
@@ -18,20 +21,62 @@ export function renderOutline() {
   if (!body) return
   const tab = getFocusedTab()
   if (!tab) {
+    _cachedHeadings = []
     body.innerHTML = `<div class="outline-view__empty">No note open</div>`
     return
   }
-  const headings = extractHeadings(tab.content || '')
-  if (headings.length === 0) {
+  _cachedHeadings = extractHeadings(tab.content || '')
+  if (_cachedHeadings.length === 0) {
     body.innerHTML = `<div class="outline-view__empty">No headings in this note</div>`
     return
   }
-  const minLevel = Math.min(...headings.map(h => h.level))
-  const html = headings.map(h => {
+  const minLevel = Math.min(..._cachedHeadings.map(h => h.level))
+  const html = _cachedHeadings.map(h => {
     const indent = (h.level - minLevel)
     return `<div class="outline-item outline-item--l${h.level}" data-line="${h.line}" style="padding-left:${indent * 12 + 8}px" role="button" tabindex="0" title="${escapeHtml(h.text)}"><span class="outline-item__bullet"></span><span class="outline-item__text">${escapeHtml(h.text)}</span></div>`
   }).join('')
   body.innerHTML = html
+  updateActiveOutlineItem()
+}
+
+function findActiveHeadingLine() {
+  if (_cachedHeadings.length === 0) return null
+  const pane = state.focusedPane || 'primary'
+  const view = editorViews[pane]
+  if (!view) return null
+  // Use whichever line is closer to the top of the viewport (1-indexed)
+  let topLine = 1
+  try {
+    const blockTop = view.lineBlockAtHeight(view.scrollDOM.scrollTop + 8)
+    if (blockTop) topLine = view.state.doc.lineAt(blockTop.from).number
+  } catch { return null }
+  // The active heading is the last one at or before topLine
+  let active = _cachedHeadings[0]?.line || null
+  for (const h of _cachedHeadings) {
+    if (h.line <= topLine) active = h.line
+    else break
+  }
+  return active
+}
+
+function updateActiveOutlineItem() {
+  const body = document.getElementById('outline-view-body')
+  if (!body) return
+  const nextLine = findActiveHeadingLine()
+  if (nextLine === _activeLine) return
+  _activeLine = nextLine
+  body.querySelectorAll('.outline-item.active').forEach(n => n.classList.remove('active'))
+  if (_activeLine == null) return
+  const el = body.querySelector(`.outline-item[data-line="${_activeLine}"]`)
+  if (el) {
+    el.classList.add('active')
+    // Keep the active heading in view without jerking the page
+    const rect = el.getBoundingClientRect()
+    const parentRect = body.getBoundingClientRect()
+    if (rect.top < parentRect.top || rect.bottom > parentRect.bottom) {
+      el.scrollIntoView({ block: 'nearest' })
+    }
+  }
 }
 
 function jumpToLine(lineNumber) {
@@ -57,8 +102,29 @@ function jumpToLine(lineNumber) {
   })
 }
 
+let _scrollListenersAttached = new WeakSet()
+let _scrollTickPending = false
+
+function attachScrollSync() {
+  for (const pane of ['primary', 'secondary']) {
+    const view = editorViews[pane]
+    if (!view || _scrollListenersAttached.has(view.scrollDOM)) continue
+    const onScroll = () => {
+      if (_scrollTickPending) return
+      _scrollTickPending = true
+      requestAnimationFrame(() => {
+        _scrollTickPending = false
+        updateActiveOutlineItem()
+      })
+    }
+    view.scrollDOM.addEventListener('scroll', onScroll, { passive: true })
+    _scrollListenersAttached.add(view.scrollDOM)
+  }
+}
+
 export function mountOutlinePanel() {
   renderOutline()
+  attachScrollSync()
   const body = document.getElementById('outline-view-body')
   if (!body) return
   body.addEventListener('click', (event) => {

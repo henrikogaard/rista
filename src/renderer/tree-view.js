@@ -16,6 +16,7 @@ export function renderFileTree({
   onToggleFolder,
   onOpenFile,
   onOpenFilePreview,
+  onContextMenu,
   depth = 0,
 }) {
   container.innerHTML = ''
@@ -42,6 +43,7 @@ export function renderFileTree({
           onToggleFolder,
           onOpenFile,
           onOpenFilePreview,
+          onContextMenu,
           depth: depth + 1,
         })
       }
@@ -52,6 +54,14 @@ export function renderFileTree({
         children.style.display = nextOpen ? 'block' : 'none'
         onToggleFolder(item.path, nextOpen)
       })
+
+      if (onContextMenu) {
+        folder.addEventListener('contextmenu', (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          onContextMenu(item, event)
+        })
+      }
 
       container.appendChild(folder)
       container.appendChild(children)
@@ -79,6 +89,13 @@ export function renderFileTree({
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null }
       onOpenFile(item)
     })
+    if (onContextMenu) {
+      file.addEventListener('contextmenu', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onContextMenu(item, event)
+      })
+    }
     container.appendChild(file)
   })
 }
