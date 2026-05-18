@@ -420,7 +420,30 @@ export function renderTabs() {
     if (group.length === 0) {
       container.innerHTML = `<div class="workspace-tabs__empty">${pane === 'primary' ? 'Open a markdown file' : 'Open another file'}</div>`
     }
+    // Defer overflow check until after layout
+    requestAnimationFrame(() => updateTabOverflowIndicator(pane))
   })
+}
+
+function updateTabOverflowIndicator(pane) {
+  const container = $(`tabs-${pane}`)
+  const btn = $(`tabs-overflow-${pane}`)
+  if (!container || !btn) return
+  const overflowing = container.scrollWidth > container.clientWidth + 1
+  const group = getGroupTabs(pane)
+  btn.hidden = !overflowing && group.length <= 1
+}
+
+export function showTabOverflowMenu(x, y, pane) {
+  const group = getGroupTabs(pane)
+  if (group.length === 0) return
+  const sorted = [...group].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+  const activeTab = getTabForPane(pane)
+  const items = sorted.map(tab => ({
+    label: `${tab === activeTab ? '● ' : '   '}${tab.pinned ? '📌 ' : ''}${tab.name}${tab.dirty ? ' ·' : ''}`,
+    action: () => activateTab(tab, pane),
+  }))
+  showContextMenu(x, y, items)
 }
 
 export function closeTab(tab, pane = getTabPane(tab)) {
@@ -777,4 +800,45 @@ export async function handleExternalFileChange({ event, path: changedPath } = {}
   }
 
   scheduleTreeRefresh()
+}
+
+// ── Tab strip overflow handling ─────────────────────────────────
+// Wheel: convert vertical scroll → horizontal so trackpads/mice can navigate
+// the tab strip. Overflow chevron opens a dropdown of all open tabs.
+document.addEventListener('click', (event) => {
+  const overflowBtn = event.target.closest('[data-action="tab-overflow"]')
+  if (overflowBtn) {
+    const rect = overflowBtn.getBoundingClientRect()
+    showTabOverflowMenu(rect.right, rect.bottom + 2, overflowBtn.dataset.pane || 'primary')
+  }
+})
+
+document.addEventListener('wheel', (event) => {
+  const strip = event.target.closest('.workspace-tabs')
+  if (!strip) return
+  if (event.deltaY === 0) return
+  // Only translate when there's actually horizontal overflow
+  if (strip.scrollWidth <= strip.clientWidth + 1) return
+  strip.scrollLeft += event.deltaY
+  event.preventDefault()
+}, { passive: false })
+
+// Re-check overflow when the window or panes resize
+if (typeof ResizeObserver !== 'undefined') {
+  const ro = new ResizeObserver(() => {
+    for (const pane of PANE_KEYS) {
+      const container = $(`tabs-${pane}`)
+      const btn = $(`tabs-overflow-${pane}`)
+      if (!container || !btn) continue
+      const overflowing = container.scrollWidth > container.clientWidth + 1
+      const empty = container.classList.contains('is-empty')
+      btn.hidden = empty || (!overflowing && getGroupTabs(pane).length <= 1)
+    }
+  })
+  // Observe the window once DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => ro.observe(document.body))
+  } else {
+    ro.observe(document.body)
+  }
 }

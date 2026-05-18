@@ -1323,6 +1323,13 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   flex-shrink: 0;
   display: none;
 }
+.workspace-tabs-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
 .workspace-tabs {
   flex: 1;
   min-width: 0;
@@ -1332,7 +1339,29 @@ body.is-resizing-sidebar .sidebar-resizer::before {
   overflow-x: auto;
   overflow-y: hidden;
   padding-top: 4px;
+  scroll-behavior: smooth;
 }
+.workspace-tabs__overflow {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  margin: 4px 4px 0 4px;
+  border-radius: var(--radius-xs);
+  color: var(--text2);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.workspace-tabs__overflow:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--text1);
+  border-color: rgba(255,255,255,0.08);
+}
+.workspace-tabs__overflow[hidden] { display: none; }
 .workspace-tabs::-webkit-scrollbar { height: 0; }
 .workspace-tabs.is-empty {
   align-items: center;
@@ -2489,8 +2518,13 @@ body.is-resizing-split .workspace-resizer::before {
 }
 
 /* ── Pinned Tabs ──────────────────────────────────────────────── */
-.tab.pinned { border-left: 2px solid var(--accent); }
-.tab__pin { font-size: 10px; opacity: 0.5; padding: 0 2px; }
+.tab.pinned {
+  border-left: 2px solid var(--accent);
+  max-width: 120px;
+  padding-right: 8px;
+}
+.tab.pinned .tab__name { font-size: 11px; }
+.tab__pin { font-size: 10px; opacity: 0.55; padding: 0 2px; flex-shrink: 0; }
 
 /* ── Preview (ephemeral) Tabs ────────────────────────────────── */
 .tab.preview .tab__name { font-style: italic; }

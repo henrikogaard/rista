@@ -208,7 +208,12 @@ export function buildEditorUI() {
         <section class="workspace-pane workspace-pane--primary" id="workspace-primary" data-pane="primary">
           <div class="workspace-pane__header">
             <div class="workspace-pane__label">Editor A</div>
-            <div class="workspace-tabs" id="tabs-primary"></div>
+            <div class="workspace-tabs-wrap">
+              <div class="workspace-tabs" id="tabs-primary"></div>
+              <div class="workspace-tabs__overflow" id="tabs-overflow-primary" data-action="tab-overflow" data-pane="primary" role="button" tabindex="0" title="All open tabs" aria-label="All open tabs" hidden>
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+            </div>
           </div>
           ${renderEditorToolbar('primary')}
           <div class="panes-main" id="panes-main-primary">
@@ -236,7 +241,12 @@ export function buildEditorUI() {
         <section class="workspace-pane workspace-pane--secondary hidden" id="workspace-secondary" data-pane="secondary">
           <div class="workspace-pane__header">
             <div class="workspace-pane__label">Editor B</div>
-            <div class="workspace-tabs" id="tabs-secondary"></div>
+            <div class="workspace-tabs-wrap">
+              <div class="workspace-tabs" id="tabs-secondary"></div>
+              <div class="workspace-tabs__overflow" id="tabs-overflow-secondary" data-action="tab-overflow" data-pane="secondary" role="button" tabindex="0" title="All open tabs" aria-label="All open tabs" hidden>
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+            </div>
           </div>
           ${renderEditorToolbar('secondary')}
           <div class="panes-main" id="panes-main-secondary">
