@@ -390,6 +390,7 @@ export function buildShell() {
           </div>
           <div class="file-tree" id="file-tree"></div>
           ${buildAgentsSidebar()}
+          <div class="left-widget-stack widget-stack widget-stack--left" id="left-widget-stack"></div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
 

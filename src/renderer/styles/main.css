@@ -2678,6 +2678,28 @@ body.is-resizing-widget { cursor: ns-resize; user-select: none; }
   overflow: hidden;
 }
 
+/* Left widget stack — sits below the file tree and agents pane */
+.left-widget-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--surface-edge);
+}
+.left-widget-stack:empty {
+  display: none;
+  border-top: none;
+}
+.left-widget-stack.has-widgets {
+  flex: 1 1 0;
+  min-height: 120px;
+}
+
+/* Drop hint when dragging a widget over an empty area of a stack */
+.widget-stack--drop-end {
+  outline: 1px dashed var(--accent-dim);
+  outline-offset: -3px;
+}
+
 /* Each widget within the sidebar */
 .widget {
   display: flex;
