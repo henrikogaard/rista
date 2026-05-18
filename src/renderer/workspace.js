@@ -11,7 +11,7 @@ import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, r
 import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, insertCodeBlock, insertHorizontalRule, syncToWysiwyg } from './commands.js'
 import { openDiagramBuilder } from './diagram-builder.js'
 import { buildInspector, setInspectorTab, handleInspectorClick as handleInspectorClickInner } from './inspector.js'
-import { buildRightPanelContainer, toggleRightPanel, closeRightPanel, refreshRightPanel, restoreRightPanel } from './right-panel.js'
+import { toggleRightPanel, closeRightPanel, refreshRightPanel, restoreRightPanel } from './right-panel.js'
 import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
 import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
 import { buildTerminalDrawer, toggleTerminalDrawer, handleTerminalInput, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
@@ -276,7 +276,6 @@ export function buildEditorUI() {
           </div>
         </section>
       </div>
-      ${buildRightPanelContainer()}
     </div>
     ${buildTerminalDrawer()}
     ${buildGraphModal()}

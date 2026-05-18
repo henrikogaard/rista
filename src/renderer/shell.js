@@ -1,4 +1,5 @@
 import { state, $, settingsValue } from './state.js'
+import { buildRightPanelContainer } from './right-panel.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
@@ -386,8 +387,8 @@ export function buildShell() {
           <div id="editor-wrapper" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
             ${buildWelcome()}
           </div>
-
         </div>
+        ${buildRightPanelContainer()}
       </div>
 
       <!-- Statusbar -->
