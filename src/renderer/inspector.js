@@ -3,6 +3,7 @@ import { getOutgoingLinks, getBacklinks, getAllMdFileNames, getTagsForFile, getA
 import { getStats, extractHeadings } from './markdown.js'
 import { getSettings } from './settings.js'
 import { registerRightPanel } from './right-panel.js'
+import { jumpToLine } from './outline-view.js'
 import { getSnapshots, loadSnapshot, relativeTime, formatSize } from './history.js'
 
 // ── Inspector Panel ──────────────────────────────────────────────
@@ -87,7 +88,7 @@ function renderOutlineContent(markdown) {
   return `
     <div class="inspector-outline">
       ${headings.map(h => `
-        <div class="inspector-outline__item inspector-outline__item--h${h.level}">${escapeHtml(h.text)}</div>
+        <div class="inspector-outline__item inspector-outline__item--h${h.level}" data-line="${h.line}" role="button" tabindex="0" title="${escapeHtml(h.text)}">${escapeHtml(h.text)}</div>
       `).join('')}
     </div>
   `
@@ -270,6 +271,13 @@ export function handleInspectorClick(event, openFileFn) {
     return
   }
 
+  const outlineItem = event.target.closest('.inspector-outline__item[data-line]')
+  if (outlineItem) {
+    const line = Number(outlineItem.dataset.line)
+    if (line > 0) jumpToLine(line)
+    return
+  }
+
   const link = event.target.closest('.inspector-link[data-link-path]')
   if (link && link.dataset.linkPath) {
     const linkPath = link.dataset.linkPath
@@ -348,10 +356,12 @@ export function initInspectorPanel(openFileFn, closeRightPanelFn) {
     onMount: () => {
       state.inspectorOpen = true
       renderInspectorContent()
-      const container = $('right-panel-container')
-      if (container && !container.dataset.inspectorClickWired) {
-        container.addEventListener('click', _onContainerClick)
-        container.dataset.inspectorClickWired = 'true'
+      // Find the widget node — it may be on either the left or right side
+      const widget = document.querySelector('.widget[data-widget="inspector"]')
+      if (widget && !widget.dataset.inspectorClickWired) {
+        widget.addEventListener('click', _onContainerClick)
+        widget.addEventListener('keydown', _onContainerKeydown)
+        widget.dataset.inspectorClickWired = 'true'
       }
     },
     onUnmount: () => {
@@ -368,4 +378,14 @@ function inspectorWidgetIcon() {
 function _onContainerClick(event) {
   // Inspector close button no longer exists in widget mode — widget header has its own close
   handleInspectorClick(event, _openFileFn)
+}
+
+function _onContainerKeydown(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  const outlineItem = event.target.closest('.inspector-outline__item[data-line]')
+  if (outlineItem) {
+    event.preventDefault()
+    const line = Number(outlineItem.dataset.line)
+    if (line > 0) jumpToLine(line)
+  }
 }

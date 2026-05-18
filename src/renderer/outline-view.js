@@ -83,7 +83,7 @@ function updateActiveOutlineItem() {
   }
 }
 
-function jumpToLine(lineNumber) {
+export function jumpToLine(lineNumber) {
   const pane = state.focusedPane || 'primary'
   const view = editorViews[pane]
   if (!view) return
