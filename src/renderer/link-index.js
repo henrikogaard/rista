@@ -23,6 +23,21 @@ export function getLinkIndex() {
   return _index
 }
 
+const _changeListeners = new Set()
+/**
+ * Subscribe to link-index changes (rebuilds, per-file updates, deletions).
+ * Returns an unsubscribe fn.
+ */
+export function onLinkIndexChange(fn) {
+  _changeListeners.add(fn)
+  return () => _changeListeners.delete(fn)
+}
+function notifyLinkIndexChange() {
+  for (const fn of _changeListeners) {
+    try { fn() } catch {}
+  }
+}
+
 export async function rebuildLinkIndex() {
   clearLinkIndex()
   if (!state.folderPath) return _index
@@ -62,6 +77,7 @@ export async function rebuildLinkIndex() {
   }
 
   _index.dirty = false
+  notifyLinkIndexChange()
   return _index
 }
 
@@ -108,6 +124,7 @@ export function rebuildBacklinks() {
     }
   }
   _index.dirty = false
+  notifyLinkIndexChange()
 }
 
 export function removeFromLinkIndex(path) {
@@ -122,6 +139,7 @@ export function removeFromLinkIndex(path) {
     if (paths.size === 0) _index.tags.delete(tag)
   }
   _index.dirty = true
+  notifyLinkIndexChange()
 }
 
 // ── Tag queries ─────────────────────────────────────────────────

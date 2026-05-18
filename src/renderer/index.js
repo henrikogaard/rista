@@ -20,7 +20,7 @@ import { toggleTerminalDrawer } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
 import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
-import { getLinkIndex, resolveWikilink } from './link-index.js'
+import { getLinkIndex, resolveWikilink, onLinkIndexChange } from './link-index.js'
 import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
 import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon } from './icons.js'
 import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks, fileExplorerHeaderActions } from './file-explorer-view.js'
@@ -142,16 +142,28 @@ registerRightPanel('agents', {
 
 initInspectorPanel(openFile, closeRightPanel)
 
+let _graphUnsubscribe = null
+function rerenderGraphFromIndex() {
+  setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
+  renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
+}
 registerRightPanel('graph', {
   title: 'Graph',
   icon: graphIcon(),
   flex: 2,
   build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
   onMount: () => {
-    setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
-    renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
+    rerenderGraphFromIndex()
+    // Re-draw whenever the link index rebuilds (folder open, file edited,
+    // file moved/created/deleted by the AI agent, etc.)
+    _graphUnsubscribe?.()
+    _graphUnsubscribe = onLinkIndexChange(() => rerenderGraphFromIndex())
   },
-  onUnmount: () => destroyGraph(),
+  onUnmount: () => {
+    _graphUnsubscribe?.()
+    _graphUnsubscribe = null
+    destroyGraph()
+  },
   onRefresh: () => {
     // When the focused tab changes, push the new path so local mode follows it
     if (getGraphLocalMode()) {
