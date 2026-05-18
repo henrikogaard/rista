@@ -414,30 +414,34 @@ export function buildShell() {
         </div>
         <div class="statusbar__controls">
           <div class="app-controls" id="app-controls" aria-label="Global controls">
-            <div class="theme-btn" id="sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar" role="button" tabindex="0">
+            <!-- Panels -->
+            <div class="theme-btn" id="sidebar-toggle" title="Toggle file explorer (⌘B)" aria-label="Toggle file explorer" role="button" tabindex="0">
               ${sidebarIcon()}
             </div>
-            <div class="theme-btn" id="toolbar-toggle" title="Toggle toolbars" aria-label="Toggle toolbars" role="button" tabindex="0">
-              ${toolbarIcon()}
-            </div>
-            <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle theme" aria-label="Toggle theme" role="button" tabindex="0">
-              ${sunIcon()}
-            </div>
-            <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings" aria-label="Open settings" role="button" tabindex="0">
-              ${gearIcon()}
-            </div>
-            <div class="app-controls__sep"></div>
-            <div class="theme-btn" id="pane-split-toggle" title="Pane split" aria-label="Toggle pane split" role="button" tabindex="0">
-              ${editorSplitIcon()}
-            </div>
-            <div class="theme-btn" id="workspace-split-toggle" title="Workspace" aria-label="Toggle workspace split" role="button" tabindex="0">
-              ${workspaceSplitIcon()}
-            </div>
-            <div class="theme-btn" id="terminal-toggle" title="Terminal" aria-label="Toggle terminal" role="button" tabindex="0">
+            <div class="theme-btn" id="terminal-toggle" title="Toggle terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
               ${terminalIcon()}
             </div>
-            <div class="theme-btn" id="right-sidebar-toggle" title="Right sidebar" aria-label="Toggle right sidebar" role="button" tabindex="0">
+            <div class="theme-btn" id="right-sidebar-toggle" title="Toggle widgets panel" aria-label="Toggle widgets panel" role="button" tabindex="0">
               ${rightSidebarIcon()}
+            </div>
+            <div class="app-controls__sep"></div>
+            <!-- Layout -->
+            <div class="theme-btn" id="pane-split-toggle" title="Split editor pane" aria-label="Split editor pane" role="button" tabindex="0">
+              ${editorSplitIcon()}
+            </div>
+            <div class="theme-btn" id="workspace-split-toggle" title="Split workspace into two editors" aria-label="Split workspace" role="button" tabindex="0">
+              ${workspaceSplitIcon()}
+            </div>
+            <div class="theme-btn" id="toolbar-toggle" title="Toggle formatting toolbar (⌘\\)" aria-label="Toggle toolbar" role="button" tabindex="0">
+              ${toolbarIcon()}
+            </div>
+            <div class="app-controls__sep"></div>
+            <!-- App -->
+            <div class="theme-btn theme-btn--theme" id="theme-btn" title="Toggle dark/light theme" aria-label="Toggle theme" role="button" tabindex="0">
+              ${sunIcon()}
+            </div>
+            <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
+              ${gearIcon()}
             </div>
           </div>
           <div class="st st-brand">fjordmark</div>

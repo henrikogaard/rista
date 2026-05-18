@@ -6,6 +6,9 @@ export function moonIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M11.9 10.6A5.8 5.8 0 0 1 5.4 4.1c0-.44.05-.87.15-1.28A6.2 6.2 0 1 0 13.2 10.45c-.41.1-.84.15-1.3.15z"/></svg>`
 }
 export function gearIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M8 1.5l1.2 1.6 2-.3.5 2 1.9.8-.4 2 1.3 1.6-1.3 1.6.4 2-1.9.8-.5 2-2-.3L8 14.5l-1.2-1.6-2 .3-.5-2L2.4 10.4l.4-2-1.3-1.6L2.8 5.2 2.4 3.2l1.9-.8.5-2 2 .3z" fill="none" stroke="currentColor" stroke-linejoin="round"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor"/></svg>`
+}
+export function slidersIcon() {
   return `<svg viewBox="0 0 16 16"><line x1="3" y1="4" x2="13" y2="4"/><line x1="3" y1="8" x2="13" y2="8"/><line x1="3" y1="12" x2="13" y2="12"/><circle cx="6" cy="4" r="1.4" fill="currentColor" stroke="none"/><circle cx="10" cy="8" r="1.4" fill="currentColor" stroke="none"/><circle cx="7" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>`
 }
 export function toolbarIcon() {
