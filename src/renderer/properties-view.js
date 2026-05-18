@@ -1,5 +1,5 @@
 import { parseFrontmatter, applyFrontmatter } from './tags.js'
-import { state, getFocusedTab, editorViews } from './state.js'
+import { state, getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
 import { updateEditorDoc } from './editor.js'
 
 const RESERVED_NAMES = new Set(['aliases', 'tags', 'cssclasses'])
@@ -40,10 +40,13 @@ function writeFrontmatter(tab, next) {
   if (newContent === tab.content) return
   tab.content = newContent
   tab.dirty = true
-  // Push into the editor view if this is the focused pane
-  const pane = state.focusedPane || 'primary'
-  const view = editorViews[pane]
-  if (view) updateEditorDoc(view, newContent)
+  // Push into every pane that has this tab mounted so dual-pane stays in sync
+  for (const pane of PANE_KEYS) {
+    if (getTabForPane(pane) === tab) {
+      const view = editorViews[pane]
+      if (view) updateEditorDoc(view, newContent)
+    }
+  }
 }
 
 export function buildPropertiesPanel() {
@@ -89,7 +92,8 @@ export function renderProperties() {
 }
 
 function renderInput(key, value, type) {
-  if (type === 'list' || key === 'tags' || key === 'aliases') {
+  const lc = key.toLowerCase()
+  if (type === 'list' || RESERVED_NAMES.has(lc)) {
     const items = Array.isArray(value) ? value : (value ? [value] : [])
     return `<input type="text" class="prop-input prop-input--list" data-input="${escapeHtml(key)}" value="${escapeHtml(items.join(', '))}" placeholder="comma, separated, values" />`
   }
@@ -97,21 +101,22 @@ function renderInput(key, value, type) {
     const checked = String(value) === 'true'
     return `<input type="checkbox" class="prop-input prop-input--bool" data-input="${escapeHtml(key)}" ${checked ? 'checked' : ''} />`
   }
+  const safeValue = value == null ? '' : value
   if (type === 'number') {
-    return `<input type="number" class="prop-input" data-input="${escapeHtml(key)}" value="${escapeHtml(value)}" />`
+    return `<input type="number" class="prop-input" data-input="${escapeHtml(key)}" value="${escapeHtml(safeValue)}" />`
   }
   if (type === 'date') {
-    // Use text so we don't force a specific format
-    return `<input type="text" class="prop-input" data-input="${escapeHtml(key)}" value="${escapeHtml(value)}" placeholder="YYYY-MM-DD" />`
+    return `<input type="text" class="prop-input" data-input="${escapeHtml(key)}" value="${escapeHtml(safeValue)}" placeholder="YYYY-MM-DD" />`
   }
-  return `<input type="text" class="prop-input" data-input="${escapeHtml(key)}" value="${escapeHtml(value)}" />`
+  return `<input type="text" class="prop-input" data-input="${escapeHtml(key)}" value="${escapeHtml(safeValue)}" />`
 }
 
 function commitChange(key, rawValue, type) {
   const tab = getActiveTab()
   if (!tab) return
   const fm = readFrontmatter(tab)
-  if (type === 'list' || key === 'tags' || key === 'aliases') {
+  const lc = key.toLowerCase()
+  if (type === 'list' || RESERVED_NAMES.has(lc)) {
     const items = String(rawValue)
       .split(',')
       .map(s => s.trim())

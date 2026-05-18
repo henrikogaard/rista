@@ -11,10 +11,15 @@ test('status bar owns a single responsive global control cluster with clear labe
 
   assert.match(shell, /statusbar__metrics/)
   assert.match(shell, /statusbar__controls/)
-  assert.match(shell, /aria-label="Toggle sidebar"/)
-  assert.match(shell, /aria-label="Toggle toolbars"/)
-  assert.match(shell, /aria-label="Toggle theme"/)
+  // Frequently-toggled workspace state lives in the status bar.
+  assert.match(shell, /aria-label="Toggle file explorer"/)
+  assert.match(shell, /aria-label="Toggle terminal"/)
+  assert.match(shell, /aria-label="Toggle widgets panel"/)
   assert.match(shell, /aria-label="Open settings"/)
+  // Theme and toolbar toggles moved out of the bar — they belong in the
+  // View menu and Settings respectively.
+  assert.doesNotMatch(shell, /id="theme-btn"/)
+  assert.doesNotMatch(shell, /id="toolbar-toggle"/)
 })
 
 test('settings panel uses compact tabs and visual preset swatches', () => {

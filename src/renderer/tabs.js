@@ -121,7 +121,11 @@ function showTreeContextMenu(item, event) {
   showContextMenu(event.clientX, event.clientY, [
     { label: 'Open', action: () => openFile(item) },
     ...(state.workspaceMode === 'dual'
-      ? [{ label: 'Open in Other Pane', action: () => openFile(item) }]
+      ? [{ label: 'Open in Other Pane', action: () => {
+          const previous = state.focusedPane
+          state.focusedPane = previous === 'primary' ? 'secondary' : 'primary'
+          openFile(item)
+        } }]
       : []),
     { separator: true },
     { label: 'Rename', action: () => renameTreeItem(item) },
@@ -201,9 +205,10 @@ async function deleteTreeItem(item) {
   try {
     const ok = await window.fjord.trashFile?.(item.path)
     if (!ok) return
-    // Close any tabs pointing at the deleted file
+    // Close any tabs pointing at the deleted file or any descendants
+    const prefixRe = new RegExp(`^${item.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[/\\\\]`)
     for (const tab of [...state.tabs]) {
-      if (tab.path === item.path || tab.path.startsWith(item.path + '/')) {
+      if (tab.path === item.path || prefixRe.test(tab.path)) {
         closeTab(tab, getTabPane(tab) || 'primary')
       }
     }
@@ -543,8 +548,9 @@ function updateTabOverflowIndicator(pane) {
   const container = $(`tabs-${pane}`)
   const btn = $(`tabs-overflow-${pane}`)
   if (!container || !btn) return
-  const overflowing = container.scrollWidth > container.clientWidth + 1
   const group = getGroupTabs(pane)
+  if (group.length === 0) { btn.hidden = true; return }
+  const overflowing = container.scrollWidth > container.clientWidth + 1
   btn.hidden = !overflowing && group.length <= 1
 }
 

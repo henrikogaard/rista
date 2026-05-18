@@ -19,6 +19,10 @@ export function buildOutlinePanel() {
 export function renderOutline() {
   const body = document.getElementById('outline-view-body')
   if (!body) return
+  // Re-attach scroll listeners — after editor rebuilds (folder switch, session
+  // restore), the old scrollDOMs are gone and our WeakSet has no record of
+  // the new ones. attachScrollSync is idempotent thanks to the WeakSet.
+  attachScrollSync()
   const tab = getFocusedTab()
   if (!tab) {
     _cachedHeadings = []

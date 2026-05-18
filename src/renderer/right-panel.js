@@ -269,8 +269,10 @@ export function toggleWidgetCollapse(id) {
   ensureStateShape()
   if (state.collapsedWidgets.has(id)) {
     state.collapsedWidgets.delete(id)
+    // Body stays in the DOM with its listeners attached — no remount needed.
+    // Refresh content in case state changed while hidden.
     const hooks = _widgets.get(id)
-    hooks?.onMount?.()
+    hooks?.onRefresh?.()
   } else {
     state.collapsedWidgets.add(id)
   }
