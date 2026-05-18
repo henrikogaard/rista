@@ -352,14 +352,19 @@ function escapeHtml(value = '') {
     .replace(/'/g, '&#39;')
 }
 
-// Extract headings for ToC
+// Extract headings for ToC. Skips fenced code blocks. Returns line number
+// (1-indexed) so consumers can jump the editor to the heading.
 export function extractHeadings(markdown) {
   const headings = []
   const lines = markdown.split('\n')
-  for (const line of lines) {
-    const m = line.match(/^(#{1,3})\s+(.+)/)
+  let inFence = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^\s*```/.test(line)) { inFence = !inFence; continue }
+    if (inFence) continue
+    const m = line.match(/^(#{1,6})\s+(.+)/)
     if (m) {
-      headings.push({ level: m[1].length, text: m[2].trim() })
+      headings.push({ level: m[1].length, text: m[2].trim(), line: i + 1 })
     }
   }
   return headings

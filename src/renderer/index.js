@@ -22,7 +22,9 @@ import { buildGraphView, renderGraph, destroyGraph } from './graph-view.js'
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink } from './link-index.js'
 import { registerRightPanel, initRightSidebarWidth } from './right-panel.js'
-import { graphIcon, calendarIcon } from './icons.js'
+import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon } from './icons.js'
+import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
+import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
@@ -112,6 +114,27 @@ registerRightPanel('graph', {
 })
 
 initAiChatPanel(openFile, closeRightPanel)
+
+registerRightPanel('outline', {
+  title: 'Outline',
+  icon: outlineIcon(),
+  flex: 1,
+  build: buildOutlinePanel,
+  onMount: mountOutlinePanel,
+  onUnmount: () => {},
+  onRefresh: renderOutline,
+})
+
+setBookmarksOpenFile((item) => openFile(item))
+registerRightPanel('bookmarks', {
+  title: 'Bookmarks',
+  icon: bookmarkIcon(),
+  flex: 1,
+  build: buildBookmarksPanel,
+  onMount: mountBookmarksPanel,
+  onUnmount: unmountBookmarksPanel,
+  onRefresh: renderBookmarks,
+})
 
 registerRightPanel('calendar', {
   title: 'Calendar',

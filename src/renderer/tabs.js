@@ -11,6 +11,7 @@ import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex } from '.
 import { refreshRightPanel } from './right-panel.js'
 import { saveSnapshot } from './history.js'
 import { exportAsWebsite } from './publish.js'
+import { toggleBookmark, isBookmarked, resetBookmarksCache } from './bookmarks.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -171,6 +172,7 @@ export async function openFolder() {
   const p = await window.fjord.openFolder()
   if (!p) return
   state.folderPath = p
+  resetBookmarksCache()
   addRecentProject(p)
   state.tabs = []
   state.tabGroups.primary = []
@@ -216,6 +218,7 @@ export async function openFolder() {
 export async function openFolderPath(folderPath) {
   if (!window.fjord || !folderPath) return
   state.folderPath = folderPath
+  resetBookmarksCache()
   addRecentProject(folderPath)
   state.tabs = []
   state.tabGroups.primary = []
@@ -528,6 +531,7 @@ function showTabContextMenu(x, y, tab, pane) {
     }},
     { separator: true },
     { label: tab.pinned ? 'Unpin' : 'Pin', action: () => togglePinTab(tab) },
+    { label: isBookmarked(tab.path) ? 'Remove Bookmark' : 'Bookmark', action: () => toggleBookmark(tab.path, tab.name) },
     { separator: true },
     { label: 'Copy Path', action: () => navigator.clipboard.writeText(tab.path) },
     { label: 'Reveal in Finder', action: () => window.fjord.showInFolder(tab.path) },
