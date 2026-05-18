@@ -12,6 +12,7 @@ import { refreshRightPanel } from './right-panel.js'
 import { saveSnapshot } from './history.js'
 import { exportAsWebsite } from './publish.js'
 import { toggleBookmark, isBookmarked, resetBookmarksCache } from './bookmarks.js'
+import { refreshFileExplorerState } from './file-explorer-view.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -234,18 +235,8 @@ export async function refreshTree() {
 }
 
 export function syncFolderUi() {
-  const openFolderBtn = $('open-folder-btn')
-  if (openFolderBtn) {
-    openFolderBtn.style.display = state.folderPath ? 'none' : ''
-  }
-  const sidebarLabel = $('sidebar-label')
-  if (sidebarLabel) {
-    sidebarLabel.textContent = state.folderPath ? state.folderPath.split('/').pop() : 'Explorer'
-  }
-  const collapseAllBtn = $('collapse-all-btn')
-  if (collapseAllBtn) {
-    collapseAllBtn.style.display = state.folderPath ? '' : 'none'
-  }
+  // The file explorer is now a widget; ask it to refresh its CTA/label/etc.
+  refreshFileExplorerState()
 }
 
 export function collapseAllFolders() {

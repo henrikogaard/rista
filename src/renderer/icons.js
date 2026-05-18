@@ -49,6 +49,14 @@ export function rightSidebarIcon() {
   return `<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.2"/><path d="M10 3v10"/><path d="M11.8 5.2h0.4M11.8 7.6h0.4M11.8 10h0.4"/></svg>`
 }
 
+export function folderIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>`
+}
+
+export function agentsIcon() {
+  return `<svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="2.5" fill="none" stroke="currentColor"/><path d="M2.5 13.5c.5-2.5 2.8-4 5.5-4s5 1.5 5.5 4" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>`
+}
+
 export function outlineIcon() {
   return `<svg viewBox="0 0 16 16"><line x1="3" y1="4" x2="13" y2="4" stroke="currentColor" stroke-linecap="round"/><line x1="5" y1="8" x2="13" y2="8" stroke="currentColor" stroke-linecap="round"/><line x1="7" y1="12" x2="13" y2="12" stroke="currentColor" stroke-linecap="round"/></svg>`
 }

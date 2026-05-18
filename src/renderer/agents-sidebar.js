@@ -5,22 +5,6 @@ import { state, $ } from './state.js'
 
 const SESSIONS_DIR = '.fjordmark/sessions'
 
-export function buildAgentsSidebar() {
-  return `
-    <div class="agents-sidebar" id="agents-sidebar" style="display:none">
-      <div class="agents-sidebar__header">
-        <span class="agents-sidebar__label">Agents</span>
-        <div class="agents-sidebar__new" id="agents-new-btn" title="New session" role="button" tabindex="0">+</div>
-      </div>
-      <div class="agents-list" id="agents-list"></div>
-      <div class="agents-empty" id="agents-empty">
-        <span>No sessions yet</span>
-        <p class="agents-empty__sub">Sessions are stored locally in your project.</p>
-      </div>
-    </div>
-  `
-}
-
 export async function loadSessions() {
   if (!state.folderPath) return []
   const sessionsPath = state.folderPath + '/' + SESSIONS_DIR
@@ -81,20 +65,6 @@ export async function renderAgentsList() {
       </div>
     </div>
   `).join('')
-}
-
-export function toggleSidebarMode() {
-  const current = state.sidebarMode || 'explorer'
-  state.sidebarMode = current === 'explorer' ? 'agents' : 'explorer'
-  const fileTree = $('file-tree')
-  const agentsSidebar = $('agents-sidebar')
-  const sidebarLabel = $('sidebar-label')
-  const toggleBtn = $('sidebar-mode-toggle')
-  if (fileTree) fileTree.style.display = state.sidebarMode === 'explorer' ? 'block' : 'none'
-  if (agentsSidebar) agentsSidebar.style.display = state.sidebarMode === 'agents' ? 'flex' : 'none'
-  if (sidebarLabel) sidebarLabel.textContent = state.sidebarMode === 'explorer' ? 'Explorer' : 'Agents'
-  if (toggleBtn) toggleBtn.classList.toggle('active', state.sidebarMode === 'agents')
-  if (state.sidebarMode === 'agents') renderAgentsList()
 }
 
 function formatTime(ts) {

@@ -21,13 +21,15 @@ import { openGraphModal } from './graph-modal.js'
 import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink } from './link-index.js'
-import { registerRightPanel, initRightSidebarWidth } from './right-panel.js'
-import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon } from './icons.js'
+import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
+import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon } from './icons.js'
+import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks } from './file-explorer-view.js'
+import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks } from './agents-view.js'
 import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
 import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
-import { toggleSidebarMode, createSession, renderAgentsList } from './agents-sidebar.js'
+import { createSession } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel } from './ai-chat.js'
@@ -100,7 +102,42 @@ initDiagrams(getTheme())
 registerEnsureRichEditorMounted(ensureRichEditorMounted)
 registerFocusPane(focusPane)
 
-// ── Initialize right panel system ────────────────────────────────
+// ── Initialize widget system (right + left sidebars) ─────────────
+// File explorer and Agents default to the left sidebar.
+registerFileExplorerCallbacks({
+  openFolder,
+  collapseAllFolders,
+  renderTree: () => { refreshTree() },
+})
+registerRightPanel('files', {
+  title: 'Files',
+  icon: folderIcon(),
+  flex: 3,
+  defaultSide: 'left',
+  defaultActive: true,
+  build: buildFileExplorerPanel,
+  onMount: mountFileExplorerPanel,
+  onUnmount: () => {},
+  onRefresh: refreshFileExplorerState,
+})
+
+registerAgentsViewCallbacks({
+  createSession: async () => {
+    const session = await createSession()
+    if (session) refreshAgentsPanel()
+  },
+})
+registerRightPanel('agents', {
+  title: 'Agents',
+  icon: agentsIcon(),
+  flex: 1,
+  defaultSide: 'left',
+  build: buildAgentsPanel,
+  onMount: mountAgentsPanel,
+  onUnmount: () => {},
+  onRefresh: refreshAgentsPanel,
+})
+
 initInspectorPanel(openFile, closeRightPanel)
 
 registerRightPanel('graph', {
@@ -182,7 +219,6 @@ registerShellCallbacks({
   togglePaneSplitView,
   toggleWorkspaceSplit,
   toggleSidebar,
-  toggleSidebarMode,
   toggleTerminal: toggleTerminalDrawer,
   toggleInspector,
   toggleRightPanel,
@@ -199,10 +235,6 @@ registerShellCallbacks({
   ensureRichEditorMounted,
   syncToolbarToggle,
   syncPaneSplitToggle,
-  createAgentSession: async () => {
-    const session = await createSession()
-    if (session) renderAgentsList()
-  },
   openAgentSession: (sessionPath) => {
     // Open session JSON as a note for now (could be a special UI later)
     openFile({ path: sessionPath, name: sessionPath.split('/').pop() })
@@ -284,6 +316,8 @@ function resolveTemplateVars(content) {
 // ── Boot ─────────────────────────────────────────────────────────
 buildShell()
 buildZenExitHint()
+// Activate default left-sidebar widgets (Files) before the editor UI exists.
+restoreRightPanel()
 syncFolderUi()
 
 // ── Command palette ──────────────────────────────────────────────

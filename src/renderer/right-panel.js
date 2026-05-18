@@ -39,6 +39,7 @@ const COLLAPSED_KEY = 'fjordmark-right-widgets-collapsed'
 const ORDER_KEY = 'fjordmark-right-widgets-order'
 const FLEX_KEY = 'fjordmark-right-widgets-flex'
 const SIDE_KEY = 'fjordmark-widget-side'
+const SEEN_KEY = 'fjordmark-widget-seen'
 
 function loadWidgetState() {
   try {
@@ -86,9 +87,39 @@ function ensureStateShape() {
   }
 }
 
+function getSeenWidgets() {
+  try { return new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]')) }
+  catch { return new Set() }
+}
+
+function markSeen(seen) {
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(Array.from(seen))) } catch {}
+}
+
+function applyFirstLaunchDefaults() {
+  // Activate defaultActive widgets the first time we encounter them (per widget).
+  // This way, newly-introduced widgets light up for existing users too.
+  const seen = getSeenWidgets()
+  let changed = false
+  for (const [id, hooks] of _widgets) {
+    if (seen.has(id)) continue
+    seen.add(id)
+    if (hooks.defaultActive) {
+      state.rightWidgets.add(id)
+      changed = true
+    }
+  }
+  markSeen(seen)
+  if (changed) persistWidgetState()
+}
+
 function getWidgetSide(id) {
   ensureStateShape()
-  return state.widgetSide[id] === 'left' ? 'left' : 'right'
+  if (state.widgetSide[id] === 'left' || state.widgetSide[id] === 'right') {
+    return state.widgetSide[id]
+  }
+  const hooks = _widgets.get(id)
+  return hooks?.defaultSide === 'left' ? 'left' : 'right'
 }
 
 function setWidgetSide(id, side) {
@@ -481,13 +512,15 @@ document.addEventListener('dragstart', (event) => {
     event.dataTransfer.setDragImage(widget, 10, 10)
     widget.classList.add('widget--dragging')
   }
+  document.body.classList.add('is-dragging-widget')
 })
 document.addEventListener('dragend', (event) => {
   const header = event.target.closest('.widget__header')
   if (header) header.closest('.widget')?.classList.remove('widget--dragging')
   _dragId = null
-  document.querySelectorAll('.widget--drop-above, .widget--drop-below').forEach(n => {
-    n.classList.remove('widget--drop-above', 'widget--drop-below')
+  document.body.classList.remove('is-dragging-widget')
+  document.querySelectorAll('.widget--drop-above, .widget--drop-below, .widget-stack--drop-end').forEach(n => {
+    n.classList.remove('widget--drop-above', 'widget--drop-below', 'widget-stack--drop-end')
   })
 })
 function findStackFromEvent(event) {
@@ -602,6 +635,7 @@ export function startRightSidebarResize(event) {
  */
 export function restoreRightPanel() {
   ensureStateShape()
+  applyFirstLaunchDefaults()
   renderSidebar()
 }
 

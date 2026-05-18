@@ -2689,6 +2689,113 @@ body.is-resizing-widget { cursor: ns-resize; user-select: none; }
   display: none;
   border-top: none;
 }
+
+/* File explorer widget body — flex column so file-tree fills the widget */
+.file-explorer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.file-explorer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  font-size: 10.5px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--surface-edge);
+}
+.file-explorer__location {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-explorer__actions { display: flex; gap: 4px; }
+.file-explorer__action {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--text3);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.file-explorer__action:hover { color: var(--text1); background: rgba(255,255,255,0.05); }
+.file-explorer__open-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 10px;
+  padding: 6px 9px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 11.5px;
+  transition: background 0.12s, color 0.12s, transform 0.08s;
+}
+.file-explorer__open-btn[hidden] { display: none; }
+.file-explorer__open-btn:hover { background: rgba(255,255,255,0.08); color: var(--text1); }
+.file-explorer__open-btn svg { width: 12px; height: 12px; fill: currentColor; opacity: 0.8; }
+
+/* Agents widget body */
+.agents-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agents-view__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  font-size: 10.5px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--surface-edge);
+}
+.agents-view__label { flex: 1; }
+.agents-view__new {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.agents-view__new:hover { color: var(--text1); background: rgba(255,255,255,0.05); }
+/* While a widget is being dragged, reveal empty stacks as visible drop zones */
+body.is-dragging-widget .widget-stack:empty {
+  display: flex !important;
+  min-height: 64px;
+  border-top: 1px dashed var(--accent-dim);
+  background: rgba(91,127,166,0.04);
+  position: relative;
+}
+body.is-dragging-widget .widget-stack:empty::before {
+  content: 'Drop here';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+  font-size: 11px;
+  pointer-events: none;
+}
 .left-widget-stack.has-widgets {
   flex: 1 1 0;
   min-height: 120px;

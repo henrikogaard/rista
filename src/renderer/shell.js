@@ -7,7 +7,6 @@ import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
 import { showContextMenu } from './context-menu.js'
-import { buildAgentsSidebar, toggleSidebarMode } from './agents-sidebar.js'
 import { renderRecentProjectsHtml, removeRecentProject } from './recent-projects.js'
 
 // ── Callback registration ────────────────────────────────────────
@@ -377,19 +376,6 @@ export function buildShell() {
 
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
-          <div class="sidebar__header">
-            <span class="sidebar__label" id="sidebar-label">Explorer</span>
-            <div class="sidebar__header-actions">
-              <div class="sidebar__mode-toggle" id="sidebar-mode-toggle" title="Toggle Agents" role="button" tabindex="0">Aa</div>
-              <div class="sidebar__collapse-all" id="collapse-all-btn" title="Collapse all">Collapse all</div>
-            </div>
-          </div>
-          <div class="sidebar__open-btn" id="open-folder-btn">
-            <svg viewBox="0 0 16 16"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
-            Open folder…
-          </div>
-          <div class="file-tree" id="file-tree"></div>
-          ${buildAgentsSidebar()}
           <div class="left-widget-stack widget-stack widget-stack--left" id="left-widget-stack"></div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
@@ -651,36 +637,18 @@ export function buildShell() {
   _callbacks.syncToolbarToggle?.()
   _callbacks.syncPaneSplitToggle?.()
 
-  $('open-folder-btn').addEventListener('click', () => _callbacks.openFolder?.())
-  $('collapse-all-btn')?.addEventListener('click', () => _callbacks.collapseAllFolders?.())
-  $('sidebar-mode-toggle')?.addEventListener('click', () => {
-    toggleSidebarMode()
-  })
-  $('sidebar-mode-toggle')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      toggleSidebarMode()
-    }
-  })
+  // File explorer's Open / Collapse-all / file-tree click handlers are wired
+  // by file-explorer-view.js on widget mount, since they live inside the
+  // Files widget body now and can move between sidebars.
   $('sidebar-resizer')?.addEventListener('pointerdown', e => _callbacks.startSidebarResize?.(e))
   $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
 
-  // Agents sidebar event delegation
-  const agentsSidebar = $('agents-sidebar')
-  if (agentsSidebar) {
-    agentsSidebar.addEventListener('click', (e) => {
-      const newBtn = e.target.closest('#agents-new-btn')
-      if (newBtn) {
-        _callbacks.createAgentSession?.()
-        return
-      }
-      const card = e.target.closest('.agent-card')
-      if (card) {
-        const sessionPath = card.dataset.sessionPath
-        if (sessionPath) _callbacks.openAgentSession?.(sessionPath)
-      }
-    })
-  }
+  // Agent card clicks are still delegated globally so they work regardless of
+  // which side the Agents widget lives on.
+  document.addEventListener('click', (e) => {
+    const card = e.target.closest('.agent-card')
+    if (card?.dataset.sessionPath) _callbacks.openAgentSession?.(card.dataset.sessionPath)
+  })
 
   // Recent projects click handlers (delegation from welcome)
   const welcomeEl = $('welcome')
