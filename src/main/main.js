@@ -698,20 +698,42 @@ ipcMain.handle('fs:readFileBase64', async (_, filePath) => {
 })
 
 // ── IPC: Run terminal command ────────────────────────────────────
+// Hand the WHOLE command string to the shell — splitting on whitespace
+// destroys quoted args, pipes, and options like `ls -la "My Folder"`.
 ipcMain.handle('terminal:run', async (_, command, cwd) => {
   return new Promise((resolve) => {
     const { spawn } = require('child_process')
-    const [cmd, ...args] = command.split(' ')
-    const child = spawn(cmd, args, { cwd: cwd || process.cwd(), shell: true })
+    // Prefer the user's login shell so PATH from .zshrc / .bash_profile is
+    // respected (Electron's default /bin/sh sees a minimal env).
+    const userShell = process.env.SHELL || '/bin/sh'
+    // -l = login shell (sources profile), -c = run the following command string
+    const child = spawn(userShell, ['-l', '-c', command], {
+      cwd: cwd || process.cwd(),
+      env: process.env,
+    })
     let stdout = ''
     let stderr = ''
-    child.stdout.on('data', (data) => { stdout += data })
-    child.stderr.on('data', (data) => { stderr += data })
+    let bytes = 0
+    const MAX_BYTES = 4 * 1024 * 1024
+    const onData = (buf, target) => {
+      const s = buf.toString()
+      bytes += s.length
+      if (bytes > MAX_BYTES) {
+        try { child.kill() } catch {}
+        target.value += `\n[output truncated at ${MAX_BYTES} bytes]`
+        return
+      }
+      target.value += s
+    }
+    const out = { value: '' }
+    const err = { value: '' }
+    child.stdout.on('data', d => onData(d, out))
+    child.stderr.on('data', d => onData(d, err))
     child.on('close', (code) => {
-      resolve({ stdout, stderr, code })
+      resolve({ stdout: out.value, stderr: err.value, code: code ?? 0 })
     })
-    child.on('error', (err) => {
-      resolve({ stdout, stderr, code: -1, error: err.message })
+    child.on('error', (e) => {
+      resolve({ stdout: out.value, stderr: err.value, code: -1, error: e.message })
     })
   })
 })
