@@ -205,12 +205,14 @@ function renderStack(side) {
       node.dataset.widget = id
       node.dataset.side = side
       node.style.flex = collapsed ? '0 0 auto' : `${getWidgetFlex(id)} 1 0`
+      const actionsHtml = typeof hooks.headerActions === 'function' ? hooks.headerActions() : ''
       node.innerHTML = `
         <header class="widget__header" draggable="true" data-action="widget-toggle-collapse" data-widget="${id}">
           <span class="widget__drag-handle" aria-hidden="true">⋮⋮</span>
           ${hooks.icon ? `<span class="widget__icon">${hooks.icon}</span>` : ''}
           <span class="widget__title">${escapeHtml(hooks.title || id)}</span>
           <span class="widget__spacer"></span>
+          ${actionsHtml ? `<div class="widget__actions">${actionsHtml}</div>` : ''}
           <span class="widget__caret" aria-hidden="true">▾</span>
           <span class="widget__close" data-action="widget-close" data-widget="${id}" role="button" tabindex="0" title="Close">×</span>
         </header>

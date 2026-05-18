@@ -6,13 +6,13 @@ export function registerAgentsViewCallbacks(cbs) {
   Object.assign(_callbacks, cbs)
 }
 
+export function agentsViewHeaderActions() {
+  return `<button type="button" class="widget__action" id="agents-new-btn" title="New session" aria-label="New session">+</button>`
+}
+
 export function buildAgentsPanel() {
   return `
     <div class="agents-view">
-      <div class="agents-view__toolbar">
-        <span class="agents-view__label">Sessions</span>
-        <div class="agents-view__new" id="agents-new-btn" title="New session" role="button" tabindex="0">+</div>
-      </div>
       <div class="agents-list" id="agents-list"></div>
       <div class="agents-empty" id="agents-empty">
         <span>No sessions yet</span>
@@ -22,13 +22,21 @@ export function buildAgentsPanel() {
   `
 }
 
+let _newBtnWired = false
 export function mountAgentsPanel() {
   renderAgentsList()
-  const newBtn = document.getElementById('agents-new-btn')
-  newBtn?.addEventListener('click', () => _callbacks.createSession?.())
-  newBtn?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _callbacks.createSession?.() }
-  })
+  if (!_newBtnWired) {
+    document.addEventListener('click', onNewBtnClick)
+    _newBtnWired = true
+  }
+}
+
+function onNewBtnClick(event) {
+  const btn = event.target.closest('#agents-new-btn')
+  if (!btn) return
+  event.preventDefault()
+  event.stopPropagation()
+  _callbacks.createSession?.()
 }
 
 export function refreshAgentsPanel() {

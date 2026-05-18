@@ -23,8 +23,8 @@ import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink } from './link-index.js'
 import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
 import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon } from './icons.js'
-import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks } from './file-explorer-view.js'
-import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks } from './agents-view.js'
+import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks, fileExplorerHeaderActions } from './file-explorer-view.js'
+import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks, agentsViewHeaderActions } from './agents-view.js'
 import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
 import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
@@ -116,6 +116,7 @@ registerRightPanel('files', {
   defaultSide: 'left',
   defaultActive: true,
   build: buildFileExplorerPanel,
+  headerActions: fileExplorerHeaderActions,
   onMount: mountFileExplorerPanel,
   onUnmount: () => {},
   onRefresh: refreshFileExplorerState,
@@ -133,6 +134,7 @@ registerRightPanel('agents', {
   flex: 1,
   defaultSide: 'left',
   build: buildAgentsPanel,
+  headerActions: agentsViewHeaderActions,
   onMount: mountAgentsPanel,
   onUnmount: () => {},
   onRefresh: refreshAgentsPanel,
