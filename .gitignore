@@ -4,6 +4,8 @@ release/
 out/
 coverage/
 
+.claude/
+
 .DS_Store
 Thumbs.db
 *.log
