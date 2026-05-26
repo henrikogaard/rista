@@ -7,12 +7,13 @@ import { buildWelcome } from './shell.js'
 import { addRecentProject, removeRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
-import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex } from './link-index.js'
+import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex, getFilesForTag } from './link-index.js'
 import { refreshRightPanel } from './right-panel.js'
 import { saveSnapshot } from './history.js'
 import { exportAsWebsite } from './publish.js'
 import { toggleBookmark, isBookmarked, resetBookmarksCache } from './bookmarks.js'
 import { refreshFileExplorerState } from './file-explorer-view.js'
+import { jumpToLine } from './outline-view.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -87,8 +88,12 @@ export function registerTabCallbacks(cbs) { Object.assign(_callbacks, cbs) }
 
 // ── File tree ────────────────────────────────────────────────────
 export function renderTree(items, container, depth = 0) {
+  const visibleItems = state.tagFilter
+    ? filterTreeByPaths(items, new Set(getFilesForTag(state.tagFilter)))
+    : items
+
   renderFileTree({
-    items,
+    items: visibleItems,
     container,
     expandedPaths: state.expandedFolders,
     activePaths: new Set([state.activeTab?.path, state.secondaryTab?.path].filter(Boolean)),
@@ -100,6 +105,16 @@ export function renderTree(items, container, depth = 0) {
     onOpenFilePreview: (item) => openFile(item, { preview: true }),
     onContextMenu: showTreeContextMenu,
     depth,
+  })
+}
+
+function filterTreeByPaths(items, allowedPaths) {
+  return items.flatMap(item => {
+    if (item.type === 'file') {
+      return allowedPaths.has(item.path) ? [item] : []
+    }
+    const children = item.children ? filterTreeByPaths(item.children, allowedPaths) : []
+    return children.length ? [{ ...item, children }] : []
   })
 }
 
@@ -255,13 +270,25 @@ export function startSidebarResize(event) {
   const resizer = $('sidebar-resizer')
   document.body.classList.add('is-resizing-sidebar')
   resizer?.setPointerCapture?.(event.pointerId)
+  let pendingWidth = getSettings().sidebarWidth
+  let frame = 0
+
+  const applyWidth = () => {
+    frame = 0
+    document.documentElement.style.setProperty('--sidebar-width', `${pendingWidth}px`)
+  }
 
   const onMove = moveEvent => {
-    const width = Math.min(420, Math.max(180, moveEvent.clientX))
-    updateSetting('sidebarWidth', width)
+    pendingWidth = Math.min(420, Math.max(180, moveEvent.clientX))
+    if (!frame) frame = requestAnimationFrame(applyWidth)
   }
 
   const onUp = () => {
+    if (frame) {
+      cancelAnimationFrame(frame)
+      applyWidth()
+    }
+    updateSetting('sidebarWidth', pendingWidth)
     document.body.classList.remove('is-resizing-sidebar')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
@@ -418,6 +445,7 @@ export async function openFile(item, { preview = false } = {}) {
   if (existing) {
     if (!preview && existing.preview) existing.preview = false
     activateTab(existing, targetPane)
+    if (item.heading?.line) requestAnimationFrame(() => jumpToLine(item.heading.line))
     return
   }
 
@@ -435,6 +463,7 @@ export async function openFile(item, { preview = false } = {}) {
   const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false, isAttachment, preview }
   state.tabs.push(tab)
   activateTab(tab, targetPane)
+  if (!isAttachment && item.heading?.line) requestAnimationFrame(() => jumpToLine(item.heading.line))
 }
 
 export async function loadFileIntoTab(tab) {
@@ -781,7 +810,7 @@ export function onRichEditorChange(pane) {
   try {
     markdown = editor.getMarkdown()
   } catch (err) {
-    console.error(`[fjordmark] Failed to read WYSIWYG content for pane "${pane}":`, err)
+    console.error(`[rista] Failed to read WYSIWYG content for pane "${pane}":`, err)
     return
   }
   if (tab.content === markdown) return

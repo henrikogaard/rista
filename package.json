@@ -1,15 +1,14 @@
 {
-  "name": "fjordmark",
+  "name": "rista",
   "version": "0.1.0",
-  "description": "A local-first Markdown editor. Nordic. Fast. Yours.",
-  "main": "src/main/main.js",
+  "description": "A local-first Markdown editor. Carved cleanly.",
   "scripts": {
-    "start": "electron .",
-    "dev": "concurrently \"npm run watch\" \"wait-on dist/renderer.js && electron .\"",
-    "watch": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --watch --loader:.js=jsx",
-    "build": "esbuild src/renderer/index.js --bundle --outfile=dist/renderer.js --loader:.js=jsx --minify",
+    "dev": "tauri dev",
+    "watch": "node scripts/build-renderer.js --watch",
+    "build": "node scripts/build-renderer.js --minify",
     "test": "node --test tests/*.test.js",
-    "package": "npm run build && electron-builder",
+    "package": "tauri build --bundles app && node scripts/fix-macos-bundle-icon.js",
+    "install:mac": "node scripts/install-macos-app.js",
     "version:check": "node scripts/semver.js check",
     "version:current": "node scripts/semver.js current",
     "version:set": "node scripts/semver.js set",
@@ -24,18 +23,20 @@
   "keywords": [
     "markdown",
     "editor",
-    "electron",
-    "nordic"
+    "tauri",
+    "nordic",
+    "runes"
   ],
   "license": "MIT",
   "devDependencies": {
-    "concurrently": "^8.2.2",
-    "electron": "^29.0.0",
-    "electron-builder": "^24.9.1",
+    "@tauri-apps/cli": "^2.0.0",
     "esbuild": "^0.20.0",
-    "wait-on": "^7.2.0"
+    "fs-extra": "^11.2.0"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.0.0",
     "@codemirror/autocomplete": "^6.20.2",
     "@codemirror/commands": "^6.3.3",
     "@codemirror/lang-markdown": "^6.2.4",
@@ -46,9 +47,7 @@
     "@codemirror/view": "^6.25.1",
     "@replit/codemirror-vim": "^6.3.0",
     "@toast-ui/editor": "^3.2.2",
-    "chokidar": "^3.6.0",
     "docx": "^9.6.1",
-    "electron-updater": "^6.8.3",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.46",
     "mermaid": "^11.15.0",
@@ -61,39 +60,5 @@
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.0",
     "unified": "^11.0.4"
-  },
-  "build": {
-    "appId": "com.fjordmark.app",
-    "productName": "Fjordmark",
-    "mac": {
-      "category": "public.app-category.productivity",
-      "icon": "public/icon.svg"
-    },
-    "linux": {
-      "target": "AppImage",
-      "icon": "public/icon.svg"
-    },
-    "win": {
-      "target": "nsis",
-      "icon": "public/icon.svg"
-    },
-    "fileAssociations": [
-      {
-        "ext": "md",
-        "name": "Markdown",
-        "role": "Editor"
-      },
-      {
-        "ext": "markdown",
-        "name": "Markdown",
-        "role": "Editor"
-      }
-    ],
-    "files": [
-      "dist/**",
-      "src/main/**",
-      "public/**",
-      "package.json"
-    ]
   }
 }

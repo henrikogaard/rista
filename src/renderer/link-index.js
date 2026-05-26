@@ -170,19 +170,41 @@ export function extractWikilinks(content) {
   return links
 }
 
+function normalizeWikilinkTarget(linkText) {
+  return String(linkText || '')
+    .split('#')[0]
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\.md$/i, '')
+}
+
 export function resolveWikilink(linkText, allPaths, folderPath) {
+  const normalized = normalizeWikilinkTarget(linkText)
+  if (!normalized) return null
+
   // Try exact match
   const exact = Array.from(allPaths).find(p => {
     const name = p.split(/[/\\]/).pop()
     const base = name.replace(/\.md$/i, '')
-    return base === linkText
+    return base === normalized
   })
   if (exact) return exact
+
+  // Try Obsidian-style relative path links, e.g. [[Areas/Foo/Bar#Heading]].
+  const normalizedPath = normalized.replace(/^\/+/, '')
+  const byPath = Array.from(allPaths).find(p => {
+    const relative = folderPath && p.startsWith(folderPath)
+      ? p.slice(folderPath.length).replace(/^[/\\]+/, '')
+      : p
+    const withoutExt = relative.replace(/\\/g, '/').replace(/\.md$/i, '')
+    return withoutExt === normalizedPath
+  })
+  if (byPath) return byPath
 
   // Try with .md suffix
   const withExt = Array.from(allPaths).find(p => {
     const name = p.split(/[/\\]/).pop()
-    return name === linkText + '.md' || name === linkText
+    return name === normalized + '.md' || name === normalized
   })
   if (withExt) return withExt
 

@@ -9,8 +9,9 @@ export const settingsValue = key => getSettings()[key]
 export const state = {
   folderPath: null,
   tree: [],
+  tagFilter: null,
   expandedFolders: new Set(),
-  appMeta: { name: 'Fjordmark', version: '' },
+  appMeta: { name: 'Rísta', version: '' },
   tabs: [],          // [{ path, name, content, dirty }]
   tabGroups: {
     primary: [],

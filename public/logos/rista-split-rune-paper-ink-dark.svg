@@ -1,0 +1,6 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rista Split Rune Paper Ink dark">
+  <rect width="256" height="256" rx="56" fill="#e9e6df"/>
+  <circle cx="128" cy="128" r="94" fill="#fbf6ec" stroke="#d8d0c2" stroke-width="8"/>
+  <path d="M102 196V60M102 72h48l28 28-30 30h-46M132 130l44 66" fill="none" stroke="#211d19" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M78 78l24 24M78 178l24-24" fill="none" stroke="#8a7661" stroke-width="12" stroke-linecap="round"/>
+</svg>

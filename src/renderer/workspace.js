@@ -342,7 +342,7 @@ export function destroyRichEditor(pane) {
     try {
       richEditors[pane].destroy()
     } catch (err) {
-      console.error(`[fjordmark] Error destroying WYSIWYG editor for pane "${pane}":`, err)
+      console.error(`[rista] Error destroying WYSIWYG editor for pane "${pane}":`, err)
     }
     richEditors[pane] = null
   }
@@ -403,7 +403,7 @@ export function ensureRichEditorMounted(pane) {
     richEditorMountTarget[pane] = mountTarget
     return richEditors[pane]
   } catch (err) {
-    console.error(`[fjordmark] Failed to mount WYSIWYG editor for pane "${pane}":`, err)
+    console.error(`[rista] Failed to mount WYSIWYG editor for pane "${pane}":`, err)
     host.remove()
     richEditors[pane] = null
     richEditorMountTarget[pane] = null

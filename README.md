@@ -1,11 +1,11 @@
-# Fjordmark
+# Rísta
 
 <p align="center">
-  <img src="./public/icon.svg" width="132" height="132" alt="Fjordmark logo" />
+  <img src="./public/icon.svg" width="132" height="132" alt="Rísta logo" />
 </p>
 
 <p align="center">
-  <strong>A local-first Markdown editor with a Nordic, low-noise interface.</strong>
+  <strong>A local-first Markdown editor with a quiet, modern-mythic interface.</strong>
 </p>
 
 <p align="center">
@@ -13,18 +13,17 @@
 </p>
 
 <p align="center">
-  <code>Electron</code> · <code>CodeMirror 6</code> · <code>Toast UI Editor</code> · <code>unified</code> · <code>Chokidar</code>
+  <code>Tauri</code> · <code>CodeMirror 6</code> · <code>Toast UI Editor</code> · <code>unified</code> · <code>notify</code>
 </p>
 
 ---
 
 ## Overview
 
-Fjordmark is a small, fast desktop editor for people who want Markdown files to stay as files.
+Rísta is a small, fast desktop editor for people who want Markdown files to stay as files.
 There is no cloud sync, no account system, and no telemetry layer between you and your notes.
 
-The interface is intentionally compact and dark by default, with a Scandinavian-inspired visual language:
-flat surfaces, restrained color, borderless controls, and as little chrome as possible.
+The interface is compact and dark by default. The name references runes, but the product stays restrained: carved geometry, mineral color, terse language, and low-noise local writing tools.
 
 ## Highlights
 
@@ -35,7 +34,6 @@ flat surfaces, restrained color, borderless controls, and as little chrome as po
 - Find and replace with keyboard shortcut support
 - Command dialogs for links, images, and tables
 - Image paste from clipboard directly into the document
-- PDF export from the desktop app
 - Light and dark themes
 - Settings panel for typography, layout, and visual atmosphere
 - File watching for live updates when Markdown files change on disk
@@ -57,11 +55,10 @@ npm run package
 
 | Command | Description |
 |---|---|
-| `npm run dev` | Start esbuild in watch mode and launch Electron |
-| `npm run watch` | Rebuild the renderer on file changes |
-| `npm run build` | Create a production renderer bundle |
-| `npm start` | Launch Electron without rebuilding |
-| `npm run package` | Build the app for distribution with `electron-builder` |
+| `npm run dev` | Build the renderer and launch Tauri |
+| `npm run watch` | Rebuild renderer assets on file changes |
+| `npm run build` | Create production renderer assets in `dist/app` |
+| `npm run package` | Build the desktop app with Tauri |
 | `npm run version:check` | Validate semantic version formatting |
 | `npm run version:current` | Print the current version |
 | `npm run version:set` | Set an explicit version |
@@ -83,32 +80,35 @@ npm run package
 
 ## Stack
 
-- Electron 29 for the desktop shell and native integration
+- Tauri 2 for the desktop shell and native integration
+- Rust commands for filesystem, watcher, terminal, D2, export, and AI transport
 - CodeMirror 6 for the Markdown editing surface
 - Toast UI Editor for WYSIWYG editing
 - unified, remark-gfm, remark-rehype, and rehype-stringify for Markdown rendering
-- Chokidar 3 for folder watching
 - esbuild for bundling
 
 ## Project Structure
 
 ```text
-fjordmark/
+rista/
 ├── public/
 │   ├── icon.svg
 │   └── index.html
 ├── src/
-│   ├── main/
-│   │   ├── main.js
-│   │   └── preload.js
 │   └── renderer/
 │       ├── editor.js
 │       ├── index.js
 │       ├── markdown.js
 │       ├── settings.js
+│       ├── tauri-api.js
 │       ├── theme.js
 │       └── styles/
 │           └── main.css
+├── src-tauri/
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   └── src/
+│       └── main.rs
 ├── dist/
 ├── package.json
 └── README.md
@@ -119,7 +119,12 @@ fjordmark/
 - Borderless toolbar controls are intentional and part of the visual identity
 - Theme colors live in CSS variables and are switched via `[data-theme]`
 - The layout is compact by default and optimized for writing density
-- UI chrome stays flat; the aurora treatment belongs to the welcome atmosphere, not the app shell
+- UI chrome stays flat; atmospheric treatments belong to the welcome surface, not the app shell
+- Norse influence stays abstract and professional rather than decorative
+
+## Current Tauri Notes
+
+The first Tauri cut preserves HTML, DOCX, and static-site export. PDF export is deferred because Electron's Chromium-only `printToPDF()` does not have a direct Tauri equivalent.
 
 ## License
 

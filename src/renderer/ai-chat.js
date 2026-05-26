@@ -124,7 +124,7 @@ function buildSystemPrompt() {
     : 'The user does not currently have a note open.'
   const root = state.folderPath || '(no folder open)'
   return [
-    'You are a writing assistant embedded in Fjordmark, a local-first markdown editor.',
+    'You are a writing assistant embedded in Rísta, a local-first markdown editor.',
     `The user has the folder "${root}" open as their project.`,
     'You can use the provided tools to read, search, write, move, and delete files inside this folder. Always inspect the project structure with list_files or search_notes before making destructive changes. Paths are RELATIVE to the project root.',
     'Never invent file paths. Confirm by listing or searching first when unsure.',

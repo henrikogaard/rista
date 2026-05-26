@@ -29,6 +29,7 @@ export function registerRightPanel(id, hooks) {
 export function buildRightPanelContainer() {
   return `<div class="right-sidebar" id="right-panel-container">
     <div class="right-sidebar__resizer" data-action="right-sidebar-resize"></div>
+    <div class="right-sidebar__drag-region" id="right-sidebar-drag-region" data-tauri-drag-region></div>
     <div class="right-sidebar__tabs" id="right-sidebar-tabs"></div>
     <div class="right-sidebar__stack widget-stack widget-stack--right" id="right-sidebar-stack"></div>
   </div>`
@@ -194,6 +195,7 @@ function renderStack(side) {
   stack.querySelectorAll('.widget').forEach(node => existing.set(node.dataset.widget, node))
 
   const fragment = document.createDocumentFragment()
+  const pendingMounts = []
   activeIds.forEach((id, i) => {
     let node = existing.get(id)
     if (!node) {
@@ -207,8 +209,8 @@ function renderStack(side) {
       node.style.flex = collapsed ? '0 0 auto' : `${getWidgetFlex(id)} 1 0`
       const actionsHtml = typeof hooks.headerActions === 'function' ? hooks.headerActions() : ''
       node.innerHTML = `
-        <header class="widget__header" draggable="true" data-action="widget-toggle-collapse" data-widget="${id}">
-          <span class="widget__drag-handle" aria-hidden="true">⋮⋮</span>
+        <header class="widget__header" data-action="widget-toggle-collapse" data-widget="${id}">
+          <span class="widget__drag-handle" data-action="widget-drag" data-widget="${id}" role="button" tabindex="0" title="Drag to move" aria-label="Drag ${escapeHtml(hooks.title || id)} widget">⋮⋮</span>
           ${hooks.icon ? `<span class="widget__icon">${hooks.icon}</span>` : ''}
           <span class="widget__title">${escapeHtml(hooks.title || id)}</span>
           <span class="widget__spacer"></span>
@@ -219,7 +221,7 @@ function renderStack(side) {
         <div class="widget__body">${hooks.build()}</div>
       `
       fragment.appendChild(node)
-      if (!collapsed) requestAnimationFrame(() => hooks.onMount?.())
+      if (!collapsed) pendingMounts.push(hooks)
     } else {
       node.dataset.side = side  // stay in sync if moved
       fragment.appendChild(node)
@@ -235,6 +237,7 @@ function renderStack(side) {
     }
   })
   stack.replaceChildren(fragment)
+  pendingMounts.forEach(hooks => hooks.onMount?.())
 
   stack.querySelectorAll('.widget').forEach(node => {
     const id = node.dataset.widget
@@ -410,13 +413,14 @@ document.addEventListener('click', (event) => {
     closeRightPanel(closeBtn.dataset.widget)
     return
   }
-  const header = event.target.closest('[data-action="widget-toggle-collapse"]')
-  if (header && !event.target.closest('[data-action="widget-close"]')) {
-    toggleWidgetCollapse(header.dataset.widget)
-  }
 })
 
 document.addEventListener('pointerdown', (event) => {
+  const widgetHeader = event.target.closest('.widget__header')
+  if (widgetHeader && !event.target.closest('[data-action="widget-close"], .widget__actions')) {
+    startWidgetDrag(event, widgetHeader)
+    return
+  }
   const sidebarResizer = event.target.closest('[data-action="right-sidebar-resize"]')
   if (sidebarResizer) {
     startRightSidebarResize(event)
@@ -500,90 +504,69 @@ function startWidgetResize(event, resizer) {
   window.addEventListener('pointercancel', onUp)
 }
 
-// ── Drag-to-reorder widget headers ──────────────────────────────
-let _dragId = null
-document.addEventListener('dragstart', (event) => {
-  const header = event.target.closest('.widget__header[draggable="true"]')
-  if (!header) return
-  _dragId = header.dataset.widget
-  // Drag the whole widget visually
-  const widget = header.closest('.widget')
-  if (widget && event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', _dragId)
-    event.dataTransfer.setDragImage(widget, 10, 10)
-    widget.classList.add('widget--dragging')
-  }
-  document.body.classList.add('is-dragging-widget')
-})
-document.addEventListener('dragend', (event) => {
-  const header = event.target.closest('.widget__header')
-  if (header) header.closest('.widget')?.classList.remove('widget--dragging')
-  _dragId = null
+// ── Pointer-driven widget repositioning ─────────────────────────
+function clearWidgetDropHints() {
   document.body.classList.remove('is-dragging-widget')
   document.querySelectorAll('.widget--drop-above, .widget--drop-below, .widget-stack--drop-end').forEach(n => {
     n.classList.remove('widget--drop-above', 'widget--drop-below', 'widget-stack--drop-end')
   })
-})
-function findStackFromEvent(event) {
+}
+
+function findStackFromElement(element) {
   for (const side of SIDES) {
     const stack = $(STACK_ID[side])
-    if (stack && event.target.closest(`#${STACK_ID[side]}`)) return { stack, side }
+    if (stack && element?.closest?.(`#${STACK_ID[side]}`)) return { stack, side }
   }
   return null
 }
 
-document.addEventListener('dragover', (event) => {
-  if (!_dragId) return
-  const target = findStackFromEvent(event)
+function findWidgetDropTarget(clientX, clientY) {
+  const element = document.elementFromPoint(clientX, clientY)
+  const target = findStackFromElement(element)
   if (!target) return
   const { stack, side } = target
-  const targetWidget = event.target.closest('.widget')
-  event.preventDefault()
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  return {
+    stack,
+    side,
+    targetWidget: element.closest?.('.widget'),
+  }
+}
 
+function updateWidgetDropHint(dropTarget, dragId, clientY) {
   document.querySelectorAll('.widget--drop-above, .widget--drop-below').forEach(n => {
     n.classList.remove('widget--drop-above', 'widget--drop-below')
   })
   document.querySelectorAll('.widget-stack--drop-end').forEach(n => n.classList.remove('widget-stack--drop-end'))
+  if (!dropTarget) return
 
-  if (targetWidget && targetWidget.dataset.widget !== _dragId && stack.contains(targetWidget)) {
+  const { stack, targetWidget } = dropTarget
+  if (targetWidget && targetWidget.dataset.widget !== dragId && stack.contains(targetWidget)) {
     const rect = targetWidget.getBoundingClientRect()
-    const above = event.clientY < rect.top + rect.height / 2
+    const above = clientY < rect.top + rect.height / 2
     targetWidget.classList.add(above ? 'widget--drop-above' : 'widget--drop-below')
   } else {
-    // Dropping into an empty area of a stack → append at the end of that side
     stack.classList.add('widget-stack--drop-end')
   }
-})
+}
 
-document.addEventListener('drop', (event) => {
-  if (!_dragId) return
-  const target = findStackFromEvent(event)
-  if (!target) return
-  const { stack, side } = target
-  event.preventDefault()
+function applyWidgetDrop(dragId, dropTarget, clientY) {
+  if (!dropTarget) return false
+  const { stack, side, targetWidget } = dropTarget
 
-  // Apply the side change first so subsequent getWidgetSide() reads are correct
-  if (getWidgetSide(_dragId) !== side) setWidgetSide(_dragId, side)
+  if (getWidgetSide(dragId) !== side) setWidgetSide(dragId, side)
 
-  // Compute target index *within the destination side* (0-based)
   const sideItemsBefore = Array.from(stack.querySelectorAll('.widget'))
     .map(n => n.dataset.widget)
-    .filter(id => id !== _dragId)
+    .filter(id => id !== dragId)
   let insertAtSide = sideItemsBefore.length
-  const targetWidget = event.target.closest('.widget')
-  if (targetWidget && targetWidget.dataset.widget !== _dragId && stack.contains(targetWidget)) {
+  if (targetWidget && targetWidget.dataset.widget !== dragId && stack.contains(targetWidget)) {
     const rect = targetWidget.getBoundingClientRect()
-    const above = event.clientY < rect.top + rect.height / 2
+    const above = clientY < rect.top + rect.height / 2
     insertAtSide = sideItemsBefore.indexOf(targetWidget.dataset.widget)
     if (!above) insertAtSide += 1
   }
 
-  // Translate the per-side insertion to a global position in rightWidgetsOrder.
-  // Strip _dragId out, then insert it before the (insertAtSide)-th destination-
-  // side item (or at the end if there are fewer destination items).
-  const without = state.rightWidgetsOrder.filter(id => id !== _dragId)
+  const without = state.rightWidgetsOrder.filter(id => id !== dragId)
   const destPositions = []
   without.forEach((id, i) => {
     if (_widgets.has(id) && getWidgetSide(id) === side) destPositions.push(i)
@@ -596,12 +579,61 @@ document.addEventListener('drop', (event) => {
   } else {
     globalInsertPos = destPositions[insertAtSide]
   }
-  without.splice(globalInsertPos, 0, _dragId)
+  without.splice(globalInsertPos, 0, dragId)
   setWidgetOrder(without)
+  return true
+}
 
-  document.querySelectorAll('.widget-stack--drop-end').forEach(n => n.classList.remove('widget-stack--drop-end'))
-  renderSidebar()
-})
+function startWidgetDrag(event, handle) {
+  ensureStateShape()
+  const header = handle.closest('.widget__header')
+  const dragId = header?.dataset.widget || handle.dataset.widget
+  const widget = handle.closest('.widget')
+  if (!dragId || !widget || !_widgets.has(dragId)) return
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  const startX = event.clientX
+  const startY = event.clientY
+  let didDrag = false
+  let lastDropTarget = null
+
+  const onMove = (moveEvent) => {
+    const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY)
+    if (!didDrag && distance < 4) return
+
+    if (!didDrag) {
+      didDrag = true
+      widget.classList.add('widget--dragging')
+      document.body.classList.add('is-dragging-widget')
+    }
+
+    lastDropTarget = findWidgetDropTarget(moveEvent.clientX, moveEvent.clientY)
+    updateWidgetDropHint(lastDropTarget, dragId, moveEvent.clientY)
+  }
+
+  const finishDrag = (upEvent, cancelled) => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onCancel)
+    widget.classList.remove('widget--dragging')
+
+    if (!cancelled && didDrag && applyWidgetDrop(dragId, lastDropTarget, upEvent.clientY)) {
+      renderSidebar()
+    } else if (!cancelled && !didDrag) {
+      toggleWidgetCollapse(dragId)
+    }
+
+    clearWidgetDropHints()
+  }
+  const onUp = (upEvent) => finishDrag(upEvent, false)
+  const onCancel = (cancelEvent) => finishDrag(cancelEvent, true)
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onCancel)
+}
 
 // ── Sidebar resize ──────────────────────────────────────────────
 export function startRightSidebarResize(event) {
@@ -611,20 +643,29 @@ export function startRightSidebarResize(event) {
   document.body.classList.add('is-resizing-right-sidebar')
   const startX = event.clientX
   const startWidth = container.getBoundingClientRect().width
+  let pendingWidth = startWidth
+  let frame = 0
+
+  const applyWidth = () => {
+    frame = 0
+    document.documentElement.style.setProperty('--right-sidebar-width', `${pendingWidth}px`)
+  }
 
   const onMove = (e) => {
     const delta = startX - e.clientX
-    const next = Math.max(220, Math.min(640, startWidth + delta))
-    document.documentElement.style.setProperty('--right-sidebar-width', `${next}px`)
+    pendingWidth = Math.max(220, Math.min(640, startWidth + delta))
+    if (!frame) frame = requestAnimationFrame(applyWidth)
   }
   const onUp = () => {
     document.body.classList.remove('is-resizing-right-sidebar')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
     window.removeEventListener('pointercancel', onUp)
-    // Persist
-    const final = document.documentElement.style.getPropertyValue('--right-sidebar-width')
-    try { localStorage.setItem('fjordmark-right-sidebar-width', final) } catch {}
+    if (frame) {
+      cancelAnimationFrame(frame)
+      applyWidth()
+    }
+    try { localStorage.setItem('fjordmark-right-sidebar-width', `${pendingWidth}px`) } catch {}
   }
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp)

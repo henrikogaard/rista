@@ -3,8 +3,12 @@ dist/
 release/
 out/
 coverage/
+src-tauri/gen/
+src-tauri/target/
 
 .claude/
+.superpowers/
+docs/superpowers/
 
 .DS_Store
 Thumbs.db

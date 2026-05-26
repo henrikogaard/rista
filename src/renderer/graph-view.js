@@ -2,6 +2,9 @@
 // Canvas-based 2D graph of wikilinks. Force-directed layout, pre-warmed
 // before first paint so it doesn't open mid-explosion.
 
+import { state } from './state.js'
+import { resolveWikilink } from './link-index.js'
+
 export function buildGraphView() {
   return `
     <div class="graph-view" id="graph-view">
@@ -117,17 +120,11 @@ export function renderGraph(linkIndex, onNodeClick) {
   const files = linkIndex.files || new Map()
   const allPaths = linkIndex.allPaths || new Set()
 
-  const nameToPath = new Map()
-  for (const path of allPaths) {
-    const name = basename(path)
-    nameToPath.set(name, path)
-  }
-
   const edgesByPath = new Map()  // path -> Set(neighborPath)
   for (const [sourcePath, entry] of files) {
     if (!entry?.links) continue
     for (const link of entry.links) {
-      const targetPath = nameToPath.get(link)
+      const targetPath = resolveWikilink(link, allPaths, state.folderPath)
       if (!targetPath || targetPath === sourcePath) continue
       if (!edgesByPath.has(sourcePath)) edgesByPath.set(sourcePath, new Set())
       if (!edgesByPath.has(targetPath)) edgesByPath.set(targetPath, new Set())

@@ -1,3 +1,4 @@
+import './tauri-api.js'
 import { initTheme } from './theme.js'
 import { applySettings } from './settings.js'
 import { initKeybindings, matchesBinding } from './keybindings.js'
@@ -22,10 +23,11 @@ import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphL
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink, onLinkIndexChange } from './link-index.js'
 import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
-import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon } from './icons.js'
+import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon } from './icons.js'
 import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks, fileExplorerHeaderActions } from './file-explorer-view.js'
 import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks, agentsViewHeaderActions } from './agents-view.js'
 import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
+import { buildTagsPanel, mountTagsPanel, renderTagsPanel, handleTagsPanelEvent } from './tags-view.js'
 import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
@@ -35,7 +37,7 @@ import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel } from './ai-chat.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
-import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme } from './shell.js'
+import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon } from './shell.js'
 
 // ── Workspace (pane layout, editor mounting, toggles) ────────────
 import {
@@ -94,6 +96,7 @@ import {
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
+applySelectedAppIcon()
 initRightSidebarWidth()
 initKeybindings()
 initDiagrams(getTheme())
@@ -192,6 +195,37 @@ registerRightPanel('outline', {
   onMount: mountOutlinePanel,
   onUnmount: () => {},
   onRefresh: renderOutline,
+})
+
+let _tagsUnsubscribe = null
+registerRightPanel('tags', {
+  title: 'Tags',
+  icon: tagIcon(),
+  flex: 1,
+  defaultSide: 'left',
+  build: buildTagsPanel,
+  onMount: () => {
+    mountTagsPanel(openFile, (tag) => {
+      state.tagFilter = tag
+      refreshTree()
+    }, () => {
+      state.tagFilter = null
+      refreshTree()
+    })
+    const body = document.getElementById('tags-view-body')
+    body?.addEventListener('click', handleTagsPanelEvent)
+    body?.addEventListener('keydown', handleTagsPanelEvent)
+    _tagsUnsubscribe?.()
+    _tagsUnsubscribe = onLinkIndexChange(() => renderTagsPanel())
+  },
+  onUnmount: () => {
+    const body = document.getElementById('tags-view-body')
+    body?.removeEventListener('click', handleTagsPanelEvent)
+    body?.removeEventListener('keydown', handleTagsPanelEvent)
+    _tagsUnsubscribe?.()
+    _tagsUnsubscribe = null
+  },
+  onRefresh: renderTagsPanel,
 })
 
 setBookmarksOpenFile((item) => openFile(item))

@@ -1,0 +1,6 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rista Split Rune Black Stone dark">
+  <rect width="256" height="256" rx="56" fill="#050607"/>
+  <circle cx="128" cy="128" r="94" fill="#0b0c0d" stroke="#303235" stroke-width="8"/>
+  <path d="M102 196V60M102 72h48l28 28-30 30h-46M132 130l44 66" fill="none" stroke="#e1e6eb" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M78 78l24 24M78 178l24-24" fill="none" stroke="#5d6670" stroke-width="12" stroke-linecap="round"/>
+</svg>

@@ -11,7 +11,7 @@ import { autocompletion, CompletionContext } from '@codemirror/autocomplete'
 import { getAllMdFileNames } from './link-index.js'
 import { checkTableAtCursor, hideTableToolbar } from './table-editor.js'
 
-// ── Minimal highlight style matching Fjordmark palette ──
+// ── Minimal highlight style matching Rísta palette ──
 const fjordHighlight = HighlightStyle.define([
   { tag: tags.heading1,         color: 'var(--text1)', fontWeight: '500' },
   { tag: tags.heading2,         color: 'var(--text1)', fontWeight: '500' },

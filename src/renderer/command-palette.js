@@ -1,5 +1,6 @@
 import { $, el, state } from './state.js'
-import { getAllTagNames, getFilesForTag } from './link-index.js'
+import { getAllTagNames, getFilesForTag, getLinkIndex } from './link-index.js'
+import { extractHeadings } from './markdown.js'
 
 // ── Callbacks ────────────────────────────────────────────────────
 let _callbacks = {}
@@ -125,14 +126,44 @@ function getResults(query) {
 
   // File mode: search files
   const files = flattenTree(state.tree)
-  return files
+  const fileResults = files
     .map(f => {
       const { match, score } = fuzzyMatch(trimmed, f.name)
       return { type: 'file', item: f, score, match }
     })
     .filter(r => r.match)
+
+  const headingResults = trimmed
+    ? getHeadingResults(trimmed, files)
+    : []
+
+  return [...fileResults, ...headingResults]
     .sort((a, b) => b.score - a.score)
     .slice(0, 10)
+}
+
+function getHeadingResults(query, files) {
+  const index = getLinkIndex()
+  return files.flatMap(f => {
+    const content = index.files.get(f.path)?.content || ''
+    return extractHeadings(content).map(heading => {
+      const { match, score } = fuzzyMatch(query, `${f.name} ${heading.text}`)
+      return {
+        type: 'heading',
+        item: {
+          path: f.path,
+          name: f.name,
+          heading: {
+            text: heading.text,
+            line: heading.line,
+            level: heading.level,
+          },
+        },
+        score: score + 4,
+        match,
+      }
+    })
+  }).filter(result => result.match)
 }
 
 // ── Render results ───────────────────────────────────────────────
@@ -151,12 +182,13 @@ function renderResults(results) {
     row.dataset.index = i
 
     const icon = el('div', 'cmd-palette__icon')
-    icon.textContent = r.type === 'file' ? '#' : r.type === 'tag' ? '•' : '>'
+    icon.textContent = r.type === 'file' ? '#' : r.type === 'tag' ? '•' : r.type === 'heading' ? 'H' : '>'
 
     const info = el('div', 'cmd-palette__info')
     const label = el('div', 'cmd-palette__label')
     if (r.type === 'file') label.textContent = r.item.name
     else if (r.type === 'tag') label.textContent = '#' + r.item.name
+    else if (r.type === 'heading') label.textContent = r.item.heading.text
     else label.textContent = r.item.label
 
     info.appendChild(label)
@@ -165,7 +197,9 @@ function renderResults(results) {
       ? r.item.description
       : r.type === 'tag'
         ? `${r.item.count} file${r.item.count === 1 ? '' : 's'}`
-        : relativePath(r.item.path)
+        : r.type === 'heading'
+          ? `${relativePath(r.item.path)}:${r.item.heading.line}`
+          : relativePath(r.item.path)
     if (desc) {
       const descEl = el('div', 'cmd-palette__desc')
       descEl.textContent = desc
@@ -244,6 +278,8 @@ function selectResult(result) {
   _tagFiles = null
   if (result.type === 'file' && _callbacks.openFile) {
     _callbacks.openFile(result.item)
+  } else if (result.type === 'heading' && _callbacks.openFile) {
+    _callbacks.openFile({ path: result.item.path, name: result.item.name, heading: result.item.heading })
   } else if (result.type === 'command' && result.item.action) {
     result.item.action()
   }

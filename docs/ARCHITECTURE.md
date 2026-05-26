@@ -1,25 +1,24 @@
-# Fjordmark Architecture
+# Rísta Architecture
 
 ## Goal
 
-This is the short, implementation-facing architecture reference for Fjordmark.
+This is the short, implementation-facing architecture reference for Rísta.
 
 For deeper planning context, see:
-- [ARCHITECTURE-PLAN.md](/Users/henrik/Repos/Fjordmark/docs/ARCHITECTURE-PLAN.md)
-- [PRODUCT-ROADMAP.md](/Users/henrik/Repos/Fjordmark/docs/PRODUCT-ROADMAP.md)
+- [ARCHITECTURE-PLAN.md](/Users/henrik/Dev/Repos/fjordmark/docs/ARCHITECTURE-PLAN.md)
+- [PRODUCT-ROADMAP.md](/Users/henrik/Dev/Repos/fjordmark/docs/PRODUCT-ROADMAP.md)
 
 ## High-Level Structure
 
-Fjordmark has three layers:
+Rísta has two runtime layers:
 
-1. Main process
-   Electron window lifecycle, menus, dialogs, file access, watching, export.
+1. Tauri shell
+   Rust commands, native plugins, file access, watching, command execution, export helpers, and bundle metadata.
 
-2. Preload layer
-   Safe renderer-facing API on `window.fjord.*`.
-
-3. Renderer
+2. Renderer
    State, layout, panes, editors, preview, tree, settings, dialogs.
+
+The renderer still talks to native capabilities through the stable `window.fjord.*` compatibility API, which is installed by `src/renderer/tauri-api.js`.
 
 ## Architecture Rules
 
@@ -60,14 +59,12 @@ Use full file paths for:
 
 Never rely on filenames alone.
 
-### 5. Keep main process thin
+### 5. Keep native commands thin
 
-The main process should do:
-- window lifecycle
-- menus
-- dialogs
+The Tauri shell should do:
 - file system access
 - watcher events
+- command execution
 - export
 
 Renderer should own application behavior and UI state.
@@ -179,4 +176,3 @@ Design state and tabs so session restore and crash recovery can be added cleanly
 4. Fix path-based identity issues
 5. Fix preload unsubscribe behavior
 6. Rebuild PDF export correctly
-

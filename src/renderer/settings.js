@@ -1,59 +1,43 @@
 const STORAGE_KEY = 'fjordmark-settings'
 
+export const APP_ICON_VARIANTS = [
+  { value: 'nordic-steel', label: 'Nordic Steel' },
+  { value: 'aurora-gradient', label: 'Aurora Gradient' },
+  { value: 'black-stone', label: 'Black Stone' },
+  { value: 'paper-ink', label: 'Paper Ink' },
+  { value: 'future-rune', label: 'Future Rune' },
+]
+
+const PROPORTIONAL_FONT_OPTIONS = [
+  { value: "'DM Sans', system-ui, sans-serif", label: 'DM Sans' },
+  { value: "system-ui, sans-serif", label: 'System Sans' },
+  { value: "Georgia, 'Times New Roman', serif", label: 'System Serif' },
+  { value: "'Inter', system-ui, sans-serif", label: 'Inter' },
+  { value: "'Space Grotesk', system-ui, sans-serif", label: 'Space Grotesk' },
+  { value: "'B612', system-ui, sans-serif", label: 'B612' },
+  { value: "'Nunito', system-ui, sans-serif", label: 'Nunito' },
+  { value: "'Lora', Georgia, serif", label: 'Lora' },
+  { value: "'Merriweather', Georgia, serif", label: 'Merriweather' },
+  { value: "'Source Serif 4', Georgia, serif", label: 'Source Serif 4' },
+  { value: "'IBM Plex Sans', 'Helvetica Neue', sans-serif", label: 'IBM Plex Sans' },
+  { value: "'Work Sans', system-ui, sans-serif", label: 'Work Sans' },
+  { value: "'Figtree', system-ui, sans-serif", label: 'Figtree' },
+]
+
+const MONO_FONT_OPTIONS = [
+  { value: "'DM Mono', 'Fira Mono', monospace", label: 'DM Mono' },
+  { value: "'SF Mono', 'Monaco', 'Cascadia Mono', monospace", label: 'System Mono' },
+  { value: "'JetBrains Mono', 'Fira Code', monospace", label: 'JetBrains Mono' },
+  { value: "'IBM Plex Mono', 'Menlo', monospace", label: 'IBM Plex Mono' },
+  { value: "'Fira Code', 'SF Mono', monospace", label: 'Fira Code' },
+  { value: "'Source Code Pro', 'Menlo', monospace", label: 'Source Code Pro' },
+]
+
 export const FONT_OPTIONS = {
-  ui: [
-    { value: "'DM Sans', system-ui, sans-serif", label: 'DM Sans' },
-    { value: "system-ui, sans-serif", label: 'System Sans' },
-    { value: "'Inter', system-ui, sans-serif", label: 'Inter' },
-    { value: "'Space Grotesk', system-ui, sans-serif", label: 'Space Grotesk' },
-    { value: "'B612', system-ui, sans-serif", label: 'B612' },
-    { value: "'Nunito', system-ui, sans-serif", label: 'Nunito' },
-    { value: "'Lora', Georgia, serif", label: 'Lora' },
-    { value: "'Merriweather', Georgia, serif", label: 'Merriweather' },
-    { value: "'Source Serif 4', Georgia, serif", label: 'Source Serif 4' },
-    { value: "'Avenir Next', 'Segoe UI', sans-serif", label: 'Avenir / Segoe' },
-    { value: "'IBM Plex Sans', 'Helvetica Neue', sans-serif", label: 'IBM Plex Sans' },
-    { value: "'Work Sans', system-ui, sans-serif", label: 'Work Sans' },
-    { value: "'Figtree', system-ui, sans-serif", label: 'Figtree' },
-    { value: "Georgia, 'Times New Roman', serif", label: 'Georgia' },
-  ],
-  editor: [
-    { value: "'DM Mono', 'Fira Mono', monospace", label: 'DM Mono' },
-    { value: "'SF Mono', 'Monaco', 'Cascadia Mono', monospace", label: 'SF Mono' },
-    { value: "'JetBrains Mono', 'Fira Code', monospace", label: 'JetBrains Mono' },
-    { value: "'IBM Plex Mono', 'Menlo', monospace", label: 'IBM Plex Mono' },
-    { value: "'Fira Code', 'SF Mono', monospace", label: 'Fira Code' },
-    { value: "'Source Code Pro', 'Menlo', monospace", label: 'Source Code Pro' },
-    { value: "'Cascadia Mono', 'Consolas', monospace", label: 'Cascadia Mono' },
-  ],
-  preview: [
-    { value: "'DM Sans', system-ui, sans-serif", label: 'DM Sans' },
-    { value: "system-ui, sans-serif", label: 'System Sans' },
-    { value: "'Inter', system-ui, sans-serif", label: 'Inter' },
-    { value: "'Space Grotesk', system-ui, sans-serif", label: 'Space Grotesk' },
-    { value: "'B612', system-ui, sans-serif", label: 'B612' },
-    { value: "'Nunito', system-ui, sans-serif", label: 'Nunito' },
-    { value: "Georgia, 'Times New Roman', serif", label: 'Georgia' },
-    { value: "'Lora', Georgia, serif", label: 'Lora' },
-    { value: "'Merriweather', Georgia, serif", label: 'Merriweather' },
-    { value: "'Source Serif 4', Georgia, serif", label: 'Source Serif 4' },
-    { value: "'Iowan Old Style', 'Palatino Linotype', serif", label: 'Iowan / Palatino' },
-  ],
-  explorer: [
-    { value: "'DM Sans', system-ui, sans-serif", label: 'DM Sans' },
-    { value: "system-ui, sans-serif", label: 'System Sans' },
-    { value: "'Inter', system-ui, sans-serif", label: 'Inter' },
-    { value: "'Space Grotesk', system-ui, sans-serif", label: 'Space Grotesk' },
-    { value: "'B612', system-ui, sans-serif", label: 'B612' },
-    { value: "'Nunito', system-ui, sans-serif", label: 'Nunito' },
-    { value: "'Lora', Georgia, serif", label: 'Lora' },
-    { value: "'Merriweather', Georgia, serif", label: 'Merriweather' },
-    { value: "'Source Serif 4', Georgia, serif", label: 'Source Serif 4' },
-    { value: "'Avenir Next', 'Segoe UI', sans-serif", label: 'Avenir / Segoe' },
-    { value: "'IBM Plex Sans', 'Helvetica Neue', sans-serif", label: 'IBM Plex Sans' },
-    { value: "'Work Sans', system-ui, sans-serif", label: 'Work Sans' },
-    { value: "'Figtree', system-ui, sans-serif", label: 'Figtree' },
-  ],
+  ui: PROPORTIONAL_FONT_OPTIONS,
+  explorer: PROPORTIONAL_FONT_OPTIONS,
+  preview: PROPORTIONAL_FONT_OPTIONS,
+  editor: MONO_FONT_OPTIONS,
 }
 
 export const THEME_PRESETS = {
@@ -302,6 +286,8 @@ export const DEFAULT_SETTINGS = {
   dailyNotesFolder: 'daily',
   dailyNoteTemplate: '# {{date}}\n\n',
   maxHistorySnapshots: 50,
+  appIconVariant: 'aurora-gradient',
+  appIconTheme: 'auto',
   aiProvider: 'openai',
   aiApiKey: '',
   aiModel: '',
@@ -434,6 +420,8 @@ function sanitize(settings) {
   next.dailyNotesFolder = String(next.dailyNotesFolder || 'daily').trim().replace(/^\/+|\/+$/g, '') || 'daily'
   next.dailyNoteTemplate = String(next.dailyNoteTemplate ?? DEFAULT_SETTINGS.dailyNoteTemplate)
   next.maxHistorySnapshots = clamp(Number(next.maxHistorySnapshots) || 50, 5, 500)
+  next.appIconVariant = APP_ICON_VARIANTS.some(icon => icon.value === next.appIconVariant) ? next.appIconVariant : DEFAULT_SETTINGS.appIconVariant
+  next.appIconTheme = ['auto', 'dark', 'light'].includes(next.appIconTheme) ? next.appIconTheme : DEFAULT_SETTINGS.appIconTheme
   next.aiProvider = ['anthropic', 'openai', 'ollama'].includes(next.aiProvider) ? next.aiProvider : 'openai'
   next.aiApiKey = String(next.aiApiKey || '')
   next.aiModel = String(next.aiModel || '')

@@ -382,7 +382,7 @@ export function syncToWysiwyg(pane = state.focusedPane) {
   try {
     editor.setMarkdown(tab.content || '')
   } catch (err) {
-    console.error(`[fjordmark] Failed to sync content to WYSIWYG for pane "${pane}":`, err)
+    console.error(`[rista] Failed to sync content to WYSIWYG for pane "${pane}":`, err)
   }
   syncingRichEditor[pane] = false
 }

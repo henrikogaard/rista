@@ -2,7 +2,8 @@ import { state, $, settingsValue } from './state.js'
 import { buildRightPanelContainer } from './right-panel.js'
 import { buildTerminalDrawer } from './terminal-drawer.js'
 import { toggleTheme, getTheme } from './theme.js'
-import { applySettings, getSettings, setSettings, updateSetting, resetSettings, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
+import { applySettings, getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
+import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
 import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
@@ -21,10 +22,12 @@ const SETTINGS_TABS = [
   { id: 'preview', label: 'Preview' },
   { id: 'daily', label: 'Daily Notes' },
   { id: 'behavior', label: 'Behavior' },
+  { id: 'hotkeys', label: 'Hotkeys' },
   { id: 'ai', label: 'AI' },
 ]
 
 let activeSettingsTab = 'theme'
+let activeKeybindingCapture = null
 
 // ── Welcome screen HTML ──────────────────────────────────────────
 export function buildWelcome() {
@@ -32,8 +35,8 @@ export function buildWelcome() {
   return `
     <div class="welcome" id="welcome">
       <div class="welcome__content">
-        <div class="welcome__logo">fjord<span>mark</span></div>
-        <div class="welcome__sub">${hasFolder ? 'Choose a note from the explorer or create a new markdown file in this folder' : 'Open a folder to start writing'}</div>
+        <div class="welcome__logo">Rí<span>sta</span></div>
+        <div class="welcome__sub">${hasFolder ? 'Choose a note from the explorer or carve a new markdown file in this folder' : 'Open a folder to start writing'}</div>
         ${hasFolder ? '' : `
           <div class="welcome__btn" id="welcome-open-btn">
             <svg viewBox="0 0 16 16"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
@@ -152,6 +155,80 @@ export function renderPresetPicker(key, label, presets) {
   `
 }
 
+function renderAppIconPicker() {
+  const currentVariant = settingsValue('appIconVariant')
+  const currentTheme = settingsValue('appIconTheme')
+  return `
+    <section class="settings-field settings-field--app-icon">
+      <div class="settings-field__row">
+        <span class="settings-field__label">App icon</span>
+        <span class="settings-field__value">${APP_ICON_VARIANTS.find(icon => icon.value === currentVariant)?.label || 'Aurora Gradient'}</span>
+      </div>
+      <div class="settings-icon-theme" role="group" aria-label="App icon theme">
+        ${[
+          { value: 'auto', label: 'Auto' },
+          { value: 'dark', label: 'Dark' },
+          { value: 'light', label: 'Light' },
+        ].map(option => `
+          <div
+            class="settings-icon-theme__option${option.value === currentTheme ? ' active' : ''}"
+            data-app-icon-theme="${option.value}"
+            role="button"
+            tabindex="0"
+          >${option.label}</div>
+        `).join('')}
+      </div>
+      <div class="settings-icon-grid">
+        ${APP_ICON_VARIANTS.map(icon => `
+          <div
+            class="settings-icon-option${icon.value === currentVariant ? ' active' : ''}"
+            data-app-icon-variant="${icon.value}"
+            role="button"
+            tabindex="0"
+            aria-label="Use ${escapeAttribute(icon.label)} app icon"
+          >
+            <span class="settings-icon-option__preview" aria-hidden="true">
+              <img src="logos/rista-split-rune-${icon.value}-dark.svg" alt="">
+              <img src="logos/rista-split-rune-${icon.value}-light.svg" alt="">
+            </span>
+            <span class="settings-icon-option__label">${icon.label}</span>
+          </div>
+        `).join('')}
+      </div>
+    </section>
+  `
+}
+
+function renderKeybindingRows() {
+  return Object.values(getAllBindings()).map(binding => `
+    <div class="keybinding-row">
+      <div class="keybinding-row__copy">
+        <div class="keybinding-row__label">${binding.label}</div>
+        <div class="keybinding-row__meta">Default: ${binding.default}</div>
+      </div>
+      <div class="keybinding-row__actions">
+        <button
+          type="button"
+          class="keybinding-capture${activeKeybindingCapture === binding.id ? ' is-listening' : ''}"
+          data-keybinding-capture="${binding.id}"
+        >${activeKeybindingCapture === binding.id ? 'Press keys...' : binding.current}</button>
+        <button
+          type="button"
+          class="settings-btn settings-btn--muted keybinding-reset"
+          data-keybinding-reset="${binding.id}"
+          ${binding.isOverridden ? '' : 'disabled'}
+        >Reset</button>
+      </div>
+    </div>
+  `).join('')
+}
+
+function syncKeybindingList() {
+  const list = $('keybinding-list')
+  if (!list) return
+  list.innerHTML = renderKeybindingRows()
+}
+
 function escapeAttribute(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -175,10 +252,52 @@ function handleSettingsInput(event) {
   if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
 }
 
+function resolveAppIconTheme(settings = getSettings()) {
+  if (settings.appIconTheme === 'dark' || settings.appIconTheme === 'light') return settings.appIconTheme
+  return getTheme() === 'light' ? 'light' : 'dark'
+}
+
+export function applySelectedAppIcon(settings = getSettings()) {
+  window.fjord?.setAppIcon?.(settings.appIconVariant, resolveAppIconTheme(settings)).catch(() => {})
+}
+
 function handleSettingsClick(event) {
+  const capture = event.target.closest('[data-keybinding-capture]')
+  if (capture) {
+    activeKeybindingCapture = activeKeybindingCapture === capture.dataset.keybindingCapture
+      ? null
+      : capture.dataset.keybindingCapture
+    syncKeybindingList()
+    return
+  }
+
+  const reset = event.target.closest('[data-keybinding-reset]')
+  if (reset) {
+    resetBinding(reset.dataset.keybindingReset)
+    activeKeybindingCapture = null
+    syncSettingsForm()
+    return
+  }
+
   const tab = event.target.closest('[data-settings-tab]')
   if (tab) {
     setSettingsTab(tab.dataset.settingsTab)
+    return
+  }
+
+  const iconVariant = event.target.closest('[data-app-icon-variant]')
+  if (iconVariant) {
+    const next = updateSetting('appIconVariant', iconVariant.dataset.appIconVariant)
+    syncSettingsForm()
+    applySelectedAppIcon(next)
+    return
+  }
+
+  const iconTheme = event.target.closest('[data-app-icon-theme]')
+  if (iconTheme) {
+    const next = updateSetting('appIconTheme', iconTheme.dataset.appIconTheme)
+    syncSettingsForm()
+    applySelectedAppIcon(next)
     return
   }
 
@@ -190,8 +309,32 @@ function handleSettingsClick(event) {
 }
 
 function handleSettingsKeydown(event) {
+  if (activeKeybindingCapture) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.key === 'Escape') {
+      activeKeybindingCapture = null
+      syncKeybindingList()
+      return
+    }
+
+    const combo = formatKeyEvent(event)
+    if (!combo) return
+    const conflict = findConflict(activeKeybindingCapture, combo)
+    if (conflict) {
+      const binding = getAllBindings()[conflict]
+      alert(`${combo} is already assigned to ${binding?.label || conflict}`)
+      return
+    }
+
+    setBinding(activeKeybindingCapture, combo)
+    activeKeybindingCapture = null
+    syncSettingsForm()
+    return
+  }
+
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const target = event.target.closest('[data-settings-tab], [data-preset-setting]')
+  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-app-icon-variant], [data-app-icon-theme]')
   if (!target) return
   event.preventDefault()
   target.click()
@@ -238,6 +381,16 @@ function syncSettingsForm() {
     const preset = THEME_PRESETS[theme].find(option => option.value === settings[key])
     if (valueLabel && preset) valueLabel.textContent = preset.label
   })
+  document.querySelectorAll('#settings-panel [data-app-icon-variant]').forEach(node => {
+    node.classList.toggle('active', node.dataset.appIconVariant === settings.appIconVariant)
+  })
+  document.querySelectorAll('#settings-panel [data-app-icon-theme]').forEach(node => {
+    node.classList.toggle('active', node.dataset.appIconTheme === settings.appIconTheme)
+  })
+  const iconValueLabel = document.querySelector('.settings-field--app-icon .settings-field__value')
+  const icon = APP_ICON_VARIANTS.find(option => option.value === settings.appIconVariant)
+  if (iconValueLabel && icon) iconValueLabel.textContent = icon.label
+  syncKeybindingList()
   syncSettingsTabs()
 }
 
@@ -254,6 +407,7 @@ export function openSettingsPanel() {
 
 export function closeSettingsPanel() {
   state.settingsOpen = false
+  activeKeybindingCapture = null
   $('app')?.classList.remove('settings-open')
 }
 
@@ -266,6 +420,12 @@ function syncAppMeta() {
 }
 
 const GLOBAL_CONTROL_SELECTOR = '#pane-split-toggle, #workspace-split-toggle, #settings-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle'
+function handleWindowDragRegionPointerDown(event) {
+  if (event.button !== 0) return
+  if (event.target.closest('input, textarea, select, button, [role="button"], [data-action], a')) return
+  event.preventDefault()
+  window.fjord?.startWindowDrag?.()
+}
 
 function handleGlobalControlPointerDown(event) {
   const control = event.target.closest(GLOBAL_CONTROL_SELECTOR)
@@ -299,6 +459,7 @@ export function toggleAppTheme() {
   const preset = THEME_PRESETS[t].find(option => option.value === presetKey) || THEME_PRESETS[t][0]
   setSettings(preset.atmosphere)
   syncSettingsForm()
+  applySelectedAppIcon()
   clearDiagramCache()
   initDiagrams(t)
   const themeBtn = $('theme-btn')
@@ -367,71 +528,77 @@ export function buildShell() {
   document.getElementById('root').innerHTML = `
     <div class="app" id="app">
 
-      <!-- Titlebar -->
-      <div class="titlebar" id="titlebar">
-        <div class="titlebar__spacer"></div>
-        <div class="titlebar__drag"></div>
-      </div>
-
       <!-- Layout -->
       <div class="layout">
 
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
+          <div class="sidebar-drag-region" id="sidebar-drag-region" data-tauri-drag-region></div>
           <div class="left-widget-stack widget-stack widget-stack--left" id="left-widget-stack"></div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
 
         <!-- Editor area -->
         <div class="editor-area">
+          <!-- Top window rail -->
+          <div class="brandrail" id="brandrail" data-tauri-drag-region>
+            <div class="brandrail__identity" aria-label="Rísta">
+              <div class="brandrail__mark" aria-hidden="true">ᚱ</div>
+              <div class="brandrail__wordmark">
+                <span class="brandrail__name">Rísta</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Welcome / editor wrapper -->
           <div id="editor-wrapper" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
             ${buildWelcome()}
           </div>
-        </div>
-        ${buildRightPanelContainer()}
-      </div>
 
-      ${buildTerminalDrawer()}
+          ${buildTerminalDrawer()}
 
-      <!-- Statusbar -->
-      <div class="statusbar">
-        <div class="statusbar__metrics">
-          <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
-          <div class="st" id="st-words">—</div>
-          <div class="st" id="st-lines">—</div>
-          <div class="st st--optional" id="st-readtime">—</div>
-          <div class="st st--cursor" id="st-cursor">Ln 1, Col 1</div>
-          <span class="st st--update" id="st-update" hidden></span>
-        </div>
-        <div class="statusbar__controls">
-          <div class="app-controls" id="app-controls" aria-label="Global controls">
-            <!-- Panels -->
-            <div class="theme-btn" id="sidebar-toggle" title="Toggle file explorer (⌘B)" aria-label="Toggle file explorer" role="button" tabindex="0">
-              ${sidebarIcon()}
+          <!-- Statusbar -->
+          <div class="statusbar">
+            <div class="statusbar__metrics">
+              <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
+              <div class="st" id="st-words">—</div>
+              <div class="st" id="st-lines">—</div>
+              <div class="st st--optional" id="st-readtime">—</div>
+              <div class="st st--cursor" id="st-cursor">Ln 1, Col 1</div>
+              <span class="st st--update" id="st-update" hidden></span>
             </div>
-            <div class="theme-btn" id="terminal-toggle" title="Toggle terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
-              ${terminalIcon()}
-            </div>
-            <div class="theme-btn" id="right-sidebar-toggle" title="Toggle widgets panel" aria-label="Toggle widgets panel" role="button" tabindex="0">
-              ${rightSidebarIcon()}
-            </div>
-            <div class="app-controls__sep"></div>
-            <!-- Layout -->
-            <div class="theme-btn" id="pane-split-toggle" title="Split editor pane" aria-label="Split editor pane" role="button" tabindex="0">
-              ${editorSplitIcon()}
-            </div>
-            <div class="theme-btn" id="workspace-split-toggle" title="Split workspace into two editors" aria-label="Split workspace" role="button" tabindex="0">
-              ${workspaceSplitIcon()}
-            </div>
-            <div class="app-controls__sep"></div>
-            <!-- App -->
-            <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
-              ${gearIcon()}
+            <div class="statusbar__controls">
+              <div class="app-controls" id="app-controls" aria-label="Global controls">
+                <!-- Panels -->
+                <div class="theme-btn" id="sidebar-toggle" title="Toggle file explorer (⌘B)" aria-label="Toggle file explorer" role="button" tabindex="0">
+                  ${sidebarIcon()}
+                </div>
+                <div class="theme-btn" id="terminal-toggle" title="Toggle terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
+                  ${terminalIcon()}
+                </div>
+                <div class="theme-btn" id="right-sidebar-toggle" title="Toggle widgets panel" aria-label="Toggle widgets panel" role="button" tabindex="0">
+                  ${rightSidebarIcon()}
+                </div>
+                <div class="app-controls__sep"></div>
+                <!-- Layout -->
+                <div class="theme-btn" id="pane-split-toggle" title="Split editor pane" aria-label="Split editor pane" role="button" tabindex="0">
+                  ${editorSplitIcon()}
+                </div>
+                <div class="theme-btn" id="workspace-split-toggle" title="Split workspace into two editors" aria-label="Split workspace" role="button" tabindex="0">
+                  ${workspaceSplitIcon()}
+                </div>
+                <div class="app-controls__sep"></div>
+                <!-- App -->
+                <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
+                  ${gearIcon()}
+                </div>
+              </div>
+              <div class="st st-brand">Rísta</div>
             </div>
           </div>
-          <div class="st st-brand">fjordmark</div>
         </div>
+
+        ${buildRightPanelContainer()}
       </div>
 
       <div class="settings-overlay" id="settings-overlay"></div>
@@ -455,6 +622,7 @@ export function buildShell() {
               <div class="settings-group__title">Theme presets</div>
               ${renderPresetPicker('darkThemePreset', 'Dark preset', THEME_PRESETS.dark)}
               ${renderPresetPicker('lightThemePreset', 'Light preset', THEME_PRESETS.light)}
+              ${renderAppIconPicker()}
             </section>
 
             <section class="settings-group settings-group--compact">
@@ -481,17 +649,17 @@ export function buildShell() {
             <section class="settings-group">
               <div class="settings-group__title">Interface type</div>
               ${renderSelectSetting('uiFont', 'App font preset', FONT_OPTIONS.ui)}
-              ${renderTextSetting('uiFontCustom', 'Custom app font stack', "Example: 'Atkinson Hyperlegible', system-ui, sans-serif")}
+              ${renderTextSetting('uiFontCustom', 'Installed app font or stack', "Example: 'Atkinson Hyperlegible', system-ui, sans-serif")}
               ${renderRangeSetting('uiFontSize', 'App size', 11, 16, 1, 'px')}
               ${renderSelectSetting('explorerFont', 'Explorer font preset', FONT_OPTIONS.explorer)}
-              ${renderTextSetting('explorerFontCustom', 'Custom explorer font stack', "Example: 'Inter', system-ui, sans-serif")}
+              ${renderTextSetting('explorerFontCustom', 'Installed explorer font or stack', "Example: 'Aptos', system-ui, sans-serif")}
               ${renderRangeSetting('explorerFontSize', 'Explorer size', 11, 16, 1, 'px')}
             </section>
 
             <section class="settings-group">
               <div class="settings-group__title">Markdown editor</div>
               ${renderSelectSetting('editorFont', 'Editor font preset', FONT_OPTIONS.editor)}
-              ${renderTextSetting('editorFontCustom', 'Custom editor font stack', "Example: 'JetBrains Mono', 'SF Mono', monospace")}
+              ${renderTextSetting('editorFontCustom', 'Installed editor font or stack', "Example: 'Berkeley Mono', 'SF Mono', monospace")}
               ${renderRangeSetting('editorFontSize', 'Editor size', 12, 18, 1, 'px')}
               ${renderRangeSetting('editorLineHeight', 'Editor spacing', 1.4, 2.1, 0.05, '')}
               ${renderTextSetting('editorTextColor', 'Editor text color', 'Optional hex color, e.g. #e7ecf7')}
@@ -517,7 +685,7 @@ export function buildShell() {
             <section class="settings-group">
               <div class="settings-group__title">Preview typography</div>
               ${renderSelectSetting('previewFont', 'Preview font preset', FONT_OPTIONS.preview)}
-              ${renderTextSetting('previewFontCustom', 'Custom preview font stack', "Example: 'Source Serif 4', Georgia, serif")}
+              ${renderTextSetting('previewFontCustom', 'Installed preview font or stack', "Example: 'Iowan Old Style', Georgia, serif")}
               ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
               ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
               ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
@@ -549,6 +717,14 @@ export function buildShell() {
             </section>
           </div>
 
+          <div class="settings-page" data-settings-section="hotkeys">
+            <section class="settings-group">
+              <div class="settings-group__title">Keyboard shortcuts</div>
+              <div class="settings-group__hint">Click a shortcut, then press the new key combo. Press Escape to cancel capture.</div>
+              <div class="keybinding-list" id="keybinding-list"></div>
+            </section>
+          </div>
+
           <div class="settings-page" data-settings-section="ai">
             <section class="settings-group">
               <div class="settings-group__title">AI provider</div>
@@ -575,7 +751,7 @@ export function buildShell() {
         </div>
 
         <div class="settings-panel__footer">
-          <div class="settings-panel__meta" id="settings-app-meta">Fjordmark</div>
+          <div class="settings-panel__meta" id="settings-app-meta">Rísta</div>
           <button class="settings-btn settings-btn--muted" id="settings-export-btn">Export</button>
           <button class="settings-btn settings-btn--muted" id="settings-import-btn">Import</button>
           <button class="settings-btn settings-btn--muted" id="settings-reset-btn">Reset</button>
@@ -607,13 +783,17 @@ export function buildShell() {
   `
 
   // Wire up controls
+  $('brandrail')?.addEventListener('pointerdown', handleWindowDragRegionPointerDown)
+  $('sidebar-drag-region')?.addEventListener('pointerdown', handleWindowDragRegionPointerDown)
+  $('right-sidebar-drag-region')?.addEventListener('pointerdown', handleWindowDragRegionPointerDown)
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
   $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)
   $('settings-done-btn').addEventListener('click', closeSettingsPanel)
   $('settings-reset-btn').addEventListener('click', () => {
-    resetSettings()
+    const next = resetSettings()
     syncSettingsForm()
+    applySelectedAppIcon(next)
   })
   $('settings-export-btn')?.addEventListener('click', async () => {
     await window.fjord.exportSettings(JSON.stringify(getSettings()))
@@ -623,8 +803,9 @@ export function buildShell() {
     if (!raw) return
     try {
       const parsed = JSON.parse(raw)
-      setSettings(parsed)
+      const next = setSettings(parsed)
       syncSettingsForm()
+      applySelectedAppIcon(next)
     } catch {
       alert('Invalid settings file')
     }

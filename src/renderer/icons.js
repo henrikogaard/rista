@@ -72,3 +72,7 @@ export function bookmarkIcon() {
 export function aiChatIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M3 3h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 12H7l-3 2.5V12H3A1.5 1.5 0 0 1 1.5 10.5v-6A1.5 1.5 0 0 1 3 3z" fill="none" stroke="currentColor"/><path d="M8 5.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5L5.5 9l2.5-1z" fill="currentColor" stroke="none"/></svg>`
 }
+
+export function tagIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M2.5 3.5h4.8l6.2 6.2-3.8 3.8-6.2-6.2z" fill="none" stroke="currentColor" stroke-linejoin="round"/><circle cx="5.4" cy="6" r="0.9" fill="currentColor" stroke="none"/></svg>`
+}

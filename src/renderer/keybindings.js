@@ -16,6 +16,22 @@ const defaultBindings = {
   'daily-note': 'Mod+Shift+D',
 }
 
+const bindingLabels = {
+  'save': 'Save',
+  'save-as': 'Save as',
+  'new-file': 'New file',
+  'toggle-sidebar': 'Toggle file explorer',
+  'toggle-toolbar': 'Toggle toolbar',
+  'find-replace': 'Find and replace',
+  'project-search': 'Project search',
+  'terminal': 'Toggle terminal',
+  'settings': 'Open settings',
+  'quick-open': 'Quick open',
+  'command-palette': 'Command palette',
+  'zen-mode': 'Zen mode',
+  'daily-note': 'Daily note',
+}
+
 let overrides = {}
 
 export function initKeybindings() {
@@ -45,12 +61,25 @@ export function getAllBindings() {
   for (const id of Object.keys(defaultBindings)) {
     all[id] = {
       id,
+      label: bindingLabels[id] || id,
       default: defaultBindings[id],
       current: overrides[id] || defaultBindings[id],
       isOverridden: !!overrides[id],
     }
   }
   return all
+}
+
+export function formatKeyEvent(event) {
+  const key = normalizeKey(event.key)
+  if (!key) return null
+
+  const parts = []
+  if (event.metaKey || event.ctrlKey) parts.push('Mod')
+  if (event.altKey) parts.push('Alt')
+  if (event.shiftKey) parts.push('Shift')
+  parts.push(key)
+  return parts.join('+')
 }
 
 export function findConflict(id, keys) {
@@ -80,4 +109,19 @@ function matchesKeyCombo(e, combo) {
 
   const eventKey = e.key.toLowerCase()
   return eventKey === key || (key === 'enter' && eventKey === 'enter') || (key === '\\' && eventKey === '\\')
+}
+
+function normalizeKey(key) {
+  if (!key) return null
+  const value = String(key)
+  const lower = value.toLowerCase()
+  if (['meta', 'control', 'ctrl', 'alt', 'shift'].includes(lower)) return null
+  if (lower === ' ') return 'Space'
+  if (lower === 'escape') return 'Escape'
+  if (lower === 'enter') return 'Enter'
+  if (lower === 'tab') return 'Tab'
+  if (lower === 'backspace') return 'Backspace'
+  if (lower === 'delete') return 'Delete'
+  if (lower.startsWith('arrow')) return value[0].toUpperCase() + value.slice(1)
+  return value.length === 1 ? value.toUpperCase() : value[0].toUpperCase() + value.slice(1)
 }
