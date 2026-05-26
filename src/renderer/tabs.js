@@ -3,7 +3,7 @@ import { updateEditorDoc } from './editor.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, saveTimers, draggedTab, setDraggedTab, getTabForPane, setTabForPane, getFocusedTab, getGroupTabs, addTabToPane, removeTabFromPane, getTabPane, isTabOpenAnywhere, cleanSplitSnapshot, storeSplitSnapshot } from './state.js'
 import { refreshPreview, updateActiveMetrics, exportToPdf } from './preview.js'
 import { getSettings, updateSetting } from './settings.js'
-import { buildWelcome } from './shell.js'
+import { buildWelcome, syncWorkspaceChrome } from './shell.js'
 import { addRecentProject, removeRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
@@ -17,6 +17,7 @@ import { jumpToLine } from './outline-view.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
+let _activeTreePrompt = null
 function persistSession() {
   clearTimeout(_sessionTimer)
   _sessionTimer = setTimeout(() => {
@@ -80,6 +81,27 @@ function clearStatusNotice() {
   node.textContent = ''
   node.removeAttribute('data-tone')
   node.hidden = true
+}
+
+function resetOpenDocuments() {
+  state.tabs = []
+  state.tabGroups.primary = []
+  state.tabGroups.secondary = []
+  state.splitSnapshot = {
+    primary: [],
+    secondary: [],
+    activePrimary: null,
+    activeSecondary: null,
+    focusedPane: 'primary',
+  }
+  state.activeTab = null
+  state.secondaryTab = null
+  state.focusedPane = 'primary'
+  state.workspaceMode = 'single'
+}
+
+function parentPath(filePath) {
+  return String(filePath || '').replace(/[/\\][^/\\]+$/, '')
 }
 
 // ── Callback registration ────────────────────────────────────────
@@ -161,49 +183,79 @@ function showTreeContextMenu(item, event) {
 }
 
 async function createFileInFolder(folderPath) {
-  const name = prompt('New file name (without .md):')
+  const name = await promptTreeText({
+    title: 'New File',
+    label: 'File name',
+    submitLabel: 'Create',
+    placeholder: 'untitled',
+  })
   if (!name) return
-  const sanitized = name.trim().replace(/\.md$/i, '')
+  const sanitized = sanitizeTreeName(name).replace(/\.md$/i, '')
   if (!sanitized) return
   const filePath = `${folderPath}/${sanitized}.md`
   try {
     const ok = await window.fjord.writeFile(filePath, '')
-    if (!ok) return
+    if (!ok) {
+      showStatusNotice('Could not create file. Check the folder permissions.', 'error')
+      return
+    }
     state.expandedFolders.add(folderPath)
     await refreshTree()
     try { await rebuildLinkIndex() } catch {}
     await openFile({ path: filePath, name: `${sanitized}.md`, type: 'file' })
-  } catch {}
+  } catch {
+    showStatusNotice('Could not create file. Check the folder permissions.', 'error')
+  }
 }
 
 async function createFolderInFolder(folderPath) {
-  const name = prompt('New folder name:')
+  const name = await promptTreeText({
+    title: 'New Folder',
+    label: 'Folder name',
+    submitLabel: 'Create',
+    placeholder: 'untitled',
+  })
   if (!name) return
-  const sanitized = name.trim()
+  const sanitized = sanitizeTreeName(name)
   if (!sanitized) return
   const dirPath = `${folderPath}/${sanitized}`
   try {
     const ok = await window.fjord.createDir?.(dirPath)
-    if (!ok) return
+    if (!ok) {
+      showStatusNotice('Could not create folder. Check the folder permissions.', 'error')
+      return
+    }
     state.expandedFolders.add(folderPath)
     await refreshTree()
-  } catch {}
+  } catch {
+    showStatusNotice('Could not create folder. Check the folder permissions.', 'error')
+  }
 }
 
 async function renameTreeItem(item) {
   const currentName = item.name
-  const next = prompt(`Rename "${currentName}" to:`, currentName)
+  const next = await promptTreeText({
+    title: item.type === 'folder' ? 'Rename Folder' : 'Rename File',
+    label: 'Name',
+    submitLabel: 'Rename',
+    value: currentName,
+  })
   if (!next || next === currentName) return
+  const sanitized = sanitizeTreeName(next)
+  if (!sanitized || sanitized === currentName) return
   const parent = item.path.replace(/[/\\][^/\\]+$/, '')
-  const newPath = `${parent}/${next}`
+  const newPath = `${parent}/${sanitized}`
   try {
     const ok = await window.fjord.renameFile?.(item.path, newPath)
-    if (!ok) return
+    if (!ok) {
+      showStatusNotice(`Could not rename ${item.type}. Check the folder permissions.`, 'error')
+      return
+    }
     // Update any open tabs
     for (const tab of state.tabs) {
       if (tab.path === item.path) {
         tab.path = newPath
-        tab.name = next
+        tab.name = sanitized
       }
     }
     if (window.fjord.setRepresentedFile && state.activeTab) {
@@ -212,7 +264,74 @@ async function renameTreeItem(item) {
     await refreshTree()
     renderTabs()
     try { await rebuildLinkIndex() } catch {}
-  } catch {}
+  } catch {
+    showStatusNotice(`Could not rename ${item.type}. Check the folder permissions.`, 'error')
+  }
+}
+
+function sanitizeTreeName(name) {
+  return String(name || '').trim().replace(/[\\/]+/g, '-')
+}
+
+function promptTreeText({ title, label, submitLabel, value = '', placeholder = '' }) {
+  return new Promise(resolve => {
+    _activeTreePrompt?.(null)
+
+    const overlay = el('div', 'tree-prompt')
+    overlay.innerHTML = `
+      <div class="tree-prompt__overlay"></div>
+      <form class="tree-prompt__panel">
+        <div class="command-dialog__header">
+          <div>
+            <div class="command-dialog__eyebrow">Files</div>
+            <div class="command-dialog__title"></div>
+          </div>
+        </div>
+        <div class="command-dialog__body">
+          <label class="command-field">
+            <span class="command-field__label"></span>
+            <input class="command-field__input" name="value" type="text" autocomplete="off" />
+          </label>
+        </div>
+        <div class="command-dialog__footer">
+          <button type="button" class="settings-btn settings-btn--muted" data-action="cancel">Cancel</button>
+          <button type="submit" class="settings-btn"></button>
+        </div>
+      </form>
+    `
+
+    const panel = overlay.querySelector('.tree-prompt__panel')
+    const input = overlay.querySelector('input')
+    overlay.querySelector('.command-dialog__title').textContent = title
+    overlay.querySelector('.command-field__label').textContent = label
+    overlay.querySelector('button[type="submit"]').textContent = submitLabel
+    input.value = value
+    input.placeholder = placeholder
+
+    const cleanup = (result) => {
+      document.removeEventListener('keydown', onKeyDown)
+      overlay.remove()
+      if (_activeTreePrompt === cleanup) _activeTreePrompt = null
+      resolve(result)
+    }
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') cleanup(null)
+    }
+
+    overlay.querySelector('.tree-prompt__overlay').addEventListener('click', () => cleanup(null))
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => cleanup(null))
+    panel.addEventListener('submit', (event) => {
+      event.preventDefault()
+      cleanup(input.value.trim())
+    })
+    document.addEventListener('keydown', onKeyDown)
+    document.body.appendChild(overlay)
+    _activeTreePrompt = cleanup
+    requestAnimationFrame(() => {
+      input.focus()
+      input.select()
+    })
+  })
 }
 
 async function deleteTreeItem(item) {
@@ -306,24 +425,13 @@ export async function openFolder() {
   const p = await window.fjord.openFolder()
   if (!p) return
   state.folderPath = p
+  state.singleFilePath = null
   resetBookmarksCache()
   addRecentProject(p)
-  state.tabs = []
-  state.tabGroups.primary = []
-  state.tabGroups.secondary = []
-  state.splitSnapshot = {
-    primary: [],
-    secondary: [],
-    activePrimary: null,
-    activeSecondary: null,
-    focusedPane: 'primary',
-  }
-  state.activeTab = null
-  state.secondaryTab = null
-  state.focusedPane = 'primary'
-  state.workspaceMode = 'single'
+  resetOpenDocuments()
   state.expandedFolders.clear()
   syncFolderUi()
+  syncWorkspaceChrome()
   await window.fjord.watchFolder(p)
   await refreshTree()
   rebuildLinkIndex().catch(() => {})
@@ -352,24 +460,13 @@ export async function openFolder() {
 export async function openFolderPath(folderPath) {
   if (!window.fjord || !folderPath) return
   state.folderPath = folderPath
+  state.singleFilePath = null
   resetBookmarksCache()
   addRecentProject(folderPath)
-  state.tabs = []
-  state.tabGroups.primary = []
-  state.tabGroups.secondary = []
-  state.splitSnapshot = {
-    primary: [],
-    secondary: [],
-    activePrimary: null,
-    activeSecondary: null,
-    focusedPane: 'primary',
-  }
-  state.activeTab = null
-  state.secondaryTab = null
-  state.focusedPane = 'primary'
-  state.workspaceMode = 'single'
+  resetOpenDocuments()
   state.expandedFolders.clear()
   syncFolderUi()
+  syncWorkspaceChrome()
   await window.fjord.watchFolder(folderPath)
   await refreshTree()
   rebuildLinkIndex().catch(() => {})
@@ -393,6 +490,31 @@ export async function openFolderPath(folderPath) {
       if (activeTab) activateTab(activeTab)
     }
   }
+}
+
+export async function openSingleFilePath(filePath) {
+  if (!window.fjord || !filePath) return
+  state.folderPath = null
+  state.singleFilePath = filePath
+  state.tree = []
+  state.tagFilter = null
+  state.sidebarVisible = false
+  state.rightPanel = null
+  state.inspectorOpen = false
+  resetBookmarksCache()
+  resetOpenDocuments()
+  state.expandedFolders.clear()
+  syncFolderUi()
+  syncWorkspaceChrome()
+  await window.fjord.watchFolder?.(parentPath(filePath))
+  const name = filePath.split(/[\\/]/).pop()
+  await openFile({ path: filePath, name })
+  const sidebar = $('sidebar')
+  if (sidebar) sidebar.classList.add('collapsed')
+  $('sidebar-toggle')?.setAttribute('aria-pressed', 'false')
+  _callbacks.syncWorkspaceUi?.()
+  _callbacks.syncSplitLayout?.()
+  renderTabs()
 }
 
 export async function createDailyNote(dateOverride) {
@@ -887,6 +1009,8 @@ export async function saveActiveAs() {
 
 // ── App commands ─────────────────────────────────────────────────
 export function handleAppCommand(command, data) {
+  if (command === 'file:new-window') window.fjord?.newWindow?.()
+  if (command === 'file:open-folder-new-window') window.fjord?.openFolderInNewWindow?.()
   if (command === 'file:daily-note') createDailyNote()
   if (command === 'file:new') createNewFile()
   if (command === 'file:open-folder') openFolder()
@@ -907,7 +1031,8 @@ export function handleAppCommand(command, data) {
   if (command === 'view:settings') _callbacks.toggleSettings?.()
   if (command === 'file:open' && data?.path) {
     const name = data.path.split('/').pop()
-    openFile({ path: data.path, name })
+    if (state.folderPath) openFile({ path: data.path, name })
+    else openSingleFilePath(data.path)
   }
   if (command === 'update:available') {
     const updateEl = $('st-update')
@@ -927,6 +1052,8 @@ export function handleAppCommand(command, data) {
 
 export async function handleExternalFileChange({ event, path: changedPath } = {}) {
   if (!changedPath) return
+  if (state.singleFilePath && changedPath !== state.singleFilePath) return
+  if (state.folderPath && !changedPath.startsWith(state.folderPath)) return
 
   const tab = state.tabs.find(t => t.path === changedPath)
   if (tab) {
@@ -941,7 +1068,7 @@ export async function handleExternalFileChange({ event, path: changedPath } = {}
     }
   }
 
-  scheduleTreeRefresh()
+  if (state.folderPath) scheduleTreeRefresh()
 }
 
 // ── Tab strip overflow handling ─────────────────────────────────

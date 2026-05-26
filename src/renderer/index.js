@@ -39,6 +39,16 @@ import { initAiChatPanel } from './ai-chat.js'
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon } from './shell.js'
 
+function getInitialFolderPath() {
+  const injected = window.__RISTA_INITIAL_FOLDER__
+  return typeof injected === 'string' && injected ? injected : null
+}
+
+function getInitialFilePath() {
+  const injected = window.__RISTA_INITIAL_FILE__
+  return typeof injected === 'string' && injected ? injected : null
+}
+
 // ── Workspace (pane layout, editor mounting, toggles) ────────────
 import {
   registerWorkspaceCallbacks,
@@ -69,6 +79,7 @@ import {
   registerTabCallbacks,
   openFolder,
   openFolderPath,
+  openSingleFilePath,
   createNewFile,
   openFile,
   loadFileIntoTab,
@@ -370,6 +381,19 @@ handleTerminalInput()
 // Activate default left-sidebar widgets (Files) before the editor UI exists.
 restoreRightPanel()
 syncFolderUi()
+const initialFolderPath = getInitialFolderPath()
+const initialFilePath = getInitialFilePath()
+if (initialFilePath) {
+  openSingleFilePath(initialFilePath)
+} else if (initialFolderPath) {
+  openFolderPath(initialFolderPath)
+} else {
+  window.fjord?.launchFile?.()
+    .then(filePath => {
+      if (filePath) openSingleFilePath(filePath)
+    })
+    .catch(() => {})
+}
 
 // ── Command palette ──────────────────────────────────────────────
 registerCommandPaletteCallbacks({ openFile })

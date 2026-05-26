@@ -29,6 +29,29 @@ const SETTINGS_TABS = [
 let activeSettingsTab = 'theme'
 let activeKeybindingCapture = null
 
+function folderName(folderPath) {
+  return String(folderPath || '').split(/[\\/]/).filter(Boolean).pop() || 'No folder open'
+}
+
+export function syncWorkspaceChrome() {
+  const nameEl = $('brandrail-workspace-name')
+  const pathEl = $('brandrail-workspace-path')
+  const railEl = $('brandrail')
+  if (!nameEl || !pathEl || !railEl) return
+  const hasFolder = Boolean(state.folderPath)
+  const hasSingleFile = Boolean(state.singleFilePath)
+  railEl.classList.toggle('has-workspace', hasFolder || hasSingleFile)
+  if (hasSingleFile && !hasFolder) {
+    nameEl.textContent = folderName(state.singleFilePath)
+    pathEl.textContent = 'Single file'
+    railEl.title = state.singleFilePath
+    return
+  }
+  nameEl.textContent = hasFolder ? folderName(state.folderPath) : 'No workspace'
+  pathEl.textContent = hasFolder ? state.folderPath : 'Open a folder or create a new window'
+  railEl.title = hasFolder ? state.folderPath : ''
+}
+
 // ── Welcome screen HTML ──────────────────────────────────────────
 export function buildWelcome() {
   const hasFolder = Boolean(state.folderPath)
@@ -542,11 +565,9 @@ export function buildShell() {
         <div class="editor-area">
           <!-- Top window rail -->
           <div class="brandrail" id="brandrail" data-tauri-drag-region>
-            <div class="brandrail__identity" aria-label="Rísta">
-              <div class="brandrail__mark" aria-hidden="true">ᚱ</div>
-              <div class="brandrail__wordmark">
-                <span class="brandrail__name">Rísta</span>
-              </div>
+            <div class="brandrail__workspace" aria-label="Current workspace">
+              <span class="brandrail__workspace-name" id="brandrail-workspace-name">No workspace</span>
+              <span class="brandrail__workspace-path" id="brandrail-workspace-path">Open a folder or create a new window</span>
             </div>
           </div>
 
@@ -572,25 +593,31 @@ export function buildShell() {
                 <!-- Panels -->
                 <div class="theme-btn" id="sidebar-toggle" title="Toggle file explorer (⌘B)" aria-label="Toggle file explorer" role="button" tabindex="0">
                   ${sidebarIcon()}
+                  <span class="control-label">Files</span>
                 </div>
                 <div class="theme-btn" id="terminal-toggle" title="Toggle terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
                   ${terminalIcon()}
+                  <span class="control-label">Terminal</span>
                 </div>
                 <div class="theme-btn" id="right-sidebar-toggle" title="Toggle widgets panel" aria-label="Toggle widgets panel" role="button" tabindex="0">
                   ${rightSidebarIcon()}
+                  <span class="control-label">Widgets</span>
                 </div>
                 <div class="app-controls__sep"></div>
                 <!-- Layout -->
                 <div class="theme-btn" id="pane-split-toggle" title="Split editor pane" aria-label="Split editor pane" role="button" tabindex="0">
                   ${editorSplitIcon()}
+                  <span class="control-label">Pane</span>
                 </div>
                 <div class="theme-btn" id="workspace-split-toggle" title="Split workspace into two editors" aria-label="Split workspace" role="button" tabindex="0">
                   ${workspaceSplitIcon()}
+                  <span class="control-label">Workspace</span>
                 </div>
                 <div class="app-controls__sep"></div>
                 <!-- App -->
                 <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
                   ${gearIcon()}
+                  <span class="control-label">Settings</span>
                 </div>
               </div>
               <div class="st st-brand">Rísta</div>
@@ -812,6 +839,7 @@ export function buildShell() {
   })
   $('settings-overlay').addEventListener('click', closeSettingsPanel)
   $('settings-panel').addEventListener('input', handleSettingsInput)
+  syncWorkspaceChrome()
   $('command-dialog-close').addEventListener('click', closeCommandDialog)
   $('command-dialog-cancel').addEventListener('click', closeCommandDialog)
   $('command-dialog-overlay').addEventListener('click', closeCommandDialog)

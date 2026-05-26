@@ -6,6 +6,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -13,10 +14,12 @@ use std::{
     sync::Mutex,
     time::SystemTime,
 };
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
+#[cfg(target_os = "macos")]
+use tauri::{LogicalPosition, TitleBarStyle};
 
 struct AppState {
-    watcher: Mutex<Option<RecommendedWatcher>>,
+    watchers: Mutex<HashMap<String, RecommendedWatcher>>,
 }
 
 #[derive(Serialize)]
@@ -88,8 +91,31 @@ fn basename(path: &Path) -> String {
 
 fn markdown_file(path: &Path) -> bool {
     path.extension()
-        .map(|ext| ext.to_string_lossy().eq_ignore_ascii_case("md"))
+        .map(|ext| {
+            let ext = ext.to_string_lossy();
+            ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown")
+        })
         .unwrap_or(false)
+}
+
+fn launch_file_from_args() -> Option<String> {
+    std::env::args().skip(1).find_map(|arg| {
+        let path = PathBuf::from(arg);
+        if path.is_file() && markdown_file(&path) {
+            Some(path_string(&path))
+        } else {
+            None
+        }
+    })
+}
+
+fn open_url_file_path(url: &Url) -> Option<String> {
+    let path = url.to_file_path().ok()?;
+    if path.is_file() && markdown_file(&path) {
+        Some(path_string(&path))
+    } else {
+        None
+    }
 }
 
 fn read_folder_tree(folder_path: &Path) -> Vec<FileNode> {
@@ -141,9 +167,16 @@ fn notify_event_name(kind: &EventKind) -> &'static str {
 
 fn unique_copy_path(file_path: &Path) -> PathBuf {
     let ext = file_path.extension().and_then(|v| v.to_str()).unwrap_or("");
-    let stem = file_path.file_stem().and_then(|v| v.to_str()).unwrap_or("copy");
+    let stem = file_path
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("copy");
     let dir = file_path.parent().unwrap_or_else(|| Path::new(""));
-    let suffix = if ext.is_empty() { String::new() } else { format!(".{ext}") };
+    let suffix = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{ext}")
+    };
     let mut copy_path = dir.join(format!("{stem}-copy{suffix}"));
     let mut counter = 1;
 
@@ -160,15 +193,25 @@ fn export_html_document(file_name: &str, html: &str, theme: &str, settings: &Val
     let surface = if is_light { "#fffaf0" } else { "#121417" };
     let text = if is_light { "#221d18" } else { "#dddfe6" };
     let muted = if is_light { "#5f564b" } else { "#7a7d8a" };
-    let border = if is_light { "rgba(34,29,24,0.12)" } else { "rgba(255,255,255,0.08)" };
+    let border = if is_light {
+        "rgba(34,29,24,0.12)"
+    } else {
+        "rgba(255,255,255,0.08)"
+    };
     let accent = if is_light { "#5c7695" } else { "#5b7fa6" };
     let font = settings
         .get("previewFontCustom")
         .or_else(|| settings.get("previewFont"))
         .and_then(Value::as_str)
         .unwrap_or("'DM Sans', system-ui, sans-serif");
-    let font_size = settings.get("previewFontSize").and_then(Value::as_i64).unwrap_or(13);
-    let line_height = settings.get("previewLineHeight").and_then(Value::as_f64).unwrap_or(1.75);
+    let font_size = settings
+        .get("previewFontSize")
+        .and_then(Value::as_i64)
+        .unwrap_or(13);
+    let line_height = settings
+        .get("previewLineHeight")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.75);
 
     format!(
         r#"<!DOCTYPE html>
@@ -208,6 +251,11 @@ fn app_meta(app: tauri::AppHandle) -> AppMeta {
         name: "Rísta".into(),
         version: app.package_info().version.to_string(),
     }
+}
+
+#[tauri::command]
+fn launch_file() -> Option<String> {
+    launch_file_from_args()
 }
 
 #[tauri::command]
@@ -255,7 +303,11 @@ fn create_dir(path: String) -> bool {
 }
 
 #[tauri::command]
-fn write_image_file(dir_path: String, base64_data: String, file_name: String) -> Option<FileResult> {
+fn write_image_file(
+    dir_path: String,
+    base64_data: String,
+    file_name: String,
+) -> Option<FileResult> {
     let dir = PathBuf::from(dir_path);
     fs::create_dir_all(&dir).ok()?;
     let bytes = general_purpose::STANDARD.decode(base64_data).ok()?;
@@ -352,25 +404,28 @@ fn list_dir(path: String) -> Vec<String> {
 }
 
 #[tauri::command]
-fn watch_folder(app: tauri::AppHandle, state: tauri::State<AppState>, path: String) -> bool {
+fn watch_folder(window: tauri::Window, state: tauri::State<AppState>, path: String) -> bool {
     let root = PathBuf::from(path);
-    let app_for_watcher = app.clone();
-    let Ok(mut watcher) = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
-        if let Ok(event) = result {
-            let event_name = notify_event_name(&event.kind).to_string();
-            for changed_path in event.paths {
-                if markdown_file(&changed_path) {
-                    let _ = app_for_watcher.emit(
-                        "fs-change",
-                        FsChange {
-                            event: event_name.clone(),
-                            path: path_string(&changed_path),
-                        },
-                    );
+    let label = window.label().to_string();
+    let window_for_watcher = window.clone();
+    let Ok(mut watcher) =
+        notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+            if let Ok(event) = result {
+                let event_name = notify_event_name(&event.kind).to_string();
+                for changed_path in event.paths {
+                    if markdown_file(&changed_path) {
+                        let _ = window_for_watcher.emit(
+                            "fs-change",
+                            FsChange {
+                                event: event_name.clone(),
+                                path: path_string(&changed_path),
+                            },
+                        );
+                    }
                 }
             }
-        }
-    }) else {
+        })
+    else {
         return false;
     };
 
@@ -378,12 +433,68 @@ fn watch_folder(app: tauri::AppHandle, state: tauri::State<AppState>, path: Stri
         return false;
     }
 
-    if let Ok(mut slot) = state.watcher.lock() {
-        *slot = Some(watcher);
+    if let Ok(mut watchers) = state.watchers.lock() {
+        watchers.insert(label, watcher);
         true
     } else {
         false
     }
+}
+
+fn open_markdown_file_in_window(app: tauri::AppHandle, file_path: String) -> Result<bool, String> {
+    create_window(app, None, Some(file_path))
+}
+
+fn create_window(
+    app: tauri::AppHandle,
+    folder_path: Option<String>,
+    file_path: Option<String>,
+) -> Result<bool, String> {
+    let label = format!("workspace-{}", Utc::now().timestamp_millis());
+    let title = file_path
+        .as_deref()
+        .and_then(|path| Path::new(path).file_name())
+        .map(|name| format!("{} - Rísta", name.to_string_lossy()))
+        .unwrap_or_else(|| "Rísta".into());
+    let mut builder = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
+        .title(title)
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(860.0, 540.0)
+        .resizable(true)
+        .decorations(true)
+        .shadow(true)
+        .center();
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(LogicalPosition::new(15.0, 17.0));
+    }
+
+    if let Some(folder_path) = folder_path {
+        let encoded = serde_json::to_string(&folder_path).map_err(|err| err.to_string())?;
+        builder =
+            builder.initialization_script(format!("window.__RISTA_INITIAL_FOLDER__ = {encoded};"));
+    }
+    if let Some(file_path) = file_path {
+        let encoded = serde_json::to_string(&file_path).map_err(|err| err.to_string())?;
+        builder =
+            builder.initialization_script(format!("window.__RISTA_INITIAL_FILE__ = {encoded};"));
+    }
+
+    builder.build().map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn new_window(
+    app: tauri::AppHandle,
+    folder_path: Option<String>,
+    file_path: Option<String>,
+) -> Result<bool, String> {
+    create_window(app, folder_path, file_path)
 }
 
 #[tauri::command]
@@ -451,9 +562,15 @@ fn render_d2(source: String, theme_id: Option<u16>) -> Value {
 
 #[tauri::command]
 fn export_html(path: String, payload: Value) -> bool {
-    let file_name = payload.get("fileName").and_then(Value::as_str).unwrap_or("export");
+    let file_name = payload
+        .get("fileName")
+        .and_then(Value::as_str)
+        .unwrap_or("export");
     let html = payload.get("html").and_then(Value::as_str).unwrap_or("");
-    let theme = payload.get("theme").and_then(Value::as_str).unwrap_or("dark");
+    let theme = payload
+        .get("theme")
+        .and_then(Value::as_str)
+        .unwrap_or("dark");
     let settings = payload.get("settings").unwrap_or(&Value::Null);
     let document = export_html_document(file_name, html, theme, settings);
     fs::write(path, document).is_ok()
@@ -492,7 +609,11 @@ fn import_content(folder_path: String, title: String, body: String, source_url: 
         .collect::<String>()
         .trim()
         .to_string();
-    let base = if safe_title.is_empty() { "untitled".into() } else { safe_title };
+    let base = if safe_title.is_empty() {
+        "untitled".into()
+    } else {
+        safe_title
+    };
     let mut file_name = format!("{base}.md");
     let mut file_path = Path::new(&folder_path).join(&file_name);
     let mut counter = 1;
@@ -523,7 +644,10 @@ async fn ai_chat(params: Value) -> Value {
     let provider = params.get("provider").and_then(Value::as_str).unwrap_or("");
     let base_url = params.get("baseUrl").and_then(Value::as_str).unwrap_or("");
     let api_key = params.get("apiKey").and_then(Value::as_str).unwrap_or("");
-    let model = params.get("model").cloned().unwrap_or(Value::String(String::new()));
+    let model = params
+        .get("model")
+        .cloned()
+        .unwrap_or(Value::String(String::new()));
     let messages = params.get("messages").cloned().unwrap_or(json!([]));
     let tools = params.get("tools").cloned();
     let client = reqwest::Client::new();
@@ -582,7 +706,10 @@ async fn ai_chat(params: Value) -> Value {
 
     match provider {
         "openai" => {
-            let message = json_value.pointer("/choices/0/message").cloned().unwrap_or(json!({}));
+            let message = json_value
+                .pointer("/choices/0/message")
+                .cloned()
+                .unwrap_or(json!({}));
             json!({
                 "text": message.get("content").and_then(Value::as_str).unwrap_or(""),
                 "stop": json_value.pointer("/choices/0/finish_reason").cloned().unwrap_or(Value::Null)
@@ -601,7 +728,9 @@ async fn ai_chat(params: Value) -> Value {
                 .unwrap_or_default();
             json!({ "text": text, "stop": json_value.get("stop_reason").cloned().unwrap_or(Value::Null) })
         }
-        "ollama" => json!({ "text": json_value.pointer("/message/content").and_then(Value::as_str).unwrap_or("") }),
+        "ollama" => {
+            json!({ "text": json_value.pointer("/message/content").and_then(Value::as_str).unwrap_or("") })
+        }
         _ => json!({ "error": "Unknown provider" }),
     }
 }
@@ -613,16 +742,36 @@ fn set_represented_file(_path: Option<String>) -> bool {
 
 fn app_icon_bytes(variant: &str, theme: &str) -> Option<&'static [u8]> {
     match (variant, theme) {
-        ("nordic-steel", "dark") => Some(include_bytes!("../icons/rista-split-rune-nordic-steel-dark.png")),
-        ("nordic-steel", "light") => Some(include_bytes!("../icons/rista-split-rune-nordic-steel-light.png")),
-        ("aurora-gradient", "dark") => Some(include_bytes!("../icons/rista-split-rune-aurora-gradient-dark.png")),
-        ("aurora-gradient", "light") => Some(include_bytes!("../icons/rista-split-rune-aurora-gradient-light.png")),
-        ("black-stone", "dark") => Some(include_bytes!("../icons/rista-split-rune-black-stone-dark.png")),
-        ("black-stone", "light") => Some(include_bytes!("../icons/rista-split-rune-black-stone-light.png")),
-        ("paper-ink", "dark") => Some(include_bytes!("../icons/rista-split-rune-paper-ink-dark.png")),
-        ("paper-ink", "light") => Some(include_bytes!("../icons/rista-split-rune-paper-ink-light.png")),
-        ("future-rune", "dark") => Some(include_bytes!("../icons/rista-split-rune-future-rune-dark.png")),
-        ("future-rune", "light") => Some(include_bytes!("../icons/rista-split-rune-future-rune-light.png")),
+        ("nordic-steel", "dark") => Some(include_bytes!(
+            "../icons/rista-split-rune-nordic-steel-dark.png"
+        )),
+        ("nordic-steel", "light") => Some(include_bytes!(
+            "../icons/rista-split-rune-nordic-steel-light.png"
+        )),
+        ("aurora-gradient", "dark") => Some(include_bytes!(
+            "../icons/rista-split-rune-aurora-gradient-dark.png"
+        )),
+        ("aurora-gradient", "light") => Some(include_bytes!(
+            "../icons/rista-split-rune-aurora-gradient-light.png"
+        )),
+        ("black-stone", "dark") => Some(include_bytes!(
+            "../icons/rista-split-rune-black-stone-dark.png"
+        )),
+        ("black-stone", "light") => Some(include_bytes!(
+            "../icons/rista-split-rune-black-stone-light.png"
+        )),
+        ("paper-ink", "dark") => Some(include_bytes!(
+            "../icons/rista-split-rune-paper-ink-dark.png"
+        )),
+        ("paper-ink", "light") => Some(include_bytes!(
+            "../icons/rista-split-rune-paper-ink-light.png"
+        )),
+        ("future-rune", "dark") => Some(include_bytes!(
+            "../icons/rista-split-rune-future-rune-dark.png"
+        )),
+        ("future-rune", "light") => Some(include_bytes!(
+            "../icons/rista-split-rune-future-rune-light.png"
+        )),
         _ => None,
     }
 }
@@ -634,17 +783,21 @@ fn set_app_icon(app: tauri::AppHandle, variant: String, theme: String) -> Result
         _ => "dark",
     };
     let variant = match variant.as_str() {
-        "nordic-steel" | "aurora-gradient" | "black-stone" | "paper-ink" | "future-rune" => variant.as_str(),
+        "nordic-steel" | "aurora-gradient" | "black-stone" | "paper-ink" | "future-rune" => {
+            variant.as_str()
+        }
         _ => "aurora-gradient",
     };
     let bytes = app_icon_bytes(variant, theme).ok_or_else(|| "Unknown app icon".to_string())?;
     let image = tauri::image::Image::from_bytes(bytes).map_err(|err| err.to_string())?;
-    if let Some(window) = app.get_webview_window("main") {
-        window.set_icon(image).map_err(|err| err.to_string())?;
-        Ok(true)
-    } else {
-        Ok(false)
+    let mut applied = false;
+    for (_, window) in app.webview_windows() {
+        window
+            .set_icon(image.clone())
+            .map_err(|err| err.to_string())?;
+        applied = true;
     }
+    Ok(applied)
 }
 
 fn main() {
@@ -652,7 +805,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
-            watcher: Mutex::new(None),
+            watchers: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             app_meta,
@@ -672,6 +825,8 @@ fn main() {
             read_templates,
             list_dir,
             watch_folder,
+            launch_file,
+            new_window,
             run_terminal_command,
             render_d2,
             export_html,
@@ -682,6 +837,16 @@ fn main() {
             set_represented_file,
             set_app_icon
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Rísta");
+        .build(tauri::generate_context!())
+        .expect("error while building Rísta")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Opened { urls } = event {
+                for url in urls {
+                    if let Some(file_path) = open_url_file_path(&url) {
+                        let _ = open_markdown_file_in_window(app.clone(), file_path);
+                    }
+                }
+            }
+        });
 }

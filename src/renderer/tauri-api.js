@@ -53,6 +53,9 @@ async function installAppMenu() {
         {
           text: 'File',
           items: [
+            item('file:new-window', 'New Window', 'CmdOrCtrl+Shift+N'),
+            item('file:open-folder-new-window', 'Open Folder in New Window...', 'CmdOrCtrl+Shift+O'),
+            { item: 'Separator' },
             item('file:new', 'New File', 'CmdOrCtrl+N'),
             item('file:open-folder', 'Open Folder...', 'CmdOrCtrl+O'),
             { item: 'Separator' },
@@ -128,6 +131,12 @@ if (window.__TAURI_INTERNALS__) {
       return Promise.resolve(false)
     },
     startWindowDrag: () => currentWindow.startDragging(),
+    newWindow: (folderPath = null, filePath = null) => invoke('new_window', { folderPath, filePath }),
+    launchFile: () => invoke('launch_file'),
+    openFolderInNewWindow: async () => {
+      const folderPath = await open({ multiple: false, directory: true })
+      return folderPath ? invoke('new_window', { folderPath }) : false
+    },
 
     openFolder: async () => open({ multiple: false, directory: true }),
     newMarkdownFile: async (folderPath) => {

@@ -8,6 +8,7 @@ export const settingsValue = key => getSettings()[key]
 // ── App state ────────────────────────────────────────────────────
 export const state = {
   folderPath: null,
+  singleFilePath: null,
   tree: [],
   tagFilter: null,
   expandedFolders: new Set(),

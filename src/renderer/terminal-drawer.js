@@ -5,20 +5,32 @@ import { state, $ } from './state.js'
 
 let commandHistory = []
 let historyIndex = -1
+let terminalBusy = false
+
+function folderName(folderPath) {
+  return String(folderPath || '').split(/[\\/]/).filter(Boolean).pop() || '~'
+}
 
 export function buildTerminalDrawer() {
   return `
     <div class="terminal-drawer" id="terminal-drawer">
       <div class="terminal-drawer__header">
-        <div class="terminal-drawer__title">Terminal</div>
+        <div class="terminal-drawer__identity">
+          <div class="terminal-drawer__title">Terminal</div>
+          <div class="terminal-drawer__cwd" id="terminal-cwd">~</div>
+        </div>
         <div class="terminal-drawer__path" id="terminal-path"></div>
+        <div class="terminal-drawer__status" id="terminal-status">Ready</div>
+        <div class="terminal-drawer__action" id="terminal-clear-btn" title="Clear terminal" role="button" tabindex="0">Clear</div>
         <div class="terminal-drawer__close" id="terminal-close-btn" title="Close terminal" role="button" tabindex="0">
           <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
         </div>
       </div>
-      <div class="terminal-drawer__output" id="terminal-output"></div>
+      <div class="terminal-drawer__output" id="terminal-output">
+        <div class="terminal-drawer__empty">Commands run in the current workspace folder.</div>
+      </div>
       <div class="terminal-drawer__input-row">
-        <span class="terminal-drawer__prompt">$</span>
+        <span class="terminal-drawer__prompt" id="terminal-prompt">$</span>
         <input type="text" class="terminal-drawer__input" id="terminal-input" placeholder="Type a command…" spellcheck="false" autocomplete="off">
       </div>
     </div>
@@ -51,13 +63,17 @@ export function closeTerminalDrawer() {
 
 function syncTerminalPath() {
   const pathEl = $('terminal-path')
-  if (!pathEl) return
-  pathEl.textContent = state.folderPath || '~'
+  const cwdEl = $('terminal-cwd')
+  const promptEl = $('terminal-prompt')
+  if (pathEl) pathEl.textContent = state.folderPath || '~'
+  if (cwdEl) cwdEl.textContent = folderName(state.folderPath)
+  if (promptEl) promptEl.textContent = `${folderName(state.folderPath)} $`
 }
 
 export function appendTerminalOutput(text, type = 'stdout') {
   const output = $('terminal-output')
   if (!output) return
+  output.querySelector('.terminal-drawer__empty')?.remove()
   const line = document.createElement('div')
   line.className = `terminal-line terminal-line--${type}`
   line.textContent = text
@@ -67,7 +83,17 @@ export function appendTerminalOutput(text, type = 'stdout') {
 
 export function clearTerminalOutput() {
   const output = $('terminal-output')
-  if (output) output.innerHTML = ''
+  if (output) output.innerHTML = '<div class="terminal-drawer__empty">Commands run in the current workspace folder.</div>'
+}
+
+function setTerminalBusy(nextBusy) {
+  terminalBusy = nextBusy
+  const drawer = $('terminal-drawer')
+  const status = $('terminal-status')
+  const input = $('terminal-input')
+  drawer?.classList.toggle('is-running', nextBusy)
+  if (status) status.textContent = nextBusy ? 'Running' : 'Ready'
+  if (input) input.disabled = nextBusy
 }
 
 export function handleTerminalInput(event) {
@@ -77,9 +103,11 @@ export function handleTerminalInput(event) {
   input.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
       e.preventDefault()
+      if (terminalBusy) return
       const command = input.value.trim()
       if (!command) return
 
+      syncTerminalPath()
       appendTerminalOutput(`$ ${command}`, 'command')
       commandHistory.push(command)
       historyIndex = commandHistory.length
@@ -92,14 +120,19 @@ export function handleTerminalInput(event) {
 
       const cwd = state.folderPath || undefined
       try {
+        setTerminalBusy(true)
         const result = await window.fjord.runTerminalCommand(command, cwd)
         if (result.stdout) appendTerminalOutput(result.stdout, 'stdout')
         if (result.stderr) appendTerminalOutput(result.stderr, 'stderr')
+        if (result.error) appendTerminalOutput(result.error, 'error')
         if (result.code !== 0 && !result.stdout && !result.stderr) {
           appendTerminalOutput(`Exit code: ${result.code}`, 'error')
         }
       } catch (err) {
         appendTerminalOutput(err.message, 'error')
+      } finally {
+        setTerminalBusy(false)
+        input.focus()
       }
       return
     }
@@ -132,4 +165,5 @@ export function handleTerminalInput(event) {
   })
 
   $('terminal-close-btn')?.addEventListener('click', closeTerminalDrawer)
+  $('terminal-clear-btn')?.addEventListener('click', clearTerminalOutput)
 }
