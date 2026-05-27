@@ -29,7 +29,6 @@ export function registerRightPanel(id, hooks) {
 export function buildRightPanelContainer() {
   return `<div class="right-sidebar" id="right-panel-container">
     <div class="right-sidebar__resizer" data-action="right-sidebar-resize"></div>
-    <div class="right-sidebar__drag-region" id="right-sidebar-drag-region" data-tauri-drag-region></div>
     <div class="right-sidebar__tabs" id="right-sidebar-tabs"></div>
     <div class="right-sidebar__stack widget-stack widget-stack--right" id="right-sidebar-stack"></div>
   </div>`

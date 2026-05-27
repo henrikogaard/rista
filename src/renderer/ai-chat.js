@@ -3,6 +3,7 @@ import { getSettings } from './settings.js'
 import { PROVIDERS } from './ai-providers.js'
 import { registerRightPanel } from './right-panel.js'
 import { TOOLS, toolsForProvider, executeToolByName, getToolSpec } from './ai-tools.js'
+import { queueAiReviewItem } from './ai-review.js'
 
 // ── AI Chat Panel ──────────────────────────────────────────────
 // Messages use a unified shape; the main-process IPC translates per provider.
@@ -13,6 +14,7 @@ import { TOOLS, toolsForProvider, executeToolByName, getToolSpec } from './ai-to
 let _closeRightPanelFn = null
 let _messages = []
 let _sending = false
+let _activeSessionPath = null
 const MAX_TOOL_TURNS = 10
 
 function getProviderConfig() {
@@ -100,6 +102,33 @@ function renderMessages() {
   }
   container.innerHTML = html
   container.scrollTop = container.scrollHeight
+}
+
+async function persistActiveSession() {
+  if (!_activeSessionPath) return
+  const payload = {
+    updatedAt: Date.now(),
+    messages: _messages.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool'),
+  }
+  try {
+    const existingRaw = await window.fjord.readFile(_activeSessionPath)
+    const existing = existingRaw ? JSON.parse(existingRaw) : {}
+    await window.fjord.writeFile(_activeSessionPath, JSON.stringify({ ...existing, ...payload }, null, 2))
+  } catch {}
+}
+
+async function loadSessionFromPath(path) {
+  try {
+    const raw = await window.fjord.readFile(path)
+    if (!raw) return false
+    const data = JSON.parse(raw)
+    _messages = Array.isArray(data.messages) ? data.messages : []
+    _activeSessionPath = path
+    renderMessages()
+    return true
+  } catch {
+    return false
+  }
 }
 
 function summarizeToolCall(tc) {
@@ -196,12 +225,18 @@ async function runAgentLoop() {
         continue
       }
       if (spec.destructive) {
-        const ok = await confirmDestructive(tc)
-        if (!ok) {
-          _messages.push({ role: 'tool', toolCallId: tc.id, content: 'User declined the action.', isError: true })
-          pushStatus(`Declined: ${tc.name}`)
-          continue
-        }
+        const reviewItem = await queueAiReviewItem({
+          toolName: tc.name,
+          toolInput: tc.input || {},
+          source: 'ai-chat',
+        })
+        _messages.push({
+          role: 'tool',
+          toolCallId: tc.id,
+          content: `Queued for review: ${reviewItem.summary}`,
+        })
+        pushStatus(`Queued for review: ${tc.name}`)
+        continue
       }
       pushStatus(`${tc.name}: ${summarizeToolCall(tc)}`)
       try {
@@ -212,6 +247,7 @@ async function runAgentLoop() {
       }
     }
     renderMessages()
+    await persistActiveSession()
   }
 
   _messages.push({ role: 'assistant', content: `(stopped after ${MAX_TOOL_TURNS} tool turns to prevent runaway)` })
@@ -232,6 +268,7 @@ async function sendMessage() {
   }
 
   _messages.push({ role: 'user', content: text })
+  await persistActiveSession()
   input.value = ''
   input.style.height = 'auto'
   _sending = true
@@ -247,6 +284,7 @@ async function sendMessage() {
   _sending = false
   renderMessages()
   updateSendButton()
+  await persistActiveSession()
 }
 
 function updateSendButton() {
@@ -261,6 +299,7 @@ function onPanelOpen() {
   clearBtn?.addEventListener('click', () => {
     _messages = []
     renderMessages()
+    persistActiveSession()
   })
 
   const sendBtn = document.getElementById('ai-chat-send')
@@ -294,6 +333,11 @@ export function initAiChatPanel(openFileFn, closeRightPanelFn) {
     onUnmount: () => {},
     onRefresh: () => renderMessages(),
   })
+}
+
+export async function openAiSession(path) {
+  if (!path) return false
+  return await loadSessionFromPath(path)
 }
 
 function aiChatWidgetIcon() {

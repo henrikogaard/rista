@@ -98,6 +98,19 @@ fn markdown_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn project_visible_file(path: &Path) -> bool {
+    if markdown_file(path) {
+        return true;
+    }
+    let name = path.to_string_lossy().to_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".pdf",
+        ".fcanvas.json", ".fdraw.json",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+}
+
 fn launch_file_from_args() -> Option<String> {
     std::env::args().skip(1).find_map(|arg| {
         let path = PathBuf::from(arg);
@@ -138,7 +151,7 @@ fn read_folder_tree(folder_path: &Path) -> Vec<FileNode> {
                 path: path_string(&full_path),
                 children: Some(read_folder_tree(&full_path)),
             });
-        } else if markdown_file(&full_path) {
+        } else if project_visible_file(&full_path) {
             entries.push(FileNode {
                 node_type: "file".into(),
                 name,
@@ -443,6 +456,11 @@ fn watch_folder(window: tauri::Window, state: tauri::State<AppState>, path: Stri
 
 fn open_markdown_file_in_window(app: tauri::AppHandle, file_path: String) -> Result<bool, String> {
     create_window(app, None, Some(file_path))
+}
+
+#[tauri::command]
+fn start_window_drag(window: tauri::Window) -> Result<bool, String> {
+    window.start_dragging().map(|_| true).map_err(|err| err.to_string())
 }
 
 fn create_window(
@@ -827,6 +845,7 @@ fn main() {
             watch_folder,
             launch_file,
             new_window,
+            start_window_drag,
             run_terminal_command,
             render_d2,
             export_html,
@@ -841,12 +860,23 @@ fn main() {
         .expect("error while building Rísta")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let RunEvent::Opened { urls } = event {
-                for url in urls {
-                    if let Some(file_path) = open_url_file_path(&url) {
-                        let _ = open_markdown_file_in_window(app.clone(), file_path);
+            match event {
+                RunEvent::Opened { urls } => {
+                    for url in urls {
+                        if let Some(file_path) = open_url_file_path(&url) {
+                            let _ = open_markdown_file_in_window(app.clone(), file_path);
+                        }
                     }
                 }
+                RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    if !has_visible_windows && app.webview_windows().is_empty() {
+                        let _ = create_window(app.clone(), None, None);
+                    }
+                }
+                _ => {}
             }
         });
 }

@@ -400,6 +400,7 @@ export function ensureRichEditorMounted(pane) {
       events: {
         focus: () => focusPane(pane),
         change: () => _callbacks.onRichEditorChange?.(pane),
+        blur: () => _callbacks.onRichEditorChange?.(pane),
       },
     })
     richEditors[pane].setHeight('100%')
@@ -485,11 +486,11 @@ export function syncWorkspaceUi() {
     if (pane === 'secondary' && !dual) return
     if (panesMain) panesMain.style.display = tab ? 'flex' : 'none'
     if (empty && pane === 'secondary') empty.style.display = tab ? 'none' : 'flex'
-    if (toolbar) toolbar.style.display = tab && !tab.isAttachment ? 'flex' : 'none'
-    if (paneRow) paneRow.style.display = tab && state.toolbarVisible && !tab.isAttachment ? 'flex' : 'none'
+    if (toolbar) toolbar.style.display = tab && !tab.isAttachment && !tab.isSpatial && !tab.isBinary ? 'flex' : 'none'
+    if (paneRow) paneRow.style.display = tab && state.toolbarVisible && !tab.isAttachment && !tab.isSpatial && !tab.isBinary ? 'flex' : 'none'
 
-    // Handle attachment tabs: hide editor/preview, show only attachment preview
-    if (tab?.isAttachment) {
+    // Handle non-markdown previews: hide editor/preview, show only preview host
+    if (tab?.isAttachment || tab?.isSpatial || tab?.isBinary) {
       const singleSurface = $(`single-surface-${pane}`)
       const splitLayout = $(`split-layout-${pane}`)
       const cmHost = $(`cm-host-${pane}`)

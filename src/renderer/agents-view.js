@@ -39,6 +39,20 @@ function onNewBtnClick(event) {
   _callbacks.createSession?.()
 }
 
+document.addEventListener('click', (event) => {
+  const card = event.target.closest('.agent-card[data-session-path]')
+  if (!card) return
+  _callbacks.openSession?.(card.dataset.sessionPath)
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  const card = event.target.closest('.agent-card[data-session-path]')
+  if (!card) return
+  event.preventDefault()
+  _callbacks.openSession?.(card.dataset.sessionPath)
+})
+
 export function refreshAgentsPanel() {
   renderAgentsList()
 }

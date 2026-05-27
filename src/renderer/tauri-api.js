@@ -27,6 +27,12 @@ async function pickSavePath(defaultPath, filters) {
 
 async function installAppMenu() {
   try {
+    let appVersion
+    try {
+      const meta = await invoke('app_meta')
+      appVersion = meta?.version || undefined
+    } catch {}
+
     const item = (id, text, accelerator) => ({
       id,
       text,
@@ -39,6 +45,17 @@ async function installAppMenu() {
         {
           text: 'Rísta',
           items: [
+            {
+              item: {
+                About: {
+                  name: 'Rísta',
+                  version: appVersion,
+                  copyright: 'Author: Henrik Øgård',
+                },
+              },
+              text: 'About Rísta',
+            },
+            { item: 'Separator' },
             item('view:settings', 'Settings...', 'CmdOrCtrl+,'),
             { item: 'Separator' },
             { item: 'Services' },
@@ -66,7 +83,8 @@ async function installAppMenu() {
             item('file:export-pdf', 'Export to PDF...', 'CmdOrCtrl+E'),
             item('file:export-website', 'Export as Website...'),
             { item: 'Separator' },
-            item('file:close-tab', 'Close Tab', 'CmdOrCtrl+W'),
+            { item: 'CloseWindow', text: 'Close Window' },
+            item('file:close-tab', 'Close Tab', 'CmdOrCtrl+Shift+W'),
           ],
         },
         {
@@ -130,7 +148,7 @@ if (window.__TAURI_INTERNALS__) {
       if (action === 'toggle-maximize') return currentWindow.toggleMaximize()
       return Promise.resolve(false)
     },
-    startWindowDrag: () => currentWindow.startDragging(),
+    startWindowDrag: () => invoke('start_window_drag'),
     newWindow: (folderPath = null, filePath = null) => invoke('new_window', { folderPath, filePath }),
     launchFile: () => invoke('launch_file'),
     openFolderInNewWindow: async () => {

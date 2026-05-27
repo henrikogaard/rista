@@ -3,8 +3,8 @@ import { updateEditorDoc } from './editor.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, saveTimers, draggedTab, setDraggedTab, getTabForPane, setTabForPane, getFocusedTab, getGroupTabs, addTabToPane, removeTabFromPane, getTabPane, isTabOpenAnywhere, cleanSplitSnapshot, storeSplitSnapshot } from './state.js'
 import { refreshPreview, updateActiveMetrics, exportToPdf } from './preview.js'
 import { getSettings, updateSetting } from './settings.js'
-import { buildWelcome, syncWorkspaceChrome } from './shell.js'
-import { addRecentProject, removeRecentProject } from './recent-projects.js'
+import { attachWelcomeProjectHandlers, buildWelcome, syncWorkspaceChrome } from './shell.js'
+import { addRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
 import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex, getFilesForTag } from './link-index.js'
@@ -15,6 +15,7 @@ import { toggleBookmark, isBookmarked, resetBookmarksCache } from './bookmarks.j
 import { refreshFileExplorerState } from './file-explorer-view.js'
 import { jumpToLine } from './outline-view.js'
 import { mergeFrontmatterWithBody } from './markdown.js'
+import { isAttachmentFile, isSpatialFile, isLikelyBinaryFile } from './attachment-preview.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -578,15 +579,17 @@ export async function openFile(item, { preview = false } = {}) {
     if (existingPreview) closeTab(existingPreview, targetPane)
   }
 
-  const isAttachment = item.path && (/\.(png|jpe?g|gif|svg|webp|bmp|pdf)$/i).test(item.path)
+  const isAttachment = isAttachmentFile(item.path || '')
+  const isSpatial = isSpatialFile(item.path || '')
+  const isBinary = isLikelyBinaryFile(item.path || '')
   let content = ''
-  if (!isAttachment) {
+  if (!isAttachment && !isBinary) {
     content = await window.fjord.readFile(item.path)
   }
-  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false, isAttachment, preview }
+  const tab = { path: item.path, name: item.name, content, dirty: false, pinned: false, isAttachment, isSpatial, isBinary, preview }
   state.tabs.push(tab)
   activateTab(tab, targetPane)
-  if (!isAttachment && item.heading?.line) requestAnimationFrame(() => jumpToLine(item.heading.line))
+  if (!isAttachment && !isBinary && item.heading?.line) requestAnimationFrame(() => jumpToLine(item.heading.line))
 }
 
 export async function loadFileIntoTab(tab) {
@@ -617,7 +620,7 @@ export function activateTab(tab, pane = 'primary') {
   _callbacks.focusPane?.(pane)
   _callbacks.ensureEditorForPane?.(pane)
 
-  if (tab.isAttachment) {
+  if (tab.isAttachment || tab.isSpatial || tab.isBinary) {
     _callbacks.renderAttachmentPreview?.(pane, tab)
   } else {
     if (editorViews[pane]) updateEditorDoc(editorViews[pane], tab.content)
@@ -882,30 +885,11 @@ export function showWelcomeScreen() {
   if (!wrapper) return
   wrapper.innerHTML = buildWelcome()
   $('welcome-open-btn')?.addEventListener('click', openFolder)
-  // Wire recent projects click handlers
-  const welcomeEl = $('welcome')
-  if (welcomeEl) {
-    welcomeEl.addEventListener('click', (e) => {
-      const removeBtn = e.target.closest('[data-remove-path]')
-      if (removeBtn) {
-        e.stopPropagation()
-        removeRecentProject(removeBtn.dataset.removePath)
-        const item = removeBtn.closest('.recent-item')
-        if (item) item.remove()
-        const remaining = welcomeEl.querySelectorAll('.recent-item')
-        if (remaining.length === 0) {
-          const recentSection = welcomeEl.querySelector('.recent-projects')
-          if (recentSection) recentSection.remove()
-        }
-        return
-      }
-      const recentItem = e.target.closest('.recent-item')
-      if (recentItem) {
-        const folderPath = recentItem.dataset.path
-        if (folderPath) openFolderPath(folderPath)
-      }
-    })
-  }
+  attachWelcomeProjectHandlers($('welcome'), {
+    openProject: (folderPath) => openFolderPath(folderPath),
+    openProjectNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),
+    refreshWelcome: showWelcomeScreen,
+  })
   renderTabs()
   updateActiveMetrics()
 }
@@ -1021,6 +1005,7 @@ export function handleAppCommand(command, data) {
   if (command === 'file:save-as') saveActiveAs()
   if (command === 'file:export-pdf') exportToPdf()
   if (command === 'file:export-website') exportAsWebsite()
+  if (command === 'file:close-window') window.fjord?.windowAction?.('close')
   if (command === 'file:close-tab' && getFocusedTab()) closeTab(getFocusedTab())
   if (command === 'view:toggle-sidebar') _callbacks.toggleSidebar?.()
   if (command === 'view:toggle-toolbar') _callbacks.toggleToolbar?.()

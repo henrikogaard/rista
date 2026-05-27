@@ -5,6 +5,7 @@ import { getSettings } from './settings.js'
 import { registerRightPanel } from './right-panel.js'
 import { jumpToLine } from './outline-view.js'
 import { getSnapshots, loadSnapshot, relativeTime, formatSize } from './history.js'
+import { getAiReviewItems, acceptAiReviewItem, rejectAiReviewItem, acceptAllAiReviewItems, rejectAllAiReviewItems, openAiReviewItem, onAiReviewChange } from './ai-review.js'
 
 // ── Inspector Panel ──────────────────────────────────────────────
 // Registered as a right panel via the shared right-panel system.
@@ -19,6 +20,7 @@ const TABS = [
 ]
 
 let activeTab = 'outline'
+let _unsubscribeAiReview = null
 
 export function buildInspector() {
   return `
@@ -244,10 +246,36 @@ async function renderHistoryContent(body) {
 }
 
 function renderAiContent() {
+  const pending = getAiReviewItems().filter(item => item.status === 'pending')
+  if (!pending.length) {
+    return `
+      <div class="inspector-empty inspector-empty--ai">
+        <span>AI Review</span>
+        <p class="inspector-empty__sub">No pending AI changes.</p>
+      </div>
+    `
+  }
   return `
-    <div class="inspector-empty inspector-empty--ai">
-      <span>AI Review</span>
-      <p class="inspector-empty__sub">AI-powered review will appear here when suggestions are available.</p>
+    <div class="inspector-section__title">AI Review (${pending.length})</div>
+    <div class="ai-review-actions">
+      <button class="ai-review-btn" data-ai-review-action="accept-all">Keep all</button>
+      <button class="ai-review-btn ai-review-btn--muted" data-ai-review-action="reject-all">Reject all</button>
+    </div>
+    <div class="ai-review-list">
+      ${pending.map(item => `
+        <div class="ai-review-item">
+          <div class="ai-review-item__head">
+            <span class="ai-review-item__title">${escapeHtml(item.summary || item.toolName)}</span>
+            <span class="ai-review-item__meta">+${item.added || 0} / -${item.removed || 0}</span>
+          </div>
+          <pre class="ai-review-item__preview">${escapeHtml(item.preview || '')}</pre>
+          <div class="ai-review-item__actions">
+            <button class="ai-review-btn ai-review-btn--muted" data-ai-review-action="open" data-ai-review-id="${item.id}">Open</button>
+            <button class="ai-review-btn" data-ai-review-action="accept" data-ai-review-id="${item.id}">Accept</button>
+            <button class="ai-review-btn ai-review-btn--muted" data-ai-review-action="reject" data-ai-review-id="${item.id}">Reject</button>
+          </div>
+        </div>
+      `).join('')}
     </div>
   `
 }
@@ -299,6 +327,34 @@ export function handleInspectorClick(event, openFileFn) {
     }
     return
   }
+
+  const aiActionEl = event.target.closest('[data-ai-review-action]')
+  if (aiActionEl) {
+    const action = aiActionEl.dataset.aiReviewAction
+    const itemId = aiActionEl.dataset.aiReviewId
+    if (action === 'accept' && itemId) {
+      acceptAiReviewItem(itemId).then(() => renderInspectorContent())
+      return
+    }
+    if (action === 'reject' && itemId) {
+      rejectAiReviewItem(itemId)
+      renderInspectorContent()
+      return
+    }
+    if (action === 'open' && itemId) {
+      openAiReviewItem(itemId)
+      return
+    }
+    if (action === 'accept-all') {
+      acceptAllAiReviewItems().then(() => renderInspectorContent())
+      return
+    }
+    if (action === 'reject-all') {
+      rejectAllAiReviewItems()
+      renderInspectorContent()
+      return
+    }
+  }
 }
 
 function escapeHtml(text) {
@@ -348,6 +404,10 @@ let _closeRightPanelFn = null
 export function initInspectorPanel(openFileFn, closeRightPanelFn) {
   _openFileFn = openFileFn
   _closeRightPanelFn = closeRightPanelFn
+  _unsubscribeAiReview?.()
+  _unsubscribeAiReview = onAiReviewChange(() => {
+    if (activeTab === 'ai') renderInspectorContent()
+  })
   registerRightPanel('inspector', {
     title: 'Inspector',
     icon: inspectorWidgetIcon(),

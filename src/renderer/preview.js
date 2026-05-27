@@ -38,6 +38,16 @@ export async function refreshPreview(pane, markdown) {
           }
         })
       })
+      p.querySelectorAll('a:not(.wikilink)').forEach(link => {
+        link.addEventListener('click', async (e) => {
+          const href = link.getAttribute('href') || ''
+          const targetPath = resolveLocalPathFromHref(href, activeTab?.path)
+          if (!targetPath) return
+          e.preventDefault()
+          const stat = await window.fjord?.stat?.(targetPath)
+          if (stat) _wikilinkCallback?.(targetPath)
+        })
+      })
     }
   })
   // Render D2 and Mermaid diagram blocks as SVGs
@@ -46,6 +56,32 @@ export async function refreshPreview(pane, markdown) {
     return p ? processDiagrams(p, theme) : null
   }).filter(Boolean)
   await Promise.all(diagramPromises)
+}
+
+function resolveLocalPathFromHref(href, currentFilePath) {
+  const raw = String(href || '').trim()
+  if (!raw || raw.startsWith('#')) return null
+  if (/^(https?:|mailto:|tel:)/i.test(raw)) return null
+  const pathOnly = raw.split('#')[0].split('?')[0]
+  if (!pathOnly) return null
+  if (pathOnly.startsWith('/')) return pathOnly
+  if (!currentFilePath) return null
+  const lastSlash = Math.max(currentFilePath.lastIndexOf('/'), currentFilePath.lastIndexOf('\\'))
+  const base = lastSlash >= 0 ? currentFilePath.slice(0, lastSlash) : ''
+  return normalizePath(`${base}/${pathOnly}`)
+}
+
+function normalizePath(path) {
+  const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/'
+  const parts = path.split(/[\\/]/)
+  const out = []
+  for (const part of parts) {
+    if (!part || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  const prefix = path.startsWith('/') ? '/' : ''
+  return prefix + out.join(sep)
 }
 
 // ── Stats ─────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ import { exportToHtml } from './preview.js'
 import { exportToDocx } from './export-docx.js'
 import { toggleSearchPanel, openSearchPanel } from './search-panel.js'
 import { registerWikilinkCallback } from './preview.js'
-import { renderAttachmentPreview } from './attachment-preview.js'
+import { renderAttachmentPreview, registerAttachmentPreviewCallbacks } from './attachment-preview.js'
 import { toggleTerminalDrawer, handleTerminalInput } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
 import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
@@ -32,9 +32,11 @@ import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, render
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { createSession } from './agents-sidebar.js'
-import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
+import { toggleRightPanel, closeRightPanel, toggleRightSidebar, openRightPanel } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
-import { initAiChatPanel } from './ai-chat.js'
+import { initAiChatPanel, openAiSession } from './ai-chat.js'
+import { executeToolByName } from './ai-tools.js'
+import { registerAiReviewCallbacks } from './ai-review.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon } from './shell.js'
@@ -140,6 +142,10 @@ registerAgentsViewCallbacks({
   createSession: async () => {
     const session = await createSession()
     if (session) refreshAgentsPanel()
+  },
+  openSession: (sessionPath) => {
+    openRightPanel('ai-chat')
+    openAiSession(sessionPath)
   },
 })
 registerRightPanel('agents', {
@@ -284,6 +290,7 @@ registerShellCallbacks({
   toggleRightSidebar,
   openFolder,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
+  openWorkspaceInNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),
   collapseAllFolders,
   startSidebarResize,
   handleAppCommand,
@@ -296,9 +303,18 @@ registerShellCallbacks({
   syncToolbarToggle,
   syncPaneSplitToggle,
   openAgentSession: (sessionPath) => {
-    // Open session JSON as a note for now (could be a special UI later)
-    openFile({ path: sessionPath, name: sessionPath.split('/').pop() })
+    openRightPanel('ai-chat')
+    openAiSession(sessionPath)
   },
+})
+
+registerAiReviewCallbacks({
+  executeTool: executeToolByName,
+  openFile,
+})
+
+registerAttachmentPreviewCallbacks({
+  openFilePath: (path) => openFile({ path, name: path.split(/[\\/]/).pop() }),
 })
 
 registerWorkspaceCallbacks({
@@ -317,7 +333,7 @@ registerWorkspaceCallbacks({
   renderAttachmentPreview,
 })
 
-registerWikilinkCallback(openFile)
+registerWikilinkCallback((path) => openFile({ path, name: path.split(/[\\/]/).pop() }))
 
 registerTabCallbacks({
   buildEditorUI,
@@ -451,6 +467,28 @@ registerCommands([
     if (result.error) { alert('Import failed: ' + result.error); return }
     await refreshTree()
     await openFile({ path: result.path, name: result.name })
+  }},
+  { id: 'new-canvas', label: 'New Canvas', description: 'Create a spatial canvas document', shortcut: '', action: async () => {
+    if (!state.folderPath) { alert('Open a folder first'); return }
+    const name = prompt('Canvas file name:', 'workspace.fcanvas.json')
+    if (!name) return
+    const fileName = name.endsWith('.fcanvas.json') ? name : `${name}.fcanvas.json`
+    const fullPath = `${state.folderPath}/${fileName}`
+    const content = JSON.stringify({ type: 'fjord-canvas', version: 1, cards: [], links: [] }, null, 2)
+    await window.fjord.writeFile(fullPath, content)
+    await refreshTree()
+    await openFile({ path: fullPath, name: fileName })
+  }},
+  { id: 'new-drawing', label: 'New Drawing', description: 'Create an embedded drawing document', shortcut: '', action: async () => {
+    if (!state.folderPath) { alert('Open a folder first'); return }
+    const name = prompt('Drawing file name:', 'drawing.fdraw.json')
+    if (!name) return
+    const fileName = name.endsWith('.fdraw.json') ? name : `${name}.fdraw.json`
+    const fullPath = `${state.folderPath}/${fileName}`
+    const content = JSON.stringify({ type: 'fjord-drawing', version: 1, strokes: [] }, null, 2)
+    await window.fjord.writeFile(fullPath, content)
+    await refreshTree()
+    await openFile({ path: fullPath, name: fileName })
   }},
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
   { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },

@@ -57,7 +57,7 @@ export async function renderAgentsList() {
   list.style.display = 'flex'
   empty.style.display = 'none'
   list.innerHTML = sessions.map(s => `
-    <div class="agent-card" data-session-path="${escapeAttr(s.path)}">
+    <div class="agent-card" data-session-path="${escapeAttr(s.path)}" role="button" tabindex="0">
       <div class="agent-card__title">${escapeHtml(s.title)}</div>
       <div class="agent-card__meta">
         <span class="agent-card__model">${escapeHtml(s.model || 'local')}</span>

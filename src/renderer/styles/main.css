@@ -231,6 +231,7 @@ textarea,
 /* ── Top window rail ── */
 .brandrail {
   height: var(--brandrail-height);
+  width: 100%;
   background:
     linear-gradient(90deg, rgba(91,127,166,0.07), transparent 34%),
     rgba(var(--bg1-rgb), 0.96);
@@ -241,6 +242,7 @@ textarea,
   padding: 0 14px;
   flex-shrink: 0;
   position: relative;
+  z-index: 2;
   border-bottom: 1px solid rgba(255,255,255,0.045);
   cursor: default;
   user-select: none;
@@ -1224,12 +1226,6 @@ body.is-resizing-split { cursor: col-resize; user-select: none; }
 }
 .sidebar.collapsed { width: 0; }
 .sidebar.collapsed + .sidebar-resizer { width: 0; opacity: 0; pointer-events: none; }
-
-.sidebar-drag-region {
-  height: var(--brandrail-height);
-  flex: 0 0 var(--brandrail-height);
-  cursor: default;
-}
 
 .sidebar-resizer {
   width: 5px;
@@ -3390,12 +3386,6 @@ body.is-resizing-right-sidebar .right-sidebar { transition: none; }
 .right-sidebar__resizer:hover,
 body.is-resizing-right-sidebar .right-sidebar__resizer {
   background: var(--accent-dim);
-}
-
-.right-sidebar__drag-region {
-  height: var(--brandrail-height);
-  flex: 0 0 var(--brandrail-height);
-  cursor: default;
 }
 
 /* Resizer between stacked widgets */

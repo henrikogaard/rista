@@ -11,6 +11,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "url": "index.html",
         "title": "Rísta",
         "width": 1280,
         "height": 800,

@@ -699,27 +699,25 @@ function showFileContextMenu(x, y, filePath, isFolder) {
 export function buildShell() {
   document.getElementById('root').innerHTML = `
     <div class="app" id="app">
+      <!-- Native macOS overlay chrome lives above every app column. -->
+      <div class="brandrail" id="brandrail" data-tauri-drag-region="deep">
+        <div class="brandrail__workspace" aria-label="Current workspace">
+          <span class="brandrail__workspace-name" id="brandrail-workspace-name">No workspace</span>
+          <span class="brandrail__workspace-path" id="brandrail-workspace-path">Open a folder or create a new window</span>
+        </div>
+      </div>
 
       <!-- Layout -->
       <div class="layout">
 
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
-          <div class="sidebar-drag-region" id="sidebar-drag-region" data-tauri-drag-region="deep"></div>
           <div class="left-widget-stack widget-stack widget-stack--left" id="left-widget-stack"></div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
 
         <!-- Editor area -->
         <div class="editor-area">
-          <!-- Top window rail -->
-          <div class="brandrail" id="brandrail" data-tauri-drag-region="deep">
-            <div class="brandrail__workspace" aria-label="Current workspace">
-              <span class="brandrail__workspace-name" id="brandrail-workspace-name">No workspace</span>
-              <span class="brandrail__workspace-path" id="brandrail-workspace-path">Open a folder or create a new window</span>
-            </div>
-          </div>
-
           <!-- Welcome / editor wrapper -->
           <div id="editor-wrapper" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
             ${buildWelcome()}
@@ -967,8 +965,6 @@ export function buildShell() {
 
   // Wire up controls
   $('brandrail')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
-  $('sidebar-drag-region')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
-  $('right-sidebar-drag-region')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
   $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)

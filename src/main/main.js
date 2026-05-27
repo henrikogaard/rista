@@ -262,10 +262,10 @@ function createWindow() {
 
 app.whenReady().then(() => {
   app.setAboutPanelOptions({
-    applicationName: 'Fjordmark',
+    applicationName: 'Rísta',
     applicationVersion: app.getVersion(),
     version: app.getVersion(),
-    copyright: 'Copyright Henrik Øgård',
+    copyright: 'Author: Henrik Øgård',
     iconPath: aboutIconPath,
   })
 
@@ -383,7 +383,7 @@ function readFolderTree(folderPath) {
           path: fullPath,
           children: readFolderTree(fullPath),
         })
-      } else if (item.name.endsWith('.md')) {
+      } else if (isProjectVisibleFile(item.name)) {
         entries.push({
           type: 'file',
           name: item.name,
@@ -396,6 +396,22 @@ function readFolderTree(folderPath) {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1
     return a.name.localeCompare(b.name)
   })
+}
+
+function isProjectVisibleFile(name = '') {
+  const lower = String(name).toLowerCase()
+  return lower.endsWith('.md')
+    || lower.endsWith('.markdown')
+    || lower.endsWith('.png')
+    || lower.endsWith('.jpg')
+    || lower.endsWith('.jpeg')
+    || lower.endsWith('.gif')
+    || lower.endsWith('.svg')
+    || lower.endsWith('.webp')
+    || lower.endsWith('.bmp')
+    || lower.endsWith('.pdf')
+    || lower.endsWith('.fcanvas.json')
+    || lower.endsWith('.fdraw.json')
 }
 
 // ── IPC: Read file ────────────────────────────────────────────────
