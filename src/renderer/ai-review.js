@@ -120,7 +120,14 @@ export function getAiReviewItems() {
 export async function acceptAiReviewItem(id) {
   const item = _items.find(entry => entry.id === id)
   if (!item || item.status !== 'pending' || !_executeTool) return false
+  const conflictTab = findConflictingReviewTab(item)
+  if (conflictTab) {
+    item.error = `${conflictTab.name || item.path} has unsaved or external changes`
+    emitChange()
+    return false
+  }
   item.status = 'applying'
+  item.error = ''
   emitChange()
   try {
     await _executeTool(item.toolName, item.toolInput)
@@ -132,6 +139,16 @@ export async function acceptAiReviewItem(id) {
     emitChange()
     return false
   }
+}
+
+function findConflictingReviewTab(item) {
+  const paths = [
+    item.toolInput?.path,
+    item.toolInput?.from,
+    item.toolInput?.to,
+    item.path,
+  ].filter(Boolean).map(joinProjectPath)
+  return state.tabs.find(tab => paths.includes(tab.path) && (tab.dirty || tab.externalConflict))
 }
 
 export function rejectAiReviewItem(id) {

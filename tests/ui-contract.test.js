@@ -124,6 +124,31 @@ test('workspace polish keeps split mode quiet, legible, and intentional', () => 
   assert.match(css, /\.app\[data-workspace-mode="dual"\] \.workspace-resizer::before\s*\{[\s\S]*height: 48px/)
 })
 
+test('global and pane icon semantics stay distinct and labelled', () => {
+  const icons = read('src/renderer/icons.js')
+  const shell = read('src/renderer/shell.js')
+  const workspace = read('src/renderer/workspace.js')
+
+  assert.match(icons, /export function sidebarIcon/)
+  assert.match(icons, /export function rightSidebarIcon/)
+  assert.match(icons, /export function toolbarIcon/)
+  assert.match(icons, /export function editorSplitIcon/)
+  assert.match(icons, /export function workspaceSplitIcon/)
+  assert.match(icons, /export function sunIcon/)
+  assert.match(icons, /export function moonIcon/)
+  assert.match(shell, /aria-label="Toggle file explorer"/)
+  assert.match(shell, /aria-label="Toggle workspace split layout"/)
+  assert.match(shell, /title="Toggle workspace split layout"/)
+  assert.match(shell, /aria-label="Open settings"/)
+  assert.match(workspace, /title="Markdown source"/)
+  assert.match(workspace, /title="Pane split preview"/)
+  assert.match(workspace, /title="Rich text editor"/)
+  assert.match(workspace, /title="Rendered preview"/)
+  assert.match(workspace, /data-action="set-view" data-view="split"[^>]*aria-label="Pane split preview"/)
+  assert.doesNotMatch(workspace, /data-action="toggle-workspace-split"/)
+  assert.doesNotMatch(workspace, /id="pane-split-toggle"/)
+})
+
 test('programmatic editor document updates do not mark tabs dirty', () => {
   const editor = read('src/renderer/editor.js')
 
@@ -503,11 +528,32 @@ test('AI chat queues destructive file edits into AI review instead of auto-writi
   assert.match(inspector, /data-ai-review-action="reject"/)
   assert.match(review, /acceptAiReviewItem/)
   assert.match(review, /rejectAiReviewItem/)
+  assert.match(review, /findConflictingReviewTab/)
+  assert.match(review, /externalConflict/)
+  assert.match(review, /dirty/)
+  assert.match(review, /item\.error/)
+})
+
+test('agents sidebar stores local session metadata with status summaries', () => {
+  const agents = read('src/renderer/agents-sidebar.js')
+  const view = read('src/renderer/agents-view.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(agents, /\.fjordmark\/sessions/)
+  assert.match(agents, /runtime/)
+  assert.match(agents, /status/)
+  assert.match(agents, /summary/)
+  assert.match(agents, /agent-card__status/)
+  assert.match(agents, /agent-card__summary/)
+  assert.match(view, /Sessions are stored locally in your project/)
+  assert.match(css, /\.agent-card__status/)
+  assert.match(css, /\.agent-card__summary/)
 })
 
 test('project tree and preview support attachments plus spatial canvas and drawing docs', () => {
   const tauriMain = read('src-tauri/src/main.rs')
   const tabs = read('src/renderer/tabs.js')
+  const previewPane = read('src/renderer/preview.js')
   const preview = read('src/renderer/attachment-preview.js')
   const css = read('src/renderer/styles/main.css')
 
@@ -515,10 +561,40 @@ test('project tree and preview support attachments plus spatial canvas and drawi
   assert.match(tauriMain, /\.fdraw\.json/)
   assert.match(tabs, /isSpatialFile/)
   assert.match(tabs, /isLikelyBinaryFile/)
+  assert.match(tabs, /tab\.isAttachment \|\| tab\.isSpatial \|\| tab\.isBinary/)
+  assert.match(previewPane, /resolveLocalPathFromHref/)
+  assert.match(previewPane, /_wikilinkCallback\?\.\(targetPath\)/)
   assert.match(preview, /renderDrawingEditor/)
   assert.match(preview, /renderCanvasWorkspace/)
+  assert.match(preview, /Preview is not available for this file type/)
   assert.match(css, /\.drawing-canvas/)
   assert.match(css, /\.canvas-board/)
+})
+
+test('canvas workspace can render and persist visual links between cards', () => {
+  const preview = read('src/renderer/attachment-preview.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(preview, /data-action="add-link"/)
+  assert.match(preview, /renderCanvasLinks/)
+  assert.match(preview, /canvas-link-layer/)
+  assert.match(preview, /doc\.links\.push/)
+  assert.match(preview, /fromPath/)
+  assert.match(preview, /toPath/)
+  assert.match(css, /\.canvas-link-layer/)
+  assert.match(css, /\.canvas-link/)
+})
+
+test('markdown preview can embed local drawing and canvas documents', () => {
+  const markdown = read('src/renderer/markdown.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(markdown, /resolveSpatialEmbeds/)
+  assert.match(markdown, /spatial-embed/)
+  assert.match(markdown, /\.fdraw\.json/)
+  assert.match(markdown, /\.fcanvas\.json/)
+  assert.match(css, /\.spatial-embed/)
+  assert.match(css, /\.spatial-embed__type/)
 })
 
 test('Tauri supports multiple windows and folder-specific watchers', () => {

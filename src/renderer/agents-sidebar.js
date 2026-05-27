@@ -36,6 +36,9 @@ export async function createSession(title = 'New Session') {
     id,
     title,
     model: 'local',
+    runtime: 'local',
+    status: 'idle',
+    summary: 'No activity yet.',
     createdAt: Date.now(),
     updatedAt: Date.now(),
     messages: [],
@@ -61,8 +64,11 @@ export async function renderAgentsList() {
       <div class="agent-card__title">${escapeHtml(s.title)}</div>
       <div class="agent-card__meta">
         <span class="agent-card__model">${escapeHtml(s.model || 'local')}</span>
+        <span class="agent-card__runtime">${escapeHtml(s.runtime || 'local')}</span>
         <span class="agent-card__time">${formatTime(s.updatedAt)}</span>
       </div>
+      <div class="agent-card__status">${escapeHtml(s.status || 'idle')}</div>
+      <div class="agent-card__summary">${escapeHtml(s.summary || 'No summary yet.')}</div>
     </div>
   `).join('')
 }

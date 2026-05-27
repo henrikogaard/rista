@@ -24,9 +24,6 @@ export function registerWorkspaceCallbacks(cbs) { Object.assign(_callbacks, cbs)
 
 // ── Toolbar UI sync ──────────────────────────────────────────────
 export function syncWorkspaceSplitToggle() {
-  document.querySelectorAll('.workspace-toolbar [data-action="toggle-workspace-split"]').forEach(node => {
-    node.classList.toggle('active', state.workspaceMode === 'dual')
-  })
   const globalToggle = $('workspace-split-toggle')
   if (globalToggle) {
     globalToggle.classList.toggle('active', state.workspaceMode === 'dual')
@@ -35,18 +32,8 @@ export function syncWorkspaceSplitToggle() {
   }
 }
 
-export function syncPaneSplitToggle() {
-  const node = $('pane-split-toggle')
-  if (!node) return
-  const split = getPaneView(state.focusedPane) === 'split'
-  node.classList.toggle('active', split)
-  node.title = split ? 'Pane split: on' : 'Pane split: off'
-  node.setAttribute('aria-pressed', split ? 'true' : 'false')
-}
-
 export function syncSplitToggles() {
   syncWorkspaceSplitToggle()
-  syncPaneSplitToggle()
 }
 
 export function syncToolbarToggle() {
@@ -168,10 +155,10 @@ export function renderEditorToolbar(pane) {
 
       <div class="workspace-toolbar__right">
         <div class="vseg">
-          <div class="vb${paneView === 'markdown' ? ' active' : ''}" data-action="set-view" data-view="markdown">MD</div>
-          <div class="vb${paneView === 'split' ? ' active' : ''}" data-action="set-view" data-view="split">Split</div>
-          <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg">Rich Text</div>
-          <div class="vb${paneView === 'preview' ? ' active' : ''}" data-action="set-view" data-view="preview">Preview</div>
+          <div class="vb${paneView === 'markdown' ? ' active' : ''}" data-action="set-view" data-view="markdown" title="Markdown source" aria-label="Markdown source" role="button" tabindex="0">MD</div>
+          <div class="vb${paneView === 'split' ? ' active' : ''}" data-action="set-view" data-view="split" title="Pane split preview" aria-label="Pane split preview" role="button" tabindex="0">Split</div>
+          <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg" title="Rich text editor" aria-label="Rich text editor" role="button" tabindex="0">Rich Text</div>
+          <div class="vb${paneView === 'preview' ? ' active' : ''}" data-action="set-view" data-view="preview" title="Rendered preview" aria-label="Rendered preview" role="button" tabindex="0">Preview</div>
         </div>
       </div>
     </div>
@@ -517,7 +504,6 @@ export function syncFocusedPaneUi() {
     const workspace = $(`workspace-${pane}`)
     workspace?.classList.toggle('focused', state.focusedPane === pane)
   })
-  syncPaneSplitToggle()
 }
 
 export function syncSplitLayout() {
@@ -678,7 +664,6 @@ export function handleToolbarClick(event) {
   if (action === 'set-view') setPaneView(pane || state.focusedPane, control.dataset.view)
   if (action === 'set-split-view') setSplitPaneView(pane || state.focusedPane, control.dataset.slot, control.dataset.slotView)
   if (action === 'toggle-toolbar') toggleToolbar()
-  if (action === 'toggle-workspace-split') toggleWorkspaceSplit()
   if (action === 'open-secondary-file') { focusPane('secondary'); toggleCommandPalette() }
   if (action === 'toggle-inspector') toggleInspector()
 }
@@ -774,7 +759,6 @@ export function setPaneView(pane, view) {
   // syncSplitLayout handles mounting + syncing WYSIWYG via maybeRefreshWysiwygPane.
   // Calling syncToWysiwyg before layout is ready can cause mount into hidden containers.
   syncSplitLayout()
-  syncPaneSplitToggle()
   if (view === 'wysiwyg') {
     // Focus the WYSIWYG editor after layout is settled
     queueMicrotask(() => richEditors[pane]?.focus())

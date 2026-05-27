@@ -184,11 +184,13 @@ async function renderCanvasWorkspace(host, tab) {
   if (!doc || !Array.isArray(doc.cards)) {
     doc = { type: 'fjord-canvas', version: 1, cards: [], links: [] }
   }
+  if (!Array.isArray(doc.links)) doc.links = []
   host.innerHTML = `
     <div class="spatial-toolbar">
       <div class="spatial-toolbar__title">Canvas</div>
       <div class="spatial-toolbar__actions">
         <div class="spatial-btn" data-action="add-card">Add card</div>
+        <div class="spatial-btn" data-action="add-link">Add link</div>
         <div class="spatial-btn" data-action="save">Save</div>
       </div>
     </div>
@@ -197,7 +199,7 @@ async function renderCanvasWorkspace(host, tab) {
   const board = host.querySelector('.canvas-board')
 
   function renderCards() {
-    board.innerHTML = ''
+    board.innerHTML = '<svg class="canvas-link-layer" aria-hidden="true"></svg>'
     for (const card of doc.cards) {
       const node = document.createElement('div')
       node.className = 'canvas-card'
@@ -214,6 +216,7 @@ async function renderCanvasWorkspace(host, tab) {
       enableCardDrag(node, card, renderCards)
       board.appendChild(node)
     }
+    renderCanvasLinks(board, doc)
   }
 
   host.querySelector('[data-action="add-card"]')?.addEventListener('click', () => {
@@ -228,12 +231,40 @@ async function renderCanvasWorkspace(host, tab) {
     renderCards()
   })
 
+  host.querySelector('[data-action="add-link"]')?.addEventListener('click', () => {
+    const fromPath = prompt('Link from note path:')
+    if (!fromPath) return
+    const toPath = prompt('Link to note path:')
+    if (!toPath) return
+    doc.links.push({ fromPath, toPath })
+    renderCards()
+  })
+
   host.querySelector('[data-action="save"]')?.addEventListener('click', async () => {
     const ok = await window.fjord.writeFile(tab.path, JSON.stringify(doc, null, 2))
     if (!ok) alert('Failed to save canvas')
   })
 
   renderCards()
+}
+
+function renderCanvasLinks(board, doc) {
+  const layer = board.querySelector('.canvas-link-layer')
+  if (!layer) return
+  const cards = new Map((doc.cards || []).map(card => [card.path, card]))
+  layer.innerHTML = ''
+  for (const link of doc.links || []) {
+    const from = cards.get(link.fromPath)
+    const to = cards.get(link.toPath)
+    if (!from || !to) continue
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+    line.classList.add('canvas-link')
+    line.setAttribute('x1', String(Number(from.x || 40) + 100))
+    line.setAttribute('y1', String(Number(from.y || 40) + 32))
+    line.setAttribute('x2', String(Number(to.x || 40) + 100))
+    line.setAttribute('y2', String(Number(to.y || 40) + 32))
+    layer.appendChild(line)
+  }
 }
 
 function enableCardDrag(node, card, rerender) {

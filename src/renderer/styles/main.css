@@ -4329,6 +4329,11 @@ body.is-dragging-widget .widget-stack:empty::before {
   font-size: 10px;
   color: var(--text3);
 }
+.ai-review-item__error {
+  margin-top: 6px;
+  color: var(--amber);
+  font-size: 11px;
+}
 .ai-review-item__preview {
   margin: 8px 0;
   max-height: 120px;
@@ -4669,6 +4674,43 @@ body.is-dragging-widget .widget-stack:empty::before {
   color: var(--text2);
   text-align: center;
 }
+.spatial-embed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  color: var(--text1);
+  text-decoration: none;
+  background: var(--surface-bg-1);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+}
+.spatial-embed:hover {
+  background: var(--hover-fill);
+  border-color: var(--active-border);
+}
+.spatial-embed__type {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent-hi);
+}
+.spatial-embed__title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.spatial-embed__hint {
+  flex: 0 0 auto;
+  color: var(--text3);
+  font-size: 11px;
+}
 .spatial-toolbar {
   position: absolute;
   top: 12px;
@@ -4730,6 +4772,20 @@ body.is-dragging-widget .widget-stack:empty::before {
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--border) 88%, transparent) 1px, transparent 0) 0 0 / 20px 20px,
     var(--surface-bg-1);
   overflow: auto;
+}
+.canvas-link-layer {
+  position: absolute;
+  inset: 0;
+  width: 2400px;
+  height: 1600px;
+  pointer-events: none;
+  overflow: visible;
+}
+.canvas-link {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0.72;
 }
 .canvas-card {
   position: absolute;
@@ -5218,9 +5274,23 @@ body.is-dragging-widget .widget-stack:empty::before {
   padding: 1px 5px;
   border-radius: var(--radius-xs);
 }
+.agent-card__runtime,
 .agent-card__time {
   font-size: 10px;
   color: var(--text3);
+}
+.agent-card__status {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.agent-card__summary {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.35;
 }
 [data-theme="light"] .agent-card:hover {
   background: rgba(53,42,30,0.03);

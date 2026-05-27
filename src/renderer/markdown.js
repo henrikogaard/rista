@@ -101,6 +101,8 @@ const processor = unified()
   .use(rehypeStringify, { allowDangerousHtml: true })
 
 let _transclusionResolver = null
+const SPATIAL_DRAWING_EXT = '.fdraw.json'
+const SPATIAL_CANVAS_EXT = '.fcanvas.json'
 
 export function setTransclusionResolver(resolver) {
   _transclusionResolver = resolver
@@ -117,9 +119,23 @@ function resolveTransclusions(markdown, depth = 0) {
   })
 }
 
+function resolveSpatialEmbeds(markdown) {
+  return String(markdown || '').replace(/^!\[\[([^\]|]+?\.(?:fdraw|fcanvas)\.json)(?:\|([^\]]+))?\]\]$/gmi, (match, target, label) => {
+    const cleanTarget = target.trim()
+    const type = cleanTarget.toLowerCase().endsWith(SPATIAL_DRAWING_EXT) ? 'Drawing' : 'Canvas'
+    const title = (label || cleanTarget.split(/[\\/]/).pop()).trim()
+    return `
+<a class="spatial-embed" href="${escapeHtml(cleanTarget)}">
+  <span class="spatial-embed__type">${type}</span>
+  <span class="spatial-embed__title">${escapeHtml(title)}</span>
+  <span class="spatial-embed__hint">Open ${type.toLowerCase()}</span>
+</a>`
+  })
+}
+
 export async function renderMarkdown(markdown, options = {}) {
   const renderable = getRenderableMarkdown(markdown, options)
-  const expanded = resolveTransclusions(renderable.body)
+  const expanded = resolveTransclusions(resolveSpatialEmbeds(renderable.body))
   const chunks = splitMarkdownIntoRenderChunks(expanded)
   const rendered = await Promise.all(chunks.map(renderChunk))
   const banner = options.showDocumentBanners === false ? '' : renderDocumentBanner(renderable.frontmatter, options)

@@ -67,7 +67,6 @@ import {
   maybeRefreshWysiwygPane,
   mountEditor,
   syncToolbarToggle,
-  syncPaneSplitToggle,
   toggleToolbar,
   togglePaneSplitView,
   toggleSidebar,
@@ -301,7 +300,6 @@ registerShellCallbacks({
   destroyRichEditor,
   ensureRichEditorMounted,
   syncToolbarToggle,
-  syncPaneSplitToggle,
   openAgentSession: (sessionPath) => {
     openRightPanel('ai-chat')
     openAiSession(sessionPath)

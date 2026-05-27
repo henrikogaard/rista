@@ -752,7 +752,7 @@ export function buildShell() {
                 </div>
                 <div class="app-controls__sep"></div>
                 <!-- Layout -->
-                <div class="theme-btn" id="workspace-split-toggle" title="Toggle workspace split" aria-label="Toggle workspace split" role="button" tabindex="0">
+                <div class="theme-btn" id="workspace-split-toggle" title="Toggle workspace split layout" aria-label="Toggle workspace split layout" role="button" tabindex="0">
                   ${workspaceSplitIcon()}
                   <span class="control-label">Split view</span>
                 </div>
@@ -1003,7 +1003,6 @@ export function buildShell() {
   $('settings-panel').addEventListener('keydown', handleSettingsKeydown)
 
   _callbacks.syncToolbarToggle?.()
-  _callbacks.syncPaneSplitToggle?.()
 
   // File explorer's Open / Collapse-all / file-tree click handlers are wired
   // by file-explorer-view.js on widget mount, since they live inside the
