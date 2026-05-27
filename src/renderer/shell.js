@@ -2,7 +2,7 @@ import { state, $, settingsValue } from './state.js'
 import { buildRightPanelContainer } from './right-panel.js'
 import { buildTerminalDrawer } from './terminal-drawer.js'
 import { toggleTheme, getTheme } from './theme.js'
-import { applySettings, getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
+import { applySettings, getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, ASSISTANT_DOCK_OPTIONS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
 import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
@@ -17,17 +17,15 @@ let _callbacks = {}
 export function registerShellCallbacks(cbs) { Object.assign(_callbacks, cbs) }
 
 const SETTINGS_TABS = [
-  { id: 'theme', label: 'Theme' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'typography', label: 'Typography' },
   { id: 'editor', label: 'Editor' },
-  { id: 'preview', label: 'Preview' },
-  { id: 'workspaces', label: 'Workspaces' },
-  { id: 'daily', label: 'Daily Notes' },
-  { id: 'behavior', label: 'Behavior' },
-  { id: 'hotkeys', label: 'Hotkeys' },
-  { id: 'ai', label: 'AI' },
+  { id: 'workspace', label: 'Workspace' },
+  { id: 'ai-tools', label: 'AI & Tools' },
+  { id: 'shortcuts', label: 'Shortcuts' },
 ]
 
-let activeSettingsTab = 'theme'
+let activeSettingsTab = 'appearance'
 let activeKeybindingCapture = null
 
 function folderName(folderPath) {
@@ -136,6 +134,43 @@ export function renderSelectSetting(key, label, options) {
         ${options.map(option => `<option value="${option.value}"${option.value === settingsValue(key) ? ' selected' : ''}>${option.label}</option>`).join('')}
       </select>
     </label>
+  `
+}
+
+function fontLabelFor(key) {
+  const group = key.replace(/Font$/, '')
+  const options = FONT_OPTIONS[group] || []
+  const current = settingsValue(key)
+  return options.find(option => option.value === current)?.label || 'Custom'
+}
+
+export function renderFontPicker(key, label, options, sample = 'Aa Markdown') {
+  const current = settingsValue(key)
+  return `
+    <section class="settings-field settings-font-picker" data-font-picker="${key}">
+      <div class="settings-field__row">
+        <span class="settings-field__label">${label}</span>
+        <span class="settings-field__value">${fontLabelFor(key)}</span>
+      </div>
+      <div class="settings-font-picker__trigger" data-font-picker-trigger="${key}" role="button" tabindex="0">
+        <span class="settings-font-picker__sample" style="font-family: ${escapeAttribute(current)}">${escapeAttribute(sample)}</span>
+        <span class="settings-font-picker__chevron">⌄</span>
+      </div>
+      <div class="settings-font-picker__list" data-font-picker-list="${key}">
+        ${options.map(option => `
+          <div
+            class="settings-font-option${option.value === current ? ' active' : ''}"
+            data-font-setting="${key}"
+            data-font-option="${escapeAttribute(option.value)}"
+            role="button"
+            tabindex="0"
+          >
+            <span class="settings-font-option__label">${option.label}</span>
+            <span class="settings-font-option__sample" style="font-family: ${escapeAttribute(option.value)}">${escapeAttribute(sample)}</span>
+          </div>
+        `).join('')}
+      </div>
+    </section>
   `
 }
 
@@ -410,6 +445,20 @@ function handleSettingsClick(event) {
     return
   }
 
+  const fontTrigger = event.target.closest('[data-font-picker-trigger]')
+  if (fontTrigger) {
+    const picker = fontTrigger.closest('[data-font-picker]')
+    picker?.classList.toggle('open')
+    return
+  }
+
+  const fontOption = event.target.closest('[data-font-option]')
+  if (fontOption) {
+    updateSetting(fontOption.dataset.fontSetting, fontOption.dataset.fontOption)
+    syncSettingsForm()
+    return
+  }
+
   const preset = event.target.closest('[data-preset-setting]')
   if (preset) {
     updateSetting(preset.dataset.presetSetting, preset.dataset.presetValue)
@@ -443,7 +492,7 @@ function handleSettingsKeydown(event) {
   }
 
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-app-icon-variant], [data-app-icon-theme], [data-open-path], [data-open-new-path], [data-unpin-path]')
+  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-font-picker-trigger], [data-font-option], [data-app-icon-variant], [data-app-icon-theme], [data-open-path], [data-open-new-path], [data-unpin-path]')
   if (!target) return
   event.preventDefault()
   target.click()
@@ -455,7 +504,7 @@ function updateSettingValueLabel(key, value, unit) {
 }
 
 function setSettingsTab(tabId) {
-  activeSettingsTab = SETTINGS_TABS.some(tab => tab.id === tabId) ? tabId : 'theme'
+  activeSettingsTab = SETTINGS_TABS.some(tab => tab.id === tabId) ? tabId : 'appearance'
   syncSettingsTabs()
 }
 
@@ -537,6 +586,15 @@ function syncSettingsForm() {
     const theme = key === 'lightThemePreset' ? 'light' : 'dark'
     const preset = THEME_PRESETS[theme].find(option => option.value === settings[key])
     if (valueLabel && preset) valueLabel.textContent = preset.label
+  })
+  document.querySelectorAll('#settings-panel [data-font-picker]').forEach(picker => {
+    const key = picker.dataset.fontPicker
+    const value = settings[key]
+    picker.querySelector('.settings-field__value').textContent = fontLabelFor(key)
+    picker.querySelector('.settings-font-picker__sample').style.fontFamily = value
+    picker.querySelectorAll('[data-font-option]').forEach(node => {
+      node.classList.toggle('active', node.dataset.fontOption === value)
+    })
   })
   document.querySelectorAll('#settings-panel [data-app-icon-variant]').forEach(node => {
     node.classList.toggle('active', node.dataset.appIconVariant === settings.appIconVariant)
@@ -787,16 +845,16 @@ export function buildShell() {
           ${renderSettingsTabs()}
           <div class="settings-panel__content">
 
-          <div class="settings-page active" data-settings-section="theme">
+          <div class="settings-page active" data-settings-section="appearance">
             <section class="settings-group">
-              <div class="settings-group__title">Theme presets</div>
+              <div class="settings-section-title">Theme presets</div>
               ${renderPresetPicker('darkThemePreset', 'Dark preset', THEME_PRESETS.dark)}
               ${renderPresetPicker('lightThemePreset', 'Light preset', THEME_PRESETS.light)}
               ${renderAppIconPicker()}
             </section>
 
             <section class="settings-group settings-group--compact">
-              <div class="settings-group__title">Atmosphere</div>
+              <div class="settings-section-title">Atmosphere</div>
               ${renderToggleSetting('ambientBackground', 'Ambient background', 'Keep the aurora field visible while editing')}
               ${renderRangeSetting('ambientIntensity', 'Background strength', 0, 100, 1, '%')}
               ${renderRangeSetting('surfaceOpacity', 'Surface opacity', 45, 100, 1, '%')}
@@ -815,24 +873,39 @@ export function buildShell() {
             </details>
           </div>
 
-          <div class="settings-page" data-settings-section="editor">
+          <div class="settings-page" data-settings-section="typography">
             <section class="settings-group">
-              <div class="settings-group__title">Interface type</div>
-              ${renderSelectSetting('uiFont', 'App font preset', FONT_OPTIONS.ui)}
+              <div class="settings-section-title">Interface type</div>
+              ${renderFontPicker('uiFont', 'Interface font', FONT_OPTIONS.ui)}
               ${renderTextSetting('uiFontCustom', 'Installed app font or stack', "Example: 'Atkinson Hyperlegible', system-ui, sans-serif")}
               ${renderRangeSetting('uiFontSize', 'App size', 11, 16, 1, 'px')}
-              ${renderSelectSetting('explorerFont', 'Explorer font preset', FONT_OPTIONS.explorer)}
+              ${renderFontPicker('explorerFont', 'Explorer font', FONT_OPTIONS.explorer)}
               ${renderTextSetting('explorerFontCustom', 'Installed explorer font or stack', "Example: 'Aptos', system-ui, sans-serif")}
               ${renderRangeSetting('explorerFontSize', 'Explorer size', 11, 16, 1, 'px')}
             </section>
 
             <section class="settings-group">
-              <div class="settings-group__title">Markdown editor</div>
-              ${renderSelectSetting('editorFont', 'Editor font preset', FONT_OPTIONS.editor)}
+              <div class="settings-section-title">Markdown editor</div>
+              ${renderFontPicker('editorFont', 'Editor font', FONT_OPTIONS.editor, 'const note = "# Markdown"')}
               ${renderTextSetting('editorFontCustom', 'Installed editor font or stack', "Example: 'Berkeley Mono', 'SF Mono', monospace")}
               ${renderRangeSetting('editorFontSize', 'Editor size', 12, 18, 1, 'px')}
               ${renderRangeSetting('editorLineHeight', 'Editor spacing', 1.4, 2.1, 0.05, '')}
               ${renderTextSetting('editorTextColor', 'Editor text color', 'Optional hex color, e.g. #e7ecf7')}
+            </section>
+
+            <section class="settings-group">
+              <div class="settings-section-title">Preview typography</div>
+              ${renderFontPicker('previewFont', 'Preview font', FONT_OPTIONS.preview, 'Heading and body text')}
+              ${renderTextSetting('previewFontCustom', 'Installed preview font or stack', "Example: 'Iowan Old Style', Georgia, serif")}
+              ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
+              ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
+              ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
+            </section>
+          </div>
+
+          <div class="settings-page" data-settings-section="editor">
+            <section class="settings-group">
+              <div class="settings-section-title">Markdown editing</div>
               ${renderToggleSetting('typewriterScrolling', 'Typewriter scrolling', 'Keep cursor vertically centered while typing')}
               ${renderToggleSetting('spellcheck', 'Spellcheck', 'Enable browser spellcheck in the editor')}
               ${renderToggleSetting('vimMode', 'Vim mode', 'Enable Vim keybindings in the editor')}
@@ -849,34 +922,25 @@ export function buildShell() {
                 { value: '8', label: '8' },
               ])}
             </section>
-          </div>
 
-          <div class="settings-page" data-settings-section="preview">
             <section class="settings-group">
-              <div class="settings-group__title">Preview typography</div>
-              ${renderSelectSetting('previewFont', 'Preview font preset', FONT_OPTIONS.preview)}
-              ${renderTextSetting('previewFontCustom', 'Installed preview font or stack', "Example: 'Iowan Old Style', Georgia, serif")}
-              ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
-              ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
-              ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
+              <div class="settings-section-title">Rendered documents</div>
               ${renderToggleSetting('hideFrontmatterInRenderedModes', 'Hide document properties', 'Hide YAML properties in Preview and Rich Text while keeping them in the markdown file')}
               ${renderToggleSetting('showDocumentBanners', 'Show document banners', 'Render banner images from document properties in Preview and exports')}
             </section>
           </div>
 
-          <div class="settings-page" data-settings-section="workspaces">
+          <div class="settings-page" data-settings-section="workspace">
             <section class="settings-group">
-              <div class="settings-group__title">Pinned workspaces</div>
+              <div class="settings-section-title">Pinned workspaces</div>
               <div class="settings-group__hint">Pinned workspaces are shown on the welcome screen for quick access.</div>
               <div id="pinned-workspaces-list">
                 ${renderPinnedProjectsHtml({ empty: true })}
               </div>
             </section>
-          </div>
 
-          <div class="settings-page" data-settings-section="behavior">
             <section class="settings-group">
-              <div class="settings-group__title">Behavior</div>
+              <div class="settings-section-title">Behavior</div>
               ${renderToggleSetting('showStatusBar', 'Show status bar', 'Display the bottom status bar')}
               ${renderSelectSetting('defaultViewMode', 'Default view mode', [
                 { value: 'markdown', label: 'Markdown' },
@@ -888,33 +952,28 @@ export function buildShell() {
               ${renderRangeSetting('zenColumnWidth', 'Zen column width', 500, 900, 10, 'px')}
               ${renderToggleSetting('showMinimap', 'Show minimap', 'Display a document overview on the right edge')}
             </section>
-          </div>
 
-          <div class="settings-page" data-settings-section="daily">
             <section class="settings-group">
-              <div class="settings-group__title">Daily notes</div>
+              <div class="settings-section-title">Daily notes</div>
               <div class="settings-group__hint">Used by the Daily Note shortcut (⇧⌘D) and the calendar widget.</div>
               ${renderTextSetting('dailyNotesFolder', 'Folder', 'Subfolder within your project, e.g. daily')}
               ${renderTextSetting('dailyNoteTemplate', 'Template', 'Use {{date}} for the date placeholder')}
             </section>
           </div>
 
-          <div class="settings-page" data-settings-section="hotkeys">
+          <div class="settings-page" data-settings-section="ai-tools">
             <section class="settings-group">
-              <div class="settings-group__title">Keyboard shortcuts</div>
-              <div class="settings-group__hint">Click a shortcut, then press the new key combo. Press Escape to cancel capture.</div>
-              <div class="keybinding-list" id="keybinding-list"></div>
-            </section>
-          </div>
-
-          <div class="settings-page" data-settings-section="ai">
-            <section class="settings-group">
-              <div class="settings-group__title">AI provider</div>
+              <div class="settings-section-title">AI provider</div>
               ${renderSelectSetting('aiProvider', 'Provider', [
                 { value: 'anthropic', label: 'Anthropic' },
                 { value: 'openai', label: 'OpenAI' },
                 { value: 'ollama', label: 'Ollama' },
               ])}
+              ${renderSelectSetting('assistantDock', 'Assistant dock', ASSISTANT_DOCK_OPTIONS)}
+            </section>
+
+            <section class="settings-group">
+              <div class="settings-section-title">Connection</div>
               <label class="settings-field">
                 <span class="settings-field__label">API key</span>
                 <input
@@ -927,6 +986,14 @@ export function buildShell() {
               </label>
               ${renderTextSetting('aiModel', 'Model', 'Leave empty for provider default')}
               ${renderTextSetting('aiBaseUrl', 'Base URL', 'Leave empty for provider default')}
+            </section>
+          </div>
+
+          <div class="settings-page" data-settings-section="shortcuts">
+            <section class="settings-group">
+              <div class="settings-section-title">Keyboard shortcuts</div>
+              <div class="settings-group__hint">Click a shortcut, then press the new key combo. Press Escape to cancel capture.</div>
+              <div class="keybinding-list" id="keybinding-list"></div>
             </section>
           </div>
           </div>

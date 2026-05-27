@@ -8,6 +8,13 @@ export const APP_ICON_VARIANTS = [
   { value: 'future-rune', label: 'Future Rune' },
 ]
 
+export const ASSISTANT_DOCK_OPTIONS = [
+  { value: 'right-sidebar', label: 'Right sidebar' },
+  { value: 'left-sidebar', label: 'Left sidebar' },
+  { value: 'right-rail', label: 'Dedicated right rail' },
+  { value: 'left-rail', label: 'Dedicated left rail' },
+]
+
 const PROPORTIONAL_FONT_OPTIONS = [
   { value: "'DM Sans', system-ui, sans-serif", label: 'DM Sans' },
   { value: "system-ui, sans-serif", label: 'System Sans' },
@@ -291,6 +298,7 @@ export const DEFAULT_SETTINGS = {
   appIconVariant: 'aurora-gradient',
   appIconTheme: 'auto',
   aiProvider: 'openai',
+  assistantDock: 'right-sidebar',
   aiApiKey: '',
   aiModel: '',
   aiBaseUrl: '',
@@ -427,6 +435,9 @@ function sanitize(settings) {
   next.appIconVariant = APP_ICON_VARIANTS.some(icon => icon.value === next.appIconVariant) ? next.appIconVariant : DEFAULT_SETTINGS.appIconVariant
   next.appIconTheme = ['auto', 'dark', 'light'].includes(next.appIconTheme) ? next.appIconTheme : DEFAULT_SETTINGS.appIconTheme
   next.aiProvider = ['anthropic', 'openai', 'ollama'].includes(next.aiProvider) ? next.aiProvider : 'openai'
+  if (!ASSISTANT_DOCK_OPTIONS.some(option => option.value === next.assistantDock)) {
+    next.assistantDock = DEFAULT_SETTINGS.assistantDock
+  }
   next.aiApiKey = String(next.aiApiKey || '')
   next.aiModel = String(next.aiModel || '')
   next.aiBaseUrl = String(next.aiBaseUrl || '')
