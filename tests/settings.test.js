@@ -24,6 +24,24 @@ function mockLocalStorage(initial = {}) {
   }
 }
 
+function mockDocument(theme = 'dark') {
+  const values = new Map()
+  return {
+    documentElement: {
+      dataset: {},
+      getAttribute(name) {
+        return name === 'data-theme' ? theme : null
+      },
+      style: {
+        values,
+        setProperty(name, value) {
+          values.set(name, value)
+        },
+      },
+    },
+  }
+}
+
 async function importSettingsModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/settings.js'), 'utf8')
   const modulePath = path.join(os.tmpdir(), `rista-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
@@ -41,4 +59,27 @@ test('settings sanitizes invalid assistant dock values', async () => {
   const { getSettings } = await importSettingsModule()
 
   assert.equal(getSettings().assistantDock, 'right-sidebar')
+})
+
+test('clearing a custom font override makes the selected preset effective', async () => {
+  global.localStorage = mockLocalStorage()
+  global.document = mockDocument()
+
+  const { FONT_OPTIONS, getSettings, setSettings } = await importSettingsModule()
+  const customStack = "'Custom Interface', system-ui, sans-serif"
+  const preset = FONT_OPTIONS.ui[1].value
+
+  setSettings({
+    uiFont: FONT_OPTIONS.ui[0].value,
+    uiFontCustom: customStack,
+  })
+  assert.equal(document.documentElement.style.values.get('--ui-font'), customStack)
+
+  setSettings({
+    uiFont: preset,
+    uiFontCustom: '',
+  })
+
+  assert.equal(getSettings().uiFontCustom, '')
+  assert.equal(document.documentElement.style.values.get('--ui-font'), preset)
 })

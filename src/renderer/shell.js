@@ -454,7 +454,11 @@ function handleSettingsClick(event) {
 
   const fontOption = event.target.closest('[data-font-option]')
   if (fontOption) {
-    updateSetting(fontOption.dataset.fontSetting, fontOption.dataset.fontOption)
+    const fontSetting = fontOption.dataset.fontSetting
+    setSettings({
+      [fontSetting]: fontOption.dataset.fontOption,
+      [`${fontSetting}Custom`]: '',
+    })
     fontOption.closest('[data-font-picker]')?.classList.remove('open')
     syncSettingsForm()
     return
