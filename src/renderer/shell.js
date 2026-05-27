@@ -455,6 +455,7 @@ function handleSettingsClick(event) {
   const fontOption = event.target.closest('[data-font-option]')
   if (fontOption) {
     updateSetting(fontOption.dataset.fontSetting, fontOption.dataset.fontOption)
+    fontOption.closest('[data-font-picker]')?.classList.remove('open')
     syncSettingsForm()
     return
   }
@@ -590,8 +591,10 @@ function syncSettingsForm() {
   document.querySelectorAll('#settings-panel [data-font-picker]').forEach(picker => {
     const key = picker.dataset.fontPicker
     const value = settings[key]
-    picker.querySelector('.settings-field__value').textContent = fontLabelFor(key)
-    picker.querySelector('.settings-font-picker__sample').style.fontFamily = value
+    const valueLabel = picker.querySelector('.settings-field__value')
+    const sample = picker.querySelector('.settings-font-picker__sample')
+    if (valueLabel) valueLabel.textContent = fontLabelFor(key)
+    if (sample) sample.style.fontFamily = value
     picker.querySelectorAll('[data-font-option]').forEach(node => {
       node.classList.toggle('active', node.dataset.fontOption === value)
     })
