@@ -1,6 +1,7 @@
 import { parseFrontmatter, applyFrontmatter } from './tags.js'
 import { state, getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
 import { updateEditorDoc } from './editor.js'
+import { refreshPreview } from './preview.js'
 
 const RESERVED_NAMES = new Set(['aliases', 'tags', 'cssclasses'])
 
@@ -45,8 +46,15 @@ function writeFrontmatter(tab, next) {
     if (getTabForPane(pane) === tab) {
       const view = editorViews[pane]
       if (view) updateEditorDoc(view, newContent)
+      refreshPreview(pane, newContent)
     }
   }
+}
+
+function numberValue(value, fallback = 0.5) {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return fallback
+  return Math.min(1, Math.max(0, next))
 }
 
 export function buildPropertiesPanel() {
@@ -82,12 +90,53 @@ export function renderProperties() {
     : ''
 
   body.innerHTML = `
+    ${renderBannerSettings(fm)}
     ${emptyHint}
     <div class="prop-list">${rows}</div>
     <div class="prop-add">
       <input type="text" class="prop-add__key" id="prop-add-key" placeholder="Property name" />
       <button type="button" class="prop-add__btn" id="prop-add-btn">+ Add</button>
     </div>
+  `
+}
+
+function renderBannerSettings(fm) {
+  const banner = fm.banner || ''
+  const x = numberValue(fm.banner_x, 0.5)
+  const y = numberValue(fm.banner_y, 0.5)
+  const hasBanner = Boolean(String(banner).trim())
+  const previewLabel = hasBanner ? escapeHtml(banner) : 'No banner set'
+  return `
+    <section class="banner-settings">
+      <div class="banner-settings__head">
+        <div>
+          <div class="banner-settings__title">Banner</div>
+          <div class="banner-settings__hint">Use an Obsidian link or local image path.</div>
+        </div>
+        <button type="button" class="banner-settings__clear" data-action="clear-banner" ${hasBanner ? '' : 'disabled'}>Clear</button>
+      </div>
+      <div class="banner-settings__preview${hasBanner ? ' has-banner' : ''}" title="${previewLabel}">
+        <span>${previewLabel}</span>
+      </div>
+      <input
+        type="text"
+        class="prop-input banner-settings__input"
+        id="banner-image-input"
+        value="${escapeHtml(banner)}"
+        placeholder="![[cover.jpg]] or _assets/cover.jpg"
+      />
+      <label class="banner-settings__axis">
+        <span>Horizontal</span>
+        <input class="banner-settings__range" type="range" min="0" max="1" step="0.01" value="${x}" data-banner-axis="banner_x">
+        <output>${Math.round(x * 100)}%</output>
+      </label>
+      <label class="banner-settings__axis">
+        <span>Vertical</span>
+        <input class="banner-settings__range" type="range" min="0" max="1" step="0.01" value="${y}" data-banner-axis="banner_y">
+        <output>${Math.round(y * 100)}%</output>
+      </label>
+      <button type="button" class="banner-settings__apply" data-action="apply-banner">Apply banner</button>
+    </section>
   `
 }
 
@@ -164,12 +213,49 @@ function addProperty() {
   })
 }
 
+function updateBannerSettings(partial = {}) {
+  const tab = getActiveTab()
+  if (!tab) return
+  const fm = readFrontmatter(tab)
+  const currentBanner = String(fm.banner || '').trim()
+  const nextBanner = Object.prototype.hasOwnProperty.call(partial, 'banner')
+    ? String(partial.banner || '').trim()
+    : currentBanner
+
+  if (!nextBanner) {
+    delete fm.banner
+    delete fm.banner_x
+    delete fm.banner_y
+  } else {
+    fm.banner = nextBanner
+    fm.banner_x = numberValue(partial.banner_x ?? fm.banner_x, 0.5)
+    fm.banner_y = numberValue(partial.banner_y ?? fm.banner_y, 0.5)
+  }
+
+  writeFrontmatter(tab, fm)
+  renderProperties()
+}
+
+function readBannerForm() {
+  return {
+    banner: document.getElementById('banner-image-input')?.value || '',
+    banner_x: document.querySelector('[data-banner-axis="banner_x"]')?.value,
+    banner_y: document.querySelector('[data-banner-axis="banner_y"]')?.value,
+  }
+}
+
 export function mountPropertiesPanel() {
   renderProperties()
   const body = document.getElementById('properties-view-body')
   if (!body) return
 
   body.addEventListener('change', (event) => {
+    const axis = event.target.closest('[data-banner-axis]')
+    if (axis) {
+      updateBannerSettings(readBannerForm())
+      return
+    }
+
     const input = event.target.closest('[data-input]')
     if (!input) return
     const row = input.closest('.prop-row')
@@ -190,9 +276,25 @@ export function mountPropertiesPanel() {
       event.preventDefault()
       addProperty()
     }
+    if (event.target.id === 'banner-image-input') {
+      event.preventDefault()
+      updateBannerSettings(readBannerForm())
+    }
   })
 
   body.addEventListener('click', (event) => {
+    const applyBanner = event.target.closest('[data-action="apply-banner"]')
+    if (applyBanner) {
+      updateBannerSettings(readBannerForm())
+      return
+    }
+
+    const clearBanner = event.target.closest('[data-action="clear-banner"]')
+    if (clearBanner) {
+      updateBannerSettings({ banner: '' })
+      return
+    }
+
     const remove = event.target.closest('[data-action="remove-prop"]')
     if (remove) {
       const row = remove.closest('.prop-row')

@@ -267,6 +267,7 @@ export const DEFAULT_SETTINGS = {
   previewFontSize: 13,
   previewLineHeight: 1.75,
   previewTextColor: '',
+  hideFrontmatterInRenderedModes: true,
   typewriterScrolling: false,
   spellcheck: false,
   vimMode: false,
@@ -401,6 +402,7 @@ function sanitize(settings) {
   next.previewFontCustom = String(next.previewFontCustom || '').trim()
   next.editorTextColor = sanitizeColor(next.editorTextColor)
   next.previewTextColor = sanitizeColor(next.previewTextColor)
+  next.hideFrontmatterInRenderedModes = next.hideFrontmatterInRenderedModes !== false
   next.typewriterScrolling = Boolean(next.typewriterScrolling)
   next.spellcheck = Boolean(next.spellcheck)
   next.vimMode = Boolean(next.vimMode)

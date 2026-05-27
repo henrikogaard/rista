@@ -14,8 +14,13 @@ export function registerWikilinkCallback(fn) {
 
 // ── Preview ───────────────────────────────────────────────────────
 export async function refreshPreview(pane, markdown) {
-  const html = await renderMarkdown(markdown)
   const theme = getTheme()
+  const activeTab = getTabForPane(pane)
+  const settings = getSettings()
+  const html = await renderMarkdown(markdown, {
+    hideFrontmatter: settings.hideFrontmatterInRenderedModes,
+    currentFilePath: activeTab?.path,
+  })
   ;['single', 'left', 'right'].forEach(slot => {
     const p = $(`preview-${slot}-${pane}`)
     if (p) {
@@ -135,7 +140,10 @@ export async function exportToPdf() {
     return
   }
   try {
-    const html = await renderMarkdown(tab.content || '')
+    const html = await renderMarkdown(tab.content || '', {
+      hideFrontmatter: getSettings().hideFrontmatterInRenderedModes,
+      currentFilePath: tab.path,
+    })
     const success = await window.fjord.exportPdf({
       fileName: tab.name,
       html,
@@ -157,7 +165,10 @@ export async function exportToHtml() {
   const tab = getFocusedTab()
   if (!tab) return
   try {
-    const html = await renderMarkdown(tab.content || '')
+    const html = await renderMarkdown(tab.content || '', {
+      hideFrontmatter: getSettings().hideFrontmatterInRenderedModes,
+      currentFilePath: tab.path,
+    })
     await window.fjord.exportHtml({
       fileName: tab.name,
       html,

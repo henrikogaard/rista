@@ -117,11 +117,131 @@ function resolveTransclusions(markdown, depth = 0) {
   })
 }
 
-export async function renderMarkdown(markdown) {
-  const expanded = resolveTransclusions(markdown)
+export async function renderMarkdown(markdown, options = {}) {
+  const renderable = getRenderableMarkdown(markdown, options)
+  const expanded = resolveTransclusions(renderable.body)
   const chunks = splitMarkdownIntoRenderChunks(expanded)
   const rendered = await Promise.all(chunks.map(renderChunk))
-  return rendered.join('')
+  return `${renderDocumentBanner(renderable.frontmatter, options)}${rendered.join('')}`
+}
+
+export function getRenderableMarkdown(markdown, options = {}) {
+  const parsed = parseFrontmatterBlock(markdown)
+  if (!options.hideFrontmatter) return { ...parsed, body: markdown || '' }
+  return parsed
+}
+
+export function mergeFrontmatterWithBody(originalMarkdown, bodyMarkdown) {
+  const parsed = parseFrontmatterBlock(originalMarkdown)
+  if (!parsed.raw) return bodyMarkdown || ''
+  const body = String(bodyMarkdown || '').replace(/^\n+/, '')
+  return `${parsed.raw}${body}`
+}
+
+export function parseFrontmatterBlock(markdown = '') {
+  const source = String(markdown || '')
+  const normalized = source.replace(/^\uFEFF/, '')
+  const firstLine = normalized.match(/^([^\n\r]*)(?:\r?\n|$)/)?.[1] || ''
+  if (!/^(---|\*\*\*)\s*$/.test(firstLine)) {
+    return { frontmatter: null, raw: '', body: source }
+  }
+
+  const lines = normalized.split(/\r?\n/)
+  const bodyLines = []
+  let closingIndex = -1
+  for (let index = 1; index < lines.length; index += 1) {
+    if (/^(---|\*\*\*)\s*$/.test(lines[index])) {
+      closingIndex = index
+      break
+    }
+    bodyLines.push(lines[index])
+  }
+
+  if (closingIndex < 0 || !bodyLines.some(line => /^\s*[\w.-]+\s*:/.test(line))) {
+    return { frontmatter: null, raw: '', body: source }
+  }
+
+  const raw = `${lines.slice(0, closingIndex + 1).join('\n')}\n`
+  return {
+    frontmatter: parseFrontmatterProperties(bodyLines),
+    raw,
+    body: lines.slice(closingIndex + 1).join('\n').replace(/^\n+/, ''),
+  }
+}
+
+function parseFrontmatterProperties(lines) {
+  const frontmatter = {}
+  for (const line of lines) {
+    const match = line.match(/^\s*([\w.-]+)\s*:\s*(.*?)\s*$/)
+    if (!match) continue
+    frontmatter[match[1]] = parseFrontmatterValue(match[2])
+  }
+  return frontmatter
+}
+
+function parseFrontmatterValue(value) {
+  const trimmed = String(value || '').trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed)
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  return trimmed
+}
+
+function renderDocumentBanner(frontmatter, options = {}) {
+  const banner = getFrontmatterValue(frontmatter, 'banner')
+  const src = resolveBannerSrc(banner, options.currentFilePath)
+  if (!src) return ''
+
+  const x = normalizeBannerAxis(getFrontmatterValue(frontmatter, 'banner_x') ?? getFrontmatterValue(frontmatter, 'banner-x'), 0.5)
+  const y = normalizeBannerAxis(getFrontmatterValue(frontmatter, 'banner_y') ?? getFrontmatterValue(frontmatter, 'banner-y'), 0.5)
+  const position = `${Math.round(x * 100)}% ${Math.round(y * 100)}%`
+  return `<figure class="document-banner"><img class="document-banner__image" src="${escapeHtml(src)}" alt="" style="object-position:${position};"></figure>`
+}
+
+function getFrontmatterValue(frontmatter, key) {
+  if (!frontmatter || typeof frontmatter !== 'object') return null
+  return Object.prototype.hasOwnProperty.call(frontmatter, key) ? frontmatter[key] : null
+}
+
+function normalizeBannerAxis(value, fallback) {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return fallback
+  return Math.min(1, Math.max(0, next))
+}
+
+function resolveBannerSrc(value, currentFilePath) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const wikilink = raw.match(/^!?\[\[([^\]|]+)(?:\|[^\]]+)?\]\]$/)
+  const markdownImage = raw.match(/^!\[[^\]]*\]\(([^)]+)\)$/)
+  const target = (wikilink?.[1] || markdownImage?.[1] || raw).trim()
+  if (!target) return ''
+  if (/^(https?:|data:|blob:|file:)/i.test(target)) return target
+  if (target.startsWith('/')) return toFileUrl(target)
+  if (!currentFilePath) return target
+  const base = currentFilePath.slice(0, Math.max(currentFilePath.lastIndexOf('/'), currentFilePath.lastIndexOf('\\')))
+  return toFileUrl(normalizeLocalPath(`${base}/${target}`))
+}
+
+function normalizeLocalPath(path) {
+  const parts = path.split(/[\\/]/)
+  const out = []
+  for (const part of parts) {
+    if (!part || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  return `${path.startsWith('/') ? '/' : ''}${out.join('/')}`
+}
+
+function toFileUrl(path) {
+  return `file://${encodeURI(path)}`
 }
 
 export function htmlToMarkdown(html) {

@@ -48,7 +48,7 @@ export function parseFrontmatter(markdown) {
     // List item under a key (  - value)
     const listItemMatch = trimmed.match(/^-\s+(.+)/)
     if (listItemMatch && inList) {
-      listItems.push(listItemMatch[1].trim())
+      listItems.push(parseScalar(listItemMatch[1].trim()))
       continue
     }
 
@@ -69,10 +69,10 @@ export function parseFrontmatter(markdown) {
         const inner = value.slice(1, -1)
         frontmatter[key] = inner
           .split(',')
-          .map(s => s.trim())
+          .map(s => parseScalar(s.trim()))
           .filter(Boolean)
       } else {
-        frontmatter[key] = value
+        frontmatter[key] = parseScalar(value)
       }
     } else if (inList && listItemMatch) {
       listItems.push(listItemMatch[1].trim())
@@ -90,6 +90,19 @@ export function parseFrontmatter(markdown) {
   }
 
   return { frontmatter, body }
+}
+
+function parseScalar(value) {
+  const trimmed = String(value || '').trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+  }
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed)
+  if (/^(true|false)$/i.test(trimmed)) return trimmed.toLowerCase() === 'true'
+  return trimmed
 }
 
 /**

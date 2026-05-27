@@ -289,6 +289,7 @@ registerShellCallbacks({
   handleAppCommand,
   loadFileIntoTab,
   refreshTree,
+  refreshAllPreviews,
   handleExternalFileChange,
   destroyRichEditor,
   ensureRichEditorMounted,

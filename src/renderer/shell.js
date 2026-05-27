@@ -334,6 +334,11 @@ function handleSettingsInput(event) {
   const next = updateSetting(input.dataset.setting, value)
   if (input.type !== 'checkbox') updateSettingValueLabel(input.dataset.setting, value, input.dataset.unit || '')
   if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
+  if (input.dataset.setting === 'hideFrontmatterInRenderedModes') refreshRenderedDocuments()
+}
+
+function refreshRenderedDocuments() {
+  _callbacks.refreshAllPreviews?.()
 }
 
 function resolveAppIconTheme(settings = getSettings()) {
@@ -856,6 +861,7 @@ export function buildShell() {
               ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
               ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
               ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
+              ${renderToggleSetting('hideFrontmatterInRenderedModes', 'Hide document properties', 'Hide YAML properties in Preview and Rich Text while keeping them in the markdown file')}
             </section>
           </div>
 
@@ -971,6 +977,7 @@ export function buildShell() {
     const next = resetSettings()
     syncSettingsForm()
     applySelectedAppIcon(next)
+    refreshRenderedDocuments()
   })
   $('settings-export-btn')?.addEventListener('click', async () => {
     await window.fjord.exportSettings(JSON.stringify(getSettings()))
@@ -983,6 +990,7 @@ export function buildShell() {
       const next = setSettings(parsed)
       syncSettingsForm()
       applySelectedAppIcon(next)
+      refreshRenderedDocuments()
     } catch {
       alert('Invalid settings file')
     }

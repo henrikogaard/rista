@@ -1,5 +1,7 @@
 import { $, state, editorViews, richEditors, syncingRichEditor, paneUsesWysiwyg, getTabForPane, getWysiwygMountSlot, getFocusedEditor } from './state.js'
 import { undo, redo } from '@codemirror/commands'
+import { getSettings } from './settings.js'
+import { getRenderableMarkdown, mergeFrontmatterWithBody } from './markdown.js'
 
 // ── Registration hooks for functions that live in index.js ───────
 let _ensureRichEditorMounted = null
@@ -371,18 +373,27 @@ export function syncToWysiwyg(pane = state.focusedPane) {
   const tab = getTabForPane(pane)
   if (!editor || !tab) return
 
+  const nextMarkdown = getRenderableMarkdown(tab.content, {
+    hideFrontmatter: getSettings().hideFrontmatterInRenderedModes,
+  }).body
+
   // Toast UI normalizes markdown (e.g., trailing newlines, whitespace).
   // Trim both sides for comparison to avoid unnecessary setMarkdown calls
   // that reset cursor position and selection state.
   const editorContent = (editor.getMarkdown() || '').trim()
-  const tabContent = (tab.content || '').trim()
+  const tabContent = nextMarkdown.trim()
   if (editorContent === tabContent) return
 
   syncingRichEditor[pane] = true
   try {
-    editor.setMarkdown(tab.content || '')
+    editor.setMarkdown(nextMarkdown)
   } catch (err) {
     console.error(`[rista] Failed to sync content to WYSIWYG for pane "${pane}":`, err)
   }
   syncingRichEditor[pane] = false
+}
+
+export function mergeRenderedEditorMarkdown(tab, renderedMarkdown) {
+  if (!getSettings().hideFrontmatterInRenderedModes) return renderedMarkdown
+  return mergeFrontmatterWithBody(tab.content, renderedMarkdown)
 }

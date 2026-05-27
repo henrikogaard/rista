@@ -14,6 +14,7 @@ import { exportAsWebsite } from './publish.js'
 import { toggleBookmark, isBookmarked, resetBookmarksCache } from './bookmarks.js'
 import { refreshFileExplorerState } from './file-explorer-view.js'
 import { jumpToLine } from './outline-view.js'
+import { mergeFrontmatterWithBody } from './markdown.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -930,7 +931,9 @@ export function onRichEditorChange(pane) {
 
   let markdown
   try {
-    markdown = editor.getMarkdown()
+    markdown = getSettings().hideFrontmatterInRenderedModes
+      ? mergeFrontmatterWithBody(tab.content, editor.getMarkdown())
+      : editor.getMarkdown()
   } catch (err) {
     console.error(`[rista] Failed to read WYSIWYG content for pane "${pane}":`, err)
     return

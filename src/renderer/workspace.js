@@ -5,7 +5,7 @@ import { chevronIcon } from './icons.js'
 import { getTheme } from './theme.js'
 import { updateSetting, getSettings } from './settings.js'
 import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste } from './preview.js'
-import { htmlToMarkdown } from './markdown.js'
+import { getRenderableMarkdown, htmlToMarkdown } from './markdown.js'
 import { toggleCommandPalette } from './command-palette.js'
 import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, replaceOne, replaceAll } from './find-replace.js'
 import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, insertCodeBlock, insertHorizontalRule, syncToWysiwyg } from './commands.js'
@@ -375,7 +375,10 @@ export function ensureRichEditorMounted(pane) {
   }
 
   // Use tab content as canonical source of truth (always synced by change handlers)
-  const markdown = getTabForPane(pane)?.content ?? ''
+  const tab = getTabForPane(pane)
+  const markdown = getRenderableMarkdown(tab?.content ?? '', {
+    hideFrontmatter: getSettings().hideFrontmatterInRenderedModes,
+  }).body
   destroyRichEditor(pane)
 
   const host = document.createElement('div')
