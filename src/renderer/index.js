@@ -197,6 +197,8 @@ registerRightPanel('properties', {
   title: 'Properties',
   icon: propertiesIcon(),
   flex: 1,
+  defaultSide: 'left',
+  defaultActive: true,
   build: buildPropertiesPanel,
   onMount: mountPropertiesPanel,
   onUnmount: () => {},

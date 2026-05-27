@@ -334,8 +334,13 @@ test('frontmatter can be hidden in rendered document modes and drive a banner im
 
 test('properties panel exposes focused banner controls backed by frontmatter', () => {
   const properties = read('src/renderer/properties-view.js')
+  const index = read('src/renderer/index.js')
+  const rightPanel = read('src/renderer/right-panel.js')
   const css = read('src/renderer/styles/main.css')
 
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'left'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultActive: true/)
+  assert.match(rightPanel, /hooks\?\.defaultSide === 'left'/)
   assert.match(properties, /renderBannerSettings/)
   assert.match(properties, /class="banner-settings"/)
   assert.match(properties, /id="banner-image-input"/)
