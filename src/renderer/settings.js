@@ -243,7 +243,7 @@ export const DEFAULT_SETTINGS = {
   ambientIntensity: 42,
   surfaceOpacity: 82,
   surfaceBlur: 18,
-  contrastBoost: 15,
+  contrastBoost: 22,
   sidebarWidth: 220,
   splitRatio: 50,
   documentSplitRatio: 50,

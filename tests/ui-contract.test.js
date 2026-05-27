@@ -104,6 +104,26 @@ test('split workspace has an actionable empty secondary pane', () => {
   assert.match(workspace, /state\.secondaryTab = null/)
 })
 
+test('workspace polish keeps split mode quiet, legible, and intentional', () => {
+  const workspace = read('src/renderer/workspace.js')
+  const settings = read('src/renderer/settings.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(workspace, /workspace-pane__empty-kicker/)
+  assert.match(workspace, /Editor B is ready/)
+  assert.match(settings, /contrastBoost: 22/)
+  assert.match(css, /--hover-fill:/)
+  assert.match(css, /--active-fill:/)
+  assert.match(css, /--quiet-border:/)
+  assert.match(css, /\.tree-file\.active\s*\{[\s\S]*font-weight: 600/)
+  assert.match(css, /\.tab\.active\s*\{[\s\S]*border-color: var\(--active-border\)/)
+  assert.match(css, /\.vb\.active\s*\{[\s\S]*box-shadow:[\s\S]*inset 0 0 0 1px var\(--active-border\)/)
+  assert.match(css, /\.settings-group\s*\{[\s\S]*background: transparent/)
+  assert.match(css, /\.settings-group\s*\{[\s\S]*border-top: 1px solid var\(--quiet-border\)/)
+  assert.match(css, /\.app\[data-workspace-mode="dual"\] #workspace-secondary:has\(#tabs-secondary\.is-empty\) \.workspace-toolbar/)
+  assert.match(css, /\.app\[data-workspace-mode="dual"\] \.workspace-resizer::before\s*\{[\s\S]*height: 48px/)
+})
+
 test('programmatic editor document updates do not mark tabs dirty', () => {
   const editor = read('src/renderer/editor.js')
 

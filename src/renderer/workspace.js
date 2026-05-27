@@ -270,6 +270,7 @@ export function buildEditorUI() {
             </div>
           </div>
           <div class="workspace-pane__empty" id="workspace-secondary-empty">
+            <div class="workspace-pane__empty-kicker">Editor B is ready</div>
             <div class="workspace-pane__empty-title">Split workspace</div>
             <div class="workspace-pane__empty-copy">Open another markdown file to compare, reference, or edit beside the current note.</div>
             <div class="workspace-pane__empty-action" data-action="open-secondary-file" role="button" tabindex="0">Quick open</div>
