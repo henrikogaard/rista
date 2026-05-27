@@ -5,12 +5,12 @@ import { toggleTheme, getTheme } from './theme.js'
 import { applySettings, getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, editorSplitIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
 import { showContextMenu } from './context-menu.js'
-import { renderRecentProjectsHtml, removeRecentProject } from './recent-projects.js'
+import { renderPinnedProjectsHtml, renderRecentProjectsHtml, removeRecentProject, togglePinnedProject, unpinProject } from './recent-projects.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -20,6 +20,7 @@ const SETTINGS_TABS = [
   { id: 'theme', label: 'Theme' },
   { id: 'editor', label: 'Editor' },
   { id: 'preview', label: 'Preview' },
+  { id: 'workspaces', label: 'Workspaces' },
   { id: 'daily', label: 'Daily Notes' },
   { id: 'behavior', label: 'Behavior' },
   { id: 'hotkeys', label: 'Hotkeys' },
@@ -55,18 +56,72 @@ export function syncWorkspaceChrome() {
 // ── Welcome screen HTML ──────────────────────────────────────────
 export function buildWelcome() {
   const hasFolder = Boolean(state.folderPath)
+  const pinnedHtml = hasFolder ? '' : renderPinnedProjectsHtml()
+  const recentHtml = hasFolder ? '' : renderRecentProjectsHtml()
+  const workspaceHtml = pinnedHtml || recentHtml
+    ? `
+      <div class="welcome__workspace-panel">
+        <div class="welcome__panel-head">
+          <span>Workspaces</span>
+          <span>⌘K quick open</span>
+        </div>
+        ${pinnedHtml}
+        ${recentHtml}
+      </div>
+    `
+    : ''
   return `
     <div class="welcome" id="welcome">
       <div class="welcome__content">
-        <div class="welcome__logo">Rí<span>sta</span></div>
-        <div class="welcome__sub">${hasFolder ? 'Choose a note from the explorer or carve a new markdown file in this folder' : 'Open a folder to start writing'}</div>
-        ${hasFolder ? '' : `
-          <div class="welcome__btn" id="welcome-open-btn">
-            <svg viewBox="0 0 16 16"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
-            Open folder…
+        <div class="welcome__hero-panel">
+          <div class="welcome__hero">
+            <div class="welcome__aurora welcome__aurora--a"></div>
+            <div class="welcome__aurora welcome__aurora--b"></div>
+            <div class="welcome__aurora welcome__aurora--c"></div>
+            <div class="welcome__mesh"></div>
+            <div class="welcome__rune" aria-hidden="true">ᚱ</div>
+            <div class="welcome__hero-lines" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
           </div>
-          ${renderRecentProjectsHtml()}
-        `}
+          <div class="welcome__title-row">
+            <div>
+              <div class="welcome__logo">Rí<span>sta</span></div>
+              <div class="welcome__sub">${hasFolder ? 'Choose a note from the explorer or create a new markdown file in this workspace.' : 'Open a local folder and start writing with private, file-based Markdown.'}</div>
+            </div>
+            ${hasFolder ? '' : `
+              <div class="welcome__btn" id="welcome-open-btn" role="button" tabindex="0">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
+                Open folder…
+              </div>
+            `}
+          </div>
+          <div class="welcome__quick-grid" aria-label="Rísta workspace features">
+            <div class="welcome__quick-card">
+              <span class="welcome__quick-kicker">Source</span>
+              <strong>Local files</strong>
+              <span>Open a folder. Edit plain .md.</span>
+            </div>
+            <div class="welcome__quick-card">
+              <span class="welcome__quick-kicker">Mode</span>
+              <strong>Split view</strong>
+              <span>Write and preview side by side.</span>
+            </div>
+            <div class="welcome__quick-card">
+              <span class="welcome__quick-kicker">Default</span>
+              <strong>Private</strong>
+              <span>No cloud, accounts, or telemetry.</span>
+            </div>
+          </div>
+        </div>
+        ${workspaceHtml}
+        <div class="welcome__status-strip" aria-hidden="true">
+          <span>Markdown-first</span>
+          <span>Local graph ready</span>
+          <span>Autosave armed</span>
+        </div>
       </div>
     </div>
   `
@@ -252,6 +307,12 @@ function syncKeybindingList() {
   list.innerHTML = renderKeybindingRows()
 }
 
+function syncPinnedWorkspaceList() {
+  const list = $('pinned-workspaces-list')
+  if (!list) return
+  list.innerHTML = renderPinnedProjectsHtml({ empty: true })
+}
+
 function escapeAttribute(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -308,6 +369,26 @@ function handleSettingsClick(event) {
     return
   }
 
+  const openPath = event.target.closest('[data-open-path]')
+  if (openPath) {
+    closeSettingsPanel()
+    _callbacks.openRecentProject?.(openPath.dataset.openPath)
+    return
+  }
+
+  const openNewPath = event.target.closest('[data-open-new-path]')
+  if (openNewPath) {
+    _callbacks.openWorkspaceInNewWindow?.(openNewPath.dataset.openNewPath)
+    return
+  }
+
+  const unpinPath = event.target.closest('[data-unpin-path]')
+  if (unpinPath) {
+    unpinProject(unpinPath.dataset.unpinPath)
+    syncPinnedWorkspaceList()
+    return
+  }
+
   const iconVariant = event.target.closest('[data-app-icon-variant]')
   if (iconVariant) {
     const next = updateSetting('appIconVariant', iconVariant.dataset.appIconVariant)
@@ -357,7 +438,7 @@ function handleSettingsKeydown(event) {
   }
 
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-app-icon-variant], [data-app-icon-theme]')
+  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-app-icon-variant], [data-app-icon-theme], [data-open-path], [data-open-new-path], [data-unpin-path]')
   if (!target) return
   event.preventDefault()
   target.click()
@@ -371,6 +452,54 @@ function updateSettingValueLabel(key, value, unit) {
 function setSettingsTab(tabId) {
   activeSettingsTab = SETTINGS_TABS.some(tab => tab.id === tabId) ? tabId : 'theme'
   syncSettingsTabs()
+}
+
+export function attachWelcomeProjectHandlers(welcomeEl, handlers = {}) {
+  if (!welcomeEl) return
+  welcomeEl.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    const action = event.target.closest('#welcome-open-btn, [data-pin-path], [data-remove-path], [data-open-path], [data-open-new-path]')
+    if (!action) return
+    event.preventDefault()
+    action.click()
+  })
+  welcomeEl.addEventListener('click', (event) => {
+    const pinBtn = event.target.closest('[data-pin-path]')
+    if (pinBtn) {
+      event.stopPropagation()
+      togglePinnedProject(pinBtn.dataset.pinPath)
+      handlers.refreshWelcome?.()
+      return
+    }
+
+    const removeBtn = event.target.closest('[data-remove-path]')
+    if (removeBtn) {
+      event.stopPropagation()
+      removeRecentProject(removeBtn.dataset.removePath)
+      handlers.refreshWelcome?.()
+      return
+    }
+
+    const openNewPath = event.target.closest('[data-open-new-path]')
+    if (openNewPath) {
+      event.stopPropagation()
+      handlers.openProjectNewWindow?.(openNewPath.dataset.openNewPath)
+      return
+    }
+
+    const openPath = event.target.closest('[data-open-path]')
+    if (openPath) {
+      event.stopPropagation()
+      handlers.openProject?.(openPath.dataset.openPath)
+      return
+    }
+
+    const recentItem = event.target.closest('.recent-item')
+    if (recentItem) {
+      const folderPath = recentItem.dataset.path
+      if (folderPath) handlers.openProject?.(folderPath)
+    }
+  })
 }
 
 function syncSettingsTabs() {
@@ -414,6 +543,7 @@ function syncSettingsForm() {
   const icon = APP_ICON_VARIANTS.find(option => option.value === settings.appIconVariant)
   if (iconValueLabel && icon) iconValueLabel.textContent = icon.label
   syncKeybindingList()
+  syncPinnedWorkspaceList()
   syncSettingsTabs()
 }
 
@@ -442,12 +572,15 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
-const GLOBAL_CONTROL_SELECTOR = '#pane-split-toggle, #workspace-split-toggle, #settings-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle'
-function handleWindowDragRegionPointerDown(event) {
+const GLOBAL_CONTROL_SELECTOR = '#workspace-split-toggle, #settings-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle'
+function handleWindowDragRegionMouseDown(event) {
   if (event.button !== 0) return
   if (event.target.closest('input, textarea, select, button, [role="button"], [data-action], a')) return
+  const startDrag = window.fjord?.startWindowDrag
+  if (typeof startDrag !== 'function') return
   event.preventDefault()
-  window.fjord?.startWindowDrag?.()
+  event.stopPropagation()
+  Promise.resolve(startDrag()).catch(() => {})
 }
 
 function handleGlobalControlPointerDown(event) {
@@ -459,7 +592,6 @@ function handleGlobalControlPointerDown(event) {
 }
 
 function performGlobalControl(id) {
-  if (id === 'pane-split-toggle') _callbacks.togglePaneSplitView?.()
   if (id === 'workspace-split-toggle') _callbacks.toggleWorkspaceSplit?.()
   if (id === 'settings-btn') toggleSettingsPanel()
   if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
@@ -473,6 +605,18 @@ function handleGlobalControlKeydown(event) {
   if (!control) return
   event.preventDefault()
   performGlobalControl(control.id)
+}
+
+function refreshShellWelcome() {
+  const wrapper = $('editor-wrapper')
+  if (!wrapper || state.folderPath) return
+  wrapper.innerHTML = buildWelcome()
+  $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
+  attachWelcomeProjectHandlers($('welcome'), {
+    openProject: (folderPath) => _callbacks.openRecentProject?.(folderPath),
+    openProjectNewWindow: (folderPath) => _callbacks.openWorkspaceInNewWindow?.(folderPath),
+    refreshWelcome: refreshShellWelcome,
+  })
 }
 
 export function toggleAppTheme() {
@@ -556,7 +700,7 @@ export function buildShell() {
 
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
-          <div class="sidebar-drag-region" id="sidebar-drag-region" data-tauri-drag-region></div>
+          <div class="sidebar-drag-region" id="sidebar-drag-region" data-tauri-drag-region="deep"></div>
           <div class="left-widget-stack widget-stack widget-stack--left" id="left-widget-stack"></div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
@@ -564,7 +708,7 @@ export function buildShell() {
         <!-- Editor area -->
         <div class="editor-area">
           <!-- Top window rail -->
-          <div class="brandrail" id="brandrail" data-tauri-drag-region>
+          <div class="brandrail" id="brandrail" data-tauri-drag-region="deep">
             <div class="brandrail__workspace" aria-label="Current workspace">
               <span class="brandrail__workspace-name" id="brandrail-workspace-name">No workspace</span>
               <span class="brandrail__workspace-path" id="brandrail-workspace-path">Open a folder or create a new window</span>
@@ -593,25 +737,21 @@ export function buildShell() {
                 <!-- Panels -->
                 <div class="theme-btn" id="sidebar-toggle" title="Toggle file explorer (⌘B)" aria-label="Toggle file explorer" role="button" tabindex="0">
                   ${sidebarIcon()}
-                  <span class="control-label">Files</span>
+                  <span class="control-label">Left sidebar</span>
                 </div>
                 <div class="theme-btn" id="terminal-toggle" title="Toggle terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
                   ${terminalIcon()}
                   <span class="control-label">Terminal</span>
                 </div>
-                <div class="theme-btn" id="right-sidebar-toggle" title="Toggle widgets panel" aria-label="Toggle widgets panel" role="button" tabindex="0">
+                <div class="theme-btn" id="right-sidebar-toggle" title="Toggle right widgets panel" aria-label="Toggle right widgets panel" role="button" tabindex="0">
                   ${rightSidebarIcon()}
-                  <span class="control-label">Widgets</span>
+                  <span class="control-label">Right sidebar</span>
                 </div>
                 <div class="app-controls__sep"></div>
                 <!-- Layout -->
-                <div class="theme-btn" id="pane-split-toggle" title="Split editor pane" aria-label="Split editor pane" role="button" tabindex="0">
-                  ${editorSplitIcon()}
-                  <span class="control-label">Pane</span>
-                </div>
-                <div class="theme-btn" id="workspace-split-toggle" title="Split workspace into two editors" aria-label="Split workspace" role="button" tabindex="0">
+                <div class="theme-btn" id="workspace-split-toggle" title="Toggle workspace split" aria-label="Toggle workspace split" role="button" tabindex="0">
                   ${workspaceSplitIcon()}
-                  <span class="control-label">Workspace</span>
+                  <span class="control-label">Split view</span>
                 </div>
                 <div class="app-controls__sep"></div>
                 <!-- App -->
@@ -719,6 +859,16 @@ export function buildShell() {
             </section>
           </div>
 
+          <div class="settings-page" data-settings-section="workspaces">
+            <section class="settings-group">
+              <div class="settings-group__title">Pinned workspaces</div>
+              <div class="settings-group__hint">Pinned workspaces are shown on the welcome screen for quick access.</div>
+              <div id="pinned-workspaces-list">
+                ${renderPinnedProjectsHtml({ empty: true })}
+              </div>
+            </section>
+          </div>
+
           <div class="settings-page" data-settings-section="behavior">
             <section class="settings-group">
               <div class="settings-group__title">Behavior</div>
@@ -810,9 +960,9 @@ export function buildShell() {
   `
 
   // Wire up controls
-  $('brandrail')?.addEventListener('pointerdown', handleWindowDragRegionPointerDown)
-  $('sidebar-drag-region')?.addEventListener('pointerdown', handleWindowDragRegionPointerDown)
-  $('right-sidebar-drag-region')?.addEventListener('pointerdown', handleWindowDragRegionPointerDown)
+  $('brandrail')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
+  $('sidebar-drag-region')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
+  $('right-sidebar-drag-region')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
   $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)
@@ -864,30 +1014,11 @@ export function buildShell() {
   })
 
   // Recent projects click handlers (delegation from welcome)
-  const welcomeEl = $('welcome')
-  if (welcomeEl) {
-    welcomeEl.addEventListener('click', (e) => {
-      const removeBtn = e.target.closest('[data-remove-path]')
-      if (removeBtn) {
-        e.stopPropagation()
-        removeRecentProject(removeBtn.dataset.removePath)
-        const item = removeBtn.closest('.recent-item')
-        if (item) item.remove()
-        // Hide the "Recent" header if no more items
-        const remaining = welcomeEl.querySelectorAll('.recent-item')
-        if (remaining.length === 0) {
-          const recentSection = welcomeEl.querySelector('.recent-projects')
-          if (recentSection) recentSection.remove()
-        }
-        return
-      }
-      const recentItem = e.target.closest('.recent-item')
-      if (recentItem) {
-        const folderPath = recentItem.dataset.path
-        if (folderPath) _callbacks.openRecentProject?.(folderPath)
-      }
-    })
-  }
+  attachWelcomeProjectHandlers($('welcome'), {
+    openProject: (folderPath) => _callbacks.openRecentProject?.(folderPath),
+    openProjectNewWindow: (folderPath) => _callbacks.openWorkspaceInNewWindow?.(folderPath),
+    refreshWelcome: refreshShellWelcome,
+  })
 
   // Watch for file changes from main process
   if (window.fjord) {
