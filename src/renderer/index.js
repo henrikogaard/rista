@@ -290,6 +290,7 @@ registerShellCallbacks({
   toggleRightPanel,
   toggleRightSidebar,
   openFolder,
+  createNewFile,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   openWorkspaceInNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),
   collapseAllFolders,

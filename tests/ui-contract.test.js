@@ -6,6 +6,23 @@ const test = require('node:test')
 const root = path.resolve(__dirname, '..')
 const read = file => fs.readFileSync(path.join(root, file), 'utf8')
 
+test('welcome screen is an IDE start surface instead of a marketing hero', () => {
+  const shell = read('src/renderer/shell.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(shell, /welcome__start/)
+  assert.match(shell, /welcome__actions/)
+  assert.match(shell, /welcome__workspace-panel/)
+  assert.match(shell, /welcome__status-strip/)
+  assert.doesNotMatch(shell, /welcome__hero-panel/)
+  assert.doesNotMatch(shell, /welcome__aurora/)
+  assert.doesNotMatch(shell, /welcome__mesh/)
+  assert.doesNotMatch(css, /\.welcome__aurora/)
+  assert.doesNotMatch(css, /\.welcome__mesh/)
+  assert.match(css, /\.welcome__start/)
+  assert.match(css, /\.welcome__actions/)
+})
+
 test('status bar owns a single responsive global control cluster with clear labels', () => {
   const shell = read('src/renderer/shell.js')
   const css = read('src/renderer/styles/main.css')

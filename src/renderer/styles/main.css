@@ -2632,97 +2632,36 @@ body.is-resizing-split .workspace-resizer::before {
   backdrop-filter: blur(calc(var(--surface-blur) * 0.9));
 }
 
-.welcome__hero-panel {
-  display: grid;
-  grid-template-columns: minmax(240px, 1.05fr) minmax(240px, 0.95fr);
-  gap: 12px;
-  min-height: 304px;
-}
-
-.welcome__hero {
-  position: relative;
-  min-height: 304px;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--surface-edge);
-  background:
-    linear-gradient(180deg, rgba(var(--bg0-rgb), 0.12), rgba(var(--bg0-rgb), 0.76)),
-    color-mix(in srgb, var(--bg2) 82%, transparent);
-}
-
-.welcome__aurora {
-  position: absolute;
-  inset: auto auto 22px auto;
-  width: 140%;
-  height: 184px;
-  filter: blur(24px);
-  opacity: 0.82;
-  transform: translateX(-12%) translateY(24px) rotate(-4deg);
-}
-
-.welcome__aurora--a {
-  left: -24%;
-  background: radial-gradient(circle at 35% 48%, color-mix(in srgb, var(--accent) 78%, transparent), transparent 68%);
-}
-
-.welcome__aurora--b {
-  left: 12%;
-  background: radial-gradient(circle at 52% 42%, color-mix(in srgb, var(--green) 72%, transparent), transparent 70%);
-}
-
-.welcome__aurora--c {
-  left: 48%;
-  background: radial-gradient(circle at 50% 54%, color-mix(in srgb, var(--accent-hi) 60%, transparent), transparent 70%);
-}
-
-.welcome__mesh {
-  position: absolute;
-  inset: 0;
-  opacity: 0.62;
-  background:
-    linear-gradient(151deg, transparent 0 41%, color-mix(in srgb, var(--border3) 86%, transparent) 42% 42.6%, transparent 43.4% 100%),
-    linear-gradient(25deg, transparent 0 51%, color-mix(in srgb, var(--border2) 88%, transparent) 52% 52.5%, transparent 53.3% 100%),
-    linear-gradient(90deg, transparent 0 18%, color-mix(in srgb, var(--border) 80%, transparent) 18.3% 18.7%, transparent 19% 100%),
-    radial-gradient(82% 42% at 50% 12%, color-mix(in srgb, var(--text2) 10%, transparent), transparent 78%);
-}
-
-.welcome__rune {
-  position: absolute;
-  left: 26px;
-  bottom: 24px;
-  width: 54px;
-  height: 54px;
+.welcome__start {
+  width: min(760px, calc(100vw - 48px));
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--surface-edge);
-  border-radius: 6px;
-  background: rgba(var(--bg0-rgb), 0.32);
-  color: color-mix(in srgb, var(--text1) 86%, var(--accent-hi));
+  flex-direction: column;
+  gap: 10px;
+}
+
+.welcome__masthead {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 0 12px;
+  border-bottom: 1px solid var(--surface-edge);
+}
+
+.welcome__eyebrow {
+  margin-bottom: 6px;
+  color: var(--text3);
   font-family: var(--mono);
-  font-size: 30px;
-  box-shadow: inset 0 1px 0 var(--surface-edge);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.welcome__hero-lines {
-  position: absolute;
-  left: 100px;
-  right: 26px;
-  bottom: 31px;
-  display: grid;
+.welcome__actions {
+  display: flex;
+  align-items: flex-start;
   gap: 8px;
+  flex-shrink: 0;
 }
-
-.welcome__hero-lines span {
-  display: block;
-  height: 5px;
-  border-radius: 0;
-  background: color-mix(in srgb, var(--text2) 22%, transparent);
-}
-
-.welcome__hero-lines span:nth-child(1) { width: 44%; }
-.welcome__hero-lines span:nth-child(2) { width: 72%; }
-.welcome__hero-lines span:nth-child(3) { width: 56%; }
 
 .welcome__title-row {
   display: flex;
@@ -3270,17 +3209,14 @@ body.is-resizing-split .workspace-resizer::before {
     padding: 8px;
   }
 
-  .welcome__hero-panel {
-    grid-template-columns: 1fr;
-    min-height: 0;
+  .welcome__start {
+    width: 100%;
   }
 
-  .welcome__hero {
-    min-height: 210px;
-  }
-
-  .welcome__title-row {
-    padding: 18px;
+  .welcome__masthead {
+    padding: 12px 0 10px;
+    flex-direction: column;
+    gap: 12px;
   }
 
   .welcome__quick-grid {
@@ -3309,18 +3245,8 @@ body.is-resizing-split .workspace-resizer::before {
     min-width: 0;
   }
 
-  .welcome__hero {
-    min-height: 178px;
-  }
-
-  .welcome__rune {
-    left: 50%;
-    bottom: 24px;
-    transform: translateX(-50%);
-  }
-
-  .welcome__hero-lines {
-    display: none;
+  .welcome__masthead {
+    padding-top: 10px;
   }
 
   .welcome__logo {

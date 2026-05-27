@@ -70,50 +70,29 @@ export function buildWelcome() {
     : ''
   return `
     <div class="welcome" id="welcome">
-      <div class="welcome__content">
-        <div class="welcome__hero-panel">
-          <div class="welcome__hero">
-            <div class="welcome__aurora welcome__aurora--a"></div>
-            <div class="welcome__aurora welcome__aurora--b"></div>
-            <div class="welcome__aurora welcome__aurora--c"></div>
-            <div class="welcome__mesh"></div>
-            <div class="welcome__rune" aria-hidden="true">ᚱ</div>
-            <div class="welcome__hero-lines" aria-hidden="true">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
+      <div class="welcome__content welcome__start">
+        <header class="welcome__masthead">
+          <div>
+            <div class="welcome__eyebrow">Local Markdown workspace</div>
+            <div class="welcome__logo">Rísta</div>
+            <div class="welcome__sub">${hasFolder ? 'Choose a note, open Graph, or start a new Markdown file.' : 'Open a folder to work with plain local files.'}</div>
           </div>
-          <div class="welcome__title-row">
-            <div>
-              <div class="welcome__logo">Rí<span>sta</span></div>
-              <div class="welcome__sub">${hasFolder ? 'Choose a note from the explorer or create a new markdown file in this workspace.' : 'Open a local folder and start writing with private, file-based Markdown.'}</div>
-            </div>
-            ${hasFolder ? '' : `
+          <div class="welcome__actions">
+            ${hasFolder ? `
+              <div class="welcome__btn" id="welcome-new-file-btn" role="button" tabindex="0">New note</div>
+            ` : `
               <div class="welcome__btn" id="welcome-open-btn" role="button" tabindex="0">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
                 Open folder…
               </div>
             `}
           </div>
-          <div class="welcome__quick-grid" aria-label="Rísta workspace features">
-            <div class="welcome__quick-card">
-              <span class="welcome__quick-kicker">Source</span>
-              <strong>Local files</strong>
-              <span>Open a folder. Edit plain .md.</span>
-            </div>
-            <div class="welcome__quick-card">
-              <span class="welcome__quick-kicker">Mode</span>
-              <strong>Split view</strong>
-              <span>Write and preview side by side.</span>
-            </div>
-            <div class="welcome__quick-card">
-              <span class="welcome__quick-kicker">Default</span>
-              <strong>Private</strong>
-              <span>No cloud, accounts, or telemetry.</span>
-            </div>
-          </div>
-        </div>
+        </header>
+        <section class="welcome__quick-grid" aria-label="Rísta workspace status">
+          <div class="welcome__quick-card"><span class="welcome__quick-kicker">Source</span><strong>Local files</strong><span>Plain Markdown on disk.</span></div>
+          <div class="welcome__quick-card"><span class="welcome__quick-kicker">Graph</span><strong>Workspace links</strong><span>Backlinks and local graph ready.</span></div>
+          <div class="welcome__quick-card"><span class="welcome__quick-kicker">AI</span><strong>Review first</strong><span>File edits stay explicit.</span></div>
+        </section>
         ${workspaceHtml}
         <div class="welcome__status-strip" aria-hidden="true">
           <span>Markdown-first</span>
@@ -682,6 +661,7 @@ function refreshShellWelcome() {
   if (!wrapper || state.folderPath) return
   wrapper.innerHTML = buildWelcome()
   $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
+  $('welcome-new-file-btn')?.addEventListener('click', () => _callbacks.createNewFile?.())
   attachWelcomeProjectHandlers($('welcome'), {
     openProject: (folderPath) => _callbacks.openRecentProject?.(folderPath),
     openProjectNewWindow: (folderPath) => _callbacks.openWorkspaceInNewWindow?.(folderPath),
@@ -1083,6 +1063,7 @@ export function buildShell() {
   // Files widget body now and can move between sidebars.
   $('sidebar-resizer')?.addEventListener('pointerdown', e => _callbacks.startSidebarResize?.(e))
   $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
+  $('welcome-new-file-btn')?.addEventListener('click', () => _callbacks.createNewFile?.())
 
   // Agent card clicks are still delegated globally so they work regardless of
   // which side the Agents widget lives on.
