@@ -122,7 +122,8 @@ export async function renderMarkdown(markdown, options = {}) {
   const expanded = resolveTransclusions(renderable.body)
   const chunks = splitMarkdownIntoRenderChunks(expanded)
   const rendered = await Promise.all(chunks.map(renderChunk))
-  return `${renderDocumentBanner(renderable.frontmatter, options)}${rendered.join('')}`
+  const banner = options.showDocumentBanners === false ? '' : renderDocumentBanner(renderable.frontmatter, options)
+  return `${banner}${rendered.join('')}`
 }
 
 export function getRenderableMarkdown(markdown, options = {}) {

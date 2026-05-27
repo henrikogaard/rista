@@ -268,6 +268,7 @@ export const DEFAULT_SETTINGS = {
   previewLineHeight: 1.75,
   previewTextColor: '',
   hideFrontmatterInRenderedModes: true,
+  showDocumentBanners: true,
   typewriterScrolling: false,
   spellcheck: false,
   vimMode: false,
@@ -403,6 +404,7 @@ function sanitize(settings) {
   next.editorTextColor = sanitizeColor(next.editorTextColor)
   next.previewTextColor = sanitizeColor(next.previewTextColor)
   next.hideFrontmatterInRenderedModes = next.hideFrontmatterInRenderedModes !== false
+  next.showDocumentBanners = next.showDocumentBanners !== false
   next.typewriterScrolling = Boolean(next.typewriterScrolling)
   next.spellcheck = Boolean(next.spellcheck)
   next.vimMode = Boolean(next.vimMode)

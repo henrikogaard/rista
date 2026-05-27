@@ -244,7 +244,11 @@ export async function exportAsWebsite() {
   // Render each file to HTML
   const files = []
   for (const file of allFiles) {
-    let html = await renderMarkdown(file.content)
+    let html = await renderMarkdown(file.content, {
+      hideFrontmatter: settings.hideFrontmatterInRenderedModes,
+      showDocumentBanners: settings.showDocumentBanners,
+      currentFilePath: file.path,
+    })
     html = resolveWikilinksToHtml(html, allBaseNames)
     const nav = buildNavLinks(allFiles, file.baseName)
     const pageHtml = buildSitePageHtml({

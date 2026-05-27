@@ -19,6 +19,7 @@ export async function refreshPreview(pane, markdown) {
   const settings = getSettings()
   const html = await renderMarkdown(markdown, {
     hideFrontmatter: settings.hideFrontmatterInRenderedModes,
+    showDocumentBanners: settings.showDocumentBanners,
     currentFilePath: activeTab?.path,
   })
   ;['single', 'left', 'right'].forEach(slot => {
@@ -176,15 +177,17 @@ export async function exportToPdf() {
     return
   }
   try {
+    const settings = getSettings()
     const html = await renderMarkdown(tab.content || '', {
-      hideFrontmatter: getSettings().hideFrontmatterInRenderedModes,
+      hideFrontmatter: settings.hideFrontmatterInRenderedModes,
+      showDocumentBanners: settings.showDocumentBanners,
       currentFilePath: tab.path,
     })
     const success = await window.fjord.exportPdf({
       fileName: tab.name,
       html,
       theme: getTheme(),
-      settings: getSettings(),
+      settings,
     })
     if (success) {
       // Success notification could be added here
@@ -201,15 +204,17 @@ export async function exportToHtml() {
   const tab = getFocusedTab()
   if (!tab) return
   try {
+    const settings = getSettings()
     const html = await renderMarkdown(tab.content || '', {
-      hideFrontmatter: getSettings().hideFrontmatterInRenderedModes,
+      hideFrontmatter: settings.hideFrontmatterInRenderedModes,
+      showDocumentBanners: settings.showDocumentBanners,
       currentFilePath: tab.path,
     })
     await window.fjord.exportHtml({
       fileName: tab.name,
       html,
       theme: getTheme(),
-      settings: getSettings(),
+      settings,
     })
   } catch (err) {
     alert('Error exporting HTML: ' + err.message)

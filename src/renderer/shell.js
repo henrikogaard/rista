@@ -334,7 +334,7 @@ function handleSettingsInput(event) {
   const next = updateSetting(input.dataset.setting, value)
   if (input.type !== 'checkbox') updateSettingValueLabel(input.dataset.setting, value, input.dataset.unit || '')
   if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
-  if (input.dataset.setting === 'hideFrontmatterInRenderedModes') refreshRenderedDocuments()
+  if (['hideFrontmatterInRenderedModes', 'showDocumentBanners'].includes(input.dataset.setting)) refreshRenderedDocuments()
 }
 
 function refreshRenderedDocuments() {
@@ -860,6 +860,7 @@ export function buildShell() {
               ${renderRangeSetting('previewLineHeight', 'Preview spacing', 1.4, 2.1, 0.05, '')}
               ${renderTextSetting('previewTextColor', 'Preview text color', 'Optional hex color, e.g. #f1f4fa')}
               ${renderToggleSetting('hideFrontmatterInRenderedModes', 'Hide document properties', 'Hide YAML properties in Preview and Rich Text while keeping them in the markdown file')}
+              ${renderToggleSetting('showDocumentBanners', 'Show document banners', 'Render banner images from document properties in Preview and exports')}
             </section>
           </div>
 
