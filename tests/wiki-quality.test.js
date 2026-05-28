@@ -76,3 +76,40 @@ test('wiki quality analysis finds missing links, orphans, duplicate titles, and 
   assert.equal(report.glossaryCandidates[0].term, 'Rista Graph')
   assert.equal(report.glossaryCandidates[0].fileCount, 2)
 })
+
+test('wiki quality analysis filters dismissed findings and surfaces near-duplicate notes', async () => {
+  const { analyzeWikiQuality, wikiQualityFindingKey } = await importWikiQualityModule()
+  const index = {
+    allPaths: new Set(['/vault/A.md', '/vault/B.md', '/vault/Source.md']),
+    dirty: false,
+    files: new Map([
+      ['/vault/A.md', {
+        content: '# Campfire Menu\n\nChocolate graham crackers marshmallow dessert around a campfire.',
+        links: new Set(),
+      }],
+      ['/vault/B.md', {
+        content: '# Campfire Ideas\n\nChocolate graham crackers marshmallow desserts near the campfire.',
+        links: new Set(),
+      }],
+      ['/vault/Source.md', {
+        content: 'See [[Dismiss Me]] later.',
+        links: new Set(['Dismiss Me']),
+      }],
+    ]),
+    backlinks: new Map(),
+  }
+  const dismissed = new Set([
+    wikiQualityFindingKey('missing-link', '/vault/Source.md', 'Dismiss Me'),
+  ])
+
+  const report = analyzeWikiQuality(index, {
+    folderPath: '/vault',
+    resolveLink: () => null,
+    dismissed,
+  })
+
+  assert.equal(report.unresolvedLinks.some(item => item.linkText === 'Dismiss Me'), false)
+  assert.equal(report.nearDuplicateNotes[0].paths.includes('/vault/A.md'), true)
+  assert.equal(report.nearDuplicateNotes[0].paths.includes('/vault/B.md'), true)
+  assert.ok(report.nearDuplicateNotes[0].similarity >= 0.5)
+})

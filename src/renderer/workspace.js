@@ -635,7 +635,14 @@ export function wireEditorUiEvents() {
     node.addEventListener('dragleave', e => _callbacks.handleTabDragLeave?.(e))
     node.addEventListener('drop', e => _callbacks.handleTabDrop?.(e))
   })
-  handleSearchInput(path => _callbacks.openFile?.({ path, name: path.split('/').pop() }))
+  handleSearchInput(target => {
+    if (!target) return
+    if (typeof target === 'string') {
+      _callbacks.openFile?.({ path: target, name: target.split('/').pop() })
+      return
+    }
+    _callbacks.openFile?.(target)
+  })
 }
 
 export function handleToolbarClick(event) {

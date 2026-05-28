@@ -28,8 +28,16 @@ export function renderRelatedNotesPanel() {
     return
   }
 
-  const semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
-  const related = findRelatedNotes(semanticIndex, tab.path, { limit: 8 })
+  let semanticIndex
+  let related
+  try {
+    semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
+    related = findRelatedNotes(semanticIndex, tab.path, { limit: 8 })
+  } catch (err) {
+    body.innerHTML = renderRelatedError(err)
+    return
+  }
+
   if (!related.length) {
     body.innerHTML = `
       ${renderStatus(semanticIndex)}
@@ -64,6 +72,11 @@ function renderStatus(index) {
       ${stale}
     </div>
   `
+}
+
+function renderRelatedError(err) {
+  const message = err?.message || 'Unable to build related notes'
+  return `<div class="related-notes__error">Index error: ${escapeHtml(message)}</div>`
 }
 
 function renderRelatedNote(item) {

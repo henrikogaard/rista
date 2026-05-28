@@ -289,7 +289,7 @@ registerRightPanel('wiki-quality', {
   flex: 1,
   build: buildWikiQualityPanel,
   onMount: () => {
-    mountWikiQualityPanel(openFile)
+    mountWikiQualityPanel(openFile, { refreshTree })
     const body = document.getElementById('wiki-quality-body')
     body?.addEventListener('click', handleWikiQualityPanelEvent)
     body?.addEventListener('keydown', handleWikiQualityPanelEvent)

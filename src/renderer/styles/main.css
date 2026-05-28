@@ -3953,7 +3953,7 @@ body.is-dragging-widget .widget-stack:empty::before {
 }
 .wiki-quality-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 5px 6px;
@@ -3971,7 +3971,8 @@ body.is-dragging-widget .widget-stack:empty::before {
   background: rgba(255,255,255,0.05);
 }
 .wiki-quality-row__main,
-.wiki-quality-row__meta {
+.wiki-quality-row__meta,
+.wiki-quality-row__actions {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3984,6 +3985,30 @@ body.is-dragging-widget .widget-stack:empty::before {
   max-width: 42%;
   color: var(--text3);
   font-size: 10px;
+}
+.wiki-quality-row__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.wiki-quality-action {
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text2);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.wiki-quality-action--muted {
+  color: var(--text3);
+}
+.wiki-quality-action:hover {
+  color: var(--text1);
+  border-color: var(--border2);
+  background: rgba(255,255,255,0.04);
 }
 .wiki-quality-empty {
   padding: 10px 4px;
@@ -4012,6 +4037,15 @@ body.is-dragging-widget .widget-stack:empty::before {
 }
 .related-notes__stale {
   color: var(--amber);
+}
+.related-notes__error {
+  margin: 4px 2px 8px;
+  padding: 8px 9px;
+  border-left: 2px solid var(--amber);
+  background: rgba(255,255,255,0.035);
+  color: var(--text2);
+  font-size: 11px;
+  line-height: 1.35;
 }
 .related-notes__list {
   display: flex;

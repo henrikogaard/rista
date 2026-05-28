@@ -58,3 +58,19 @@ test('local semantic index finds related notes for the current document', async 
   assert.match(related[0].snippet, /graham crackers/)
   assert.equal(related.some(item => item.path === '/vault/Garden.md'), false)
 })
+
+test('semantic index rebuilds from changed link index content', async () => {
+  const { buildSemanticIndex, searchSemanticIndex } = await importSemanticIndexModule()
+  const source = makeIndex()
+
+  let index = buildSemanticIndex(source, { folderPath: '/vault' })
+  assert.equal(searchSemanticIndex(index, 'basil tomatoes', { limit: 1 })[0].path, '/vault/Garden.md')
+
+  source.files.set('/vault/Garden.md', {
+    content: '# Plants\n\nGraham cracker desserts and chocolate around the fire.',
+  })
+  index = buildSemanticIndex(source, { folderPath: '/vault' })
+
+  assert.equal(searchSemanticIndex(index, 'basil tomatoes', { limit: 1 }).length, 0)
+  assert.equal(searchSemanticIndex(index, 'graham chocolate fire', { limit: 1 })[0].path, '/vault/Garden.md')
+})

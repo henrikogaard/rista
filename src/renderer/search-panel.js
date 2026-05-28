@@ -10,6 +10,7 @@ let searchResults = []
 let selectedIndex = -1
 let searchDebounceTimer = null
 let searchIndexStatus = null
+let searchIndexError = ''
 
 export function buildSearchPanel() {
   return `
@@ -52,6 +53,7 @@ export function openSearchPanel() {
     searchResults = []
     selectedIndex = -1
     searchIndexStatus = null
+    searchIndexError = ''
     renderSearchResults()
   }
 }
@@ -100,7 +102,7 @@ export function handleSearchInput(callback) {
       e.preventDefault()
       const result = searchResults[selectedIndex]
       if (result) {
-        callback?.(result.path)
+        callback?.(buildOpenTarget(result))
         closeSearchPanel()
       }
       return
@@ -112,7 +114,8 @@ export function handleSearchInput(callback) {
   $('search-results')?.addEventListener('click', (e) => {
     const row = e.target.closest('.search-result')
     if (row && row.dataset.path) {
-      callback?.(row.dataset.path)
+      const result = searchResults[Number(row.dataset.index)]
+      callback?.(buildOpenTarget(result || row.dataset))
       closeSearchPanel()
     }
   })
@@ -122,14 +125,29 @@ function runSearch() {
   if (searchQuery.length < 2) {
     searchResults = []
     selectedIndex = -1
+    searchIndexStatus = null
+    searchIndexError = ''
     renderSearchResults()
     return
   }
-  const semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
-  searchIndexStatus = semanticIndex
-  const fileResults = searchFiles(searchQuery, { limit: 50 })
-  const semanticResults = searchSemanticIndex(semanticIndex, searchQuery, { limit: 50 })
-  searchResults = mergeSearchResults(fileResults, semanticResults).slice(0, 50)
+
+  try {
+    const semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
+    searchIndexStatus = semanticIndex
+    searchIndexError = ''
+    const fileResults = searchFiles(searchQuery, { limit: 50 })
+    const semanticResults = searchSemanticIndex(semanticIndex, searchQuery, { limit: 50 })
+    searchResults = mergeSearchResults(fileResults, semanticResults).slice(0, 50)
+  } catch (err) {
+    searchIndexError = err?.message || 'Semantic index failed'
+    searchIndexStatus = searchIndexStatus || { documentCount: 0, dirty: false }
+    try {
+      searchResults = searchFiles(searchQuery, { limit: 50 })
+    } catch {
+      searchResults = []
+    }
+  }
+
   selectedIndex = searchResults.length > 0 ? 0 : -1
   renderSearchResults()
 }
@@ -184,12 +202,12 @@ function renderSearchResults() {
     } else {
       container.innerHTML = `<div class="search-empty">No results for "${escapeHtml(searchQuery)}"</div>`
     }
-    if (footer) footer.textContent = searchIndexStatus ? searchIndexFooter() : ''
+    if (footer) footer.textContent = searchIndexStatus || searchIndexError ? searchIndexFooter() : ''
     return
   }
 
   container.innerHTML = searchResults.map((r, i) => `
-    <div class="search-result${i === selectedIndex ? ' active' : ''}" data-path="${escapeAttr(r.path)}" data-index="${i}">
+    <div class="search-result${i === selectedIndex ? ' active' : ''}" data-path="${escapeAttr(r.path)}" data-index="${i}" data-heading="${escapeAttr(r.heading || '')}" data-line="${escapeAttr(r.line || '')}">
       <div class="search-result__name">${escapeHtml(r.name)}</div>
       <div class="search-result__path">${escapeHtml(r.path)}</div>
       ${r.heading ? `<div class="search-result__cite">${escapeHtml(r.heading)}${r.relevance ? ` · ${Math.round(r.relevance * 100)}%` : ''}</div>` : ''}
@@ -203,9 +221,24 @@ function renderSearchResults() {
 }
 
 function searchIndexFooter() {
+  if (searchIndexError) return `Index error: ${searchIndexError}`
   const count = searchIndexStatus?.documentCount || 0
   const stale = searchIndexStatus?.dirty ? ' · index updating' : ''
   return `${count} notes indexed${stale}`
+}
+
+function buildOpenTarget(result) {
+  if (!result) return null
+  const path = result.path
+  const name = result.name || path?.split(/[/\\]/).pop()
+  if (result.heading && Number.isFinite(Number(result.line)) && Number(result.line) > 0) {
+    return {
+      path,
+      name,
+      heading: { text: result.heading, line: Number(result.line) },
+    }
+  }
+  return { path, name }
 }
 
 function scrollSelectedIntoView() {

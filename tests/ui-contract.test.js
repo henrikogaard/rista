@@ -917,6 +917,8 @@ test('right sidebar exposes related notes from the local semantic index', () => 
   assert.match(view, /export function mountRelatedNotesPanel/)
   assert.match(view, /export function renderRelatedNotesPanel/)
   assert.match(view, /export function handleRelatedNotesPanelEvent/)
+  assert.match(view, /catch \(err\)/)
+  assert.match(view, /related-notes__error/)
   assert.match(semantic, /export function buildSemanticIndex/)
   assert.match(semantic, /export function searchSemanticIndex/)
   assert.match(semantic, /export function findRelatedNotes/)
@@ -924,6 +926,7 @@ test('right sidebar exposes related notes from the local semantic index', () => 
   assert.match(semantic, /snippet/)
   assert.match(icons, /export function relatedNotesIcon/)
   assert.match(css, /\.related-notes/)
+  assert.match(css, /\.related-notes__error/)
 })
 
 test('project search blends local semantic citations with file matches', () => {
@@ -932,10 +935,41 @@ test('project search blends local semantic citations with file matches', () => {
 
   assert.match(search, /buildSemanticIndex/)
   assert.match(search, /searchSemanticIndex/)
+  assert.match(search, /try \{[\s\S]*buildSemanticIndex/)
+  assert.match(search, /catch \(err\)/)
+  assert.match(search, /searchIndexError/)
   assert.match(search, /mergeSearchResults/)
   assert.match(search, /search-result__cite/)
   assert.match(search, /notes indexed/)
+  assert.match(search, /Index error/)
   assert.match(css, /\.search-result__cite/)
+})
+
+test('semantic search citations open the cited heading line', () => {
+  const search = read('src/renderer/search-panel.js')
+  const workspace = read('src/renderer/workspace.js')
+
+  assert.match(search, /data-line="\$\{escapeAttr\(r\.line/)
+  assert.match(search, /function buildOpenTarget/)
+  assert.match(search, /heading: \{ text: result\.heading, line: Number\(result\.line\)/)
+  assert.match(search, /callback\?\.\(buildOpenTarget\(result\)\)/)
+  assert.match(workspace, /typeof target === 'string'/)
+  assert.match(workspace, /_callbacks\.openFile\?\.\(target\)/)
+})
+
+test('wiki quality findings can create missing notes and be dismissed', () => {
+  const view = read('src/renderer/wiki-quality-view.js')
+  const analyzer = read('src/renderer/wiki-quality.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(view, /data-action="create-missing-note"/)
+  assert.match(view, /data-action="dismiss-finding"/)
+  assert.match(view, /createMissingNoteFromFinding/)
+  assert.match(view, /dismissWikiQualityFinding/)
+  assert.match(view, /localStorage/)
+  assert.match(analyzer, /export function wikiQualityFindingKey/)
+  assert.match(analyzer, /nearDuplicateNotes/)
+  assert.match(css, /\.wiki-quality-row__actions/)
 })
 
 test('source-aware AI editor actions queue review items with citations', () => {
