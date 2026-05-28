@@ -463,6 +463,14 @@ export function moveWidgetToSide(id, side) {
   persistWidgetState()
 }
 
+export function setWidgetSidePreference(id, side) {
+  if (!_widgets.has(id)) return
+  setWidgetSide(id, side)
+  // Move an already-active widget without forcing dormant widgets open.
+  renderSidebar()
+  persistWidgetState()
+}
+
 function startWidgetResize(event, resizer) {
   ensureStateShape()
   const aboveId = resizer.dataset.aboveWidget

@@ -1,6 +1,6 @@
 import { getSettings } from './settings.js'
 import { buildAiChatPanel, mountAiChatPanel } from './ai-chat.js'
-import { closeRightPanel, moveWidgetToSide } from './right-panel.js'
+import { closeRightPanel, moveWidgetToSide, setWidgetSidePreference } from './right-panel.js'
 
 function isRailDock(dock) {
   return dock === 'right-rail' || dock === 'left-rail'
@@ -10,10 +10,18 @@ function applyAssistantDockPlacement(dock) {
   if (isRailDock(dock)) {
     closeRightPanel('ai-chat')
   } else if (dock === 'left-sidebar') {
-    moveWidgetToSide('ai-chat', 'left')
+    setWidgetSidePreference('ai-chat', 'left')
   } else {
-    moveWidgetToSide('ai-chat', 'right')
+    setWidgetSidePreference('ai-chat', 'right')
   }
+}
+
+export function openAssistantWidgetForDock(dock = getSettings().assistantDock) {
+  if (dock === 'left-sidebar') {
+    moveWidgetToSide('ai-chat', 'left')
+    return
+  }
+  moveWidgetToSide('ai-chat', 'right')
 }
 
 export function buildAssistantRail() {

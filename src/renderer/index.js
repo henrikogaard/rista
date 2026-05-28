@@ -32,10 +32,10 @@ import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, render
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { createSession } from './agents-sidebar.js'
-import { toggleRightPanel, closeRightPanel, toggleRightSidebar, openRightPanel } from './right-panel.js'
+import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel, openAiSession } from './ai-chat.js'
-import { mountAssistantRail } from './assistant-rail.js'
+import { mountAssistantRail, openAssistantWidgetForDock } from './assistant-rail.js'
 import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
@@ -112,7 +112,7 @@ function openAiChatSurface() {
     mountAssistantRail()
     return
   }
-  openRightPanel('ai-chat')
+  openAssistantWidgetForDock(dock)
 }
 
 // ── Init theme before any paint ──────────────────────────────────
