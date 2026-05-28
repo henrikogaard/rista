@@ -861,6 +861,54 @@ fn openai_tool_calls(message: &Value) -> Value {
     Value::Array(tool_calls)
 }
 
+fn anthropic_messages(messages: Value) -> Value {
+    let messages = messages
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) != Some("system"))
+        .map(|message| {
+            let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+            match role {
+                "assistant" => {
+                    let mut content = Vec::new();
+                    if let Some(text) = message.get("content").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            content.push(json!({ "type": "text", "text": text }));
+                        }
+                    }
+                    if let Some(tool_calls) = message.get("toolCalls").and_then(Value::as_array) {
+                        content.extend(tool_calls.iter().map(|tool_call| {
+                            json!({
+                                "type": "tool_use",
+                                "id": tool_call.get("id").cloned().unwrap_or(Value::Null),
+                                "name": tool_call.get("name").cloned().unwrap_or(Value::Null),
+                                "input": tool_call.get("input").cloned().unwrap_or_else(|| json!({}))
+                            })
+                        }));
+                    }
+                    json!({ "role": "assistant", "content": content })
+                }
+                "tool" => json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": message.get("toolCallId").cloned().unwrap_or(Value::Null),
+                        "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
+                    }]
+                }),
+                _ => json!({
+                    "role": role,
+                    "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Value::Array(messages)
+}
+
 fn anthropic_tool_calls(content: &[Value]) -> Value {
     let tool_calls = content
         .iter()
@@ -896,7 +944,7 @@ async fn ai_chat(params: Value) -> Value {
             let mut payload = json!({
                 "model": model,
                 "max_tokens": 4096,
-                "messages": messages.as_array().cloned().unwrap_or_default().into_iter().filter(|m| m.get("role").and_then(Value::as_str) != Some("system")).collect::<Vec<_>>()
+                "messages": anthropic_messages(messages)
             });
             if let Some(tools) = tools {
                 payload["tools"] = tools;
