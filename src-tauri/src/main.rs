@@ -861,52 +861,90 @@ fn openai_tool_calls(message: &Value) -> Value {
     Value::Array(tool_calls)
 }
 
+fn is_openai_compatible_key_provider(provider: &str) -> bool {
+    matches!(provider, "openai" | "openrouter")
+}
+
+fn anthropic_system(messages: &Value) -> Option<String> {
+    let system = messages
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("system"))
+        .filter_map(|message| message.get("content").and_then(Value::as_str))
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if system.is_empty() {
+        None
+    } else {
+        Some(system)
+    }
+}
+
 fn anthropic_messages(messages: Value) -> Value {
-    let messages = messages
+    let mut mapped = Vec::new();
+    let mut pending_tool_results = Vec::new();
+
+    let flush_tool_results = |mapped: &mut Vec<Value>, pending_tool_results: &mut Vec<Value>| {
+        if pending_tool_results.is_empty() {
+            return;
+        }
+        mapped.push(json!({
+            "role": "user",
+            "content": std::mem::take(pending_tool_results)
+        }));
+    };
+
+    for message in messages
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
         .filter(|message| message.get("role").and_then(Value::as_str) != Some("system"))
-        .map(|message| {
-            let role = message.get("role").and_then(Value::as_str).unwrap_or("");
-            match role {
-                "assistant" => {
-                    let mut content = Vec::new();
-                    if let Some(text) = message.get("content").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            content.push(json!({ "type": "text", "text": text }));
-                        }
+    {
+        let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+        match role {
+            "assistant" => {
+                flush_tool_results(&mut mapped, &mut pending_tool_results);
+                let mut content = Vec::new();
+                if let Some(text) = message.get("content").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        content.push(json!({ "type": "text", "text": text }));
                     }
-                    if let Some(tool_calls) = message.get("toolCalls").and_then(Value::as_array) {
-                        content.extend(tool_calls.iter().map(|tool_call| {
-                            json!({
-                                "type": "tool_use",
-                                "id": tool_call.get("id").cloned().unwrap_or(Value::Null),
-                                "name": tool_call.get("name").cloned().unwrap_or(Value::Null),
-                                "input": tool_call.get("input").cloned().unwrap_or_else(|| json!({}))
-                            })
-                        }));
-                    }
-                    json!({ "role": "assistant", "content": content })
                 }
-                "tool" => json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": message.get("toolCallId").cloned().unwrap_or(Value::Null),
-                        "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
-                    }]
-                }),
-                _ => json!({
+                if let Some(tool_calls) = message.get("toolCalls").and_then(Value::as_array) {
+                    content.extend(tool_calls.iter().map(|tool_call| {
+                        json!({
+                            "type": "tool_use",
+                            "id": tool_call.get("id").cloned().unwrap_or(Value::Null),
+                            "name": tool_call.get("name").cloned().unwrap_or(Value::Null),
+                            "input": tool_call.get("input").cloned().unwrap_or_else(|| json!({}))
+                        })
+                    }));
+                }
+                mapped.push(json!({ "role": "assistant", "content": content }));
+            }
+            "tool" => {
+                pending_tool_results.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": message.get("toolCallId").cloned().unwrap_or(Value::Null),
+                    "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
+                }));
+            }
+            _ => {
+                flush_tool_results(&mut mapped, &mut pending_tool_results);
+                mapped.push(json!({
                     "role": role,
                     "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
-                }),
+                }));
             }
-        })
-        .collect::<Vec<_>>();
+        }
+    }
+    flush_tool_results(&mut mapped, &mut pending_tool_results);
 
-    Value::Array(messages)
+    Value::Array(mapped)
 }
 
 fn anthropic_tool_calls(content: &[Value]) -> Value {
@@ -941,11 +979,15 @@ async fn ai_chat(params: Value) -> Value {
     let (url, payload, request) = match provider {
         "anthropic" => {
             let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+            let system = anthropic_system(&messages);
             let mut payload = json!({
                 "model": model,
                 "max_tokens": 4096,
                 "messages": anthropic_messages(messages)
             });
+            if let Some(system) = system {
+                payload["system"] = Value::String(system);
+            }
             if let Some(tools) = tools {
                 payload["tools"] = tools;
             }
@@ -962,10 +1004,12 @@ async fn ai_chat(params: Value) -> Value {
             if let Some(tools) = tools {
                 payload["tools"] = tools;
             }
-            let request = client
+            let mut request = client
                 .post(&url)
-                .header("content-type", "application/json")
-                .bearer_auth(api_key);
+                .header("content-type", "application/json");
+            if !api_key.is_empty() && is_openai_compatible_key_provider(provider) {
+                request = request.bearer_auth(api_key);
+            }
             (url, payload, request)
         }
         "ollama" => {

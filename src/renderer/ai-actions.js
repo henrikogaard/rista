@@ -19,6 +19,7 @@ function getProviderConfig(settings) {
   return {
     providerKey,
     provider,
+    apiKey: provider.apiKey ? settings.aiApiKey : '',
     model: settings.aiModel || provider.defaultModel || '',
     baseUrl: settings.aiBaseUrl || provider.defaultBaseUrl || '',
   }
@@ -63,7 +64,7 @@ async function runAiAction(action, selectedText, view) {
   try {
     const result = await window.fjord.aiChat({
       provider: config.providerKey,
-      apiKey: settings.aiApiKey,
+      apiKey: config.apiKey,
       model: config.model,
       baseUrl: config.baseUrl,
       messages,
@@ -114,7 +115,7 @@ export async function askNotesRag(question) {
   try {
     return await window.fjord.aiChat({
       provider: config.providerKey,
-      apiKey: settings.aiApiKey,
+      apiKey: config.apiKey,
       model: config.model,
       baseUrl: config.baseUrl,
       messages,

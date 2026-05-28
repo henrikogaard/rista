@@ -36,7 +36,7 @@ function getProviderConfig() {
   }
   return {
     provider: providerKey,
-    apiKey: s.aiApiKey || '',
+    apiKey: provider.apiKey ? s.aiApiKey : '',
     model: s.aiModel || provider.defaultModel,
     baseUrl: s.aiBaseUrl || provider.defaultBaseUrl,
     label: provider.label,
