@@ -306,6 +306,22 @@ test('right sidebar widget tabs expose only honest visible hit targets', () => {
   assert.match(css, /\.right-sidebar__tab \*\s*\{[\s\S]*cursor: default/)
 })
 
+test('widgets use docked IDE pane chrome', () => {
+  const rightPanel = read('src/renderer/right-panel.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(rightPanel, /widget__header-main/)
+  assert.match(rightPanel, /widget__header-controls/)
+  assert.match(rightPanel, /aria-label="Move widget"/)
+  assert.match(rightPanel, /aria-label="Collapse widget"/)
+  assert.match(rightPanel, /aria-label="Close widget"/)
+  assert.match(rightPanel, /right-sidebar__tab-label/)
+  assert.match(css, /\.widget--active/)
+  assert.match(css, /\.widget__header-main/)
+  assert.match(css, /\.widget__header-controls/)
+  assert.match(css, /\.right-sidebar__tab-label/)
+})
+
 test('global brand rail owns the native window chrome above every column', () => {
   const shell = read('src/renderer/shell.js')
   const rightPanel = read('src/renderer/right-panel.js')

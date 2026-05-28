@@ -3432,17 +3432,41 @@ body.is-resizing-widget { cursor: ns-resize; user-select: none; }
   transition: color 0.1s, background 0.1s, border-color 0.1s;
   box-sizing: border-box;
 }
+.right-sidebar.open .right-sidebar__tabs:hover .right-sidebar__tab {
+  width: auto;
+  max-width: 104px;
+  flex: 0 1 auto;
+  gap: 5px;
+  padding: 0 7px;
+}
 .right-sidebar__tabs > :not(.right-sidebar__tab) {
   cursor: default;
   pointer-events: none;
 }
 .right-sidebar__tab:hover { color: var(--text1); background: rgba(255,255,255,0.05); border-color: var(--border2); }
 .right-sidebar__tab.active { color: var(--accent-hi); background: var(--accent-dim); border-color: var(--border2); }
+.right-sidebar__tab-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
 .right-sidebar__tab svg {
   width: 13px;
   height: 13px;
   pointer-events: none;
   cursor: default;
+}
+.right-sidebar__tab-label {
+  display: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.right-sidebar.open .right-sidebar__tabs:hover .right-sidebar__tab-label {
+  display: inline;
 }
 .right-sidebar__tab * {
   pointer-events: none;
@@ -3541,6 +3565,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   overflow: hidden;
 }
 .widget:last-child { border-bottom: none; }
+.widget--active { background: color-mix(in srgb, var(--surface-bg-1) 92%, transparent); }
 .widget--collapsed .widget__body { display: none; }
 .widget--collapsed .widget__caret { transform: rotate(-90deg); }
 
@@ -3561,6 +3586,18 @@ body.is-dragging-widget .widget-stack:empty::before {
   transition: color 0.12s, background 0.12s;
 }
 .widget__header:hover { color: var(--text1); background: rgba(255,255,255,0.025); }
+.widget__header-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.widget__header-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
 .widget__drag-handle {
   color: var(--text3);
   font-size: 8px;
@@ -3587,7 +3624,13 @@ body.is-dragging-widget .widget-stack:empty::before {
   opacity: 0.7;
 }
 .widget__header:hover .widget__icon { opacity: 1; }
-.widget__title { flex-shrink: 0; font-weight: 500; }
+.widget__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
 .widget__spacer { flex: 1; }
 .widget__actions {
   display: inline-flex;

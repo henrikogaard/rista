@@ -159,7 +159,10 @@ function renderTabs() {
     const hooks = _widgets.get(id)
     const active = state.rightWidgets.has(id) ? ' active' : ''
     const title = hooks?.title || id
-    return `<div class="right-sidebar__tab${active}" data-action="widget-tab" data-widget="${id}" title="${escapeHtml(title)}" role="button" tabindex="0">${hooks?.icon || ''}</div>`
+    return `<div class="right-sidebar__tab${active}" data-action="widget-tab" data-widget="${id}" title="${escapeHtml(title)}" aria-label="Toggle ${escapeHtml(title)} widget" role="button" tabindex="0">
+      <span class="right-sidebar__tab-icon">${hooks?.icon || ''}</span>
+      <span class="right-sidebar__tab-label">${escapeHtml(title)}</span>
+    </div>`
   }).join('')
 }
 
@@ -201,22 +204,26 @@ function renderStack(side) {
       const hooks = _widgets.get(id)
       if (!hooks) return
       const collapsed = state.collapsedWidgets.has(id)
+      const activeClass = collapsed ? '' : ' widget--active'
       node = document.createElement('section')
-      node.className = `widget${collapsed ? ' widget--collapsed' : ''}`
+      node.className = `widget${activeClass}${collapsed ? ' widget--collapsed' : ''}`
       node.dataset.widget = id
       node.dataset.side = side
       node.style.flex = collapsed ? '0 0 auto' : `${getWidgetFlex(id)} 1 0`
       const actionsHtml = typeof hooks.headerActions === 'function' ? hooks.headerActions() : ''
       node.innerHTML = `
-        <header class="widget__header" data-action="widget-toggle-collapse" data-widget="${id}">
-          <span class="widget__drag-handle" data-action="widget-drag" data-widget="${id}" role="button" tabindex="0" title="Drag to move" aria-label="Drag ${escapeHtml(hooks.title || id)} widget">⋮⋮</span>
-          ${hooks.icon ? `<span class="widget__icon">${hooks.icon}</span>` : ''}
-          <span class="widget__title">${escapeHtml(hooks.title || id)}</span>
-          <span class="widget__spacer"></span>
-          ${actionsHtml ? `<div class="widget__actions">${actionsHtml}</div>` : ''}
-          <span class="widget__caret" aria-hidden="true">▾</span>
-          <span class="widget__close" data-action="widget-close" data-widget="${id}" role="button" tabindex="0" title="Close">×</span>
-        </header>
+        <div class="widget__header" data-action="widget-collapse" data-widget="${id}">
+          <div class="widget__header-main">
+            <span class="widget__drag-handle" data-action="widget-drag" data-widget="${id}" aria-label="Move widget" role="button" tabindex="0" title="Move widget">⋮⋮</span>
+            <span class="widget__icon">${hooks?.icon || ''}</span>
+            <span class="widget__title">${escapeHtml(hooks?.title || id)}</span>
+          </div>
+          <div class="widget__header-controls">
+            <span class="widget__actions">${actionsHtml}</span>
+            <span class="widget__caret" aria-label="Collapse widget">▾</span>
+            <span class="widget__close" aria-label="Close widget" data-action="widget-close" data-widget="${id}" role="button" tabindex="0" title="Close">×</span>
+          </div>
+        </div>
         <div class="widget__body">${hooks.build()}</div>
       `
       fragment.appendChild(node)
@@ -242,6 +249,7 @@ function renderStack(side) {
     const id = node.dataset.widget
     const collapsed = state.collapsedWidgets.has(id)
     node.classList.toggle('widget--collapsed', collapsed)
+    node.classList.toggle('widget--active', !collapsed)
     node.style.flex = collapsed ? '0 0 auto' : `${getWidgetFlex(id)} 1 0`
   })
 }
