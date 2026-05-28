@@ -12,6 +12,22 @@ const AI_ACTIONS = [
   { id: 'explain', label: 'AI: Explain', instruction: 'Explain the following text in simple terms:' },
 ]
 
+function getProviderConfig(settings) {
+  const providerKey = settings.aiProvider || 'openai'
+  const provider = PROVIDERS[providerKey]
+  if (!provider) return null
+  return {
+    providerKey,
+    provider,
+    model: settings.aiModel || provider.defaultModel || '',
+    baseUrl: settings.aiBaseUrl || provider.defaultBaseUrl || '',
+  }
+}
+
+function cliActionMessage(provider) {
+  return `${provider.label} discovery is available in Settings. Action transport will be wired in a later pass.`
+}
+
 export function showAiContextMenu(x, y, view) {
   const selection = view.state.sliceDoc(
     view.state.selection.main.from,
@@ -29,21 +45,29 @@ export function showAiContextMenu(x, y, view) {
 
 async function runAiAction(action, selectedText, view) {
   const settings = getSettings()
-  if (!settings.aiApiKey && !PROVIDERS[settings.aiProvider]?.noApiKey) {
+  const config = getProviderConfig(settings)
+  if (!config) return
+  if (config.provider.transport === 'cli') {
+    alert(cliActionMessage(config.provider))
+    return
+  }
+  if (!settings.aiApiKey && !config.provider.noApiKey) {
     alert('Please set an API key in Settings → AI')
     return
   }
-
-  const provider = settings.aiProvider || 'openai'
-  const model = settings.aiModel || PROVIDERS[provider]?.defaultModel || ''
-  const baseUrl = settings.aiBaseUrl || PROVIDERS[provider]?.defaultBaseUrl || ''
 
   const messages = [
     { role: 'user', content: `${action.instruction}\n\n${selectedText}` },
   ]
 
   try {
-    const result = await window.fjord.aiChat({ provider, apiKey: settings.aiApiKey, model, baseUrl, messages })
+    const result = await window.fjord.aiChat({
+      provider: config.providerKey,
+      apiKey: settings.aiApiKey,
+      model: config.model,
+      baseUrl: config.baseUrl,
+      messages,
+    })
     if (result?.error) {
       alert('AI error: ' + result.error)
       return
@@ -67,7 +91,12 @@ async function runAiAction(action, selectedText, view) {
 
 export async function askNotesRag(question) {
   const settings = getSettings()
-  if (!settings.aiApiKey && !PROVIDERS[settings.aiProvider]?.noApiKey) {
+  const config = getProviderConfig(settings)
+  if (!config) return { error: 'Unknown AI provider' }
+  if (config.provider.transport === 'cli') {
+    return { error: cliActionMessage(config.provider) }
+  }
+  if (!settings.aiApiKey && !config.provider.noApiKey) {
     return { error: 'Please set an API key in Settings → AI' }
   }
 
@@ -77,17 +106,19 @@ export async function askNotesRag(question) {
     .map(r => `--- ${r.name} ---\n${r.preview || ''}`)
     .join('\n\n')
 
-  const provider = settings.aiProvider || 'openai'
-  const model = settings.aiModel || PROVIDERS[provider]?.defaultModel || ''
-  const baseUrl = settings.aiBaseUrl || PROVIDERS[provider]?.defaultBaseUrl || ''
-
   const messages = [
     { role: 'system', content: `You are a knowledge assistant. Answer the user's question based on these notes from their wiki:\n\n${context}\n\nIf the notes don't contain relevant information, say so.` },
     { role: 'user', content: question },
   ]
 
   try {
-    return await window.fjord.aiChat({ provider, apiKey: settings.aiApiKey, model, baseUrl, messages })
+    return await window.fjord.aiChat({
+      provider: config.providerKey,
+      apiKey: settings.aiApiKey,
+      model: config.model,
+      baseUrl: config.baseUrl,
+      messages,
+    })
   } catch (err) {
     return { error: err.message || 'Request failed' }
   }
