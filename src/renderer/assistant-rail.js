@@ -6,6 +6,16 @@ function isRailDock(dock) {
   return dock === 'right-rail' || dock === 'left-rail'
 }
 
+function applyAssistantDockPlacement(dock) {
+  if (isRailDock(dock)) {
+    closeRightPanel('ai-chat')
+  } else if (dock === 'left-sidebar') {
+    moveWidgetToSide('ai-chat', 'left')
+  } else {
+    moveWidgetToSide('ai-chat', 'right')
+  }
+}
+
 export function buildAssistantRail() {
   return `
     <aside class="assistant-rail" id="assistant-rail" aria-label="AI assistant">
@@ -21,14 +31,7 @@ export function buildAssistantRail() {
 export function syncAssistantRail() {
   const rail = document.getElementById('assistant-rail')
   const dock = getSettings().assistantDock
-
-  if (isRailDock(dock)) {
-    closeRightPanel('ai-chat')
-  } else if (dock === 'left-sidebar') {
-    moveWidgetToSide('ai-chat', 'left')
-  } else {
-    moveWidgetToSide('ai-chat', 'right')
-  }
+  applyAssistantDockPlacement(dock)
 
   if (!rail) return
   rail.classList.toggle('open', isRailDock(dock))
@@ -49,6 +52,8 @@ export function mountAssistantRail() {
     syncAssistantRail()
     return
   }
+
+  applyAssistantDockPlacement(dock)
 
   if (body.firstChild) {
     syncAssistantRail()

@@ -842,6 +842,12 @@ test('assistant can dock as widget or dedicated side rail', () => {
   assert.match(assistantRail, /moveWidgetToSide\('ai-chat', 'left'\)/)
   assert.match(assistantRail, /closeRightPanel\('ai-chat'\)/)
   assert.match(assistantRail, /body\.replaceChildren\(\)/)
+  assert.match(assistantRail, /function applyAssistantDockPlacement/)
+  assert.match(assistantRail, /applyAssistantDockPlacement\(dock\)[\s\S]*body\.innerHTML = buildAiChatPanel\(\)/)
+  assert.ok(
+    assistantRail.indexOf('applyAssistantDockPlacement(dock)') < assistantRail.indexOf('body.innerHTML = buildAiChatPanel()'),
+    'assistant widget must close or move before rail chat DOM is injected'
+  )
   assert.match(assistantRail, /assistant-rail/)
   assert.match(css, /\.assistant-rail/)
   assert.match(css, /\.assistant-rail\.open/)
