@@ -495,6 +495,23 @@ test('renderer installs the Tauri-backed window.fjord compatibility API', () => 
   assert.match(adapter, /onCommand/)
 })
 
+test('terminal exposes shell metadata and command run details', () => {
+  const terminal = read('src/renderer/terminal-drawer.js')
+  const adapter = read('src/renderer/tauri-api.js')
+  const tauriMain = read('src-tauri/src/main.rs')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(adapter, /getShellInfo: \(\) => invoke\('get_shell_info'\)/)
+  assert.match(tauriMain, /fn get_shell_info/)
+  assert.match(tauriMain, /durationMs/)
+  assert.match(terminal, /terminal-shell/)
+  assert.match(terminal, /formatDuration/)
+  assert.match(terminal, /terminal-line__meta/)
+  assert.match(css, /\.terminal-shell/)
+  assert.match(css, /\.terminal-line__meta/)
+  assert.match(css, /\.terminal-quick-command/)
+})
+
 test('visible app identity is rebranded to Rista', () => {
   const html = read('public/index.html')
   const shell = read('src/renderer/shell.js')

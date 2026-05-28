@@ -6,9 +6,29 @@ import { state, $ } from './state.js'
 let commandHistory = []
 let historyIndex = -1
 let terminalBusy = false
+let shellInfo = { name: 'shell', path: '' }
 
 function folderName(folderPath) {
   return String(folderPath || '').split(/[\\/]/).filter(Boolean).pop() || '~'
+}
+
+function formatDuration(ms) {
+  const value = Number(ms || 0)
+  if (value < 1000) return `${value}ms`
+  return `${(value / 1000).toFixed(1)}s`
+}
+
+async function syncShellInfo() {
+  try {
+    shellInfo = await window.fjord.getShellInfo()
+  } catch {
+    shellInfo = { name: 'shell', path: '' }
+  }
+  const el = $('terminal-shell')
+  if (el) {
+    el.textContent = shellInfo.name
+    el.title = shellInfo.path || shellInfo.name
+  }
 }
 
 export function buildTerminalDrawer() {
@@ -19,6 +39,7 @@ export function buildTerminalDrawer() {
           <div class="terminal-drawer__title">Terminal</div>
           <div class="terminal-drawer__cwd" id="terminal-cwd">~</div>
         </div>
+        <div class="terminal-shell" id="terminal-shell">shell</div>
         <div class="terminal-drawer__path" id="terminal-path"></div>
         <div class="terminal-drawer__status" id="terminal-status">Ready</div>
         <div class="terminal-drawer__action" id="terminal-clear-btn" title="Clear terminal" role="button" tabindex="0">Clear</div>
@@ -44,6 +65,7 @@ export function toggleTerminalDrawer() {
   if (drawer.classList.contains('open')) {
     $('terminal-input')?.focus()
     syncTerminalPath()
+    syncShellInfo()
   }
 }
 
@@ -53,6 +75,7 @@ export function openTerminalDrawer() {
   drawer.classList.add('open')
   $('terminal-input')?.focus()
   syncTerminalPath()
+  syncShellInfo()
 }
 
 export function closeTerminalDrawer() {
@@ -75,7 +98,7 @@ export function appendTerminalOutput(text, type = 'stdout') {
   if (!output) return
   output.querySelector('.terminal-drawer__empty')?.remove()
   const line = document.createElement('div')
-  line.className = `terminal-line terminal-line--${type}`
+  line.className = type === 'meta' ? 'terminal-line terminal-line__meta' : `terminal-line terminal-line--${type}`
   line.textContent = text
   output.appendChild(line)
   output.scrollTop = output.scrollHeight
@@ -128,6 +151,7 @@ export function handleTerminalInput(event) {
         if (result.code !== 0 && !result.stdout && !result.stderr) {
           appendTerminalOutput(`Exit code: ${result.code}`, 'error')
         }
+        appendTerminalOutput(`exit ${result.code ?? 0} · ${formatDuration(result.durationMs)}`, 'meta')
       } catch (err) {
         appendTerminalOutput(err.message, 'error')
       } finally {

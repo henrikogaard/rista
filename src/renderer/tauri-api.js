@@ -207,6 +207,7 @@ if (window.__TAURI_INTERNALS__) {
     deleteFile: (path) => invoke('delete_file', { path }),
 
     runTerminalCommand: (command, cwd) => invoke('run_terminal_command', { command, cwd }),
+    getShellInfo: () => invoke('get_shell_info'),
     importContent: ({ folderPath, title, body, sourceUrl }) => invoke('import_content', { folderPath, title, body, sourceUrl }),
     setRepresentedFile: (path) => invoke('set_represented_file', { path }),
     setAppIcon: (variant, theme) => invoke('set_app_icon', { variant, theme }),

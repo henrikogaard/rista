@@ -77,6 +77,15 @@ struct TerminalResult {
     stderr: String,
     code: i32,
     error: Option<String>,
+    #[serde(rename = "durationMs")]
+    duration_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellInfo {
+    path: String,
+    name: String,
 }
 
 fn path_string(path: &Path) -> String {
@@ -517,6 +526,7 @@ async fn new_window(
 
 #[tauri::command]
 fn run_terminal_command(command: String, cwd: Option<String>) -> TerminalResult {
+    let started = std::time::Instant::now();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(windows) {
             "cmd".into()
@@ -535,19 +545,44 @@ fn run_terminal_command(command: String, cwd: Option<String>) -> TerminalResult 
     }
 
     match cmd.output() {
-        Ok(output) => TerminalResult {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            code: output.status.code().unwrap_or(0),
-            error: None,
-        },
-        Err(err) => TerminalResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            code: -1,
-            error: Some(err.to_string()),
-        },
+        Ok(output) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            TerminalResult {
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                code: output.status.code().unwrap_or(0),
+                error: None,
+                duration_ms,
+            }
+        }
+        Err(err) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            TerminalResult {
+                stdout: String::new(),
+                stderr: String::new(),
+                code: -1,
+                error: Some(err.to_string()),
+                duration_ms,
+            }
+        }
     }
+}
+
+#[tauri::command]
+fn get_shell_info() -> ShellInfo {
+    let path = std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(windows) {
+            "cmd".into()
+        } else {
+            "/bin/sh".into()
+        }
+    });
+    let name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&path)
+        .to_string();
+    ShellInfo { path, name }
 }
 
 #[tauri::command]
@@ -847,6 +882,7 @@ fn main() {
             new_window,
             start_window_drag,
             run_terminal_command,
+            get_shell_info,
             render_d2,
             export_html,
             export_site,
