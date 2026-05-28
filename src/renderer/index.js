@@ -1,6 +1,6 @@
 import './tauri-api.js'
 import { initTheme } from './theme.js'
-import { applySettings } from './settings.js'
+import { applySettings, getSettings } from './settings.js'
 import { initKeybindings, matchesBinding } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
@@ -106,6 +106,15 @@ import {
   createDailyNote,
 } from './tabs.js'
 
+function openAiChatSurface() {
+  const dock = getSettings().assistantDock
+  if (dock === 'right-rail' || dock === 'left-rail') {
+    mountAssistantRail()
+    return
+  }
+  openRightPanel('ai-chat')
+}
+
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
@@ -144,7 +153,7 @@ registerAgentsViewCallbacks({
     if (session) refreshAgentsPanel()
   },
   openSession: (sessionPath) => {
-    openRightPanel('ai-chat')
+    openAiChatSurface()
     openAiSession(sessionPath)
   },
 })
@@ -306,7 +315,7 @@ registerShellCallbacks({
   syncToolbarToggle,
   syncAssistantRail: mountAssistantRail,
   openAgentSession: (sessionPath) => {
-    openRightPanel('ai-chat')
+    openAiChatSurface()
     openAiSession(sessionPath)
   },
 })
