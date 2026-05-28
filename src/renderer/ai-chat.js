@@ -22,13 +22,27 @@ function getProviderConfig() {
   const providerKey = s.aiProvider || 'openai'
   const provider = PROVIDERS[providerKey]
   if (!provider) return null
+  if (provider.transport === 'cli') {
+    return {
+      provider: providerKey,
+      apiKey: '',
+      model: s.aiModel || provider.defaultModel,
+      baseUrl: '',
+      label: provider.label,
+      noApiKey: true,
+      transport: 'cli',
+      supportsTools: false,
+    }
+  }
   return {
     provider: providerKey,
     apiKey: s.aiApiKey || '',
     model: s.aiModel || provider.defaultModel,
     baseUrl: s.aiBaseUrl || provider.defaultBaseUrl,
     label: provider.label,
-    noApiKey: provider.noApiKey || false,
+    noApiKey: provider.noApiKey || provider.apiKey === false,
+    transport: provider.transport || 'http',
+    supportsTools: Boolean(provider.supportsTools),
   }
 }
 
@@ -173,7 +187,7 @@ async function runAgentLoop() {
   const config = getProviderConfig()
   if (!config) return
   const systemPrompt = buildSystemPrompt()
-  const supportsTools = config.provider === 'anthropic' || config.provider === 'openai'
+  const supportsTools = config.transport !== 'cli' && config.supportsTools
   const tools = supportsTools ? toolsForProvider(config.provider) : undefined
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
@@ -263,6 +277,11 @@ async function sendMessage() {
   if (!config) return
   if (!config.noApiKey && !config.apiKey) {
     _messages.push({ role: 'assistant', content: 'Please set your API key in Settings > AI.' })
+    renderMessages()
+    return
+  }
+  if (config.transport === 'cli') {
+    _messages.push({ role: '__status', content: `${config.label} discovery is available in Settings. Chat transport will be wired in a later pass.` })
     renderMessages()
     return
   }

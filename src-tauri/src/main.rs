@@ -82,6 +82,16 @@ struct TerminalResult {
 }
 
 #[derive(Serialize)]
+struct LocalAiTool {
+    id: String,
+    label: String,
+    command: String,
+    path: Option<String>,
+    version: Option<String>,
+    available: bool,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellInfo {
     path: String,
@@ -689,6 +699,74 @@ fn import_content(folder_path: String, title: String, body: String, source_url: 
 }
 
 #[tauri::command]
+fn discover_local_ai_tools() -> Vec<LocalAiTool> {
+    let probes = [
+        ("codex", "Codex CLI", "codex", "codex --version"),
+        ("opencode", "opencode", "opencode", "opencode --version"),
+    ];
+
+    probes
+        .iter()
+        .map(|(id, label, command, _version_probe)| {
+            let path = which_command(command);
+            let available = path.is_some();
+            LocalAiTool {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                command: (*command).to_string(),
+                path,
+                version: if available {
+                    version_command(command)
+                } else {
+                    None
+                },
+                available,
+            }
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn which_command(command: &str) -> Option<String> {
+    let output = Command::new("where").arg(command).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn which_command(command: &str) -> Option<String> {
+    let quoted = command.replace('\'', "'\\''");
+    let script = format!("command -v '{}'", quoted);
+    let output = Command::new("sh").arg("-lc").arg(script).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+fn version_command(command: &str) -> Option<String> {
+    let output = Command::new(command).arg("--version").output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let version = format!("{}{}", stdout.trim(), stderr.trim()).trim().to_string();
+    if output.status.success() && !version.is_empty() {
+        Some(version)
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
 async fn ai_chat(params: Value) -> Value {
     let provider = params.get("provider").and_then(Value::as_str).unwrap_or("");
     let base_url = params.get("baseUrl").and_then(Value::as_str).unwrap_or("");
@@ -719,7 +797,7 @@ async fn ai_chat(params: Value) -> Value {
                 .header("anthropic-version", "2023-06-01");
             (url, payload, request)
         }
-        "openai" => {
+        "openai" | "openrouter" | "custom-openai-compatible" => {
             let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
             let mut payload = json!({ "model": model, "messages": messages });
             if let Some(tools) = tools {
@@ -754,7 +832,7 @@ async fn ai_chat(params: Value) -> Value {
     }
 
     match provider {
-        "openai" => {
+        "openai" | "openrouter" | "custom-openai-compatible" => {
             let message = json_value
                 .pointer("/choices/0/message")
                 .cloned()
@@ -884,6 +962,7 @@ fn main() {
             export_site,
             export_pdf,
             import_content,
+            discover_local_ai_tools,
             ai_chat,
             set_represented_file,
             set_app_icon

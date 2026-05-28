@@ -11,6 +11,7 @@ import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
 import { showContextMenu } from './context-menu.js'
 import { renderPinnedProjectsHtml, renderRecentProjectsHtml, removeRecentProject, togglePinnedProject, unpinProject } from './recent-projects.js'
+import { PROVIDERS } from './ai-providers.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -27,6 +28,7 @@ const SETTINGS_TABS = [
 
 let activeSettingsTab = 'appearance'
 let activeKeybindingCapture = null
+let localAiTools = []
 
 function folderName(folderPath) {
   return String(folderPath || '').split(/[\\/]/).filter(Boolean).pop() || 'No folder open'
@@ -291,6 +293,37 @@ function renderAppIconPicker() {
   `
 }
 
+function renderLocalToolRows() {
+  if (!localAiTools.length) {
+    return '<div class="settings-muted">Run discovery to check local AI tools.</div>'
+  }
+
+  return localAiTools.map(tool => `
+    <div class="local-tool-row${tool.available ? ' is-available' : ''}">
+      <div class="local-tool-row__main">
+        <span class="local-tool-row__label">${escapeAttribute(tool.label || tool.id || tool.command)}</span>
+        <span class="local-tool-row__meta">${escapeAttribute(tool.path || tool.command || '')}</span>
+      </div>
+      <div class="local-tool-row__status">
+        <span class="local-tool-row__pill">${tool.available ? 'Available' : 'Missing'}</span>
+        ${tool.version ? `<span class="local-tool-row__version">${escapeAttribute(tool.version)}</span>` : ''}
+      </div>
+    </div>
+  `).join('')
+}
+
+function renderLocalToolDiscovery() {
+  return `
+    <section class="settings-field" data-local-tool-discovery>
+      <div class="settings-field__row">
+        <span class="settings-field__label">Local AI tools</span>
+        <span class="settings-btn settings-btn--muted" data-local-tool-refresh role="button" tabindex="0">Refresh</span>
+      </div>
+      <div class="local-tool-list">${renderLocalToolRows()}</div>
+    </section>
+  `
+}
+
 function renderKeybindingRows() {
   return Object.values(getAllBindings()).map(binding => `
     <div class="keybinding-row">
@@ -325,6 +358,28 @@ function syncPinnedWorkspaceList() {
   const list = $('pinned-workspaces-list')
   if (!list) return
   list.innerHTML = renderPinnedProjectsHtml({ empty: true })
+}
+
+function syncLocalToolDiscovery() {
+  const list = document.querySelector('[data-local-tool-discovery] .local-tool-list')
+  if (!list) return
+  list.innerHTML = renderLocalToolRows()
+}
+
+async function refreshLocalAiTools() {
+  try {
+    localAiTools = await window.fjord.discoverLocalAiTools()
+  } catch {
+    localAiTools = []
+  }
+  syncSettingsForm()
+}
+
+function renderProviderOptions() {
+  return Object.entries(PROVIDERS).map(([value, provider]) => ({
+    value,
+    label: provider.label,
+  }))
 }
 
 function escapeAttribute(value) {
@@ -365,6 +420,12 @@ export function applySelectedAppIcon(settings = getSettings()) {
 }
 
 function handleSettingsClick(event) {
+  const localToolRefresh = event.target.closest('[data-local-tool-refresh]')
+  if (localToolRefresh) {
+    refreshLocalAiTools()
+    return
+  }
+
   const capture = event.target.closest('[data-keybinding-capture]')
   if (capture) {
     activeKeybindingCapture = activeKeybindingCapture === capture.dataset.keybindingCapture
@@ -476,7 +537,7 @@ function handleSettingsKeydown(event) {
   }
 
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-font-picker-trigger], [data-font-option], [data-app-icon-variant], [data-app-icon-theme], [data-open-path], [data-open-new-path], [data-unpin-path]')
+  const target = event.target.closest('[data-settings-tab], [data-preset-setting], [data-font-picker-trigger], [data-font-option], [data-app-icon-variant], [data-app-icon-theme], [data-open-path], [data-open-new-path], [data-unpin-path], [data-local-tool-refresh]')
   if (!target) return
   event.preventDefault()
   target.click()
@@ -593,6 +654,7 @@ function syncSettingsForm() {
   if (iconValueLabel && icon) iconValueLabel.textContent = icon.label
   syncKeybindingList()
   syncPinnedWorkspaceList()
+  syncLocalToolDiscovery()
   syncSettingsTabs()
 }
 
@@ -951,12 +1013,9 @@ export function buildShell() {
           <div class="settings-page" data-settings-section="ai-tools">
             <section class="settings-group">
               <div class="settings-section-title">AI provider</div>
-              ${renderSelectSetting('aiProvider', 'Provider', [
-                { value: 'anthropic', label: 'Anthropic' },
-                { value: 'openai', label: 'OpenAI' },
-                { value: 'ollama', label: 'Ollama' },
-              ])}
+              ${renderSelectSetting('aiProvider', 'Provider', renderProviderOptions())}
               ${renderSelectSetting('assistantDock', 'Assistant dock', ASSISTANT_DOCK_OPTIONS)}
+              ${renderLocalToolDiscovery()}
             </section>
 
             <section class="settings-group">

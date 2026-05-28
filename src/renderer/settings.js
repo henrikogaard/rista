@@ -1,4 +1,13 @@
 const STORAGE_KEY = 'fjordmark-settings'
+const AI_PROVIDER_KEYS = [
+  'openai',
+  'anthropic',
+  'openrouter',
+  'ollama',
+  'custom-openai-compatible',
+  'opencode-go',
+  'opencode-zen',
+]
 
 export const APP_ICON_VARIANTS = [
   { value: 'nordic-steel', label: 'Nordic Steel' },
@@ -434,7 +443,7 @@ function sanitize(settings) {
   next.maxHistorySnapshots = clamp(Number(next.maxHistorySnapshots) || 50, 5, 500)
   next.appIconVariant = APP_ICON_VARIANTS.some(icon => icon.value === next.appIconVariant) ? next.appIconVariant : DEFAULT_SETTINGS.appIconVariant
   next.appIconTheme = ['auto', 'dark', 'light'].includes(next.appIconTheme) ? next.appIconTheme : DEFAULT_SETTINGS.appIconTheme
-  next.aiProvider = ['anthropic', 'openai', 'ollama'].includes(next.aiProvider) ? next.aiProvider : 'openai'
+  next.aiProvider = AI_PROVIDER_KEYS.includes(next.aiProvider) ? next.aiProvider : 'openai'
   if (!ASSISTANT_DOCK_OPTIONS.some(option => option.value === next.assistantDock)) {
     next.assistantDock = DEFAULT_SETTINGS.assistantDock
   }

@@ -211,6 +211,7 @@ if (window.__TAURI_INTERNALS__) {
     importContent: ({ folderPath, title, body, sourceUrl }) => invoke('import_content', { folderPath, title, body, sourceUrl }),
     setRepresentedFile: (path) => invoke('set_represented_file', { path }),
     setAppIcon: (variant, theme) => invoke('set_app_icon', { variant, theme }),
+    discoverLocalAiTools: () => invoke('discover_local_ai_tools'),
 
     exportPdf: () => invoke('export_pdf'),
     exportHtml: async (payload) => {
