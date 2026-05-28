@@ -75,7 +75,7 @@ function remarkWikilinks() {
             if (lastIndex < child.value.length) {
               parts.push({ type: 'text', value: child.value.slice(lastIndex) })
             }
-            if (parts.length > 1) {
+            if (parts.length > 0) {
               node.children.splice(i, 1, ...parts)
               i += parts.length - 1
             }
@@ -103,6 +103,8 @@ const processor = unified()
 let _transclusionResolver = null
 const SPATIAL_DRAWING_EXT = '.fdraw.json'
 const SPATIAL_CANVAS_EXT = '.fcanvas.json'
+const OBSIDIAN_IMAGE_EXT_RE = /\.(avif|gif|jpe?g|png|svg|webp)$/i
+const OBSIDIAN_ATTACHMENT_EXT_RE = /\.(csv|docx?|pdf|pptx?|txt|xlsx?|zip)$/i
 
 export function setTransclusionResolver(resolver) {
   _transclusionResolver = resolver
@@ -133,9 +135,53 @@ function resolveSpatialEmbeds(markdown) {
   })
 }
 
+function resolveObsidianEmbeds(markdown, options = {}) {
+  return String(markdown || '').replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (match, target, meta) => {
+    const cleanTarget = target.trim()
+    if (OBSIDIAN_IMAGE_EXT_RE.test(cleanTarget)) {
+      return renderObsidianImageEmbed(cleanTarget, meta, options)
+    }
+    if (OBSIDIAN_ATTACHMENT_EXT_RE.test(cleanTarget)) {
+      return renderObsidianAttachmentEmbed(cleanTarget, meta, options)
+    }
+    return match
+  })
+}
+
+function renderObsidianImageEmbed(target, meta, options) {
+  const embed = parseObsidianEmbedMeta(target, meta)
+  const src = resolveBannerSrc(target, options.currentFilePath)
+  return `<img class="obsidian-embed obsidian-embed--image" src="${escapeHtml(src)}" alt="${escapeHtml(embed.label)}">`
+}
+
+function renderObsidianAttachmentEmbed(target, meta, options) {
+  const embed = parseObsidianEmbedMeta(target, meta)
+  const href = resolveBannerSrc(target, options.currentFilePath)
+  return `<a class="obsidian-embed obsidian-embed--attachment" href="${escapeHtml(href)}">${escapeHtml(embed.label)}</a>`
+}
+
+function parseObsidianEmbedMeta(target, meta) {
+  const fallback = target.split(/[\\/]/).pop()
+  const value = String(meta || '').trim()
+  if (!value || /^\d+(?:x\d+)?$/i.test(value)) {
+    return { label: fallback }
+  }
+  return { label: value }
+}
+
+function resolveBlockReferences(markdown) {
+  return String(markdown || '')
+    .split('\n')
+    .map(line => line.replace(/(^|[^\S\r\n])\^([A-Za-z0-9][A-Za-z0-9-]*)\s*$/, (match, prefix, id) => {
+      return `${prefix}<span class="block-ref-anchor" id="${escapeHtml(`^${id}`)}" data-block-ref="${escapeHtml(id)}"></span>`
+    }))
+    .join('\n')
+}
+
 export async function renderMarkdown(markdown, options = {}) {
   const renderable = getRenderableMarkdown(markdown, options)
-  const expanded = resolveTransclusions(resolveSpatialEmbeds(renderable.body))
+  const compatible = resolveBlockReferences(resolveObsidianEmbeds(resolveSpatialEmbeds(renderable.body), options))
+  const expanded = resolveTransclusions(compatible)
   const chunks = splitMarkdownIntoRenderChunks(expanded)
   const rendered = await Promise.all(chunks.map(renderChunk))
   const banner = options.showDocumentBanners === false ? '' : renderDocumentBanner(renderable.frontmatter, options)
@@ -420,7 +466,7 @@ function splitMarkdownIntoRenderChunks(markdown) {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const match = line.match(/^>\s*\[!([A-Za-z0-9_-]+)\](?:\s+(.*))?$/)
+    const match = line.match(/^>\s*\[!([A-Za-z0-9_-]+)\]([+-])?(?:\s+(.*))?$/)
     if (!match) {
       buffer.push(line)
       continue
@@ -439,7 +485,8 @@ function splitMarkdownIntoRenderChunks(markdown) {
     chunks.push({
       type: 'callout',
       calloutType: match[1].toLowerCase(),
-      title: (match[2] || '').trim(),
+      fold: match[2] === '-' ? 'closed' : match[2] === '+' ? 'open' : '',
+      title: (match[3] || '').trim(),
       body: bodyLines.join('\n').trim(),
     })
   }
@@ -454,16 +501,17 @@ async function renderChunk(chunk) {
   return String(result)
 }
 
-async function renderCallout({ calloutType, title, body }) {
+async function renderCallout({ calloutType, title, body, fold }) {
   const renderedBody = body
     ? String(await processor.process(body))
     : '<p></p>'
 
   const safeType = sanitizeCalloutType(calloutType)
   const displayTitle = escapeHtml(title || titleizeCalloutType(safeType))
+  const foldAttr = fold ? ` data-callout-fold="${fold}"` : ''
 
   return `
-    <div class="callout callout--${safeType}" data-callout="${safeType}">
+    <div class="callout callout--${safeType}" data-callout="${safeType}"${foldAttr}>
       <div class="callout__title">${displayTitle}</div>
       <div class="callout__body">${renderedBody}</div>
     </div>

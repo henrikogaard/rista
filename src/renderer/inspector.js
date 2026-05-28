@@ -268,6 +268,7 @@ function renderAiContent() {
             <span class="ai-review-item__title">${escapeHtml(item.summary || item.toolName)}</span>
             <span class="ai-review-item__meta">+${item.added || 0} / -${item.removed || 0}</span>
           </div>
+          ${item.sourceNotes?.length ? `<div class="ai-review-item__source">Sources: ${escapeHtml(formatAiReviewSources(item.sourceNotes))}</div>` : ''}
           ${item.error ? `<div class="ai-review-item__error">${escapeHtml(item.error)}</div>` : ''}
           <pre class="ai-review-item__preview">${escapeHtml(item.preview || '')}</pre>
           <div class="ai-review-item__actions">
@@ -279,6 +280,12 @@ function renderAiContent() {
       `).join('')}
     </div>
   `
+}
+
+function formatAiReviewSources(sourceNotes = []) {
+  return sourceNotes
+    .map(note => `${note.relativePath || note.name || note.path}${note.range ? ` ${note.range}` : ''}`)
+    .join(', ')
 }
 
 export function handleInspectorClick(event, openFileFn) {

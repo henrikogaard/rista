@@ -38,6 +38,18 @@ The interface is compact and dark by default. The name references runes, but the
 - Settings panel for typography, layout, and visual atmosphere
 - File watching for live updates when Markdown files change on disk
 
+## Obsidian Compatibility
+
+Rísta keeps Obsidian-style Markdown as plain text on disk while improving preview behavior for common vault syntax:
+
+- YAML properties round-trip and can be hidden in rendered modes
+- Wikilinks, aliases, note embeds, tags, and local attachments work with existing vault files
+- Obsidian callouts render in preview, including open and closed fold markers
+- Image attachment embeds such as `![[image.png|Alt text]]` render as local images
+- Obsidian block references such as `^block-id` become hidden anchors instead of visible trailing syntax
+
+Unsupported Obsidian-specific syntax remains editable as Markdown and falls back to readable text.
+
 ## Getting Started
 
 ```bash

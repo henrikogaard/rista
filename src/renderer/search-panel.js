@@ -1,5 +1,6 @@
 import { state, $ } from './state.js'
-import { searchFiles } from './link-index.js'
+import { getLinkIndex, searchFiles } from './link-index.js'
+import { buildSemanticIndex, searchSemanticIndex } from './semantic-index.js'
 
 // ── Project Search Panel ─────────────────────────────────────────
 // A floating modal for project-wide search across markdown files.
@@ -8,6 +9,7 @@ let searchQuery = ''
 let searchResults = []
 let selectedIndex = -1
 let searchDebounceTimer = null
+let searchIndexStatus = null
 
 export function buildSearchPanel() {
   return `
@@ -49,6 +51,7 @@ export function openSearchPanel() {
     searchQuery = ''
     searchResults = []
     selectedIndex = -1
+    searchIndexStatus = null
     renderSearchResults()
   }
 }
@@ -122,9 +125,52 @@ function runSearch() {
     renderSearchResults()
     return
   }
-  searchResults = searchFiles(searchQuery, { limit: 50 })
+  const semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
+  searchIndexStatus = semanticIndex
+  const fileResults = searchFiles(searchQuery, { limit: 50 })
+  const semanticResults = searchSemanticIndex(semanticIndex, searchQuery, { limit: 50 })
+  searchResults = mergeSearchResults(fileResults, semanticResults).slice(0, 50)
   selectedIndex = searchResults.length > 0 ? 0 : -1
   renderSearchResults()
+}
+
+function mergeSearchResults(fileResults, semanticResults) {
+  const byPath = new Map()
+
+  for (const result of fileResults) {
+    byPath.set(result.path, {
+      ...result,
+      rank: result.nameMatch ? 100 : 60,
+    })
+  }
+
+  for (const result of semanticResults) {
+    const existing = byPath.get(result.path)
+    if (existing) {
+      existing.semanticMatch = true
+      existing.heading = result.heading
+      existing.line = result.line
+      existing.relevance = result.relevance
+      existing.preview = existing.preview || result.snippet
+      existing.rank += result.score * 50
+    } else {
+      byPath.set(result.path, {
+        path: result.path,
+        name: result.name,
+        preview: result.snippet,
+        heading: result.heading,
+        line: result.line,
+        relevance: result.relevance,
+        semanticMatch: true,
+        nameMatch: false,
+        contentMatch: true,
+        rank: result.score * 50,
+      })
+    }
+  }
+
+  return Array.from(byPath.values())
+    .sort((a, b) => b.rank - a.rank || a.name.localeCompare(b.name))
 }
 
 function renderSearchResults() {
@@ -138,7 +184,7 @@ function renderSearchResults() {
     } else {
       container.innerHTML = `<div class="search-empty">No results for "${escapeHtml(searchQuery)}"</div>`
     }
-    if (footer) footer.textContent = ''
+    if (footer) footer.textContent = searchIndexStatus ? searchIndexFooter() : ''
     return
   }
 
@@ -146,13 +192,20 @@ function renderSearchResults() {
     <div class="search-result${i === selectedIndex ? ' active' : ''}" data-path="${escapeAttr(r.path)}" data-index="${i}">
       <div class="search-result__name">${escapeHtml(r.name)}</div>
       <div class="search-result__path">${escapeHtml(r.path)}</div>
+      ${r.heading ? `<div class="search-result__cite">${escapeHtml(r.heading)}${r.relevance ? ` · ${Math.round(r.relevance * 100)}%` : ''}</div>` : ''}
       ${r.preview ? `<div class="search-result__preview">${escapeHtml(r.preview)}</div>` : ''}
     </div>
   `).join('')
 
   if (footer) {
-    footer.textContent = `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}`
+    footer.textContent = `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} · ${searchIndexFooter()}`
   }
+}
+
+function searchIndexFooter() {
+  const count = searchIndexStatus?.documentCount || 0
+  const stale = searchIndexStatus?.dirty ? ' · index updating' : ''
+  return `${count} notes indexed${stale}`
 }
 
 function scrollSelectedIntoView() {

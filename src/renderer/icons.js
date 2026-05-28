@@ -76,3 +76,11 @@ export function aiChatIcon() {
 export function tagIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M2.5 3.5h4.8l6.2 6.2-3.8 3.8-6.2-6.2z" fill="none" stroke="currentColor" stroke-linejoin="round"/><circle cx="5.4" cy="6" r="0.9" fill="currentColor" stroke="none"/></svg>`
 }
+
+export function wikiQualityIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M3 2.5h7.5l2.5 2.5v8.5H3z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M10.5 2.5V5H13" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M5 7.2l1.1 1.1 2-2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><line x1="9.5" y1="7.2" x2="11.3" y2="7.2" stroke="currentColor" stroke-linecap="round"/><path d="M5 10.8l1.1 1.1 2-2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/><line x1="9.5" y1="10.8" x2="11.3" y2="10.8" stroke="currentColor" stroke-linecap="round"/></svg>`
+}
+
+export function relatedNotesIcon() {
+  return `<svg viewBox="0 0 16 16"><circle cx="5" cy="5" r="2" fill="none" stroke="currentColor"/><circle cx="11" cy="5" r="2" fill="none" stroke="currentColor"/><circle cx="8" cy="11" r="2" fill="none" stroke="currentColor"/><path d="M6.7 5.8l1 3.2M9.3 5.8l-1 3.2M6.8 5h2.4" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>`
+}

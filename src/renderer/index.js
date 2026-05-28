@@ -23,11 +23,13 @@ import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphL
 import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
 import { getLinkIndex, resolveWikilink, onLinkIndexChange } from './link-index.js'
 import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
-import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon } from './icons.js'
+import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon, wikiQualityIcon, relatedNotesIcon } from './icons.js'
 import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks, fileExplorerHeaderActions } from './file-explorer-view.js'
 import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks, agentsViewHeaderActions } from './agents-view.js'
 import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
 import { buildTagsPanel, mountTagsPanel, renderTagsPanel, handleTagsPanelEvent } from './tags-view.js'
+import { buildWikiQualityPanel, mountWikiQualityPanel, renderWikiQualityPanel, handleWikiQualityPanelEvent } from './wiki-quality-view.js'
+import { buildRelatedNotesPanel, mountRelatedNotesPanel, renderRelatedNotesPanel, handleRelatedNotesPanelEvent } from './related-notes-view.js'
 import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
@@ -254,6 +256,54 @@ registerRightPanel('tags', {
     _tagsUnsubscribe = null
   },
   onRefresh: renderTagsPanel,
+})
+
+let _relatedNotesUnsubscribe = null
+registerRightPanel('related-notes', {
+  title: 'Related',
+  icon: relatedNotesIcon(),
+  flex: 1,
+  build: buildRelatedNotesPanel,
+  onMount: () => {
+    mountRelatedNotesPanel(openFile)
+    const body = document.getElementById('related-notes-body')
+    body?.addEventListener('click', handleRelatedNotesPanelEvent)
+    body?.addEventListener('keydown', handleRelatedNotesPanelEvent)
+    _relatedNotesUnsubscribe?.()
+    _relatedNotesUnsubscribe = onLinkIndexChange(() => renderRelatedNotesPanel())
+  },
+  onUnmount: () => {
+    const body = document.getElementById('related-notes-body')
+    body?.removeEventListener('click', handleRelatedNotesPanelEvent)
+    body?.removeEventListener('keydown', handleRelatedNotesPanelEvent)
+    _relatedNotesUnsubscribe?.()
+    _relatedNotesUnsubscribe = null
+  },
+  onRefresh: renderRelatedNotesPanel,
+})
+
+let _wikiQualityUnsubscribe = null
+registerRightPanel('wiki-quality', {
+  title: 'Wiki',
+  icon: wikiQualityIcon(),
+  flex: 1,
+  build: buildWikiQualityPanel,
+  onMount: () => {
+    mountWikiQualityPanel(openFile)
+    const body = document.getElementById('wiki-quality-body')
+    body?.addEventListener('click', handleWikiQualityPanelEvent)
+    body?.addEventListener('keydown', handleWikiQualityPanelEvent)
+    _wikiQualityUnsubscribe?.()
+    _wikiQualityUnsubscribe = onLinkIndexChange(() => renderWikiQualityPanel())
+  },
+  onUnmount: () => {
+    const body = document.getElementById('wiki-quality-body')
+    body?.removeEventListener('click', handleWikiQualityPanelEvent)
+    body?.removeEventListener('keydown', handleWikiQualityPanelEvent)
+    _wikiQualityUnsubscribe?.()
+    _wikiQualityUnsubscribe = null
+  },
+  onRefresh: renderWikiQualityPanel,
 })
 
 setBookmarksOpenFile((item) => openFile(item))

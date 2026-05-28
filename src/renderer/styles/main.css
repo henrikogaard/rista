@@ -3880,6 +3880,203 @@ body.is-dragging-widget .widget-stack:empty::before {
   border: 1px solid var(--border);
 }
 
+/* ── Wiki quality widget ── */
+.wiki-quality {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 8px;
+  font-size: 11px;
+}
+.wiki-quality__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 7px;
+}
+.wiki-quality-stat {
+  min-width: 0;
+  padding: 5px 4px;
+  border: 1px solid var(--surface-edge);
+  background: rgba(255,255,255,0.025);
+  text-align: center;
+}
+.wiki-quality-stat span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text3);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.wiki-quality-stat strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text1);
+  font-size: 13px;
+  font-weight: 600;
+}
+.wiki-quality__stale {
+  margin: 0 0 7px;
+  padding: 4px 6px;
+  border-left: 2px solid var(--amber);
+  color: var(--text2);
+  background: rgba(255,255,255,0.025);
+}
+.wiki-quality-section {
+  margin-top: 8px;
+}
+.wiki-quality-section__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 4px;
+  color: var(--text3);
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.wiki-quality-section__more {
+  color: var(--accent-hi);
+  font-family: var(--mono);
+  letter-spacing: 0;
+}
+.wiki-quality-section__items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.wiki-quality-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-left: 2px solid transparent;
+  color: var(--text2);
+  cursor: pointer;
+}
+.wiki-quality-row:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text1);
+}
+.wiki-quality-row:focus-visible {
+  outline: none;
+  border-left-color: var(--accent);
+  background: rgba(255,255,255,0.05);
+}
+.wiki-quality-row__main,
+.wiki-quality-row__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-quality-row__main {
+  color: inherit;
+}
+.wiki-quality-row__meta {
+  max-width: 42%;
+  color: var(--text3);
+  font-size: 10px;
+}
+.wiki-quality-empty {
+  padding: 10px 4px;
+  color: var(--text3);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* ── Related notes widget ── */
+.related-notes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 8px;
+  font-size: 11px;
+}
+.related-notes__status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 0 2px;
+  color: var(--text3);
+  font-size: 10px;
+}
+.related-notes__stale {
+  color: var(--amber);
+}
+.related-notes__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.related-note {
+  padding: 7px 7px 8px;
+  border-left: 2px solid transparent;
+  color: var(--text2);
+  cursor: pointer;
+}
+.related-note:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text1);
+}
+.related-note:focus-visible {
+  outline: none;
+  border-left-color: var(--accent);
+  background: rgba(255,255,255,0.05);
+}
+.related-note__top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.related-note__title,
+.related-note__meta,
+.related-note__snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.related-note__title {
+  color: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.related-note__score {
+  color: var(--accent-hi);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.related-note__meta {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.related-note__snippet {
+  display: -webkit-box;
+  margin-top: 4px;
+  color: var(--text2);
+  line-height: 1.35;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.related-notes__empty {
+  padding: 10px 4px;
+  color: var(--text3);
+  font-size: 11px;
+  font-style: italic;
+}
+
 /* ── Outline widget ── */
 .outline-view {
   overflow-y: auto;
@@ -4446,6 +4643,12 @@ body.is-dragging-widget .widget-stack:empty::before {
   font-size: 10px;
   color: var(--text3);
 }
+.ai-review-item__source {
+  margin-top: 4px;
+  color: var(--accent-hi);
+  font-size: 10px;
+  line-height: 1.35;
+}
 .ai-review-item__error {
   margin-top: 6px;
   color: var(--amber);
@@ -4691,6 +4894,15 @@ body.is-dragging-widget .widget-stack:empty::before {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.search-result__cite {
+  margin-bottom: 4px;
+  color: var(--accent-hi);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .search-result__preview {
   font-size: 11px;
   color: var(--text2);
@@ -4723,6 +4935,40 @@ body.is-dragging-widget .widget-stack:empty::before {
   color: var(--text3);
   border-bottom: 1px dashed var(--text3);
   cursor: help;
+}
+.preview-pane .obsidian-embed {
+  max-width: 100%;
+}
+.preview-pane img.obsidian-embed--image {
+  display: block;
+  max-height: 420px;
+  object-fit: contain;
+  background: var(--surface-bg-1);
+  border: 1px solid var(--border);
+}
+.preview-pane a.obsidian-embed--attachment {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 3px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--surface-bg-1);
+  color: var(--text2);
+}
+.preview-pane a.obsidian-embed--attachment:hover {
+  color: var(--text1);
+  border-color: var(--border2);
+}
+.preview-pane .block-ref-anchor {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
 }
 .cm-host .cm-line .cm-wikilink {
   color: var(--accent);

@@ -97,13 +97,14 @@ function joinProjectPath(rel = '') {
   return `${root}${sep}${path.replace(/^[/\\]+/, '')}`
 }
 
-export async function queueAiReviewItem({ toolName, toolInput, source = 'ai-chat' }) {
+export async function queueAiReviewItem({ toolName, toolInput, source = 'ai-chat', sourceNotes = [] }) {
   const details = await buildPreviewForTool(toolName, toolInput || {})
   const item = {
     id: nowId(),
     toolName,
     toolInput: toolInput || {},
     source,
+    sourceNotes,
     createdAt: Date.now(),
     status: 'pending',
     ...details,
