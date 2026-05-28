@@ -35,7 +35,7 @@ import { createSession } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar, openRightPanel } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel, openAiSession } from './ai-chat.js'
-import { buildAssistantRail, mountAssistantRail, syncAssistantRail } from './assistant-rail.js'
+import { mountAssistantRail } from './assistant-rail.js'
 import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
@@ -404,7 +404,6 @@ function resolveTemplateVars(content) {
 // ── Boot ─────────────────────────────────────────────────────────
 buildShell()
 mountAssistantRail()
-syncAssistantRail()
 buildZenExitHint()
 // The terminal drawer lives in the persistent shell now, not the editor UI —
 // wire its input listener once.

@@ -1129,13 +1129,6 @@ export function buildShell() {
   $('welcome-open-btn')?.addEventListener('click', () => _callbacks.openFolder?.())
   $('welcome-new-file-btn')?.addEventListener('click', () => _callbacks.createNewFile?.())
 
-  // Agent card clicks are still delegated globally so they work regardless of
-  // which side the Agents widget lives on.
-  document.addEventListener('click', (e) => {
-    const card = e.target.closest('.agent-card')
-    if (card?.dataset.sessionPath) _callbacks.openAgentSession?.(card.dataset.sessionPath)
-  })
-
   // Recent projects click handlers (delegation from welcome)
   attachWelcomeProjectHandlers($('welcome'), {
     openProject: (folderPath) => _callbacks.openRecentProject?.(folderPath),
