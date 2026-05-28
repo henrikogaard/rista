@@ -496,7 +496,7 @@ export function attachWelcomeProjectHandlers(welcomeEl, handlers = {}) {
   if (!welcomeEl) return
   welcomeEl.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return
-    const action = event.target.closest('#welcome-open-btn, [data-pin-path], [data-remove-path], [data-open-path], [data-open-new-path]')
+    const action = event.target.closest('#welcome-open-btn, #welcome-new-file-btn, [data-pin-path], [data-remove-path], [data-open-path], [data-open-new-path]')
     if (!action) return
     event.preventDefault()
     action.click()
