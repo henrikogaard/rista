@@ -763,6 +763,87 @@ fn version_command(command: &str) -> Option<String> {
     }
 }
 
+fn openai_messages(messages: Value) -> Value {
+    let messages = messages
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|message| {
+            let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+            match role {
+                "assistant" => {
+                    let mut next = json!({
+                        "role": "assistant",
+                        "content": message.get("content").cloned().unwrap_or(Value::Null)
+                    });
+                    if let Some(tool_calls) = message.get("toolCalls").and_then(Value::as_array) {
+                        if !tool_calls.is_empty() {
+                            next["tool_calls"] = Value::Array(
+                                tool_calls
+                                    .iter()
+                                    .map(|tool_call| {
+                                        let input = tool_call
+                                            .get("input")
+                                            .cloned()
+                                            .unwrap_or_else(|| json!({}));
+                                        json!({
+                                            "id": tool_call.get("id").cloned().unwrap_or(Value::Null),
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool_call.get("name").cloned().unwrap_or(Value::Null),
+                                                "arguments": serde_json::to_string(&input).unwrap_or_else(|_| "{}".into())
+                                            }
+                                        })
+                                    })
+                                    .collect(),
+                            );
+                        }
+                    }
+                    next
+                }
+                "tool" => json!({
+                    "role": "tool",
+                    "tool_call_id": message.get("toolCallId").cloned().unwrap_or(Value::Null),
+                    "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
+                }),
+                _ => json!({
+                    "role": role,
+                    "content": message.get("content").cloned().unwrap_or(Value::String(String::new()))
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Value::Array(messages)
+}
+
+fn openai_tool_calls(message: &Value) -> Value {
+    let tool_calls = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .map(|calls| {
+            calls
+                .iter()
+                .map(|call| {
+                    let arguments = call
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}");
+                    let input = serde_json::from_str::<Value>(arguments).unwrap_or_else(|_| json!({}));
+                    json!({
+                        "id": call.get("id").cloned().unwrap_or(Value::Null),
+                        "name": call.pointer("/function/name").cloned().unwrap_or(Value::Null),
+                        "input": input
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Value::Array(tool_calls)
+}
+
 #[tauri::command]
 async fn ai_chat(params: Value) -> Value {
     let provider = params.get("provider").and_then(Value::as_str).unwrap_or("");
@@ -796,7 +877,7 @@ async fn ai_chat(params: Value) -> Value {
         }
         "openai" | "openrouter" | "custom-openai-compatible" => {
             let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-            let mut payload = json!({ "model": model, "messages": messages });
+            let mut payload = json!({ "model": model, "messages": openai_messages(messages) });
             if let Some(tools) = tools {
                 payload["tools"] = tools;
             }
@@ -834,9 +915,11 @@ async fn ai_chat(params: Value) -> Value {
                 .pointer("/choices/0/message")
                 .cloned()
                 .unwrap_or(json!({}));
+            let tool_calls = openai_tool_calls(&message);
             json!({
                 "text": message.get("content").and_then(Value::as_str).unwrap_or(""),
-                "stop": json_value.pointer("/choices/0/finish_reason").cloned().unwrap_or(Value::Null)
+                "stop": json_value.pointer("/choices/0/finish_reason").cloned().unwrap_or(Value::Null),
+                "toolCalls": tool_calls
             })
         }
         "anthropic" => {
