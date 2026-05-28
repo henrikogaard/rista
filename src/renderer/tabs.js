@@ -885,6 +885,7 @@ export function showWelcomeScreen() {
   if (!wrapper) return
   wrapper.innerHTML = buildWelcome()
   $('welcome-open-btn')?.addEventListener('click', openFolder)
+  $('welcome-new-file-btn')?.addEventListener('click', createNewFile)
   attachWelcomeProjectHandlers($('welcome'), {
     openProject: (folderPath) => openFolderPath(folderPath),
     openProjectNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),

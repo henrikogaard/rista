@@ -8,6 +8,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8')
 
 test('welcome screen is an IDE start surface instead of a marketing hero', () => {
   const shell = read('src/renderer/shell.js')
+  const tabs = read('src/renderer/tabs.js')
   const css = read('src/renderer/styles/main.css')
 
   assert.match(shell, /welcome__start/)
@@ -21,6 +22,8 @@ test('welcome screen is an IDE start surface instead of a marketing hero', () =>
   assert.doesNotMatch(css, /\.welcome__mesh/)
   assert.match(css, /\.welcome__start/)
   assert.match(css, /\.welcome__actions/)
+  assert.match(tabs, /welcome-new-file-btn/)
+  assert.match(tabs, /welcome-new-file-btn'[\s\S]*addEventListener\('click', createNewFile\)/)
 })
 
 test('status bar owns a single responsive global control cluster with clear labels', () => {
