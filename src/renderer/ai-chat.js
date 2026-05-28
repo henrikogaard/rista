@@ -40,7 +40,7 @@ function getProviderConfig() {
     model: s.aiModel || provider.defaultModel,
     baseUrl: s.aiBaseUrl || provider.defaultBaseUrl,
     label: provider.label,
-    noApiKey: provider.noApiKey || provider.apiKey === false,
+    noApiKey: provider.noApiKey || false,
     transport: provider.transport || 'http',
     supportsTools: Boolean(provider.supportsTools),
   }

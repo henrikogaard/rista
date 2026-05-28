@@ -710,16 +710,13 @@ fn discover_local_ai_tools() -> Vec<LocalAiTool> {
         .map(|(id, label, command, _version_probe)| {
             let path = which_command(command);
             let available = path.is_some();
+            let version = path.as_deref().and_then(version_command);
             LocalAiTool {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
                 command: (*command).to_string(),
                 path,
-                version: if available {
-                    version_command(command)
-                } else {
-                    None
-                },
+                version,
                 available,
             }
         })
