@@ -51,7 +51,7 @@ export const PROVIDERS = {
     defaultBaseUrl: 'http://localhost:8000',
     transport: 'http',
     apiKey: false,
-    noApiKey: false,
+    noApiKey: true,
     supportsTools: true,
     protocol: 'openai-compatible',
   },

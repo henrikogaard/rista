@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    env,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -14,6 +15,8 @@ use std::{
     sync::Mutex,
     time::SystemTime,
 };
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tauri::{Emitter, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
 use tauri::{LogicalPosition, TitleBarStyle};
@@ -700,67 +703,81 @@ fn import_content(folder_path: String, title: String, body: String, source_url: 
 
 #[tauri::command]
 fn discover_local_ai_tools() -> Vec<LocalAiTool> {
+    // Version probes such as "codex --version" and "opencode --version" are intentionally
+    // not executed during passive discovery; some CLIs may load auth/config at startup.
     let probes = [
-        ("codex", "Codex CLI", "codex", "codex --version"),
-        ("opencode", "opencode", "opencode", "opencode --version"),
+        ("codex", "Codex CLI", "codex"),
+        ("opencode", "opencode", "opencode"),
     ];
 
     probes
         .iter()
-        .map(|(id, label, command, _version_probe)| {
+        .map(|(id, label, command)| {
             let path = which_command(command);
             let available = path.is_some();
-            let version = path.as_deref().and_then(version_command);
             LocalAiTool {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
                 command: (*command).to_string(),
                 path,
-                version,
+                version: None,
                 available,
             }
         })
         .collect()
 }
 
-#[cfg(target_os = "windows")]
 fn which_command(command: &str) -> Option<String> {
-    let output = Command::new("where").arg(command).output().ok()?;
-    if !output.status.success() {
+    if command.contains(std::path::MAIN_SEPARATOR) {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        for candidate in command_candidates(command) {
+            let path = dir.join(candidate);
+            if is_executable_file(&path) {
+                return Some(path_string(&path));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn command_candidates(command: &str) -> Vec<String> {
+    let path = Path::new(command);
+    if path.extension().is_some() {
+        return vec![command.to_string()];
+    }
+    let pathext = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    pathext
+        .split(';')
+        .filter(|ext| !ext.trim().is_empty())
+        .map(|ext| format!("{}{}", command, ext.trim()))
+        .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
-fn which_command(command: &str) -> Option<String> {
-    let quoted = command.replace('\'', "'\\''");
-    let script = format!("command -v '{}'", quoted);
-    let output = Command::new("sh").arg("-lc").arg(script).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
+fn command_candidates(command: &str) -> Vec<String> {
+    vec![command.to_string()]
 }
 
-fn version_command(command: &str) -> Option<String> {
-    let output = Command::new(command).arg("--version").output().ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let version = format!("{}{}", stdout.trim(), stderr.trim()).trim().to_string();
-    if output.status.success() && !version.is_empty() {
-        Some(version)
-    } else {
-        None
-    }
+#[cfg(target_os = "windows")]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(all(not(unix), not(target_os = "windows")))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn openai_messages(messages: Value) -> Value {
@@ -844,6 +861,22 @@ fn openai_tool_calls(message: &Value) -> Value {
     Value::Array(tool_calls)
 }
 
+fn anthropic_tool_calls(content: &[Value]) -> Value {
+    let tool_calls = content
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .map(|block| {
+            json!({
+                "id": block.get("id").cloned().unwrap_or(Value::Null),
+                "name": block.get("name").cloned().unwrap_or(Value::Null),
+                "input": block.get("input").cloned().unwrap_or_else(|| json!({}))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Value::Array(tool_calls)
+}
+
 #[tauri::command]
 async fn ai_chat(params: Value) -> Value {
     let provider = params.get("provider").and_then(Value::as_str).unwrap_or("");
@@ -923,17 +956,21 @@ async fn ai_chat(params: Value) -> Value {
             })
         }
         "anthropic" => {
-            let text = json_value
+            let content = json_value
                 .get("content")
                 .and_then(Value::as_array)
-                .map(|blocks| {
-                    blocks
-                        .iter()
-                        .filter_map(|block| block.get("text").and_then(Value::as_str))
-                        .collect::<String>()
-                })
+                .cloned()
                 .unwrap_or_default();
-            json!({ "text": text, "stop": json_value.get("stop_reason").cloned().unwrap_or(Value::Null) })
+            let text = content
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<String>();
+            let tool_calls = anthropic_tool_calls(&content);
+            json!({
+                "text": text,
+                "stop": json_value.get("stop_reason").cloned().unwrap_or(Value::Null),
+                "toolCalls": tool_calls
+            })
         }
         "ollama" => {
             json!({ "text": json_value.pointer("/message/content").and_then(Value::as_str).unwrap_or("") })

@@ -51,6 +51,15 @@ async function importSettingsModule() {
   return mod
 }
 
+async function importAiProvidersModule() {
+  const source = fs.readFileSync(path.join(root, 'src/renderer/ai-providers.js'), 'utf8')
+  const modulePath = path.join(os.tmpdir(), `rista-ai-providers-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  fs.writeFileSync(modulePath, source)
+  const mod = await import(`file://${modulePath}`)
+  fs.rmSync(modulePath, { force: true })
+  return mod
+}
+
 test('settings sanitizes invalid assistant dock values', async () => {
   global.localStorage = mockLocalStorage({
     'fjordmark-settings': JSON.stringify({ assistantDock: 'floating-panel' }),
@@ -59,6 +68,13 @@ test('settings sanitizes invalid assistant dock values', async () => {
   const { getSettings } = await importSettingsModule()
 
   assert.equal(getSettings().assistantDock, 'right-sidebar')
+})
+
+test('custom OpenAI-compatible provider does not require an API key by default', async () => {
+  const { PROVIDERS } = await importAiProvidersModule()
+
+  assert.equal(PROVIDERS['custom-openai-compatible'].apiKey, false)
+  assert.equal(PROVIDERS['custom-openai-compatible'].noApiKey, true)
 })
 
 test('clearing a custom font override makes the selected preset effective', async () => {
