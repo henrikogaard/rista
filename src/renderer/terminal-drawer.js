@@ -20,7 +20,13 @@ function formatDuration(ms) {
 
 async function syncShellInfo() {
   try {
-    shellInfo = await window.fjord.getShellInfo()
+    const nextShellInfo = await window.fjord.getShellInfo()
+    shellInfo = nextShellInfo && typeof nextShellInfo.name === 'string'
+      ? {
+          name: nextShellInfo.name || 'shell',
+          path: typeof nextShellInfo.path === 'string' ? nextShellInfo.path : '',
+        }
+      : { name: 'shell', path: '' }
   } catch {
     shellInfo = { name: 'shell', path: '' }
   }
@@ -49,6 +55,11 @@ export function buildTerminalDrawer() {
       </div>
       <div class="terminal-drawer__output" id="terminal-output">
         <div class="terminal-drawer__empty">Commands run in the current workspace folder.</div>
+      </div>
+      <div class="terminal-quick-commands" aria-label="Quick terminal commands">
+        <div class="terminal-quick-command" data-terminal-command="pwd" role="button" tabindex="0">pwd</div>
+        <div class="terminal-quick-command" data-terminal-command="ls" role="button" tabindex="0">ls</div>
+        <div class="terminal-quick-command" data-terminal-command="git status" role="button" tabindex="0">git status</div>
       </div>
       <div class="terminal-drawer__input-row">
         <span class="terminal-drawer__prompt" id="terminal-prompt">$</span>
@@ -145,13 +156,14 @@ export function handleTerminalInput(event) {
       try {
         setTerminalBusy(true)
         const result = await window.fjord.runTerminalCommand(command, cwd)
-        if (result.stdout) appendTerminalOutput(result.stdout, 'stdout')
-        if (result.stderr) appendTerminalOutput(result.stderr, 'stderr')
-        if (result.error) appendTerminalOutput(result.error, 'error')
-        if (result.code !== 0 && !result.stdout && !result.stderr) {
-          appendTerminalOutput(`Exit code: ${result.code}`, 'error')
+        const code = Number.isFinite(Number(result?.code)) ? Number(result.code) : -1
+        if (result?.stdout) appendTerminalOutput(result.stdout, 'stdout')
+        if (result?.stderr) appendTerminalOutput(result.stderr, 'stderr')
+        if (result?.error) appendTerminalOutput(result.error, 'error')
+        if (code !== 0 && !result?.stdout && !result?.stderr) {
+          appendTerminalOutput(`Exit code: ${code}`, 'error')
         }
-        appendTerminalOutput(`exit ${result.code ?? 0} · ${formatDuration(result.durationMs)}`, 'meta')
+        appendTerminalOutput(`exit ${code} · ${formatDuration(result.durationMs)}`, 'meta')
       } catch (err) {
         appendTerminalOutput(err.message, 'error')
       } finally {
@@ -186,6 +198,19 @@ export function handleTerminalInput(event) {
       closeTerminalDrawer()
       return
     }
+  })
+
+  document.querySelectorAll('[data-terminal-command]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      input.value = chip.dataset.terminalCommand || ''
+      input.focus()
+    })
+    chip.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      e.preventDefault()
+      input.value = chip.dataset.terminalCommand || ''
+      input.focus()
+    })
   })
 
   $('terminal-close-btn')?.addEventListener('click', closeTerminalDrawer)

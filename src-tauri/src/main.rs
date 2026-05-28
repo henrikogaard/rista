@@ -98,6 +98,14 @@ fn basename(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn terminal_shell() -> String {
+    if cfg!(windows) {
+        std::env::var("ComSpec").unwrap_or_else(|_| "cmd".into())
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    }
+}
+
 fn markdown_file(path: &Path) -> bool {
     path.extension()
         .map(|ext| {
@@ -527,14 +535,8 @@ async fn new_window(
 #[tauri::command]
 fn run_terminal_command(command: String, cwd: Option<String>) -> TerminalResult {
     let started = std::time::Instant::now();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(windows) {
-            "cmd".into()
-        } else {
-            "/bin/sh".into()
-        }
-    });
-    let mut cmd = Command::new(shell);
+    let shell = terminal_shell();
+    let mut cmd = Command::new(&shell);
     if cfg!(windows) {
         cmd.args(["/C", &command]);
     } else {
@@ -550,7 +552,7 @@ fn run_terminal_command(command: String, cwd: Option<String>) -> TerminalResult 
             TerminalResult {
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-                code: output.status.code().unwrap_or(0),
+                code: output.status.code().unwrap_or(-1),
                 error: None,
                 duration_ms,
             }
@@ -570,13 +572,7 @@ fn run_terminal_command(command: String, cwd: Option<String>) -> TerminalResult 
 
 #[tauri::command]
 fn get_shell_info() -> ShellInfo {
-    let path = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(windows) {
-            "cmd".into()
-        } else {
-            "/bin/sh".into()
-        }
-    });
+    let path = terminal_shell();
     let name = Path::new(&path)
         .file_name()
         .and_then(|name| name.to_str())
