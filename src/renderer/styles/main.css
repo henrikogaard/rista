@@ -3755,6 +3755,45 @@ body.is-dragging-widget .widget-stack:empty::before {
 .widget-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .widget-fill > * { flex: 1; min-height: 0; }
 
+.assistant-rail {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  flex-shrink: 0;
+  border-left: 1px solid var(--surface-edge);
+  background: var(--surface-bg-1);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.18s ease, opacity 0.18s ease;
+}
+.assistant-rail.open {
+  width: 340px;
+  opacity: 1;
+}
+.assistant-rail--left {
+  order: -1;
+  border-left: none;
+  border-right: 1px solid var(--surface-edge);
+}
+.assistant-rail__header {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--surface-edge);
+  color: var(--text2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.assistant-rail__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 /* ── Tags widget ── */
 .tags-view {
   display: flex;

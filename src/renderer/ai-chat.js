@@ -341,6 +341,14 @@ function onPanelOpen() {
   input?.focus()
 }
 
+export function buildAiChatPanel() {
+  return buildPanel()
+}
+
+export function mountAiChatPanel() {
+  onPanelOpen()
+}
+
 export function initAiChatPanel(openFileFn, closeRightPanelFn) {
   _closeRightPanelFn = closeRightPanelFn
   registerRightPanel('ai-chat', {

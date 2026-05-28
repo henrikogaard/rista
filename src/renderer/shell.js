@@ -12,6 +12,7 @@ import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.
 import { showContextMenu } from './context-menu.js'
 import { renderPinnedProjectsHtml, renderRecentProjectsHtml, removeRecentProject, togglePinnedProject, unpinProject } from './recent-projects.js'
 import { PROVIDERS } from './ai-providers.js'
+import { buildAssistantRail } from './assistant-rail.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -404,6 +405,7 @@ function handleSettingsInput(event) {
   if (input.type !== 'checkbox') updateSettingValueLabel(input.dataset.setting, value, input.dataset.unit || '')
   if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
   if (['hideFrontmatterInRenderedModes', 'showDocumentBanners'].includes(input.dataset.setting)) refreshRenderedDocuments()
+  if (input.dataset.setting === 'assistantDock') _callbacks.syncAssistantRail?.()
 }
 
 function refreshRenderedDocuments() {
@@ -875,6 +877,7 @@ export function buildShell() {
           </div>
         </div>
 
+        ${buildAssistantRail()}
         ${buildRightPanelContainer()}
       </div>
 
@@ -1014,7 +1017,7 @@ export function buildShell() {
             <section class="settings-group">
               <div class="settings-section-title">AI provider</div>
               ${renderSelectSetting('aiProvider', 'Provider', renderProviderOptions())}
-              ${renderSelectSetting('assistantDock', 'Assistant dock', ASSISTANT_DOCK_OPTIONS)}
+              ${renderSelectSetting('assistantDock', 'Assistant placement', ASSISTANT_DOCK_OPTIONS)}
               ${renderLocalToolDiscovery()}
             </section>
 
@@ -1088,6 +1091,7 @@ export function buildShell() {
     syncSettingsForm()
     applySelectedAppIcon(next)
     refreshRenderedDocuments()
+    _callbacks.syncAssistantRail?.()
   })
   $('settings-export-btn')?.addEventListener('click', async () => {
     await window.fjord.exportSettings(JSON.stringify(getSettings()))
@@ -1101,6 +1105,7 @@ export function buildShell() {
       syncSettingsForm()
       applySelectedAppIcon(next)
       refreshRenderedDocuments()
+      _callbacks.syncAssistantRail?.()
     } catch {
       alert('Invalid settings file')
     }
