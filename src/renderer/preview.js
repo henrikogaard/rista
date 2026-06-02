@@ -21,6 +21,8 @@ export async function refreshPreview(pane, markdown) {
     hideFrontmatter: settings.hideFrontmatterInRenderedModes,
     showDocumentBanners: settings.showDocumentBanners,
     currentFilePath: activeTab?.path,
+    folderPath: state.folderPath,
+    attachmentPaths: getWorkspaceAttachmentPaths(),
   })
   ;['single', 'left', 'right'].forEach(slot => {
     const p = $(`preview-${slot}-${pane}`)
@@ -83,6 +85,17 @@ function normalizePath(path) {
   }
   const prefix = path.startsWith('/') ? '/' : ''
   return prefix + out.join(sep)
+}
+
+export function getWorkspaceAttachmentPaths(items = state.tree, result = []) {
+  for (const item of items || []) {
+    if (item.type === 'folder') {
+      getWorkspaceAttachmentPaths(item.children || [], result)
+    } else if (item.type === 'file' && !/\.(md|markdown)$/i.test(item.path || item.name || '')) {
+      result.push(item.path)
+    }
+  }
+  return result
 }
 
 // ── Stats ─────────────────────────────────────────────────────────
@@ -182,6 +195,8 @@ export async function exportToPdf() {
       hideFrontmatter: settings.hideFrontmatterInRenderedModes,
       showDocumentBanners: settings.showDocumentBanners,
       currentFilePath: tab.path,
+      folderPath: state.folderPath,
+      attachmentPaths: getWorkspaceAttachmentPaths(),
     })
     const success = await window.fjord.exportPdf({
       fileName: tab.name,
@@ -209,6 +224,8 @@ export async function exportToHtml() {
       hideFrontmatter: settings.hideFrontmatterInRenderedModes,
       showDocumentBanners: settings.showDocumentBanners,
       currentFilePath: tab.path,
+      folderPath: state.folderPath,
+      attachmentPaths: getWorkspaceAttachmentPaths(),
     })
     await window.fjord.exportHtml({
       fileName: tab.name,

@@ -62,7 +62,7 @@ export const THEME_PRESETS = {
       value: 'nordic-night',
       label: 'Nordic Night',
       bg: ['#0d0e10', '#111214', '#161719', '#1c1d20', '#252729', '#2e3033'],
-      text: ['#dddfe6', '#8e91a0', '#5a5e6e'],
+      text: ['#eceef5', '#adb2c0', '#747b8b'],
       accent: '#5b7fa6',
       green: '#4a9966',
       red: '#c0504d',
@@ -307,7 +307,7 @@ export const DEFAULT_SETTINGS = {
   appIconVariant: 'aurora-gradient',
   appIconTheme: 'auto',
   aiProvider: 'openai',
-  assistantDock: 'right-sidebar',
+  assistantDock: 'right-rail',
   aiApiKey: '',
   aiModel: '',
   aiBaseUrl: '',
@@ -470,9 +470,9 @@ export function applySettings(settings = getSettings()) {
   const palette = getThemePalette(next)
   const contrast = next.contrastBoost / 100
   const contrastTarget = palette.theme === 'light' ? '#000000' : '#ffffff'
-  const baseText1 = mixHex(palette.text1, contrastTarget, contrast * 0.58)
-  const baseText2 = mixHex(palette.text2, contrastTarget, contrast * 0.50)
-  const baseText3 = mixHex(palette.text3, contrastTarget, contrast * 0.44)
+  const baseText1 = mixHex(palette.text1, contrastTarget, contrast * 0.66)
+  const baseText2 = mixHex(palette.text2, contrastTarget, contrast * 0.68)
+  const baseText3 = mixHex(palette.text3, contrastTarget, contrast * 0.58)
   const accent = next.accentColor || palette.accent
   const accentHi = palette.theme === 'light'
     ? mixHex(accent, '#000000', 0.2)

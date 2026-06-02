@@ -51,3 +51,16 @@ test('Obsidian block reference ids become hidden anchors', async () => {
   assert.match(html, /data-wikilink="Other\#\^abc-123"/)
   assert.doesNotMatch(html, /paragraph \^abc-123/)
 })
+
+test('document banners resolve Obsidian attachments from the whole vault', async () => {
+  const { renderMarkdown } = await importMarkdownModule()
+
+  const html = await renderMarkdown('---\nbanner: "[[Smores.jpeg]]"\nbanner_x: 0.25\nbanner_y: 0.75\n---\n\n# Family Favorites', {
+    currentFilePath: '/vault/Family/Objectives/Family Recipes.md',
+    attachmentPaths: ['/vault/images/Smores.jpeg'],
+  })
+
+  assert.match(html, /class="document-banner"/)
+  assert.match(html, /src="file:\/\/\/vault\/images\/Smores.jpeg"/)
+  assert.match(html, /object-position:25% 75%/)
+})

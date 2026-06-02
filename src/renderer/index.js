@@ -37,7 +37,7 @@ import { createSession } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel, openAiSession } from './ai-chat.js'
-import { mountAssistantRail, openAssistantWidgetForDock } from './assistant-rail.js'
+import { mountAssistantRail, openAssistantWidgetForDock, syncAssistantRail } from './assistant-rail.js'
 import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
@@ -139,6 +139,7 @@ registerFileExplorerCallbacks({
 registerRightPanel('files', {
   title: 'Files',
   icon: folderIcon(),
+  group: 'project',
   flex: 3,
   defaultSide: 'left',
   defaultActive: true,
@@ -162,6 +163,7 @@ registerAgentsViewCallbacks({
 registerRightPanel('agents', {
   title: 'Agents',
   icon: agentsIcon(),
+  group: 'project',
   flex: 1,
   defaultSide: 'left',
   build: buildAgentsPanel,
@@ -181,7 +183,9 @@ function rerenderGraphFromIndex() {
 registerRightPanel('graph', {
   title: 'Graph',
   icon: graphIcon(),
+  group: 'context',
   flex: 2,
+  defaultSide: 'right',
   build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
   onMount: () => {
     rerenderGraphFromIndex()
@@ -208,9 +212,9 @@ initAiChatPanel(openFile, closeRightPanel)
 registerRightPanel('properties', {
   title: 'Properties',
   icon: propertiesIcon(),
+  group: 'context',
   flex: 1,
-  defaultSide: 'left',
-  defaultActive: true,
+  defaultSide: 'right',
   build: buildPropertiesPanel,
   onMount: mountPropertiesPanel,
   onUnmount: () => {},
@@ -220,7 +224,9 @@ registerRightPanel('properties', {
 registerRightPanel('outline', {
   title: 'Outline',
   icon: outlineIcon(),
+  group: 'context',
   flex: 1,
+  defaultSide: 'right',
   build: buildOutlinePanel,
   onMount: mountOutlinePanel,
   onUnmount: () => {},
@@ -231,6 +237,7 @@ let _tagsUnsubscribe = null
 registerRightPanel('tags', {
   title: 'Tags',
   icon: tagIcon(),
+  group: 'project',
   flex: 1,
   defaultSide: 'left',
   build: buildTagsPanel,
@@ -262,7 +269,9 @@ let _relatedNotesUnsubscribe = null
 registerRightPanel('related-notes', {
   title: 'Related',
   icon: relatedNotesIcon(),
+  group: 'context',
   flex: 1,
+  defaultSide: 'right',
   build: buildRelatedNotesPanel,
   onMount: () => {
     mountRelatedNotesPanel(openFile)
@@ -286,7 +295,9 @@ let _wikiQualityUnsubscribe = null
 registerRightPanel('wiki-quality', {
   title: 'Wiki',
   icon: wikiQualityIcon(),
+  group: 'project-health',
   flex: 1,
+  defaultSide: 'right',
   build: buildWikiQualityPanel,
   onMount: () => {
     mountWikiQualityPanel(openFile, { refreshTree })
@@ -310,7 +321,9 @@ setBookmarksOpenFile((item) => openFile(item))
 registerRightPanel('bookmarks', {
   title: 'Bookmarks',
   icon: bookmarkIcon(),
+  group: 'project',
   flex: 1,
+  defaultSide: 'left',
   build: buildBookmarksPanel,
   onMount: mountBookmarksPanel,
   onUnmount: unmountBookmarksPanel,
@@ -320,6 +333,7 @@ registerRightPanel('bookmarks', {
 registerRightPanel('calendar', {
   title: 'Calendar',
   icon: calendarIcon(),
+  group: 'project',
   flex: 0,
   build: () => `<div id="calendar-panel-body" class="widget-fill"></div>`,
   onMount: () => {
@@ -363,7 +377,7 @@ registerShellCallbacks({
   destroyRichEditor,
   ensureRichEditorMounted,
   syncToolbarToggle,
-  syncAssistantRail: mountAssistantRail,
+  syncAssistantRail,
   openAgentSession: (sessionPath) => {
     openAiChatSurface()
     openAiSession(sessionPath)
@@ -453,7 +467,7 @@ function resolveTemplateVars(content) {
 
 // ── Boot ─────────────────────────────────────────────────────────
 buildShell()
-mountAssistantRail()
+syncAssistantRail()
 buildZenExitHint()
 // The terminal drawer lives in the persistent shell now, not the editor UI —
 // wire its input listener once.

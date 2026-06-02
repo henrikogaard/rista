@@ -1,3 +1,7 @@
+const TREE_ROOT_INDENT = 8
+const TREE_DEPTH_INDENT = 10
+const TREE_FILE_INDENT = 20
+
 export function collectFolderPaths(items, result = []) {
   items.forEach(item => {
     if (item.type === 'folder') {
@@ -26,7 +30,7 @@ export function renderFileTree({
       const isOpen = expandedPaths.has(item.path)
       const folder = document.createElement('div')
       folder.className = `tree-folder${isOpen ? ' open' : ''}`
-      folder.style.paddingLeft = `${10 + depth * 14}px`
+      folder.style.paddingLeft = `${TREE_ROOT_INDENT + depth * TREE_DEPTH_INDENT}px`
       folder.title = item.name
       folder.dataset.path = item.path
       folder.dataset.type = 'folder'
@@ -72,7 +76,7 @@ export function renderFileTree({
     file.className = 'tree-file'
     file.dataset.path = item.path
     file.dataset.type = 'file'
-    file.style.paddingLeft = `${24 + depth * 14}px`
+    file.style.paddingLeft = `${TREE_FILE_INDENT + depth * TREE_DEPTH_INDENT}px`
     file.title = item.path
     file.innerHTML = `<div class="tree-file__dot"></div>${item.name}`
     file.classList.toggle('active', activePaths.has(item.path))

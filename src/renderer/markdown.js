@@ -150,13 +150,13 @@ function resolveObsidianEmbeds(markdown, options = {}) {
 
 function renderObsidianImageEmbed(target, meta, options) {
   const embed = parseObsidianEmbedMeta(target, meta)
-  const src = resolveBannerSrc(target, options.currentFilePath)
+  const src = resolveBannerSrc(target, options.currentFilePath, options)
   return `<img class="obsidian-embed obsidian-embed--image" src="${escapeHtml(src)}" alt="${escapeHtml(embed.label)}">`
 }
 
 function renderObsidianAttachmentEmbed(target, meta, options) {
   const embed = parseObsidianEmbedMeta(target, meta)
-  const href = resolveBannerSrc(target, options.currentFilePath)
+  const href = resolveBannerSrc(target, options.currentFilePath, options)
   return `<a class="obsidian-embed obsidian-embed--attachment" href="${escapeHtml(href)}">${escapeHtml(embed.label)}</a>`
 }
 
@@ -256,9 +256,9 @@ function parseFrontmatterValue(value) {
   return trimmed
 }
 
-function renderDocumentBanner(frontmatter, options = {}) {
+export function renderDocumentBanner(frontmatter, options = {}) {
   const banner = getFrontmatterValue(frontmatter, 'banner')
-  const src = resolveBannerSrc(banner, options.currentFilePath)
+  const src = resolveBannerSrc(banner, options.currentFilePath, options)
   if (!src) return ''
 
   const x = normalizeBannerAxis(getFrontmatterValue(frontmatter, 'banner_x') ?? getFrontmatterValue(frontmatter, 'banner-x'), 0.5)
@@ -278,18 +278,46 @@ function normalizeBannerAxis(value, fallback) {
   return Math.min(1, Math.max(0, next))
 }
 
-function resolveBannerSrc(value, currentFilePath) {
+function resolveBannerSrc(value, currentFilePath, options = {}) {
   const raw = String(value || '').trim()
   if (!raw) return ''
   const wikilink = raw.match(/^!?\[\[([^\]|]+)(?:\|[^\]]+)?\]\]$/)
   const markdownImage = raw.match(/^!\[[^\]]*\]\(([^)]+)\)$/)
-  const target = (wikilink?.[1] || markdownImage?.[1] || raw).trim()
+  const target = (wikilink?.[1] || markdownImage?.[1] || raw).split('#')[0].trim()
   if (!target) return ''
   if (/^(https?:|data:|blob:|file:)/i.test(target)) return target
   if (target.startsWith('/')) return toFileUrl(target)
+
+  const resolvedAttachment = resolveWorkspaceAttachment(target, options)
+  if (resolvedAttachment) return toFileUrl(resolvedAttachment)
+
   if (!currentFilePath) return target
   const base = currentFilePath.slice(0, Math.max(currentFilePath.lastIndexOf('/'), currentFilePath.lastIndexOf('\\')))
   return toFileUrl(normalizeLocalPath(`${base}/${target}`))
+}
+
+function resolveWorkspaceAttachment(target, options = {}) {
+  const attachmentPaths = Array.isArray(options.attachmentPaths) ? options.attachmentPaths : []
+  if (!attachmentPaths.length) return ''
+  const cleanTarget = normalizeLocalPath(String(target || '').replace(/\\/g, '/')).replace(/^\/+/, '')
+  const targetLower = cleanTarget.toLowerCase()
+  const basenameLower = cleanTarget.split('/').pop().toLowerCase()
+  const folderPath = normalizeLocalPath(String(options.folderPath || '')).replace(/\/+$/, '')
+
+  const exact = attachmentPaths.find(path => {
+    const normalized = normalizeLocalPath(String(path || '').replace(/\\/g, '/'))
+    const relative = folderPath && normalized.startsWith(`${folderPath}/`)
+      ? normalized.slice(folderPath.length + 1)
+      : normalized.replace(/^\/+/, '')
+    return relative.toLowerCase() === targetLower
+  })
+  if (exact) return normalizeLocalPath(exact)
+
+  const byName = attachmentPaths.find(path => {
+    const name = String(path || '').split(/[\\/]/).pop().toLowerCase()
+    return name === basenameLower
+  })
+  return byName ? normalizeLocalPath(byName) : ''
 }
 
 function normalizeLocalPath(path) {

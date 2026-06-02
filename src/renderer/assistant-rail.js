@@ -2,6 +2,8 @@ import { getSettings } from './settings.js'
 import { buildAiChatPanel, mountAiChatPanel } from './ai-chat.js'
 import { closeRightPanel, moveWidgetToSide, setWidgetSidePreference } from './right-panel.js'
 
+let assistantRailOpen = false
+
 function isRailDock(dock) {
   return dock === 'right-rail' || dock === 'left-rail'
 }
@@ -42,7 +44,7 @@ export function syncAssistantRail() {
   applyAssistantDockPlacement(dock)
 
   if (!rail) return
-  rail.classList.toggle('open', isRailDock(dock))
+  rail.classList.toggle('open', isRailDock(dock) && assistantRailOpen)
   rail.classList.toggle('assistant-rail--left', dock === 'left-rail')
   rail.classList.toggle('assistant-rail--right', dock !== 'left-rail')
 }
@@ -56,11 +58,13 @@ export function mountAssistantRail() {
 
   const dock = getSettings().assistantDock
   if (!isRailDock(dock)) {
+    assistantRailOpen = false
     body.replaceChildren()
     syncAssistantRail()
     return
   }
 
+  assistantRailOpen = true
   applyAssistantDockPlacement(dock)
 
   if (body.firstChild) {

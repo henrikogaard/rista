@@ -4,8 +4,8 @@ import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarge
 import { chevronIcon } from './icons.js'
 import { getTheme } from './theme.js'
 import { updateSetting, getSettings } from './settings.js'
-import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste } from './preview.js'
-import { getRenderableMarkdown, htmlToMarkdown } from './markdown.js'
+import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste, getWorkspaceAttachmentPaths } from './preview.js'
+import { getRenderableMarkdown, htmlToMarkdown, renderDocumentBanner } from './markdown.js'
 import { toggleCommandPalette } from './command-palette.js'
 import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, replaceOne, replaceAll } from './find-replace.js'
 import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insertLink, insertImage, insertTable, insertCallout, insertCodeBlock, insertHorizontalRule, syncToWysiwyg } from './commands.js'
@@ -372,11 +372,18 @@ export function ensureRichEditorMounted(pane) {
   const host = document.createElement('div')
   host.className = 'wysiwyg-editor'
   host.id = `wysiwyg-editor-${pane}`
+  const bannerHost = document.createElement('div')
+  bannerHost.className = 'wysiwyg-banner'
+  bannerHost.id = `wysiwyg-banner-${pane}`
+  const editorHost = document.createElement('div')
+  editorHost.className = 'wysiwyg-editor__body'
+  host.appendChild(bannerHost)
+  host.appendChild(editorHost)
   slotHost.appendChild(host)
 
   try {
     richEditors[pane] = new ToastEditor({
-      el: host,
+      el: editorHost,
       initialValue: markdown,
       initialEditType: 'wysiwyg',
       hideModeSwitch: true,
@@ -393,6 +400,7 @@ export function ensureRichEditorMounted(pane) {
     })
     richEditors[pane].setHeight('100%')
     richEditorMountTarget[pane] = mountTarget
+    renderWysiwygBanner(pane)
     return richEditors[pane]
   } catch (err) {
     console.error(`[rista] Failed to mount WYSIWYG editor for pane "${pane}":`, err)
@@ -420,7 +428,23 @@ export function refreshAllPreviews() {
 export function maybeRefreshWysiwygPane(pane) {
   if (!paneUsesWysiwyg(pane)) return
   ensureRichEditorMounted(pane)
+  renderWysiwygBanner(pane)
   syncToWysiwyg(pane)
+}
+
+export function renderWysiwygBanner(pane) {
+  const bannerHost = document.getElementById(`wysiwyg-banner-${pane}`)
+  if (!bannerHost) return
+  const tab = getTabForPane(pane)
+  const settings = getSettings()
+  const renderable = getRenderableMarkdown(tab?.content || '', { hideFrontmatter: true })
+  const html = settings.showDocumentBanners === false ? '' : renderDocumentBanner(renderable.frontmatter, {
+    currentFilePath: tab?.path,
+    folderPath: state.folderPath,
+    attachmentPaths: getWorkspaceAttachmentPaths(),
+  })
+  bannerHost.innerHTML = html
+  bannerHost.classList.toggle('hidden', !html)
 }
 
 // ── Minimap ──────────────────────────────────────────────────────

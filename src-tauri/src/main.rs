@@ -115,7 +115,48 @@ fn terminal_shell() -> String {
     if cfg!(windows) {
         std::env::var("ComSpec").unwrap_or_else(|_| "cmd".into())
     } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+        std::env::var("SHELL")
+            .ok()
+            .filter(|shell| !shell.trim().is_empty())
+            .or_else(macos_user_shell)
+            .unwrap_or_else(|| "/bin/sh".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_user_shell() -> Option<String> {
+    let user = std::env::var("USER").ok()?;
+    let output = Command::new("dscl")
+        .args([".", "-read", &format!("/Users/{user}"), "UserShell"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.split_whitespace()
+        .last()
+        .map(|shell| shell.to_string())
+        .filter(|shell| shell.starts_with('/'))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_user_shell() -> Option<String> {
+    None
+}
+
+fn interactive_shell_args(shell: &str, command: &str) -> Vec<String> {
+    if cfg!(windows) {
+        return vec!["/C".to_string(), command.to_string()];
+    }
+    let shell_name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+    if shell_name == "zsh" || shell_name == "bash" {
+        vec!["-ilc".to_string(), command.to_string()]
+    } else {
+        vec!["-lc".to_string(), command.to_string()]
     }
 }
 
@@ -550,11 +591,7 @@ fn run_terminal_command(command: String, cwd: Option<String>) -> TerminalResult 
     let started = std::time::Instant::now();
     let shell = terminal_shell();
     let mut cmd = Command::new(&shell);
-    if cfg!(windows) {
-        cmd.args(["/C", &command]);
-    } else {
-        cmd.args(["-lc", &command]);
-    }
+    cmd.args(interactive_shell_args(&shell, &command));
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }

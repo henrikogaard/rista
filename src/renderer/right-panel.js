@@ -9,6 +9,14 @@ import { showContextMenu } from './context-menu.js'
 const _widgets = new Map()
 const SIDES = ['right', 'left']
 const STACK_ID = { right: 'right-sidebar-stack', left: 'left-widget-stack' }
+const RIGHT_SIDEBAR_DEFAULT_WIDGET = 'outline'
+const SIDEBAR_LAYOUT_VERSION = 1
+const LAYOUT_VERSION_KEY = 'fjordmark-sidebar-layout-version'
+const RIGHT_SIDEBAR_TAB_GROUPS = [
+  { id: 'context', label: 'Context', groups: ['context'] },
+  { id: 'knowledge', label: 'Knowledge', groups: ['project-health'] },
+]
+const RIGHT_SIDEBAR_SOLO_GROUPS = new Set(['context', 'project-health'])
 
 /**
  * Register a widget.
@@ -21,6 +29,7 @@ const STACK_ID = { right: 'right-sidebar-stack', left: 'left-widget-stack' }
  * @param {function} [hooks.onUnmount]  - called before body is removed
  * @param {function} [hooks.onRefresh]  - called to refresh existing body
  * @param {number}   [hooks.flex]       - relative flex weight (default 1)
+ * @param {string}   [hooks.group]      - layout group: project, context, project-health, assistant
  */
 export function registerRightPanel(id, hooks) {
   _widgets.set(id, hooks)
@@ -122,9 +131,64 @@ function getWidgetSide(id) {
   return hooks?.defaultSide === 'left' ? 'left' : 'right'
 }
 
+function getWidgetGroup(id) {
+  return _widgets.get(id)?.group || 'tools'
+}
+
+function isRightSidebarSoloWidget(id) {
+  return getWidgetSide(id) === 'right' && RIGHT_SIDEBAR_SOLO_GROUPS.has(getWidgetGroup(id))
+}
+
+function enforceRightSidebarSoloMode(id) {
+  if (!isRightSidebarSoloWidget(id)) return
+  for (const activeId of Array.from(state.rightWidgets)) {
+    if (activeId !== id && isRightSidebarSoloWidget(activeId)) {
+      state.rightWidgets.delete(activeId)
+    }
+  }
+  state.collapsedWidgets.delete(id)
+}
+
 function setWidgetSide(id, side) {
   ensureStateShape()
   state.widgetSide[id] = side === 'left' ? 'left' : 'right'
+  persistWidgetState()
+}
+
+function getRightSidebarTabGroup(id) {
+  const widgetGroup = getWidgetGroup(id)
+  return RIGHT_SIDEBAR_TAB_GROUPS.find(group => group.groups.includes(widgetGroup))?.id || 'active'
+}
+
+function shouldShowRightSidebarTab(id) {
+  if (getWidgetSide(id) !== 'right') return false
+  const group = getWidgetGroup(id)
+  if (RIGHT_SIDEBAR_TAB_GROUPS.some(tabGroup => tabGroup.groups.includes(group))) return true
+  return state.rightWidgets.has(id)
+}
+
+function applySidebarLayoutMigration() {
+  let storedVersion = 0
+  try {
+    storedVersion = Number(localStorage.getItem(LAYOUT_VERSION_KEY) || '0')
+  } catch {}
+  if (storedVersion >= SIDEBAR_LAYOUT_VERSION) return
+
+  // Old installs could have every new widget lit up at once. Keep project
+  // navigation on the left, keep one right context surface, and let chat use
+  // the assistant rail by default.
+  state.rightWidgets.delete('ai-chat')
+
+  const activeRightContext = getActiveWidgetIds()
+    .filter(id => isRightSidebarSoloWidget(id))
+  const preferred = activeRightContext.includes(RIGHT_SIDEBAR_DEFAULT_WIDGET)
+    ? RIGHT_SIDEBAR_DEFAULT_WIDGET
+    : activeRightContext[0]
+
+  activeRightContext.forEach(id => state.rightWidgets.delete(id))
+  if (preferred) state.rightWidgets.add(preferred)
+
+  try { localStorage.setItem(LAYOUT_VERSION_KEY, String(SIDEBAR_LAYOUT_VERSION)) } catch {}
   persistWidgetState()
 }
 
@@ -154,8 +218,16 @@ function renderTabs() {
   const tabsEl = $('right-sidebar-tabs')
   if (!tabsEl) return
   ensureStateShape()
-  const allIds = Array.from(_widgets.keys())
-  tabsEl.innerHTML = allIds.map(id => {
+  const idsByGroup = new Map(RIGHT_SIDEBAR_TAB_GROUPS.map(group => [group.id, []]))
+  idsByGroup.set('active', [])
+  for (const id of _widgets.keys()) {
+    if (!shouldShowRightSidebarTab(id)) continue
+    const groupId = getRightSidebarTabGroup(id)
+    if (!idsByGroup.has(groupId)) idsByGroup.set(groupId, [])
+    idsByGroup.get(groupId).push(id)
+  }
+
+  const renderTab = (id) => {
     const hooks = _widgets.get(id)
     const active = state.rightWidgets.has(id) ? ' active' : ''
     const title = hooks?.title || id
@@ -163,7 +235,21 @@ function renderTabs() {
       <span class="right-sidebar__tab-icon">${hooks?.icon || ''}</span>
       <span class="right-sidebar__tab-label">${escapeHtml(title)}</span>
     </div>`
-  }).join('')
+  }
+
+  const chunks = []
+  for (const group of RIGHT_SIDEBAR_TAB_GROUPS) {
+    const ids = idsByGroup.get(group.id) || []
+    if (ids.length === 0) continue
+    chunks.push(`<div class="right-sidebar__group-label">${escapeHtml(group.label)}</div>`)
+    chunks.push(...ids.map(renderTab))
+  }
+  const activeIds = idsByGroup.get('active') || []
+  if (activeIds.length) {
+    chunks.push(`<div class="right-sidebar__group-label">Open</div>`)
+    chunks.push(...activeIds.map(renderTab))
+  }
+  tabsEl.innerHTML = chunks.join('')
 }
 
 function getActiveWidgetIdsForSide(side) {
@@ -264,6 +350,13 @@ function renderSidebar() {
   if (container) {
     const rightActive = getActiveWidgetIdsForSide('right').length > 0
     container.classList.toggle('open', rightActive)
+    if (rightActive) {
+      container.style.width = 'var(--right-sidebar-width)'
+      container.style.opacity = '1'
+    } else {
+      container.style.removeProperty('width')
+      container.style.removeProperty('opacity')
+    }
   }
 
   renderTabs()
@@ -293,6 +386,7 @@ export function openRightPanel(id) {
   const side = getWidgetSide(id)
   if (!$(STACK_ID[side])) return
   state.rightWidgets.add(id)
+  enforceRightSidebarSoloMode(id)
   renderSidebar()
   persistWidgetState()
 }
@@ -334,12 +428,15 @@ export function toggleRightSidebar() {
     return
   }
   if (!$('right-panel-container')) return
-  const toRestore = (_lastActive && _lastActive.length ? _lastActive : ['inspector'])
+  const toRestore = (_lastActive && _lastActive.length ? _lastActive : [RIGHT_SIDEBAR_DEFAULT_WIDGET])
     .filter(id => _widgets.has(id) && getWidgetSide(id) === 'right')
-  if (toRestore.length === 0 && _widgets.has('inspector') && getWidgetSide('inspector') === 'right') {
-    toRestore.push('inspector')
+  if (toRestore.length === 0 && _widgets.has(RIGHT_SIDEBAR_DEFAULT_WIDGET) && getWidgetSide(RIGHT_SIDEBAR_DEFAULT_WIDGET) === 'right') {
+    toRestore.push(RIGHT_SIDEBAR_DEFAULT_WIDGET)
   }
-  toRestore.forEach(id => state.rightWidgets.add(id))
+  toRestore.forEach(id => {
+    state.rightWidgets.add(id)
+    enforceRightSidebarSoloMode(id)
+  })
   renderSidebar()
   persistWidgetState()
 }
@@ -348,6 +445,7 @@ export function toggleWidgetCollapse(id) {
   ensureStateShape()
   if (state.collapsedWidgets.has(id)) {
     state.collapsedWidgets.delete(id)
+    enforceRightSidebarSoloMode(id)
     // Body stays in the DOM with its listeners attached — no remount needed.
     // Refresh content in case state changed while hidden.
     const hooks = _widgets.get(id)
@@ -459,6 +557,7 @@ export function moveWidgetToSide(id, side) {
   setWidgetSide(id, side)
   // Ensure the widget is active so the destination renders it
   state.rightWidgets.add(id)
+  enforceRightSidebarSoloMode(id)
   renderSidebar()
   persistWidgetState()
 }
@@ -466,6 +565,7 @@ export function moveWidgetToSide(id, side) {
 export function setWidgetSidePreference(id, side) {
   if (!_widgets.has(id)) return
   setWidgetSide(id, side)
+  if (state.rightWidgets.has(id)) enforceRightSidebarSoloMode(id)
   // Move an already-active widget without forcing dormant widgets open.
   renderSidebar()
   persistWidgetState()
@@ -694,6 +794,7 @@ export function startRightSidebarResize(event) {
 export function restoreRightPanel() {
   ensureStateShape()
   applyFirstLaunchDefaults()
+  applySidebarLayoutMigration()
   renderSidebar()
 }
 
