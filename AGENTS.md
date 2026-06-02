@@ -4,6 +4,19 @@ Handoff document for Codex. Read this before touching any file.
 
 ---
 
+## Agent operating rules
+
+These rules apply before any code change.
+
+- **Think before coding** — state assumptions when the request is ambiguous. If there are multiple reasonable interpretations, name them before choosing. Ask when the wrong assumption would cause rework.
+- **Simplicity first** — implement the smallest change that solves the request. Do not add speculative abstractions, configurability, or extra features.
+- **Surgical changes** — touch only files and lines needed for the task. Match the existing style. Do not refactor adjacent code, reformat unrelated sections, or delete pre-existing dead code unless explicitly asked.
+- **Clean up your own trail** — remove imports, variables, functions, CSS, or tests made obsolete by your own change. Leave unrelated existing cleanup as a note, not an edit.
+- **Verify the goal** — for each non-trivial task, define what proves success before or while implementing. Prefer tests for logic changes, builds for integration changes, and rendered checks for UI changes.
+- **Every changed line must justify itself** — if a line cannot be traced back to the user request, the repo’s conventions, or required verification, do not change it.
+
+---
+
 ## What is Fjordmark
 
 A **local-first, open-source Markdown editor** built with Electron.
