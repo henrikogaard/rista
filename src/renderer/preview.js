@@ -103,11 +103,10 @@ export function updateActiveMetrics() {
   const tab = getFocusedTab()
   const markdown = tab?.content || ''
   const words = $('st-words')
-  const lines = $('st-lines')
-  updateCursorStatus()
   if (!tab) {
     if (words) words.textContent = '—'
-    if (lines) lines.textContent = '—'
+    const fname = $('st-filename')
+    if (fname) fname.textContent = '—'
     renderStatsPopover(getStats('', getSettings().readingSpeed))
     renderTocPopover([])
     return
@@ -122,7 +121,13 @@ export function updateActiveMetrics() {
       setTimeout(() => words.classList.remove('goal-reached'), 3000)
     }
   }
-  if (lines) lines.textContent = `${markdown.split('\n').length} lines`
+  const filename = $('st-filename')
+  if (filename) {
+    const name = tab?.name || ''
+    filename.innerHTML = name
+      ? `<span class="st-filename__name">${name}</span>${tab.dirty ? '<span class="st-dirty" aria-label="unsaved"> ·</span>' : ''}`
+      : '—'
+  }
   const readTime = $('st-readtime')
   if (readTime) {
     readTime.textContent = stats.readMin < 1 ? '< 1 min read' : `~${stats.readMin} min read`

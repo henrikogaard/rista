@@ -4,6 +4,7 @@ import { Menu } from '@tauri-apps/api/menu'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { homeDir } from '@tauri-apps/api/path'
 
 const commandListeners = new Set()
 
@@ -148,6 +149,7 @@ if (window.__TAURI_INTERNALS__) {
       if (action === 'toggle-maximize') return currentWindow.toggleMaximize()
       return Promise.resolve(false)
     },
+    setFullscreen: (enabled) => currentWindow.setFullscreen(enabled),
     startWindowDrag: () => invoke('start_window_drag'),
     newWindow: (folderPath = null, filePath = null) => invoke('new_window', { folderPath, filePath }),
     launchFile: () => invoke('launch_file'),
@@ -193,6 +195,7 @@ if (window.__TAURI_INTERNALS__) {
     watchFolder: (path) => invoke('watch_folder', { path }),
     stat: (path) => invoke('stat_file', { path }),
     createDir: (path) => invoke('create_dir', { path }),
+    getHomeDir: () => homeDir(),
     writeImageFile: (dirPath, base64Data, fileNameValue) => invoke('write_image_file', { dirPath, base64Data, fileName: fileNameValue }),
     renameFile: (oldPath, newPath) => invoke('rename_file', { oldPath, newPath }),
     trashFile: (path) => invoke('trash_file', { path }),

@@ -562,6 +562,7 @@ export async function createNewFile() {
 // ── Open file ────────────────────────────────────────────────────
 export async function openFile(item, { preview = false } = {}) {
   if (!window.fjord) return
+  const _t0 = performance.now()
   if (!$('workspace-primary')) _callbacks.buildEditorUI?.()
   const targetPane = state.workspaceMode === 'dual' ? state.focusedPane : 'primary'
 
@@ -590,6 +591,9 @@ export async function openFile(item, { preview = false } = {}) {
   state.tabs.push(tab)
   activateTab(tab, targetPane)
   if (!isAttachment && !isBinary && item.heading?.line) requestAnimationFrame(() => jumpToLine(item.heading.line))
+  // Perf budget (#61): file-switch latency ≤ 80 ms
+  const elapsed = performance.now() - _t0
+  if (elapsed > 80) console.warn(`[rista/perf] file-switch latency: ${Math.round(elapsed)}ms (budget 80ms)`)
 }
 
 export async function loadFileIntoTab(tab) {

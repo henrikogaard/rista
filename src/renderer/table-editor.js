@@ -162,3 +162,99 @@ export function checkTableAtCursor(view) {
   }
   hideTableToolbar()
 }
+
+// ── Tab / Shift-Tab navigation between table cells (#52) ─────────
+export function tableTabForward(view) {
+  const { state } = view
+  const pos = state.selection.main.head
+  if (!isInsideTable(state, pos)) return false
+
+  const line = state.doc.lineAt(pos)
+  const rest = line.text.slice(pos - line.from)
+  const nextPipe = rest.indexOf('|', 1) // skip first char (might be '|' itself)
+
+  if (nextPipe !== -1) {
+    // Move into the next cell on the same line
+    const cellStart = pos + nextPipe + 1
+    const cellEnd = (() => {
+      const after = line.text.slice(cellStart - line.from)
+      const nextP = after.indexOf('|')
+      return nextP !== -1 ? cellStart + nextP : line.to
+    })()
+    // Skip the separator row (line 2 of the table, all dashes)
+    const targetLine = state.doc.lineAt(cellStart)
+    if (/^\s*\|[\s:|-]+\|\s*$/.test(targetLine.text)) {
+      return tableTabForward({ state, dispatch: view.dispatch.bind(view), coordsAtPos: view.coordsAtPos.bind(view), dom: view.dom, ...view })
+    }
+    view.dispatch({ selection: { anchor: cellStart, head: Math.min(cellEnd, line.to) } })
+    return true
+  }
+
+  // Move to the first cell of the next line
+  const nextLineNum = line.number + 1
+  if (nextLineNum > state.doc.lines) return false
+  const nextLine = state.doc.line(nextLineNum)
+  if (!isInsideTable(state, nextLine.from)) return false
+
+  const firstPipe = nextLine.text.indexOf('|')
+  const start = nextLine.from + firstPipe + 1
+  const after = nextLine.text.slice(firstPipe + 1)
+  const endPipe = after.indexOf('|')
+  const end = endPipe !== -1 ? start + endPipe : nextLine.to
+  // Skip separator row
+  if (/^\s*\|[\s:|-]+\|\s*$/.test(nextLine.text)) {
+    const skipLine = state.doc.line(nextLineNum + 1)
+    if (skipLine && isInsideTable(state, skipLine.from)) {
+      const fp = skipLine.text.indexOf('|')
+      const s = skipLine.from + fp + 1
+      const af = skipLine.text.slice(fp + 1)
+      const ep = af.indexOf('|')
+      const e = ep !== -1 ? s + ep : skipLine.to
+      view.dispatch({ selection: { anchor: s, head: e } })
+      return true
+    }
+    return false
+  }
+  view.dispatch({ selection: { anchor: start, head: end } })
+  return true
+}
+
+export function tableTabBackward(view) {
+  const { state } = view
+  const pos = state.selection.main.head
+  if (!isInsideTable(state, pos)) return false
+
+  const line = state.doc.lineAt(pos)
+  const before = line.text.slice(0, pos - line.from)
+  // Find the second-to-last pipe in `before`
+  const pipes = []
+  for (let i = 0; i < before.length; i++) if (before[i] === '|') pipes.push(i)
+
+  if (pipes.length >= 2) {
+    const cellStart = line.from + pipes[pipes.length - 2] + 1
+    const cellEnd = line.from + pipes[pipes.length - 1]
+    view.dispatch({ selection: { anchor: cellStart, head: cellEnd } })
+    return true
+  }
+
+  // Move to the last cell of the previous line
+  const prevLineNum = line.number - 1
+  if (prevLineNum < 1) return false
+  const prevLine = state.doc.line(prevLineNum)
+  if (!isInsideTable(state, prevLine.from)) return false
+  // Skip separator row
+  const lineToUse = /^\s*\|[\s:|-]+\|\s*$/.test(prevLine.text)
+    ? (prevLineNum > 1 ? state.doc.line(prevLineNum - 1) : null)
+    : prevLine
+  if (!lineToUse || !isInsideTable(state, lineToUse.from)) return false
+
+  const pipes2 = []
+  for (let i = 0; i < lineToUse.text.length; i++) if (lineToUse.text[i] === '|') pipes2.push(i)
+  if (pipes2.length >= 2) {
+    const cellStart = lineToUse.from + pipes2[pipes2.length - 2] + 1
+    const cellEnd = lineToUse.from + pipes2[pipes2.length - 1]
+    view.dispatch({ selection: { anchor: cellStart, head: cellEnd } })
+    return true
+  }
+  return false
+}

@@ -9,6 +9,10 @@ function isRailDock(dock) {
 }
 
 function applyAssistantDockPlacement(dock) {
+  if (dock === 'hidden') {
+    closeRightPanel('ai-chat')
+    return
+  }
   if (isRailDock(dock)) {
     closeRightPanel('ai-chat')
   } else if (dock === 'left-sidebar') {

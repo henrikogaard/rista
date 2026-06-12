@@ -23,6 +23,7 @@ export function toggleZenMode() {
 export function enterZenMode() {
   state.zenMode = true
   document.documentElement.setAttribute('data-zen', 'true')
+  window.fjord?.setFullscreen?.(true).catch(() => {})
   showHint()
 
   state._zenMouseHandler = () => showHint()
@@ -34,6 +35,7 @@ export function exitZenMode() {
   if (!state.zenMode) return
   state.zenMode = false
   document.documentElement.removeAttribute('data-zen')
+  window.fjord?.setFullscreen?.(false).catch(() => {})
   hideHint()
 
   if (state._zenMouseHandler) {

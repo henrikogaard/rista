@@ -101,6 +101,7 @@ export function buildWelcome() {
           <span>Markdown-first</span>
           <span>Local graph ready</span>
           <span>Autosave armed</span>
+          <span>Works offline</span>
         </div>
       </div>
     </div>
@@ -406,6 +407,7 @@ function handleSettingsInput(event) {
   if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
   if (['hideFrontmatterInRenderedModes', 'showDocumentBanners'].includes(input.dataset.setting)) refreshRenderedDocuments()
   if (input.dataset.setting === 'assistantDock') _callbacks.syncAssistantRail?.()
+  if (['typewriterScrolling', 'spellcheck', 'vimMode', 'smartTypography', 'focusMode', 'livePreview', 'posHighlight'].includes(input.dataset.setting)) _callbacks.applyEditorSettings?.()
 }
 
 function refreshRenderedDocuments() {
@@ -838,10 +840,9 @@ export function buildShell() {
           <div class="statusbar">
             <div class="statusbar__metrics">
               <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
+              <div class="st st--filename" id="st-filename" title="Current file">—</div>
               <div class="st" id="st-words">—</div>
-              <div class="st" id="st-lines">—</div>
               <div class="st st--optional" id="st-readtime">—</div>
-              <div class="st st--cursor" id="st-cursor">Ln 1, Col 1</div>
               <span class="st st--update" id="st-update" hidden></span>
             </div>
             <div class="statusbar__controls">
@@ -947,6 +948,7 @@ export function buildShell() {
 
             <section class="settings-group">
               <div class="settings-section-title">Preview typography</div>
+              ${renderToggleSetting('previewMirrorEditor', 'Mirror editor font', 'Use the same font, size, and spacing as the editor in Preview mode')}
               ${renderFontPicker('previewFont', 'Preview font', FONT_OPTIONS.preview, 'Heading and body text')}
               ${renderTextSetting('previewFontCustom', 'Installed preview font or stack', "Example: 'Iowan Old Style', Georgia, serif")}
               ${renderRangeSetting('previewFontSize', 'Preview size', 12, 18, 1, 'px')}
@@ -959,6 +961,10 @@ export function buildShell() {
             <section class="settings-group">
               <div class="settings-section-title">Markdown editing</div>
               ${renderToggleSetting('typewriterScrolling', 'Typewriter scrolling', 'Keep cursor vertically centered while typing')}
+              ${renderToggleSetting('livePreview', 'Live preview', 'Hide Markdown syntax marks on lines not being edited (heading marks, bold/italic, links)')}
+              ${renderToggleSetting('posHighlight', 'Writing analysis', 'Subtly highlight adverbs, passive voice, and long sentences in the editor')}
+              ${renderToggleSetting('focusMode', 'Focus mode', 'Dim lines outside the current paragraph while writing')}
+              ${renderToggleSetting('smartTypography', 'Smart typography', 'Auto-convert dashes, ellipsis, and straight quotes to typographic characters')}
               ${renderToggleSetting('spellcheck', 'Spellcheck', 'Enable browser spellcheck in the editor')}
               ${renderToggleSetting('vimMode', 'Vim mode', 'Enable Vim keybindings in the editor')}
               ${renderToggleSetting('softWrap', 'Soft wrap', 'Wrap long lines instead of horizontal scrolling')}
@@ -979,6 +985,11 @@ export function buildShell() {
               <div class="settings-section-title">Rendered documents</div>
               ${renderToggleSetting('hideFrontmatterInRenderedModes', 'Hide document properties', 'Hide YAML properties in Preview and Rich Text while keeping them in the markdown file')}
               ${renderToggleSetting('showDocumentBanners', 'Show document banners', 'Render banner images from document properties in Preview and exports')}
+            </section>
+
+            <section class="settings-group">
+              <div class="settings-section-title">Experimental</div>
+              ${renderToggleSetting('docxExportEnabled', 'DOCX export', 'Enable Export to DOCX command in the command palette (experimental feature)')}
             </section>
           </div>
 

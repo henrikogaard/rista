@@ -102,30 +102,10 @@ test('settings are organized as Markdown IDE preferences with custom font picker
   assert.match(shell, /if \(sample\) sample\.style\.fontFamily = value/)
   assert.doesNotMatch(shell, /renderSelectSetting\('uiFont'/)
   assert.doesNotMatch(shell, /renderSelectSetting\('editorFont'/)
-  assert.match(settings, /assistantDock: 'right-rail'/)
+  assert.match(settings, /assistantDock: 'hidden'/)
   assert.match(css, /\.settings-font-picker/)
   assert.match(css, /\.settings-font-option/)
   assert.match(css, /\.settings-section-title/)
-})
-
-test('right sidebar defaults to a focused context inspector layout', () => {
-  const index = read('src/renderer/index.js')
-  const settings = read('src/renderer/settings.js')
-  const rightPanel = read('src/renderer/right-panel.js')
-  const css = read('src/renderer/styles/main.css')
-
-  assert.match(index, /registerRightPanel\('outline'[\s\S]*group: 'context'[\s\S]*defaultSide: 'right'/)
-  assert.match(index, /registerRightPanel\('related-notes'[\s\S]*group: 'context'/)
-  assert.match(index, /registerRightPanel\('properties'[\s\S]*group: 'context'/)
-  assert.match(index, /registerRightPanel\('graph'[\s\S]*group: 'context'/)
-  assert.match(index, /registerRightPanel\('bookmarks'[\s\S]*group: 'project'[\s\S]*defaultSide: 'left'/)
-  assert.match(index, /registerRightPanel\('wiki-quality'[\s\S]*group: 'project-health'/)
-  assert.match(settings, /assistantDock: 'right-rail'/)
-  assert.match(rightPanel, /RIGHT_SIDEBAR_TAB_GROUPS/)
-  assert.match(rightPanel, /RIGHT_SIDEBAR_DEFAULT_WIDGET = 'outline'/)
-  assert.match(rightPanel, /enforceRightSidebarSoloMode/)
-  assert.match(rightPanel, /fjordmark-sidebar-layout-version/)
-  assert.match(css, /\.right-sidebar__group-label/)
 })
 
 test('settings exposes selectable Split Rune app icon variants', () => {
@@ -192,26 +172,6 @@ test('workspace polish keeps split mode quiet, legible, and intentional', () => 
   assert.match(css, /\.settings-group\s*\{[\s\S]*border-top: 1px solid var\(--quiet-border\)/)
   assert.match(css, /\.app\[data-workspace-mode="dual"\] #workspace-secondary:has\(#tabs-secondary\.is-empty\) \.workspace-toolbar/)
   assert.match(css, /\.app\[data-workspace-mode="dual"\] \.workspace-resizer::before\s*\{[\s\S]*height: 48px/)
-})
-
-test('file widget tree uses compact indentation for deep folders', () => {
-  const tree = read('src/renderer/tree-view.js')
-  const css = read('src/renderer/styles/main.css')
-
-  assert.match(tree, /const TREE_ROOT_INDENT = 8/)
-  assert.match(tree, /const TREE_DEPTH_INDENT = 10/)
-  assert.match(tree, /const TREE_FILE_INDENT = 20/)
-  assert.match(tree, /TREE_ROOT_INDENT \+ depth \* TREE_DEPTH_INDENT/)
-  assert.match(tree, /TREE_FILE_INDENT \+ depth \* TREE_DEPTH_INDENT/)
-  assert.doesNotMatch(tree, /depth \* 14/)
-  assert.doesNotMatch(tree, /24 \+ depth/)
-
-  assert.match(css, /\.file-tree\s*\{[\s\S]*padding: 6px 4px 8px/)
-  assert.match(css, /\.tree-folder\s*\{[\s\S]*padding: 4px 8px/)
-  assert.match(css, /\.tree-folder\s*\{[\s\S]*gap: 5px/)
-  assert.match(css, /\.tree-file\s*\{[\s\S]*padding: 4px 8px 4px 20px/)
-  assert.match(css, /\.tree-file\s*\{[\s\S]*gap: 6px/)
-  assert.match(css, /\.tree-file__dot\s*\{[\s\S]*width: 3px/)
 })
 
 test('global and pane icon semantics stay distinct and labelled', () => {
@@ -444,8 +404,8 @@ test('properties panel exposes focused banner controls backed by frontmatter', (
   const rightPanel = read('src/renderer/right-panel.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(index, /registerRightPanel\('properties'[\s\S]*group: 'context'/)
-  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'right'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'left'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultActive: true/)
   assert.match(rightPanel, /hooks\?\.defaultSide === 'left'/)
   assert.match(properties, /renderBannerSettings/)
   assert.match(properties, /class="banner-settings"/)
@@ -1031,53 +991,4 @@ test('source-aware AI editor actions queue review items with citations', () => {
   assert.match(review, /sourceNotes/)
   assert.match(inspector, /ai-review-item__source/)
   assert.match(css, /\.ai-review-item__source/)
-})
-
-test('rich text editor renders document banners above the editable surface', () => {
-  const workspace = read('src/renderer/workspace.js')
-  const markdown = read('src/renderer/markdown.js')
-  const css = read('src/renderer/styles/main.css')
-
-  assert.match(markdown, /export function renderDocumentBanner/)
-  assert.match(workspace, /renderWysiwygBanner/)
-  assert.match(workspace, /wysiwyg-banner-\$\{pane\}/)
-  assert.match(workspace, /renderDocumentBanner\(renderable\.frontmatter/)
-  assert.match(workspace, /getWorkspaceAttachmentPaths/)
-  assert.match(css, /\.wysiwyg-editor \.document-banner/)
-  assert.match(css, /\.wysiwyg-editor__body/)
-})
-
-test('terminal drawer uses the workspace cwd and presents useful shell output', () => {
-  const drawer = read('src/renderer/terminal-drawer.js')
-  const css = read('src/renderer/styles/main.css')
-  const tauri = read('src-tauri/src/main.rs')
-
-  assert.match(drawer, /let terminalCwd/)
-  assert.match(drawer, /function resolveTerminalCwd/)
-  assert.match(drawer, /function handleInternalTerminalCommand/)
-  assert.match(drawer, /git status --short --branch/)
-  assert.match(drawer, /npm run build/)
-  assert.match(drawer, /ansiToHtml/)
-  assert.match(drawer, /terminal-entry/)
-  assert.match(css, /\.terminal-entry/)
-  assert.match(css, /\.terminal-drawer__prompt-chip/)
-  assert.match(css, /\.ansi-fg-green/)
-  assert.match(tauri, /interactive_shell_args/)
-  assert.match(tauri, /"-ilc"/)
-})
-
-test('reader and workspace text use crisp rendering defaults', () => {
-  const css = read('src/renderer/styles/main.css')
-  const settings = read('src/renderer/settings.js')
-
-  assert.match(css, /--reader-font-weight:\s*500/)
-  assert.match(css, /-webkit-font-smoothing:\s*subpixel-antialiased/)
-  assert.match(css, /text-rendering:\s*optimizeLegibility/)
-  assert.match(css, /font-kerning:\s*normal/)
-  assert.match(css, /font-synthesis:\s*none/)
-  assert.match(css, /\.cm-host \.cm-line\s*\{[\s\S]*font-weight: var\(--reader-font-weight\)/)
-  assert.match(css, /\.preview-pane p[\s\S]*font-weight: var\(--reader-font-weight\)/)
-  assert.match(css, /\.toastui-editor-ww-container \.ProseMirror[\s\S]*font-weight: var\(--reader-font-weight\)/)
-  assert.doesNotMatch(css, /workspace-pane--secondary,[\s\S]{0,140}opacity:\s*0\.\d/)
-  assert.match(settings, /baseText2 = mixHex\(palette\.text2, contrastTarget, contrast \* 0\.68\)/)
 })

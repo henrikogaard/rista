@@ -1,5 +1,5 @@
 import ToastEditor from '@toast-ui/editor'
-import { createEditor, updateEditorDoc } from './editor.js'
+import { createEditor, updateEditorDoc, updateSmartTypography, updateFocusMode, updateLivePreview, updatePosHighlight } from './editor.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, syncingRichEditor, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab } from './state.js'
 import { chevronIcon } from './icons.js'
 import { getTheme } from './theme.js'
@@ -316,6 +316,10 @@ export function mountEditor(pane) {
     typewriterEnabled: getSettings().typewriterScrolling,
     spellcheckEnabled: getSettings().spellcheck,
     vimEnabled: getSettings().vimMode,
+    smartTypographyEnabled: getSettings().smartTypography !== false,
+    focusModeEnabled: Boolean(getSettings().focusMode),
+    livePreviewEnabled: Boolean(getSettings().livePreview),
+    posHighlightEnabled: Boolean(getSettings().posHighlight),
   })
 
   // Wire minimap updates
@@ -527,6 +531,18 @@ export function syncFocusedPaneUi() {
   PANE_KEYS.forEach(pane => {
     const workspace = $(`workspace-${pane}`)
     workspace?.classList.toggle('focused', state.focusedPane === pane)
+  })
+}
+
+export function applyEditorSettings() {
+  const s = getSettings()
+  PANE_KEYS.forEach(pane => {
+    const view = editorViews[pane]
+    if (!view) return
+    updateSmartTypography(view, s.smartTypography !== false)
+    updateFocusMode(view, Boolean(s.focusMode))
+    updateLivePreview(view, Boolean(s.livePreview))
+    updatePosHighlight(view, Boolean(s.posHighlight))
   })
 }
 

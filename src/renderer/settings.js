@@ -18,6 +18,7 @@ export const APP_ICON_VARIANTS = [
 ]
 
 export const ASSISTANT_DOCK_OPTIONS = [
+  { value: 'hidden', label: 'Off (hidden by default)' },
   { value: 'right-sidebar', label: 'Right sidebar' },
   { value: 'left-sidebar', label: 'Left sidebar' },
   { value: 'right-rail', label: 'Dedicated right rail' },
@@ -62,7 +63,7 @@ export const THEME_PRESETS = {
       value: 'nordic-night',
       label: 'Nordic Night',
       bg: ['#0d0e10', '#111214', '#161719', '#1c1d20', '#252729', '#2e3033'],
-      text: ['#eceef5', '#adb2c0', '#747b8b'],
+      text: ['#dddfe6', '#8e91a0', '#5a5e6e'],
       accent: '#5b7fa6',
       green: '#4a9966',
       red: '#c0504d',
@@ -269,7 +270,7 @@ export const DEFAULT_SETTINGS = {
   accentColor: '',
   uiFont: FONT_OPTIONS.ui[0].value,
   uiFontCustom: '',
-  uiFontSize: 13,
+  uiFontSize: 12,
   explorerFont: FONT_OPTIONS.explorer[0].value,
   explorerFontCustom: '',
   explorerFontSize: 12,
@@ -280,8 +281,9 @@ export const DEFAULT_SETTINGS = {
   editorTextColor: '',
   previewFont: FONT_OPTIONS.preview[0].value,
   previewFontCustom: '',
-  previewFontSize: 13,
-  previewLineHeight: 1.75,
+  previewFontSize: 16,
+  previewLineHeight: 1.8,
+  previewMirrorEditor: false,
   previewTextColor: '',
   hideFrontmatterInRenderedModes: true,
   showDocumentBanners: true,
@@ -301,13 +303,18 @@ export const DEFAULT_SETTINGS = {
   zenParagraphDimming: false,
   zenColumnWidth: 700,
   showMinimap: false,
+  smartTypography: true,
+  focusMode: false,
+  livePreview: false,
+  posHighlight: false,
+  docxExportEnabled: false,
   dailyNotesFolder: 'daily',
   dailyNoteTemplate: '# {{date}}\n\n',
   maxHistorySnapshots: 50,
   appIconVariant: 'aurora-gradient',
   appIconTheme: 'auto',
   aiProvider: 'openai',
-  assistantDock: 'right-rail',
+  assistantDock: 'hidden',
   aiApiKey: '',
   aiModel: '',
   aiBaseUrl: '',
@@ -470,9 +477,9 @@ export function applySettings(settings = getSettings()) {
   const palette = getThemePalette(next)
   const contrast = next.contrastBoost / 100
   const contrastTarget = palette.theme === 'light' ? '#000000' : '#ffffff'
-  const baseText1 = mixHex(palette.text1, contrastTarget, contrast * 0.66)
-  const baseText2 = mixHex(palette.text2, contrastTarget, contrast * 0.68)
-  const baseText3 = mixHex(palette.text3, contrastTarget, contrast * 0.58)
+  const baseText1 = mixHex(palette.text1, contrastTarget, contrast * 0.58)
+  const baseText2 = mixHex(palette.text2, contrastTarget, contrast * 0.50)
+  const baseText3 = mixHex(palette.text3, contrastTarget, contrast * 0.44)
   const accent = next.accentColor || palette.accent
   const accentHi = palette.theme === 'light'
     ? mixHex(accent, '#000000', 0.2)
@@ -517,9 +524,14 @@ export function applySettings(settings = getSettings()) {
   root.style.setProperty('--editor-font', next.editorFontCustom || next.editorFont)
   root.style.setProperty('--editor-font-size', `${next.editorFontSize}px`)
   root.style.setProperty('--editor-line-height', String(next.editorLineHeight))
-  root.style.setProperty('--preview-font', next.previewFontCustom || next.previewFont)
-  root.style.setProperty('--preview-font-size', `${next.previewFontSize}px`)
-  root.style.setProperty('--preview-line-height', String(next.previewLineHeight))
+  const resolvedPreviewFont = next.previewMirrorEditor
+    ? (next.editorFontCustom || next.editorFont)
+    : (next.previewFontCustom || next.previewFont)
+  const resolvedPreviewSize = next.previewMirrorEditor ? next.editorFontSize : next.previewFontSize
+  const resolvedPreviewLH = next.previewMirrorEditor ? next.editorLineHeight : next.previewLineHeight
+  root.style.setProperty('--preview-font', resolvedPreviewFont)
+  root.style.setProperty('--preview-font-size', `${resolvedPreviewSize}px`)
+  root.style.setProperty('--preview-line-height', String(resolvedPreviewLH))
   root.dataset.statusbar = next.showStatusBar ? 'true' : 'false'
   return next
 }

@@ -37,7 +37,7 @@ import { createSession } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel, openAiSession } from './ai-chat.js'
-import { mountAssistantRail, openAssistantWidgetForDock, syncAssistantRail } from './assistant-rail.js'
+import { mountAssistantRail, openAssistantWidgetForDock } from './assistant-rail.js'
 import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
@@ -76,6 +76,7 @@ import {
   toggleWorkspaceSplit,
   toggleInspector,
   refreshRightPanel,
+  applyEditorSettings,
 } from './workspace.js'
 
 // ── Tabs (file/tab operations, editor changes, saves) ────────────
@@ -139,7 +140,6 @@ registerFileExplorerCallbacks({
 registerRightPanel('files', {
   title: 'Files',
   icon: folderIcon(),
-  group: 'project',
   flex: 3,
   defaultSide: 'left',
   defaultActive: true,
@@ -163,7 +163,6 @@ registerAgentsViewCallbacks({
 registerRightPanel('agents', {
   title: 'Agents',
   icon: agentsIcon(),
-  group: 'project',
   flex: 1,
   defaultSide: 'left',
   build: buildAgentsPanel,
@@ -183,9 +182,7 @@ function rerenderGraphFromIndex() {
 registerRightPanel('graph', {
   title: 'Graph',
   icon: graphIcon(),
-  group: 'context',
   flex: 2,
-  defaultSide: 'right',
   build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
   onMount: () => {
     rerenderGraphFromIndex()
@@ -212,9 +209,9 @@ initAiChatPanel(openFile, closeRightPanel)
 registerRightPanel('properties', {
   title: 'Properties',
   icon: propertiesIcon(),
-  group: 'context',
   flex: 1,
-  defaultSide: 'right',
+  defaultSide: 'left',
+  defaultActive: true,
   build: buildPropertiesPanel,
   onMount: mountPropertiesPanel,
   onUnmount: () => {},
@@ -224,9 +221,7 @@ registerRightPanel('properties', {
 registerRightPanel('outline', {
   title: 'Outline',
   icon: outlineIcon(),
-  group: 'context',
   flex: 1,
-  defaultSide: 'right',
   build: buildOutlinePanel,
   onMount: mountOutlinePanel,
   onUnmount: () => {},
@@ -237,7 +232,6 @@ let _tagsUnsubscribe = null
 registerRightPanel('tags', {
   title: 'Tags',
   icon: tagIcon(),
-  group: 'project',
   flex: 1,
   defaultSide: 'left',
   build: buildTagsPanel,
@@ -269,9 +263,7 @@ let _relatedNotesUnsubscribe = null
 registerRightPanel('related-notes', {
   title: 'Related',
   icon: relatedNotesIcon(),
-  group: 'context',
   flex: 1,
-  defaultSide: 'right',
   build: buildRelatedNotesPanel,
   onMount: () => {
     mountRelatedNotesPanel(openFile)
@@ -295,9 +287,7 @@ let _wikiQualityUnsubscribe = null
 registerRightPanel('wiki-quality', {
   title: 'Wiki',
   icon: wikiQualityIcon(),
-  group: 'project-health',
   flex: 1,
-  defaultSide: 'right',
   build: buildWikiQualityPanel,
   onMount: () => {
     mountWikiQualityPanel(openFile, { refreshTree })
@@ -321,9 +311,7 @@ setBookmarksOpenFile((item) => openFile(item))
 registerRightPanel('bookmarks', {
   title: 'Bookmarks',
   icon: bookmarkIcon(),
-  group: 'project',
   flex: 1,
-  defaultSide: 'left',
   build: buildBookmarksPanel,
   onMount: mountBookmarksPanel,
   onUnmount: unmountBookmarksPanel,
@@ -333,7 +321,6 @@ registerRightPanel('bookmarks', {
 registerRightPanel('calendar', {
   title: 'Calendar',
   icon: calendarIcon(),
-  group: 'project',
   flex: 0,
   build: () => `<div id="calendar-panel-body" class="widget-fill"></div>`,
   onMount: () => {
@@ -377,7 +364,8 @@ registerShellCallbacks({
   destroyRichEditor,
   ensureRichEditorMounted,
   syncToolbarToggle,
-  syncAssistantRail,
+  syncAssistantRail: mountAssistantRail,
+  applyEditorSettings,
   openAgentSession: (sessionPath) => {
     openAiChatSurface()
     openAiSession(sessionPath)
@@ -465,9 +453,48 @@ function resolveTemplateVars(content) {
   return resolved.replace(/\{\{cursor\}\}/g, '')
 }
 
+// ── First-run sample document ────────────────────────────────────
+const FIRST_RUN_SAMPLE = `# Welcome to Rista ✦
+
+A local-first Markdown editor. Your files, your folder — no cloud, no accounts.
+
+## Getting started
+
+Open a folder with **⌘O** to see all your notes in the sidebar.
+Press **⌘K** to jump to any file or run a command.
+
+## Writing shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Bold | ⌘B |
+| Italic | ⌘I |
+| Inline code | ⌘\` |
+| Find & replace | ⌘F |
+| Project search | ⇧⌘F |
+| Zen mode | ⇧⌘↵ |
+
+## Views
+
+Toggle between **Edit**, **Split**, and **Preview** using the buttons in the toolbar.
+
+## Tips
+
+- Type \`---\` on its own line for a horizontal rule
+- Type \`"quotes"\` and they become "smart quotes" automatically
+- Use \`#tag\` anywhere in a note to build a tag index
+
+---
+
+_This file lives at \`~/Documents/Rista/welcome.md\`. Feel free to edit or delete it._
+`
+
 // ── Boot ─────────────────────────────────────────────────────────
+// Perf budget (#61): cold launch ≤ 400 ms to first interactive frame.
+// File-switch latency ≤ 80 ms p95. Log a warning if exceeded.
+const _bootStart = performance.now()
 buildShell()
-syncAssistantRail()
+mountAssistantRail()
 buildZenExitHint()
 // The terminal drawer lives in the persistent shell now, not the editor UI —
 // wire its input listener once.
@@ -483,11 +510,41 @@ if (initialFilePath) {
   openFolderPath(initialFolderPath)
 } else {
   window.fjord?.launchFile?.()
-    .then(filePath => {
-      if (filePath) openSingleFilePath(filePath)
+    .then(async filePath => {
+      if (filePath) {
+        openSingleFilePath(filePath)
+        return
+      }
+      // First-run: create a sample welcome document so new users aren't dropped
+      // into a blank screen. Only runs once (guarded by localStorage flag).
+      if (window.fjord && !localStorage.getItem('rista-onboarded')) {
+        localStorage.setItem('rista-onboarded', '1')
+        try {
+          const home = await window.fjord.getHomeDir?.()
+          if (home) {
+            const dir = `${home}/Documents/Rista`
+            const samplePath = `${dir}/welcome.md`
+            await window.fjord.createDir(dir).catch(() => {})
+            const existing = await window.fjord.stat(samplePath).catch(() => null)
+            if (!existing) {
+              await window.fjord.writeFile(samplePath, FIRST_RUN_SAMPLE)
+            }
+            await openSingleFilePath(samplePath)
+          }
+        } catch (_) { /* non-fatal — user just sees empty state */ }
+      }
     })
     .catch(() => {})
 }
+
+// Perf budget check: warn in console if shell construction exceeded budget.
+requestAnimationFrame(() => {
+  const elapsed = performance.now() - _bootStart
+  const BUDGET_MS = 400
+  if (elapsed > BUDGET_MS) {
+    console.warn(`[rista/perf] Cold launch exceeded budget: ${Math.round(elapsed)}ms > ${BUDGET_MS}ms`)
+  }
+})
 
 // ── Command palette ──────────────────────────────────────────────
 registerCommandPaletteCallbacks({ openFile })
@@ -515,7 +572,7 @@ registerCommands([
     setDocumentGoal(getFocusedTab()?.path, null)
   }},
   { id: 'export-html', label: 'Export to HTML', description: 'Save as standalone HTML file', shortcut: '', action: () => exportToHtml() },
-  { id: 'export-docx', label: 'Export to DOCX', description: 'Save as Word document', shortcut: '', action: () => exportToDocx() },
+  { id: 'export-docx', label: 'Export to DOCX', description: 'Save as Word document (experimental)', shortcut: '', when: () => getSettings().docxExportEnabled, action: () => exportToDocx() },
   { id: 'print', label: 'Print', description: 'Print the preview', shortcut: '', action: () => window.print() },
   { id: 'new-from-template', label: 'New File from Template', description: 'Create a file from a template', shortcut: '', action: async () => {
     const templates = await getAvailableTemplates()
@@ -584,17 +641,43 @@ document.addEventListener('keydown', e => {
   }
 
   // Customizable shortcuts via keybindings registry
+  // When the CM editor is focused, let it handle formatting shortcuts (Mod-B/I/K etc.)
+  // by skipping the conflicting app-level shortcuts here.
+  const cmFocused = !!document.activeElement?.closest('.cm-editor')
   if (matchesBinding(e, 'zen-mode')) { e.preventDefault(); toggleZenMode(); return }
   if (matchesBinding(e, 'quick-open')) { e.preventDefault(); openCommandPaletteFiles(); return }
-  if (matchesBinding(e, 'command-palette')) { e.preventDefault(); openCommandPaletteCommands(); return }
+  if (matchesBinding(e, 'command-palette') && !cmFocused) { e.preventDefault(); openCommandPaletteCommands(); return }
   if (matchesBinding(e, 'save-as')) { e.preventDefault(); saveActiveAs(); return }
   if (matchesBinding(e, 'save')) { e.preventDefault(); saveActive(); return }
   if (matchesBinding(e, 'new-file')) { e.preventDefault(); createNewFile(); return }
-  if (matchesBinding(e, 'toggle-sidebar')) { e.preventDefault(); toggleSidebar(); return }
+  if (matchesBinding(e, 'toggle-sidebar') && !cmFocused) { e.preventDefault(); toggleSidebar(); return }
   if (matchesBinding(e, 'toggle-toolbar')) { e.preventDefault(); toggleToolbar(); return }
   if (matchesBinding(e, 'find-replace')) { e.preventDefault(); toggleFindReplace(); return }
   if (matchesBinding(e, 'project-search')) { e.preventDefault(); openSearchPanel(); return }
   if (matchesBinding(e, 'terminal')) { e.preventDefault(); toggleTerminalDrawer(); return }
   if (matchesBinding(e, 'settings')) { e.preventDefault(); toggleSettingsPanel(); return }
   if (matchesBinding(e, 'daily-note')) { e.preventDefault(); createDailyNote(); return }
+})
+
+// ── Auto-hide chrome while typing (#47) ─────────────────────────
+// When the user is actively typing in the editor, fade out tabs and brandrail
+// so the writing surface can breathe. Chrome reappears on mouse move or pause.
+let _typingTimer = null
+function _setTyping(active) {
+  document.documentElement.dataset.typing = active ? 'true' : 'false'
+}
+document.addEventListener('keydown', e => {
+  // Only trigger when a printable key is pressed and a CM editor is focused
+  if (e.ctrlKey || e.metaKey || e.altKey) return
+  const focused = document.activeElement
+  if (!focused?.closest('.cm-editor')) return
+  _setTyping(true)
+  clearTimeout(_typingTimer)
+  _typingTimer = setTimeout(() => _setTyping(false), 1800)
+})
+document.addEventListener('mousemove', () => {
+  if (document.documentElement.dataset.typing === 'true') {
+    clearTimeout(_typingTimer)
+    _setTyping(false)
+  }
 })
