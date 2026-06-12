@@ -102,7 +102,7 @@ test('settings are organized as Markdown IDE preferences with custom font picker
   assert.match(shell, /if \(sample\) sample\.style\.fontFamily = value/)
   assert.doesNotMatch(shell, /renderSelectSetting\('uiFont'/)
   assert.doesNotMatch(shell, /renderSelectSetting\('editorFont'/)
-  assert.match(settings, /assistantDock: 'right-sidebar'/)
+  assert.match(settings, /assistantDock: 'hidden'/)
   assert.match(css, /\.settings-font-picker/)
   assert.match(css, /\.settings-font-option/)
   assert.match(css, /\.settings-section-title/)

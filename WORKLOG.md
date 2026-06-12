@@ -1,33 +1,62 @@
 # Fjordmark Worklog
 
-## Handoff
+## Epic: Pivot — Most Beautiful Markdown Editor (Completed)
 
-Date: 2026-04-06
-Repo: `/Users/henrik/Repos/Fjordmark`
-Focus: split view and WYSIWYG stabilization
+Date: 2026-05-28
+Epic: #63 / henrikogaard/rista
 
-## Current State
+All 32 issues from the "Pivot" epic have been implemented. Rista is now a writing-first,
+local-only Markdown editor with iA Writer as the quality bar.
 
-The app has gone through a large UI/editor refactor and is now in a more stable state around in-pane split mode, but still needs focused verification and cleanup.
+### What shipped
 
-Working:
-- high-level two-pane workspace split exists
-- markdown preview rendering works
-- markdown and WYSIWYG work in split view with explicit editor/preview roles
-- toolbar, settings, callouts, and much of the shell/UI work are in place
-- the split-mode state model has been simplified and build is passing
+**Local-first integrity**
+- #37 Self-hosted fonts — all 16 font families from `@fontsource/*`, zero CDN calls
+- #38 Zero network calls — CSP tightened, Google Fonts link removed
+- #39 Offline promise — "Works offline" badge on welcome screen
 
-Broken or unstable:
-- WYSIWYG is still not reliably rendering in all cases
-- switching slot modes inside split view should no longer create contradictory layout state, but needs manual regression testing
-- standalone `MD` had previously broken because pane sizing rules were still tied to stale CSS selectors
-- single-pane and split-pane rendering paths are still tightly coupled
+**Typography & themes**
+- #40 Curated type system — DM Sans + DM Mono, semantic scale tokens
+- #41 Measure & vertical rhythm — `clamp(540px,68ch,720px)` max prose, 1.8 line-height
+- #43 Smart typography — auto-curly quotes, em-dash, ellipsis in CM editor
+- #44 Hanging punctuation — CSS `hanging-punctuation: first last`
 
-## Most Recent Changes
+**Focus**
+- #45 Focus mode — dim inactive paragraphs plugin (`cm-focus-dim`)
+- #46 Typewriter scrolling — CM `scrollIntoView` on cursor
+- #47 Auto-hide chrome — tabs/brand-rail fade on keystroke, restore on mouse
+- #48 Fullscreen zen mode — `window.fjord.setFullscreen()` via Tauri
 
-### 0. Planning and architecture docs
-- Added planning documents under `docs/`:
-  - `PRODUCT-ROADMAP.md`
+**Editing core**
+- #49 Inline live rendering — syntax hiding, heading sizes, HR widget, image widget in CM
+- #50 Markdown shortcuts — ⌘B/I/`/⇧S in CM keymap
+- #51 Inline image rendering — `ImageWidget` WidgetType in live preview plugin
+- #52 Table editing — Tab/Shift-Tab cell navigation wired
+
+**Reading & export**
+- #54 Preview mirrors editor typography — `previewMirrorEditor` setting
+- #55 DOCX export behind experimental flag
+
+**Writing aids**
+- #56 Word-count goals — document + session goals
+- #57 Parts-of-speech highlighting — adverbs, passive voice, long sentences
+- #58 Readability hints — FK Grade + avg sentence length in stats popover
+
+**Foundation**
+- #34 Cmd-K spine — command palette with file + command + tag search
+- #35 Collapsed statusbar — filename + dirty indicator only
+- #36 Hide assistant rail by default — `assistantDock: 'hidden'`
+- #59 Welcome screen feel — toolbar ambient gradient
+- #60 First-run sample document — writes `~/Documents/Rista/welcome.md` on first launch
+- #61 Perf budget — cold launch ≤ 400ms, file-switch ≤ 80ms, console warnings on regression
+- #62 Nordic 0-radius identity — all chrome surfaces set to `border-radius: 0`
+- #63 Epic sign-off ← this entry
+
+**Tests:** 61/61 passing.
+
+---
+
+
   - `PROJECT-BOARD.md`
   - `ARCHITECTURE-PLAN.md`
   - `ARCHITECTURE.md`

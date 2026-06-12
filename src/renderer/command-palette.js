@@ -10,13 +10,13 @@ export function registerCommandPaletteCallbacks(cbs) { Object.assign(_callbacks,
 const commands = []
 
 export function registerCommands(cmds) {
-  cmds.forEach(c => registerCommand(c.id, c.label, c.description, c.shortcut, c.action))
+  cmds.forEach(c => registerCommand(c.id, c.label, c.description, c.shortcut, c.action, c.when))
 }
 
-export function registerCommand(id, label, description, shortcut, action) {
+export function registerCommand(id, label, description, shortcut, action, when) {
   const existing = commands.findIndex(c => c.id === id)
-  if (existing >= 0) commands[existing] = { id, label, description, shortcut, action }
-  else commands.push({ id, label, description, shortcut, action })
+  if (existing >= 0) commands[existing] = { id, label, description, shortcut, action, when }
+  else commands.push({ id, label, description, shortcut, action, when })
 }
 
 // ── DOM refs ─────────────────────────────────────────────────────
@@ -91,10 +91,30 @@ function getResults(query) {
       .slice(0, 10)
   }
 
+  // Empty query: show open tabs as a quick-jump list
+  if (!trimmed) {
+    if (state.tabs && state.tabs.length > 0) {
+      return [...state.tabs].reverse().map(t => ({
+        type: 'file',
+        item: { path: t.path, name: t.name },
+        score: 100,
+        match: true,
+        isOpenTab: true,
+        isDirty: t.dirty,
+      })).slice(0, 10)
+    }
+    // No open tabs yet — show first 8 workspace files
+    const files = flattenTree(state.tree)
+    return files.slice(0, 8).map(f => ({
+      type: 'file', item: f, score: 0, match: true,
+    }))
+  }
+
   // Command mode: query starts with ">"
   if (trimmed.startsWith('>')) {
     const cmdQuery = trimmed.slice(1).trim()
     return commands
+      .filter(c => !c.when || c.when())
       .map(c => {
         const { match, score } = fuzzyMatch(cmdQuery, c.label)
         return { type: 'command', item: c, score, match }
@@ -171,6 +191,13 @@ function renderResults(results) {
   if (!resultsEl) return
   resultsEl.innerHTML = ''
 
+  if (results.length === 0 && !inputEl?.value.trim()) {
+    // No open tabs and no workspace — show onboarding hint
+    const hint = el('div', 'cmd-palette__hints')
+    hint.innerHTML = '<span><kbd>&gt;</kbd> commands</span><span><kbd>#</kbd> tags</span>'
+    resultsEl.appendChild(hint)
+    return
+  }
   if (results.length === 0) {
     const empty = el('div', 'cmd-palette__empty', 'No results')
     resultsEl.appendChild(empty)
@@ -182,11 +209,19 @@ function renderResults(results) {
     row.dataset.index = i
 
     const icon = el('div', 'cmd-palette__icon')
-    icon.textContent = r.type === 'file' ? '#' : r.type === 'tag' ? '•' : r.type === 'heading' ? 'H' : '>'
+    icon.textContent = r.type === 'file' ? '↗' : r.type === 'tag' ? '#' : r.type === 'heading' ? '§' : '>'
+    if (r.isOpenTab) icon.textContent = '◉'
 
     const info = el('div', 'cmd-palette__info')
     const label = el('div', 'cmd-palette__label')
-    if (r.type === 'file') label.textContent = r.item.name
+    if (r.type === 'file') {
+      label.textContent = r.item.name
+      if (r.isDirty) {
+        const dot = el('span', 'cmd-palette__dirty')
+        dot.textContent = ' ·'
+        label.appendChild(dot)
+      }
+    }
     else if (r.type === 'tag') label.textContent = '#' + r.item.name
     else if (r.type === 'heading') label.textContent = r.item.heading.text
     else label.textContent = r.item.label
@@ -300,7 +335,7 @@ function buildPalette() {
   inputEl = document.createElement('input')
   inputEl.type = 'text'
   inputEl.className = 'cmd-palette__input'
-  inputEl.placeholder = 'Search files, # for tags, > for commands...'
+  inputEl.placeholder = 'Jump to file — > commands — # tags…'
   inputEl.spellcheck = false
   inputEl.autocomplete = 'off'
 

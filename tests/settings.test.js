@@ -67,7 +67,7 @@ test('settings sanitizes invalid assistant dock values', async () => {
 
   const { getSettings } = await importSettingsModule()
 
-  assert.equal(getSettings().assistantDock, 'right-sidebar')
+  assert.equal(getSettings().assistantDock, 'hidden')
 })
 
 test('custom OpenAI-compatible provider does not require an API key by default', async () => {
