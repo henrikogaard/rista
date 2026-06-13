@@ -1,5 +1,5 @@
 import './tauri-api.js'
-import { markLaunchStart, markLaunchDone, measureFileSwitch } from './perf-budget.js'
+import { markLaunchStart, markLaunchDone } from './perf-budget.js'
 import { initTheme } from './theme.js'
 import { applySettings, getSettings } from './settings.js'
 import { initKeybindings, matchesBinding } from './keybindings.js'
