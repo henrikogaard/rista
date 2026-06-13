@@ -1,6 +1,6 @@
 import { collectFolderPaths, renderFileTree, highlightTreeFiles } from './tree-view.js'
 import { updateEditorDoc } from './editor.js'
-import { measureFileSwitch } from './perf-budget.js'
+import { markFileSwitchStart, markFileSwitchDone } from './perf-budget.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, saveTimers, draggedTab, setDraggedTab, getTabForPane, setTabForPane, getFocusedTab, getGroupTabs, addTabToPane, removeTabFromPane, getTabPane, isTabOpenAnywhere, cleanSplitSnapshot, storeSplitSnapshot } from './state.js'
 import { refreshPreview, updateActiveMetrics, exportToPdf } from './preview.js'
 import { getSettings, updateSetting } from './settings.js'
@@ -615,34 +615,34 @@ export async function loadFileIntoTab(tab) {
 
 // ── Tabs ─────────────────────────────────────────────────────────
 export function activateTab(tab, pane = 'primary') {
-  measureFileSwitch(() => {
-    if (!$('workspace-primary')) _callbacks.buildEditorUI?.()
-    if (pane === 'secondary' && state.workspaceMode !== 'dual') {
-      state.workspaceMode = 'dual'
-    }
+  markFileSwitchStart()
+  if (!$('workspace-primary')) _callbacks.buildEditorUI?.()
+  if (pane === 'secondary' && state.workspaceMode !== 'dual') {
+    state.workspaceMode = 'dual'
+  }
 
-    addTabToPane(tab, pane)
-    setTabForPane(pane, tab)
-    _callbacks.focusPane?.(pane)
-    _callbacks.ensureEditorForPane?.(pane)
+  addTabToPane(tab, pane)
+  setTabForPane(pane, tab)
+  _callbacks.focusPane?.(pane)
+  _callbacks.ensureEditorForPane?.(pane)
 
-    if (tab.isAttachment || tab.isSpatial || tab.isBinary) {
-      _callbacks.renderAttachmentPreview?.(pane, tab)
-    } else {
-      if (editorViews[pane]) updateEditorDoc(editorViews[pane], tab.content)
-      refreshPreview(pane, tab.content)
-      _callbacks.maybeRefreshWysiwygPane?.(pane)
-    }
+  if (tab.isAttachment || tab.isSpatial || tab.isBinary) {
+    _callbacks.renderAttachmentPreview?.(pane, tab)
+  } else {
+    if (editorViews[pane]) updateEditorDoc(editorViews[pane], tab.content)
+    refreshPreview(pane, tab.content)
+    _callbacks.maybeRefreshWysiwygPane?.(pane)
+  }
 
-    _callbacks.syncWorkspaceUi?.()
-    _callbacks.syncSplitLayout?.()
-    renderTabs()
-    highlightActiveFile()
-    updateActiveMetrics()
-    refreshRightPanel()
-    if (window.fjord.setRepresentedFile) window.fjord.setRepresentedFile(tab.path)
-    persistSession()
-  })
+  _callbacks.syncWorkspaceUi?.()
+  _callbacks.syncSplitLayout?.()
+  renderTabs()
+  highlightActiveFile()
+  updateActiveMetrics()
+  refreshRightPanel()
+  if (window.fjord.setRepresentedFile) window.fjord.setRepresentedFile(tab.path)
+  persistSession()
+  markFileSwitchDone()
 }
 
 export function renderTabs() {

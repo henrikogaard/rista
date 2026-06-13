@@ -1078,6 +1078,8 @@ test('perf budget module exports instrumentation functions', async () => {
 
   assert.equal(typeof perfBudget.markLaunchStart, 'function', 'markLaunchStart should be exported')
   assert.equal(typeof perfBudget.markLaunchDone, 'function', 'markLaunchDone should be exported')
+  assert.equal(typeof perfBudget.markFileSwitchStart, 'function', 'markFileSwitchStart should be exported')
+  assert.equal(typeof perfBudget.markFileSwitchDone, 'function', 'markFileSwitchDone should be exported')
   assert.equal(typeof perfBudget.measureFileSwitch, 'function', 'measureFileSwitch should be exported')
 })
 

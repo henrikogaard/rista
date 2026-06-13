@@ -2,6 +2,7 @@ export const LAUNCH_BUDGET_MS = 400
 export const FILE_SWITCH_BUDGET_MS = 80
 
 let _launchStart = null
+let _fileSwitchStart = null
 
 export function markLaunchStart() {
   _launchStart = performance.now()
@@ -14,6 +15,22 @@ export function markLaunchDone() {
     console.warn(`[perf] Launch exceeded budget: ${Math.round(elapsed)}ms > ${LAUNCH_BUDGET_MS}ms`)
   }
   _launchStart = null
+}
+
+export function markFileSwitchStart() {
+  _fileSwitchStart = performance.now()
+}
+
+export function markFileSwitchDone() {
+  if (_fileSwitchStart === null) return
+  const start = _fileSwitchStart
+  _fileSwitchStart = null
+  requestAnimationFrame(() => {
+    const elapsed = performance.now() - start
+    if (elapsed > FILE_SWITCH_BUDGET_MS) {
+      console.warn(`[perf] File switch exceeded budget: ${Math.round(elapsed)}ms > ${FILE_SWITCH_BUDGET_MS}ms`)
+    }
+  })
 }
 
 export function measureFileSwitch(fn) {
