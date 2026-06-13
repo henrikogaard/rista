@@ -992,3 +992,65 @@ test('source-aware AI editor actions queue review items with citations', () => {
   assert.match(inspector, /ai-review-item__source/)
   assert.match(css, /\.ai-review-item__source/)
 })
+
+test('CSP enforces local-only origins (zero external network calls)', () => {
+  const html = read('public/index.html')
+  
+  // Extract CSP content from meta tag
+  const cspMatch = html.match(/meta http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)
+  assert.ok(cspMatch, 'CSP meta tag must exist')
+  
+  const cspValue = cspMatch[1]
+  
+  // Verify default-src is restricted to self
+  assert.match(cspValue, /default-src 'self'/, 'default-src must be restricted to self')
+  
+  // Verify font-src is restricted to self (no Google Fonts CDN)
+  assert.match(cspValue, /font-src 'self'/, 'font-src must be restricted to self')
+  
+  // Verify connect-src is either absent or also restricted
+  if (cspValue.includes('connect-src')) {
+    assert.match(cspValue, /connect-src 'self'/, 'if connect-src is set, it must be self only')
+  }
+  
+  // Verify no external URLs in CSP value (no https:// or http:// except localhost)
+  const externalUrls = cspValue.match(/https?:\/\/(?!localhost)[^\s;]/g)
+  assert.strictEqual(externalUrls, null, `CSP must not contain external URLs, found: ${externalUrls}`)
+})
+
+test('HTML has no external CDN script or font tags', () => {
+  const html = read('public/index.html')
+  
+  // No Google Fonts link
+  assert.doesNotMatch(html, /fonts\.googleapis\.com/, 'HTML must not load Google Fonts')
+  
+  // No Google Fonts script
+  assert.doesNotMatch(html, /scripts\.font\.is/, 'HTML must not load font services')
+  
+  // No other common CDN links in HTML
+  assert.doesNotMatch(html, /cdnjs\.com/, 'HTML must not load from cdnjs')
+  assert.doesNotMatch(html, /unpkg\.com/, 'HTML must not load from unpkg')
+  assert.doesNotMatch(html, /jsdelivr\.net/, 'HTML must not load from jsdelivr')
+  
+  // Verify all stylesheet links are local
+  const styleLinks = html.match(/<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"/g) || []
+  styleLinks.forEach(link => {
+    const href = link.match(/href="([^"]+)"/)[1]
+    assert.doesNotMatch(href, /^https?:\/\//, `Stylesheet link must be relative: ${href}`)
+  })
+})
+
+test('fonts.css loads only self-hosted fonts (no CDN imports)', () => {
+  const fontsCss = read('public/fonts.css')
+  
+  // Verify no @import from external URLs
+  assert.doesNotMatch(fontsCss, /@import\s+url\(['"]?https?:/, 'fonts.css must not import from CDN')
+  assert.doesNotMatch(fontsCss, /fonts\.googleapis\.com/, 'fonts.css must not import from Google Fonts')
+  
+  // Verify all @import paths are local relative paths
+  const imports = fontsCss.match(/@import\s+['"]([^'"]+)['"]/g) || []
+  imports.forEach(imp => {
+    const path = imp.match(/@import\s+['"]([^'"]+)['"]/)[1]
+    assert.match(path, /^\.\/fonts\//, `Font import must use local relative path: ${path}`)
+  })
+})
