@@ -1054,3 +1054,38 @@ test('fonts.css loads only self-hosted fonts (no CDN imports)', () => {
     assert.match(path, /^\.\/fonts\//, `Font import must use local relative path: ${path}`)
   })
 })
+
+async function importPerfBudgetModule() {
+  const source = fs.readFileSync(path.join(root, 'src/renderer/perf-budget.js'), 'utf8')
+  const modulePath = path.join(root, `.tmp-perf-budget-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  fs.writeFileSync(modulePath, source)
+  try {
+    return await import(`file://${modulePath}`)
+  } finally {
+    fs.rmSync(modulePath, { force: true })
+  }
+}
+
+test('perf budget constants are defined with correct values', async () => {
+  const { LAUNCH_BUDGET_MS, FILE_SWITCH_BUDGET_MS } = await importPerfBudgetModule()
+
+  assert.equal(LAUNCH_BUDGET_MS, 400, 'LAUNCH_BUDGET_MS should be 400ms')
+  assert.equal(FILE_SWITCH_BUDGET_MS, 80, 'FILE_SWITCH_BUDGET_MS should be 80ms')
+})
+
+test('perf budget module exports instrumentation functions', async () => {
+  const perfBudget = await importPerfBudgetModule()
+
+  assert.equal(typeof perfBudget.markLaunchStart, 'function', 'markLaunchStart should be exported')
+  assert.equal(typeof perfBudget.markLaunchDone, 'function', 'markLaunchDone should be exported')
+  assert.equal(typeof perfBudget.measureFileSwitch, 'function', 'measureFileSwitch should be exported')
+})
+
+test('measureFileSwitch function wraps and returns result', async () => {
+  const { measureFileSwitch } = await importPerfBudgetModule()
+
+  const testValue = 42
+  const result = measureFileSwitch(() => testValue)
+
+  assert.equal(result, testValue, 'measureFileSwitch should return the function result')
+})

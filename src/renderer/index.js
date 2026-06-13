@@ -1,4 +1,5 @@
 import './tauri-api.js'
+import { markLaunchStart, markLaunchDone, measureFileSwitch } from './perf-budget.js'
 import { initTheme } from './theme.js'
 import { applySettings, getSettings } from './settings.js'
 import { initKeybindings, matchesBinding } from './keybindings.js'
@@ -492,7 +493,7 @@ _This file lives at \`~/Documents/Rista/welcome.md\`. Feel free to edit or delet
 // ── Boot ─────────────────────────────────────────────────────────
 // Perf budget (#61): cold launch ≤ 400 ms to first interactive frame.
 // File-switch latency ≤ 80 ms p95. Log a warning if exceeded.
-const _bootStart = performance.now()
+markLaunchStart()
 buildShell()
 mountAssistantRail()
 buildZenExitHint()
@@ -539,11 +540,7 @@ if (initialFilePath) {
 
 // Perf budget check: warn in console if shell construction exceeded budget.
 requestAnimationFrame(() => {
-  const elapsed = performance.now() - _bootStart
-  const BUDGET_MS = 400
-  if (elapsed > BUDGET_MS) {
-    console.warn(`[rista/perf] Cold launch exceeded budget: ${Math.round(elapsed)}ms > ${BUDGET_MS}ms`)
-  }
+  markLaunchDone()
 })
 
 // ── Command palette ──────────────────────────────────────────────
