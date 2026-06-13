@@ -909,15 +909,15 @@ export function buildShell() {
             <section class="settings-group settings-group--compact">
               <div class="settings-section-title">Atmosphere</div>
               ${renderToggleSetting('ambientBackground', 'Ambient background', 'Keep the aurora field visible while editing')}
-              ${renderRangeSetting('ambientIntensity', 'Background strength', 0, 100, 1, '%')}
-              ${renderRangeSetting('surfaceOpacity', 'Surface opacity', 45, 100, 1, '%')}
-              ${renderRangeSetting('surfaceBlur', 'Surface blur', 0, 32, 1, 'px')}
-              ${renderRangeSetting('contrastBoost', 'Contrast boost', 0, 40, 1, '%')}
             </section>
 
             <details class="settings-advanced">
-              <summary>Advanced color overrides</summary>
+              <summary>Advanced appearance controls</summary>
               <div class="settings-advanced__body">
+                ${renderRangeSetting('ambientIntensity', 'Background strength', 0, 100, 1, '%')}
+                ${renderRangeSetting('surfaceOpacity', 'Surface opacity', 45, 100, 1, '%')}
+                ${renderRangeSetting('surfaceBlur', 'Surface blur', 0, 32, 1, 'px')}
+                ${renderRangeSetting('contrastBoost', 'Contrast boost', 0, 40, 1, '%')}
                 ${renderTextSetting('textColor', 'Primary text color', 'Optional hex color, e.g. #f2f5ff')}
                 ${renderTextSetting('mutedTextColor', 'Secondary text color', 'Optional hex color, e.g. #a7b0c0')}
                 ${renderTextSetting('subtleTextColor', 'Subtle text color', 'Optional hex color, e.g. #6d7483')}
