@@ -112,6 +112,10 @@ export function showTableToolbar(view, range) {
     <div class="table-toolbar__sep"></div>
     <div class="table-toolbar__btn" data-action="del-row">- Row</div>
     <div class="table-toolbar__btn" data-action="del-col">- Col</div>
+    <div class="table-toolbar__sep"></div>
+    <div class="table-toolbar__btn" data-action="align-left">L</div>
+    <div class="table-toolbar__btn" data-action="align-center">C</div>
+    <div class="table-toolbar__btn" data-action="align-right">R</div>
   `
   toolbar.addEventListener('click', e => {
     const btn = e.target.closest('[data-action]')
@@ -123,6 +127,9 @@ export function showTableToolbar(view, range) {
     if (action === 'add-col') addColumn(_activeView, r)
     if (action === 'del-row') deleteRow(_activeView, r)
     if (action === 'del-col') deleteColumn(_activeView, r)
+    if (action === 'align-left') toggleColumnAlignment(_activeView, r, 'left')
+    if (action === 'align-center') toggleColumnAlignment(_activeView, r, 'center')
+    if (action === 'align-right') toggleColumnAlignment(_activeView, r, 'right')
     _tableRange = getTableRange(_activeView.state, _activeView.state.selection.main.head)
   })
 
@@ -163,6 +170,20 @@ export function checkTableAtCursor(view) {
   hideTableToolbar()
 }
 
+export function toggleColumnAlignment(view, range, alignment) {
+  const text = view.state.doc.sliceString(range.from, range.to)
+  const table = parseMarkdownTable(text)
+  if (!table) return
+  const head = view.state.selection.main.head
+  const line = view.state.doc.lineAt(head)
+  const beforeCursor = line.text.slice(0, head - line.from)
+  const colIdx = (beforeCursor.match(/\|/g) || []).length - 1
+  if (colIdx < 0 || colIdx >= table.alignments.length) return
+  table.alignments[colIdx] = alignment
+  const newText = serializeTable(table)
+  view.dispatch({ changes: { from: range.from, to: range.to, insert: newText } })
+}
+
 // ── Tab / Shift-Tab navigation between table cells (#52) ─────────
 export function tableTabForward(view) {
   const { state } = view
@@ -184,7 +205,7 @@ export function tableTabForward(view) {
     // Skip the separator row (line 2 of the table, all dashes)
     const targetLine = state.doc.lineAt(cellStart)
     if (/^\s*\|[\s:|-]+\|\s*$/.test(targetLine.text)) {
-      return tableTabForward({ state, dispatch: view.dispatch.bind(view), coordsAtPos: view.coordsAtPos.bind(view), dom: view.dom, ...view })
+      return tableTabForward(view)
     }
     view.dispatch({ selection: { anchor: cellStart, head: Math.min(cellEnd, line.to) } })
     return true

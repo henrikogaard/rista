@@ -617,6 +617,10 @@ function syncSettingsTabs() {
 
 function syncSettingsForm() {
   const settings = getSettings()
+  // Gate experimental-only controls behind showExperimental toggle
+  document.querySelectorAll("#settings-panel [data-experimental-feature]").forEach(el => {
+    el.style.display = settings.showExperimental ? "" : "none"
+  })
   document.querySelectorAll('#settings-panel [data-setting]').forEach(input => {
     const key = input.dataset.setting
     if (input.type === 'checkbox') {
@@ -890,7 +894,7 @@ export function buildShell() {
               ${renderToggleSetting('ambientBackground', 'Ambient background', 'Keep the aurora field visible while editing')}
             </section>
 
-            <details class="settings-advanced">
+            <details class="settings-advanced" data-experimental-feature>
               <summary>Advanced appearance controls</summary>
               <div class="settings-advanced__body">
                 ${renderRangeSetting('ambientIntensity', 'Background strength', 0, 100, 1, '%')}

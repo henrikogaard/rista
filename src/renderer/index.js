@@ -212,7 +212,8 @@ _featureEnabled('featureGraphView') && registerRightPanel('graph', {
 
 _featureEnabled('featureAgents') && initAiChatPanel(openFile, closeRightPanel)
 
-registerRightPanel('properties', {
+// Gate behind featureProperties toggle to match settings UI
+_featureEnabled('featureProperties') && registerRightPanel('properties', {
   title: 'Properties',
   icon: propertiesIcon(),
   flex: 1,
