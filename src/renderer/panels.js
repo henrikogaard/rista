@@ -21,6 +21,7 @@ import { state } from './state.js'
 import { getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 
+import { $ } from './state.js'
 function _featureEnabled(key) { return getSettings()[key] || getSettings().showExperimental }
 
 export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSurface, createDailyNote, collapseAllFolders, openFolderPath }) {
@@ -142,14 +143,14 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
         state.tagFilter = null
         refreshTree()
       })
-      const body = document.getElementById('tags-view-body')
+      const body = $('tags-view-body')
       body?.addEventListener('click', handleTagsPanelEvent)
       body?.addEventListener('keydown', handleTagsPanelEvent)
       _tagsUnsubscribe?.()
       _tagsUnsubscribe = onLinkIndexChange(() => renderTagsPanel())
     },
     onUnmount: () => {
-      const body = document.getElementById('tags-view-body')
+      const body = $('tags-view-body')
       body?.removeEventListener('click', handleTagsPanelEvent)
       body?.removeEventListener('keydown', handleTagsPanelEvent)
       _tagsUnsubscribe?.()
@@ -167,14 +168,14 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
     build: buildRelatedNotesPanel,
     onMount: () => {
       mountRelatedNotesPanel(openFile)
-      const body = document.getElementById('related-notes-body')
+      const body = $('related-notes-body')
       body?.addEventListener('click', handleRelatedNotesPanelEvent)
       body?.addEventListener('keydown', handleRelatedNotesPanelEvent)
       _relatedNotesUnsubscribe?.()
       _relatedNotesUnsubscribe = onLinkIndexChange(() => renderRelatedNotesPanel())
     },
     onUnmount: () => {
-      const body = document.getElementById('related-notes-body')
+      const body = $('related-notes-body')
       body?.removeEventListener('click', handleRelatedNotesPanelEvent)
       body?.removeEventListener('keydown', handleRelatedNotesPanelEvent)
       _relatedNotesUnsubscribe?.()
@@ -192,14 +193,14 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
     build: buildWikiQualityPanel,
     onMount: () => {
       mountWikiQualityPanel(openFile, { refreshTree })
-      const body = document.getElementById('wiki-quality-body')
+      const body = $('wiki-quality-body')
       body?.addEventListener('click', handleWikiQualityPanelEvent)
       body?.addEventListener('keydown', handleWikiQualityPanelEvent)
       _wikiQualityUnsubscribe?.()
       _wikiQualityUnsubscribe = onLinkIndexChange(() => renderWikiQualityPanel())
     },
     onUnmount: () => {
-      const body = document.getElementById('wiki-quality-body')
+      const body = $('wiki-quality-body')
       body?.removeEventListener('click', handleWikiQualityPanelEvent)
       body?.removeEventListener('keydown', handleWikiQualityPanelEvent)
       _wikiQualityUnsubscribe?.()
@@ -227,12 +228,12 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
     flex: 0,
     build: () => `<div id="calendar-panel-body" class="widget-fill"></div>`,
     onMount: () => {
-      const body = document.getElementById('calendar-panel-body')
+      const body = $('calendar-panel-body')
       if (body && !body.firstChild) {
         const panel = buildCalendarPanel({ onDateClick: (dateStr) => createDailyNote(dateStr), folderPath: state.folderPath })
         body.appendChild(panel)
       }
     },
-    onUnmount: () => { document.getElementById('calendar-panel-body')?.replaceChildren() },
+    onUnmount: () => { $('calendar-panel-body')?.replaceChildren() },
   })
 }

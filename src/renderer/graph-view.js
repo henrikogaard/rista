@@ -5,6 +5,7 @@
 import { state } from './state.js'
 import { resolveWikilink } from './link-index.js'
 
+import { $ } from './state.js'
 export function buildGraphView() {
   return `
     <div class="graph-view" id="graph-view">
@@ -109,8 +110,8 @@ function teardownInteractive() {
 export function renderGraph(linkIndex, onNodeClick) {
   _onNodeClick = onNodeClick
   _lastLinkIndex = linkIndex
-  _canvas = document.getElementById('graph-canvas')
-  const empty = document.getElementById('graph-empty')
+  _canvas = $('graph-canvas')
+  const empty = $('graph-empty')
   if (!_canvas) return
   _ctx = _canvas.getContext('2d')
   _palette = getPalette()
@@ -276,7 +277,7 @@ export function renderGraph(linkIndex, onNodeClick) {
     _hovered = findNodeAt(x, y)
     _canvas.style.cursor = _hovered ? 'pointer' : isDragging ? 'grabbing' : 'grab'
 
-    const tooltip = document.getElementById('graph-tooltip')
+    const tooltip = $('graph-tooltip')
     if (tooltip) {
       if (_hovered && !isDragging) {
         tooltip.style.display = 'block'
@@ -332,13 +333,13 @@ export function renderGraph(linkIndex, onNodeClick) {
     { target: _canvas, type: 'wheel', fn: onWheel },
   )
 
-  const resetBtn = document.getElementById('graph-reset-btn')
+  const resetBtn = $('graph-reset-btn')
   if (resetBtn) {
     resetBtn.addEventListener('click', onResetClick)
     _listeners.push({ target: resetBtn, type: 'click', fn: onResetClick })
   }
 
-  const localBtn = document.getElementById('graph-local-btn')
+  const localBtn = $('graph-local-btn')
   if (localBtn) {
     localBtn.classList.toggle('graph-btn--active', _localMode)
     const onLocalClick = () => setGraphLocalMode(!_localMode)

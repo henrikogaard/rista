@@ -74,7 +74,7 @@ function buildPanel() {
 }
 
 function renderMessages() {
-  const container = document.getElementById('ai-chat-messages')
+  const container = $('ai-chat-messages')
   if (!container) return
 
   let html = ''
@@ -268,7 +268,7 @@ async function runAgentLoop() {
 }
 
 async function sendMessage() {
-  const input = document.getElementById('ai-chat-input')
+  const input = $('ai-chat-input')
   if (!input) return
   const text = input.value.trim()
   if (!text || _sending) return
@@ -307,24 +307,24 @@ async function sendMessage() {
 }
 
 function updateSendButton() {
-  const btn = document.getElementById('ai-chat-send')
+  const btn = $('ai-chat-send')
   if (btn) btn.disabled = _sending
 }
 
 function onPanelOpen() {
   renderMessages()
 
-  const clearBtn = document.getElementById('ai-chat-clear')
+  const clearBtn = $('ai-chat-clear')
   clearBtn?.addEventListener('click', () => {
     _messages = []
     renderMessages()
     persistActiveSession()
   })
 
-  const sendBtn = document.getElementById('ai-chat-send')
+  const sendBtn = $('ai-chat-send')
   sendBtn?.addEventListener('click', sendMessage)
 
-  const input = document.getElementById('ai-chat-input')
+  const input = $('ai-chat-input')
   input?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()

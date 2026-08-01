@@ -819,7 +819,7 @@ function showFileContextMenu(x, y, filePath, isFolder) {
 
 // ── Build app shell ───────────────────────────────────────────────
 export function buildShell() {
-  document.getElementById('root').innerHTML = `
+  $('root').innerHTML = `
     <div class="app" id="app">
       <!-- Native macOS overlay chrome lives above every app column. -->
       <div class="brandrail" id="brandrail" data-tauri-drag-region="deep">

@@ -3,6 +3,7 @@ import { getLinkIndex } from './link-index.js'
 import { buildSemanticIndex, findRelatedNotes } from './semantic-index.js'
 import { state } from './state.js'
 
+import { $ } from './state.js'
 let _openFile = null
 
 export function buildRelatedNotesPanel() {
@@ -15,7 +16,7 @@ export function mountRelatedNotesPanel(openFile) {
 }
 
 export function renderRelatedNotesPanel() {
-  const body = document.getElementById('related-notes-body')
+  const body = $('related-notes-body')
   if (!body) return
 
   const tab = getFocusedTab()

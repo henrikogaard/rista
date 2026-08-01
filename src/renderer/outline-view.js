@@ -1,6 +1,7 @@
 import { extractHeadings } from './markdown.js'
 import { state, editorViews, getFocusedTab } from './state.js'
 
+import { $ } from './state.js'
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -17,7 +18,7 @@ export function buildOutlinePanel() {
 }
 
 export function renderOutline() {
-  const body = document.getElementById('outline-view-body')
+  const body = $('outline-view-body')
   if (!body) return
   // Re-attach scroll listeners — after editor rebuilds (folder switch, session
   // restore), the old scrollDOMs are gone and our WeakSet has no record of
@@ -64,7 +65,7 @@ function findActiveHeadingLine() {
 }
 
 function updateActiveOutlineItem() {
-  const body = document.getElementById('outline-view-body')
+  const body = $('outline-view-body')
   if (!body) return
   const nextLine = findActiveHeadingLine()
   if (nextLine === _activeLine) return
@@ -129,7 +130,7 @@ function attachScrollSync() {
 export function mountOutlinePanel() {
   renderOutline()
   attachScrollSync()
-  const body = document.getElementById('outline-view-body')
+  const body = $('outline-view-body')
   if (!body) return
   body.addEventListener('click', (event) => {
     const item = event.target.closest('.outline-item')
