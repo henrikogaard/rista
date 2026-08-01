@@ -687,7 +687,7 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
-const GLOBAL_CONTROL_SELECTOR = '#workspace-split-toggle, #settings-btn, #sidebar-toggle, #terminal-toggle, #right-sidebar-toggle'
+const GLOBAL_CONTROL_SELECTOR = '#settings-btn'
 function handleWindowDragRegionMouseDown(event) {
   if (event.button !== 0) return
   if (event.target.closest('input, textarea, select, button, [role="button"], [data-action], a')) return
@@ -707,11 +707,6 @@ function handleGlobalControlPointerDown(event) {
 }
 
 function performGlobalControl(id) {
-  if (id === 'workspace-split-toggle') _callbacks.toggleWorkspaceSplit?.()
-  if (id === 'settings-btn') toggleSettingsPanel()
-  if (id === 'sidebar-toggle') _callbacks.toggleSidebar?.()
-  if (id === 'terminal-toggle') _callbacks.toggleTerminal?.()
-  if (id === 'right-sidebar-toggle') _callbacks.toggleRightSidebar?.()
 }
 
 function handleGlobalControlKeydown(event) {
@@ -837,6 +832,7 @@ export function buildShell() {
           ${buildTerminalDrawer()}
 
           <!-- Statusbar -->
+          <!-- Statusbar -->
           <div class="statusbar">
             <div class="statusbar__metrics">
               <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
@@ -847,32 +843,14 @@ export function buildShell() {
             </div>
             <div class="statusbar__controls">
               <div class="app-controls" id="app-controls" aria-label="Global controls">
-                <!-- Panels -->
-                <div class="theme-btn" id="sidebar-toggle" title="Toggle file explorer (⌘B)" aria-label="Toggle file explorer" role="button" tabindex="0">
-                  ${sidebarIcon()}
-                  <span class="control-label">Left sidebar</span>
-                </div>
-                <div class="theme-btn" id="terminal-toggle" title="Toggle terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
-                  ${terminalIcon()}
-                  <span class="control-label">Terminal</span>
-                </div>
-                <div class="theme-btn" id="right-sidebar-toggle" title="Toggle right widgets panel" aria-label="Toggle right widgets panel" role="button" tabindex="0">
-                  ${rightSidebarIcon()}
-                  <span class="control-label">Right sidebar</span>
-                </div>
-                <div class="app-controls__sep"></div>
-                <!-- Layout -->
-                <div class="theme-btn" id="workspace-split-toggle" title="Toggle workspace split layout" aria-label="Toggle workspace split layout" role="button" tabindex="0">
-                  ${workspaceSplitIcon()}
-                  <span class="control-label">Split view</span>
-                </div>
-                <div class="app-controls__sep"></div>
-                <!-- App -->
                 <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
                   ${gearIcon()}
-                  <span class="control-label">Settings</span>
                 </div>
               </div>
+              <div class="st st-brand">Rísta</div>
+            </div>
+          </div>
+
               <div class="st st-brand">Rísta</div>
             </div>
           </div>
@@ -990,11 +968,26 @@ export function buildShell() {
             <section class="settings-group">
               <div class="settings-section-title">Experimental</div>
               ${renderToggleSetting('docxExportEnabled', 'DOCX export', 'Enable Export to DOCX command in the command palette (experimental feature)')}
+              ${renderToggleSetting('showExperimental', 'Show experimental features', 'Enable non-core modules in settings and sidebar. When off, only core writing features are shown.')}
+              <div class="settings-section-divider"></div>
+              <div class="settings-section-hint">Toggle individual non-core modules:</div>
+              ${renderToggleSetting('featureGraphView', 'Graph view', 'Toggle the graph/backlinks panel')}
+              ${renderToggleSetting('featureCalendar', 'Calendar', 'Toggle the daily notes calendar widget')}
+              ${renderToggleSetting('featureBookmarks', 'Bookmarks', 'Toggle the bookmarks panel')}
+              ${renderToggleSetting('featureTags', 'Tags', 'Toggle the tags panel')}
+              ${renderToggleSetting('featureAgents', 'AI Agents', 'Toggle the AI agents sidebar')}
+              ${renderToggleSetting('featureProperties', 'Document properties', 'Toggle the frontmatter properties panel')}
+              ${renderToggleSetting('featureInspector', 'Inspector', 'Toggle the document inspector')}
+              ${renderToggleSetting('featureWikilinks', 'Wikilink index', 'Toggle the wiki link index and autocomplete')}
+              ${renderToggleSetting('featureSemanticIndex', 'Semantic index', 'Toggle the local semantic search index')}
+              ${renderToggleSetting('featureWikiQuality', 'Wiki quality', 'Toggle the wiki quality analysis panel')}
+              ${renderToggleSetting('featureRelatedNotes', 'Related notes', 'Toggle the related notes panel')}
+              ${renderToggleSetting('featureDiagramBuilder', 'Diagram builder', 'Toggle the D2 diagram builder')}
+              ${renderToggleSetting('featureTerminal', 'Terminal', 'Toggle the integrated terminal drawer')}
+              ${renderToggleSetting('featurePublish', 'Publish', 'Toggle the workspace export/publish panel')}
             </section>
           </div>
-
           <div class="settings-page" data-settings-section="workspace">
-            <section class="settings-group">
               <div class="settings-section-title">Pinned workspaces</div>
               <div class="settings-group__hint">Pinned workspaces are shown on the welcome screen for quick access.</div>
               <div id="pinned-workspaces-list">

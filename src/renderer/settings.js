@@ -298,9 +298,27 @@ export const DEFAULT_SETTINGS = {
   softWrap: true,
   showLineNumbers: false,
   showStatusBar: true,
+  // ── Feature flags (#64) ──────────────────────────────────────────
+  // Non-core modules: all off by default. Core (editor, preview, tree,
+  // command palette, find/replace, export, themes, settings) stays on.
+  showExperimental: false,
+  featureGraphView: false,
+  featureCalendar: false,
+  featureBookmarks: false,
+  featureTags: false,
+  featureAgents: false,
+  featureProperties: false,
+  featureInspector: false,
+  featureWikilinks: false,
+  featureSemanticIndex: false,
+  featureWikiQuality: false,
+  featureRelatedNotes: false,
+  featureDiagramBuilder: false,
+  featureTerminal: false,
+  featurePublish: false,
+  zenParagraphDimming: false,
   defaultViewMode: 'split',
   readingSpeed: 200,
-  zenParagraphDimming: false,
   zenColumnWidth: 700,
   showMinimap: false,
   smartTypography: true,
@@ -440,6 +458,21 @@ function sanitize(settings) {
   next.softWrap = next.softWrap !== false
   next.showLineNumbers = Boolean(next.showLineNumbers)
   next.showStatusBar = next.showStatusBar !== false
+  next.showExperimental = Boolean(next.showExperimental)
+  next.featureGraphView = Boolean(next.featureGraphView)
+  next.featureCalendar = Boolean(next.featureCalendar)
+  next.featureBookmarks = Boolean(next.featureBookmarks)
+  next.featureTags = Boolean(next.featureTags)
+  next.featureAgents = Boolean(next.featureAgents)
+  next.featureProperties = Boolean(next.featureProperties)
+  next.featureInspector = Boolean(next.featureInspector)
+  next.featureWikilinks = Boolean(next.featureWikilinks)
+  next.featureSemanticIndex = Boolean(next.featureSemanticIndex)
+  next.featureWikiQuality = Boolean(next.featureWikiQuality)
+  next.featureRelatedNotes = Boolean(next.featureRelatedNotes)
+  next.featureDiagramBuilder = Boolean(next.featureDiagramBuilder)
+  next.featureTerminal = Boolean(next.featureTerminal)
+  next.featurePublish = Boolean(next.featurePublish)
   next.defaultViewMode = ['markdown', 'split', 'preview'].includes(next.defaultViewMode) ? next.defaultViewMode : 'split'
   next.readingSpeed = clamp(Number(next.readingSpeed) || 200, 100, 500)
   next.zenParagraphDimming = Boolean(next.zenParagraphDimming)

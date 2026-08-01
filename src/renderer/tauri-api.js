@@ -216,7 +216,7 @@ if (window.__TAURI_INTERNALS__) {
     setAppIcon: (variant, theme) => invoke('set_app_icon', { variant, theme }),
     discoverLocalAiTools: () => invoke('discover_local_ai_tools'),
 
-    exportPdf: () => invoke('export_pdf'),
+    exportPdf: (payload) => invoke('export_pdf', { payload }),
     exportHtml: async (payload) => {
       const path = await pickSavePath(await exportFileName(payload?.fileName, 'html'), [{ name: 'HTML files', extensions: ['html'] }])
       return path ? invoke('export_html', { path, payload }) : false

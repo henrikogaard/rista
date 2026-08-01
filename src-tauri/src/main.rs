@@ -696,8 +696,22 @@ fn export_site(output_dir: String, files: Vec<Value>) -> bool {
 }
 
 #[tauri::command]
-fn export_pdf() -> bool {
-    false
+fn export_pdf(payload: Value) -> bool {
+    let file_name = payload
+        .get("fileName")
+        .and_then(Value::as_str)
+        .unwrap_or("export");
+    let html = payload.get("html").and_then(Value::as_str).unwrap_or("");
+    let theme = payload
+        .get("theme")
+        .and_then(Value::as_str)
+        .unwrap_or("dark");
+    let settings = payload.get("settings").unwrap_or(&Value::Null);
+    let document = export_html_document(file_name, html, theme, settings);
+    let tmp_path = std::env::temp_dir().join(format!("rista-{}.html", file_name));
+    if fs::write(&tmp_path, document).is_err() { return false; }
+    let _ = std::process::Command::new("open").arg(&tmp_path).spawn();
+    true
 }
 
 #[tauri::command]

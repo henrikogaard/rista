@@ -696,22 +696,3 @@ export function updatePosHighlight(view, enabled) {
     effects: posHighlightCompartment.reconfigure(enabled ? posHighlightPlugin : posHighlightOff),
   })
 }
-  const { state: s } = view
-  const sel = s.selection.main
-  const selected = s.sliceDoc(sel.from, sel.to)
-  // Toggle: if selection is already wrapped, unwrap it
-  if (selected.startsWith(before) && selected.endsWith(after) && selected.length > before.length + after.length) {
-    const inner = selected.slice(before.length, selected.length - after.length)
-    view.dispatch(s.update({
-      changes: { from: sel.from, to: sel.to, insert: inner },
-      selection: { anchor: sel.from, head: sel.from + inner.length },
-    }))
-  } else {
-    const insert = `${before}${selected || 'text'}${after}`
-    view.dispatch(s.update({
-      changes: { from: sel.from, to: sel.to, insert },
-      selection: { anchor: sel.from + before.length, head: sel.from + before.length + (selected || 'text').length },
-    }))
-  }
-  view.focus()
-}

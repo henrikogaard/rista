@@ -17,11 +17,10 @@ These rules apply before any code change.
 
 ---
 
-## What is Fjordmark
+## What is Rísta
 
-A **local-first, open-source Markdown editor** built with Electron.
+A **local-first, open-source Markdown editor** built with Tauri.
 The design language is Nordic/Scandinavian — dark, minimal, purposeful.
-Inspired by AuraDocs, Panda writer, and TipTap.
 
 Users open a folder. All `.md` files in that folder become a "project".
 No cloud. No accounts. No telemetry. Files are just files.
@@ -30,11 +29,12 @@ No cloud. No accounts. No telemetry. Files are just files.
 
 ## Design principles
 
-- **Borderless buttons** — toolbar uses `<div>` not `<button>`. Never revert this. Browser default button styles break the aesthetic badly.
-- **Two themes** — dark (default) and light, toggled via `[data-theme]` on `<html>`. All colors are CSS variables. Never hardcode hex values in component code.
-- **Compact density** — inspired by AuraDocs. Tight spacing, small type (10–13px), nothing wastes vertical space.
-- **Toolbar is hideable** — users who write plain Markdown can hide it permanently. Respect this.
-- **No gradients in UI chrome** — only the welcome/aurora cover screen uses gradient. Surfaces are flat.
+- **Borderless buttons** — toolbar uses `<div>` not `<button>`. Never revert this.
+- **Two themes** — dark (default) and light, toggled via `[data-theme]` on `<html>`. All colors are CSS variables.
+- **Compact density** — Tight spacing, small type (11–13px), nothing wastes vertical space.
+- **Toolbar is hideable** — users who write plain Markdown can hide it permanently.
+- **No gradients in UI chrome** — only the welcome surface uses gradient.
+- **Core by default, all else opt-in** — writing features come first. Non-core modules (graph, agents, calendar, etc.) are off by default behind the Experimental feature flags in Settings.
 
 ---
 
@@ -42,36 +42,49 @@ No cloud. No accounts. No telemetry. Files are just files.
 
 | Layer | Technology |
 |---|---|
-| Shell | Electron 29 |
-| Editor engine | CodeMirror 6 |
+| Shell | Tauri 2 |
+| Editor engine | CodeMirror 6 + Toast UI Editor (WYSIWYG) |
 | Markdown pipeline | unified + remark-gfm + remark-rehype + rehype-stringify |
-| File watching | Chokidar 3 |
+| File watching | Rust notify crate |
 | Bundler | esbuild (no React, no framework — vanilla JS) |
-| Fonts | DM Sans + DM Mono (Google Fonts) |
+| Fonts | DM Sans + DM Mono (self-hosted via @fontsource) |
 
 **No React. No Vue. No framework.** The renderer is vanilla JS with direct DOM manipulation.
-Keep it that way unless there is a very strong reason to change — the bundle stays small and fast.
+Keep it that way unless there is a very strong reason to change.
 
 ---
 
 ## Project structure
 
 ```
-fjordmark/
+rista/
 ├── public/
-│   └── index.html          # HTML shell, CSP header, loads fonts + CSS + dist/renderer.js
+│   ├── index.html          # HTML shell, CSP header, loads fonts + CSS + dist/app/renderer.js
+│   └── fonts.css           # Self-hosted @fontsource imports
 ├── src/
-│   ├── main/
-│   │   ├── main.js         # Electron main process — window, IPC handlers, Chokidar
-│   │   └── preload.js      # contextBridge — exposes window.fjord.* to renderer
 │   └── renderer/
-│       ├── index.js        # App entry — UI construction, state, event wiring
-│       ├── editor.js       # CodeMirror 6 setup, highlight theme, createEditor()
+│       ├── index.js        # App entry — UI construction, state, event wiring, panel registration
+│       ├── workspace.js    # Pane layout, toolbar, split mode, editor mounting
+│       ├── shell.js        # App shell HTML builder, settings panel, statusbar, welcome screen
+│       ├── editor.js       # CodeMirror 6 setup, themes, plugins (focus, typewriter, live preview, POS)
+│       ├── command-palette.js  # Cmd-K fuzzy search over files + commands
 │       ├── markdown.js     # unified pipeline, renderMarkdown(), getStats(), extractHeadings()
-│       ├── theme.js        # initTheme(), toggleTheme(), persisted to localStorage
+│       ├── preview.js      # Preview rendering, PDF/HTML export, image paste
+│       ├── settings.js     # Settings model, defaults, validation, feature flags (#64)
+│       ├── theme.js        # Dark/light theme management, persisted to localStorage
+│       ├── state.js        # Central app state, pane helpers, tab helpers
+│       ├── tauri-api.js    # window.fjord.* bridge to Tauri Rust commands
+│       ├── tabs.js         # Tab management, auto-save, file switching
+│       ├── right-panel.js  # Right sidebar widget system registration
+│       ├── commands.js     # Editor commands (wraps CodeMirror + WYSIWYG actions)
 │       └── styles/
-│           └── main.css    # All CSS — tokens, both themes, layout, components
+│           └── main.css    # All CSS — tokens, both themes, layout, all components
+├── src-tauri/
+│   ├── src/main.rs         # Rust backend — file ops, watcher, export, terminal, commands
+│   ├── Cargo.toml
+│   └── tauri.conf.json
 ├── dist/                   # esbuild output (gitignored)
+├── tests/                  # Node test files
 ├── package.json
 └── README.md
 ```
@@ -80,50 +93,36 @@ fjordmark/
 
 ## IPC API (window.fjord.*)
 
-Defined in `preload.js`, implemented in `main.js`.
+Defined in `src/renderer/tauri-api.js`, calls Tauri `invoke` to Rust commands.
 
 ```js
 window.fjord.openFolder()              // → string | null (folder path)
 window.fjord.readFolder(path)          // → FileTree[]
 window.fjord.readFile(path)            // → string (file content)
 window.fjord.writeFile(path, content)  // → boolean
-window.fjord.watchFolder(path)         // → boolean (starts Chokidar)
+window.fjord.watchFolder(path)         // → boolean (starts Rust watcher)
 window.fjord.stat(path)                // → { mtime, size } | null
-window.fjord.onFileChange(cb)          // → unsubscribe fn — cb({ event, path })
-```
-
-`FileTree` node shape:
-```ts
-{ type: 'file' | 'folder', name: string, path: string, children?: FileTree[] }
+window.fjord.onFileChange(cb)          // → unsubscribe fn
+window.fjord.exportPdf(payload)        // → bool (writes HTML to temp file, opens in browser)
+window.fjord.exportHtml(payload)       // → bool (saves standalone HTML)
+window.fjord.saveDocx(base64, name)    // → bool
 ```
 
 ---
 
-## App state (src/renderer/index.js)
+## Feature flags / survivor set
 
-```js
-const state = {
-  folderPath: null,       // string | null
-  tree: [],               // FileTree[]
-  tabs: [],               // Tab[]
-  activeTab: null,        // Tab | null
-  view: 'split',          // 'edit' | 'split' | 'preview'
-  toolbarVisible: true,
-  sidebarVisible: true,
-  activePopover: null,    // 'stats' | 'toc' | null
-}
-```
+The app distinguishes **core** (on by default) and **non-core** (off by default) modules.
+All switches live in Settings → Experimental.
 
-Tab shape:
-```ts
-{ path: string, name: string, content: string, dirty: boolean }
-```
+**Core (on by default):** Editor, file tree, preview, command palette, find/replace, export (HTML/DOCX), themes, settings, outline, properties.
 
-Auto-save fires 800ms after the last keystroke via a debounced `saveActive()`.
+**Non-core (off by default):** Graph view, calendar, bookmarks, tags, AI agents, inspector, wikilink index, semantic index, wiki quality, related notes, diagram builder, terminal, publish.
+
+Gate variable in settings.js: each has a `feature*` boolean. Panels are wrapped with `_featureEnabled()` guards in index.js.
+The `showExperimental` master toggle must be on for any non-core module to appear.
 
 ---
-
-## CSS architecture
 
 Everything lives in `src/renderer/styles/main.css`.
 
@@ -139,81 +138,34 @@ Everything lives in `src/renderer/styles/main.css`.
 
 ---
 
+
 ## Keyboard shortcuts
 
 | Action | Mac | Windows/Linux |
 |---|---|---|
 | Save | `⌘S` | `Ctrl+S` |
+| Save as | `⌘⇧S` | `Ctrl+Shift+S` |
 | Toggle sidebar | `⌘B` | `Ctrl+B` |
 | Toggle toolbar | `⌘\` | `Ctrl+\` |
-
-Add new shortcuts in the `keydown` listener at the bottom of `index.js`.
-
----
-
-## What is NOT yet built (priority order)
-
-### 1. Aurora welcome screen
-The empty state / no-folder-open screen should have a gradient mesh header (like AuraDocs — teal/purple/green aurora waves) above the "Open folder" CTA. Currently it's just text. This is purely CSS/SVG, no logic needed.
-
-### 2. WYSIWYG mode
-Currently only raw Markdown editing exists. A WYSIWYG toggle should switch the editor pane from CodeMirror to a rich-text view. **Recommended approach:** use a hidden CodeMirror instance as the source of truth, and render a ProseMirror or `contenteditable` WYSIWYG on top. Sync on blur/change.
-
-### 3. Image paste from clipboard
-Wire up `paste` event in the CM host div. If `clipboardData` contains an image:
-1. Convert to base64 or save to a local `_assets/` subfolder next to the markdown file
-2. Insert `![image](path)` at cursor
-For local files, saving to `_assets/` alongside the `.md` is more portable than base64.
-
-### 4. Command palette (⌘K)
-A floating search/command input that:
-- Lists all files in the current folder for quick-open
-- Lists editor commands (toggle view, insert table, etc.)
-- Fuzzy search across both
-Trigger: `⌘K` / `Ctrl+K`. Dismiss: `Escape`.
-
-### 5. Find & replace (⌘F)
-A bar that slides in above the editor (not a modal). Wire into CodeMirror's built-in search extension: `@codemirror/search` — `openSearchPanel`, `closeSearchPanel`.
-
-### 6. Vim mode
-Optional. `@codemirror/vim` can be added as an extension to the CodeMirror instance in `editor.js`. Should be toggled in settings, persisted to localStorage.
-
-### 7. Settings panel
-A slide-in panel (not a new window) for:
-- Font size (editor)
-- Vim mode toggle
-- Auto-save delay
-- Default view (edit/split/preview)
-- Spellcheck toggle
-Persist all settings to `localStorage`.
-
-### 8. Export to PDF
-Use Electron's `webContents.printToPDF()` from the main process. Add IPC handler `export:pdf`. Trigger from a menu item or toolbar button. Print the preview pane HTML, not the raw editor.
-
----
-
-## Known issues / technical debt
-
-- `editorCmd('undo'/'redo')` uses dynamic `import()` which is slightly awkward. Better to import the commands statically at the top of `index.js` and call them directly.
-- The CodeMirror theme uses `dark: true` which is hardcoded. When light mode is active, CodeMirror needs a separate theme object. Create `fjordThemeLight` in `editor.js` and swap it via a `Compartment` when the theme toggles.
-- Popover positioning is `position: absolute` inside the toolbar's right group. This works for the current layout but will clip if the window is very narrow. Consider a proper popover library or `@floating-ui/dom` if this becomes an issue.
-- There is no empty-tab-bar state UI. If all tabs are closed, the editor area is blank. Should show the welcome screen again.
-
----
+| Find & replace | `⌘F` | `Ctrl+F` |
+| Project search | `⌘⇧F` | `Ctrl+Shift+F` |
+| Command palette | `⌘K` | `Ctrl+K` |
+| Settings | `⌘,` | `Ctrl+,` |
+| Terminal | `⌘J` | `Ctrl+J` |
+| Daily note | `⌘⇧D` | `Ctrl+Shift+D` |
+| New file | `⌘N` | `Ctrl+N` |
+| Open folder | `⌘O` | `Ctrl+O` |
+| Zen mode | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
 
 ## Running locally
 
 ```bash
 npm install
-npm run dev      # starts esbuild watcher + Electron
+npm run dev        # builds renderer + launches Tauri dev
+npm run build      # production renderer build
+npm run package    # packages the desktop app
+npm test           # runs 68+ tests
 ```
-
-For production build:
-```bash
-npm run package  # outputs to release/ via electron-builder
-```
-
----
 
 ## Contribution conventions
 

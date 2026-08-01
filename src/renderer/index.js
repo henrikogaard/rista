@@ -125,11 +125,13 @@ applySettings()
 applySelectedAppIcon()
 initRightSidebarWidth()
 initKeybindings()
-initDiagrams(getTheme())
+_featureEnabled('featureDiagramBuilder') && initDiagrams(getTheme())
 
 // ── Cross-module callback registration ───────────────────────────
 registerEnsureRichEditorMounted(ensureRichEditorMounted)
 registerFocusPane(focusPane)
+
+function _featureEnabled(key) { return getSettings()[key] || getSettings().showExperimental; }
 
 // ── Initialize widget system (right + left sidebars) ─────────────
 // File explorer and Agents default to the left sidebar.
@@ -161,7 +163,7 @@ registerAgentsViewCallbacks({
     openAiSession(sessionPath)
   },
 })
-registerRightPanel('agents', {
+_featureEnabled('featureAgents') && registerRightPanel('agents', {
   title: 'Agents',
   icon: agentsIcon(),
   flex: 1,
@@ -173,14 +175,14 @@ registerRightPanel('agents', {
   onRefresh: refreshAgentsPanel,
 })
 
-initInspectorPanel(openFile, closeRightPanel)
+_featureEnabled('featureInspector') && initInspectorPanel(openFile, closeRightPanel)
 
 let _graphUnsubscribe = null
 function rerenderGraphFromIndex() {
   setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
   renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
 }
-registerRightPanel('graph', {
+_featureEnabled('featureGraphView') && registerRightPanel('graph', {
   title: 'Graph',
   icon: graphIcon(),
   flex: 2,
@@ -205,7 +207,7 @@ registerRightPanel('graph', {
   },
 })
 
-initAiChatPanel(openFile, closeRightPanel)
+_featureEnabled('featureAgents') && initAiChatPanel(openFile, closeRightPanel)
 
 registerRightPanel('properties', {
   title: 'Properties',
@@ -230,7 +232,7 @@ registerRightPanel('outline', {
 })
 
 let _tagsUnsubscribe = null
-registerRightPanel('tags', {
+_featureEnabled('featureTags') && registerRightPanel('tags', {
   title: 'Tags',
   icon: tagIcon(),
   flex: 1,
@@ -261,7 +263,7 @@ registerRightPanel('tags', {
 })
 
 let _relatedNotesUnsubscribe = null
-registerRightPanel('related-notes', {
+_featureEnabled('featureRelatedNotes') && registerRightPanel('related-notes', {
   title: 'Related',
   icon: relatedNotesIcon(),
   flex: 1,
@@ -285,7 +287,7 @@ registerRightPanel('related-notes', {
 })
 
 let _wikiQualityUnsubscribe = null
-registerRightPanel('wiki-quality', {
+_featureEnabled('featureWikiQuality') && registerRightPanel('wiki-quality', {
   title: 'Wiki',
   icon: wikiQualityIcon(),
   flex: 1,
@@ -308,8 +310,8 @@ registerRightPanel('wiki-quality', {
   onRefresh: renderWikiQualityPanel,
 })
 
-setBookmarksOpenFile((item) => openFile(item))
-registerRightPanel('bookmarks', {
+_featureEnabled('featureBookmarks') && setBookmarksOpenFile((item) => openFile(item))
+_featureEnabled('featureBookmarks') && registerRightPanel('bookmarks', {
   title: 'Bookmarks',
   icon: bookmarkIcon(),
   flex: 1,
@@ -319,7 +321,7 @@ registerRightPanel('bookmarks', {
   onRefresh: renderBookmarks,
 })
 
-registerRightPanel('calendar', {
+_featureEnabled('featureCalendar') && registerRightPanel('calendar', {
   title: 'Calendar',
   icon: calendarIcon(),
   flex: 0,

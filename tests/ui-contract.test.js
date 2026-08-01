@@ -29,35 +29,21 @@ test('welcome screen is an IDE start surface instead of a marketing hero', () =>
   assert.match(tabs, /welcome-new-file-btn'[\s\S]*addEventListener\('click', createNewFile\)/)
 })
 
-test('status bar owns a single responsive global control cluster with clear labels', () => {
-  const shell = read('src/renderer/shell.js')
-  const css = read('src/renderer/styles/main.css')
+test("status bar collapsed to metrics and settings only", () => {
+  const shell = read("src/renderer/shell.js")
+  const css = read("src/renderer/styles/main.css")
 
   assert.match(shell, /statusbar__metrics/)
-  assert.match(shell, /statusbar__controls/)
-  // Frequently-toggled workspace state lives in the status bar.
-  assert.match(shell, /aria-label="Toggle file explorer"/)
-  assert.match(shell, /aria-label="Toggle terminal"/)
-  assert.match(shell, /aria-label="Toggle right widgets panel"/)
-  assert.match(shell, /<span class="control-label">Left sidebar<\/span>/)
-  assert.match(shell, /<span class="control-label">Terminal<\/span>/)
-  assert.match(shell, /<span class="control-label">Right sidebar<\/span>/)
-  assert.match(shell, /<span class="control-label">Split view<\/span>/)
-  assert.match(shell, /<span class="control-label">Settings<\/span>/)
+  assert.match(shell, /st-filename/)
+  assert.match(shell, /st-words/)
+  assert.match(shell, /st-readtime/)
+  assert.match(shell, /st--mode/)
+  assert.match(shell, /st-brand/)
+  assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
-  // Theme and toolbar toggles moved out of the bar — they belong in the
-  // View menu and Settings respectively.
-  assert.doesNotMatch(shell, /id="theme-btn"/)
-  assert.doesNotMatch(shell, /id="toolbar-toggle"/)
-  assert.match(css, /\.statusbar\s*\{[\s\S]*cursor: default/)
-  assert.match(css, /\.app-controls\s*\{[\s\S]*cursor: default/)
-  assert.match(css, /\.app-controls \.theme-btn\s*\{[\s\S]*min-width: 22px/)
-  assert.match(css, /\.control-label\s*\{/)
-  assert.match(css, /@media \(max-width: 980px\)[\s\S]*\.control-label\s*\{[\s\S]*display: none/)
-  assert.match(css, /\.app-controls \.theme-btn\s*\{[\s\S]*border: 1px solid transparent/)
-  assert.match(css, /\.app-controls__sep\s*\{[\s\S]*cursor: default/)
+  assert.doesNotMatch(shell, /aria-label="Toggle terminal"/)
+  assert.doesNotMatch(shell, /aria-label="Toggle right widgets panel"/)
 })
-
 test('settings panel uses compact tabs and visual preset swatches', () => {
   const shell = read('src/renderer/shell.js')
   const settings = read('src/renderer/settings.js')
@@ -186,10 +172,11 @@ test('global and pane icon semantics stay distinct and labelled', () => {
   assert.match(icons, /export function workspaceSplitIcon/)
   assert.match(icons, /export function sunIcon/)
   assert.match(icons, /export function moonIcon/)
-  assert.match(shell, /aria-label="Toggle file explorer"/)
-  assert.match(shell, /aria-label="Toggle workspace split layout"/)
-  assert.match(shell, /title="Toggle workspace split layout"/)
+  // Statusbar collapsed to metrics + settings. Mode toggles live in Cmd-K only.
+  assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
+  assert.match(shell, /st-brand/)
+  assert.doesNotMatch(shell, /aria-label="Toggle workspace split layout"/)
   assert.match(workspace, /title="Markdown source"/)
   assert.match(workspace, /title="Pane split preview"/)
   assert.match(workspace, /title="Rich text editor"/)
