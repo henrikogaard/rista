@@ -15,7 +15,7 @@ import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette
 import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
 import { exportToHtml } from './preview.js'
 import { exportToDocx } from './export-docx.js'
-import { toggleSearchPanel, openSearchPanel } from './search-panel.js'
+import { openSearchPanel } from './search-panel.js'
 import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview, registerAttachmentPreviewCallbacks } from './attachment-preview.js'
 import { toggleTerminalDrawer, handleTerminalInput } from './terminal-drawer.js'

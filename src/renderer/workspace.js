@@ -12,7 +12,7 @@ import { editorCmd, wrapInline, wrapSelection, insertHeading, insertList, insert
 import { openDiagramBuilder } from './diagram-builder.js'
 import { buildInspector, setInspectorTab, handleInspectorClick as handleInspectorClickInner } from './inspector.js'
 import { toggleRightPanel, closeRightPanel, refreshRightPanel, restoreRightPanel } from './right-panel.js'
-import { buildSearchPanel, toggleSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
+import { buildSearchPanel, handleSearchInput, openSearchPanel, closeSearchPanel } from './search-panel.js'
 import { renderAttachmentPreview, clearAttachmentPreview } from './attachment-preview.js'
 import { toggleTerminalDrawer, openTerminalDrawer, closeTerminalDrawer } from './terminal-drawer.js'
 import { buildGraphModal, openGraphModal, closeGraphModal } from './graph-modal.js'
