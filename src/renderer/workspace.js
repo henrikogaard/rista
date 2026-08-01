@@ -1,7 +1,6 @@
 import ToastEditor from '@toast-ui/editor'
-import { createEditor, updateEditorDoc, updateSmartTypography, updateFocusMode, updateLivePreview, updatePosHighlight } from './editor.js'
+import { createEditor, updateSmartTypography, updateFocusMode, updateLivePreview, updatePosHighlight } from './editor.js'
 import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, syncingRichEditor, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab } from './state.js'
-import { chevronIcon } from './icons.js'
 import { getTheme } from './theme.js'
 import { updateSetting, getSettings } from './settings.js'
 import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste, getWorkspaceAttachmentPaths } from './preview.js'
