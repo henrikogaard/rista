@@ -1012,7 +1012,7 @@ export function handleAppCommand(command, data) {
   if (command === 'file:save') saveActive()
   if (command === 'file:save-as') saveActiveAs()
   if (command === 'file:export-pdf') exportToPdf()
-  if (command === 'file:export-website') exportAsWebsite()
+  if (command === 'file:export-website' && (getSettings().featurePublish || getSettings().showExperimental)) exportAsWebsite()
   if (command === 'file:close-window') window.fjord?.windowAction?.('close')
   if (command === 'file:close-tab' && getFocusedTab()) closeTab(getFocusedTab())
   if (command === 'view:toggle-sidebar') _callbacks.toggleSidebar?.()

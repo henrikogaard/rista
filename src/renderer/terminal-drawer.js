@@ -110,7 +110,7 @@ async function syncShellInfo() {
 
 export function buildTerminalDrawer() {
   return `
-    <div class="terminal-drawer" id="terminal-drawer">
+    <div class="terminal-drawer" id="terminal-drawer" data-experimental-feature="featureTerminal">
       <div class="terminal-drawer__header">
         <div class="terminal-drawer__identity">
           <div class="terminal-drawer__title">Terminal</div>

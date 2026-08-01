@@ -617,9 +617,18 @@ function syncSettingsTabs() {
 
 function syncSettingsForm() {
   const settings = getSettings()
-  // Gate experimental-only controls behind showExperimental toggle
+  // Gate experimental-only controls: check showExperimental + individual toggles
   document.querySelectorAll("#settings-panel [data-experimental-feature]").forEach(el => {
-    el.style.display = settings.showExperimental ? "" : "none"
+    const featureKey = el.dataset.experimentalFeature
+    const enabled = featureKey ? (settings.showExperimental || settings[featureKey]) : settings.showExperimental
+    el.style.display = enabled ? "" : "none"
+  })
+  // Gate non-settings experimental features (terminal, publish, etc.)
+  document.querySelectorAll("[data-experimental-feature]").forEach(el => {
+    if (el.closest("#settings-panel")) return
+    const featureKey = el.dataset.experimentalFeature
+    const enabled = featureKey ? (settings.showExperimental || settings[featureKey]) : settings.showExperimental
+    el.style.display = enabled ? "" : "none"
   })
   document.querySelectorAll('#settings-panel [data-setting]').forEach(input => {
     const key = input.dataset.setting
