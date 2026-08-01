@@ -85,7 +85,7 @@ function buildSitePageHtml({ title, bodyHtml, nav, colors, settings }) {
     }
     .site-nav__title { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: var(--text); }
     .site-nav__link {
-      display: block; padding: 4px 8px; margin: 2px 0; border-radius: 4px;
+      display: block; padding: 4px 8px; margin: 2px 0; 
       color: var(--muted); text-decoration: none; font-size: 12px;
     }
     .site-nav__link:hover { background: rgba(127,127,127,0.1); color: var(--text); }
@@ -98,13 +98,13 @@ function buildSitePageHtml({ title, bodyHtml, nav, colors, settings }) {
     .preview-pane p { margin: 0 0 12px; white-space: pre-wrap; }
     .preview-pane ul, .preview-pane ol { padding-left: 18px; margin: 0 0 12px; }
     .preview-pane li { margin: 4px 0; }
-    .preview-pane code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: rgba(127,127,127,0.14); padding: 1px 5px; border-radius: 4px; color: var(--accent); }
-    .preview-pane pre { background: rgba(127,127,127,0.1); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin: 12px 0; overflow-x: auto; }
+    .preview-pane code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: rgba(127,127,127,0.14); padding: 1px 5px;  color: var(--accent); }
+    .preview-pane pre { background: rgba(127,127,127,0.1); border: 1px solid var(--border);  padding: 14px 16px; margin: 12px 0; overflow-x: auto; }
     .preview-pane pre code { background: transparent; padding: 0; color: var(--muted); }
     .preview-pane blockquote { border-left: 2px solid var(--border); margin: 14px 0; padding: 3px 0 3px 14px; color: var(--muted); }
     .preview-pane a { color: var(--accent); text-decoration: none; }
     .preview-pane a:hover { text-decoration: underline; }
-    .preview-pane img { max-width: 100%; border-radius: 4px; margin: 8px 0; }
+    .preview-pane img { max-width: 100%;  margin: 8px 0; }
     .preview-pane hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
     .preview-pane table { border-collapse: collapse; width: 100%; margin: 12px 0; }
     .preview-pane th { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--muted); text-align: left; font-weight: 600; }
@@ -186,7 +186,7 @@ function buildIndexHtml(allFiles, colors, settings) {
     }
     .site-nav__title { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: var(--text); }
     .site-nav__link {
-      display: block; padding: 4px 8px; margin: 2px 0; border-radius: 4px;
+      display: block; padding: 4px 8px; margin: 2px 0; 
       color: var(--muted); text-decoration: none; font-size: 12px;
     }
     .site-nav__link:hover { background: rgba(127,127,127,0.1); color: var(--text); }

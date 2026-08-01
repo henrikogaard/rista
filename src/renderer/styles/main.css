@@ -193,7 +193,11 @@ textarea,
 .tree-prompt__overlay {
   position: absolute;
   inset: 0;
-  background: rgba(7, 8, 11, 0.42);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.18)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.12)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.06)) 0, transparent 40%),
+    rgba(6, 8, 12, 0.42);
 }
 
 .tree-prompt__panel {
@@ -412,7 +416,11 @@ textarea,
 .command-dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 8, 11, 0.42);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.20)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.14)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.08)) 0, transparent 40%),
+    rgba(6, 8, 12, 0.55);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.16s ease;
@@ -3097,7 +3105,11 @@ body.is-resizing-split .workspace-resizer::before {
 .cmd-palette__overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.45);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.22)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.16)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.08)) 0, transparent 40%),
+    rgba(6, 8, 12, 0.50);
   backdrop-filter: blur(2px);
   opacity: 0;
   pointer-events: none;
@@ -3242,7 +3254,11 @@ body.is-resizing-split .workspace-resizer::before {
 
 /* Light theme overrides */
 [data-theme="light"] .cmd-palette__overlay {
-  background: rgba(60,42,24,0.22);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.12)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.08)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.04)) 0, transparent 40%),
+    rgba(43,34,27,0.22);
 }
 [data-theme="light"] .cmd-palette {
   background: var(--bg1);
@@ -5612,7 +5628,11 @@ body.is-dragging-widget .widget-stack:empty::before {
 .graph-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(6, 8, 12, 0.55);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.28)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.18)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.10)) 0, transparent 40%),
+    rgba(6, 8, 12, 0.55);
   backdrop-filter: blur(3px);
   opacity: 0;
   pointer-events: none;
@@ -5762,7 +5782,11 @@ body.is-dragging-widget .widget-stack:empty::before {
 }
 
 [data-theme="light"] .graph-modal-overlay {
-  background: rgba(60,42,24,0.3);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.14)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.08)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.04)) 0, transparent 40%),
+    rgba(43,34,27,0.28);
 }
 [data-theme="light"] .graph-modal {
   background: var(--bg1);
@@ -5917,7 +5941,11 @@ body.is-dragging-widget .widget-stack:empty::before {
 .diagram-builder-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 8, 11, 0.42);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.18)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.12)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.06)) 0, transparent 40%),
+    rgba(6, 8, 12, 0.42);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.16s ease;
