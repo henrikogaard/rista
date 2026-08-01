@@ -125,7 +125,7 @@ async function renderDrawingEditor(host, tab) {
     ctx.beginPath()
     ctx.moveTo(points[0].x, points[0].y)
     for (const point of points.slice(1)) ctx.lineTo(point.x, point.y)
-    ctx.strokeStyle = '#5b7fa6'
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#5b7fa6'
     ctx.lineWidth = 2
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
