@@ -528,3 +528,36 @@ cargo clippy       # clean
 npm test           # 201/201 passing
 npm run build      # passes
 ```
+
+## Session: 2026-08-01 — Final cleanup: commands tests, code review, build verification
+
+### Changes
+
+1. **Added 6 pure-logic tests for commands.js** — `tests/commands.test.js` covers
+   `normalizePathSeparators`, `lastPathSegment`, `stripFileExtension`,
+   `directoryPath`, `toRelativePath`, and `formatCalloutLabel`. All are pure
+   functions testable without the running app.
+
+2. **Full code review pass** — Verified:
+   - No TODOs/FIXMEs/HACKs/XXXs in source code
+   - All `console.*` calls are legitimate perf/error handlers (8 total)
+   - All `JSON.parse` calls are properly try-caught or in user-file loops
+   - All prior dead exports confirmed removed (no references remain)
+   - AGENTS.md references correct Tauri architecture (no stale Electron refs)
+   - Rust: `cargo check` + `cargo clippy` both clean, 0 `unsafe` blocks, 1 `expect()`
+   - All hex colors defined as CSS variables, no inline hex in component JS
+   - PROJECT-BOARD.md: all 54 tasks marked Done
+   - No `!important` abuses (all in print/print-only media or TOAST UI overrides)
+
+### Remaining (needs running app / subjective QA — blocked without Henrik)
+
+- **#59 (P1)** — Does settings overlay + all modals feel like the welcome screen?
+- **#62 (P2)** — Does the carved 0-radius look right on every surface?
+
+### Build Status
+```bash
+npm test           # 207/207 passing
+npm run build      # passes
+cd src-tauri && cargo check  # passes
+cd src-tauri && cargo clippy # clean
+```
