@@ -1,8 +1,8 @@
-# Fjordmark Test Cases
+# Rista Test Cases
 
 ## Purpose
 
-This document is the core manual regression checklist for Fjordmark.
+This document is the core manual regression checklist for Rista.
 
 Use it:
 - before major merges
