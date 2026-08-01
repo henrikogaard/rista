@@ -89,15 +89,6 @@ export async function renderAttachmentPreview(pane, tab) {
   container.appendChild(previewHost)
 }
 
-export function clearAttachmentPreview(pane) {
-  const singleSurface = $(`single-surface-${pane}`)
-  const splitLeft = $(`view-slot-left-${pane}`)
-  const splitRight = $(`view-slot-right-${pane}`)
-
-  const container = singleSurface || splitLeft || splitRight
-  container?.querySelectorAll('.attachment-preview').forEach(el => el.remove())
-}
-
 async function renderDrawingEditor(host, tab) {
   const raw = await window.fjord.readFile(tab.path)
   let doc = null

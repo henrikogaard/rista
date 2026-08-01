@@ -165,12 +165,3 @@ export function buildCalendarPanel({ onDateClick, folderPath } = {}) {
   return panel
 }
 
-/**
- * Refresh the daily notes map and re-render an existing calendar panel.
- */
-export async function refreshCalendarPanel(folderPath) {
-  const panel = $('calendar-panel')
-  if (!panel) return
-  _dailyNotesMap = await getDailyNotesMap(folderPath)
-  renderCalendar(_currentYear, _currentMonth, _dailyNotesMap, panel)
-}

@@ -168,7 +168,6 @@ test('global and pane icon semantics stay distinct and labelled', () => {
 
   assert.match(icons, /export function sidebarIcon/)
   assert.match(icons, /export function rightSidebarIcon/)
-  assert.match(icons, /export function toolbarIcon/)
   assert.match(icons, /export function editorSplitIcon/)
   assert.match(icons, /export function workspaceSplitIcon/)
   assert.match(icons, /export function sunIcon/)
