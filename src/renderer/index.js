@@ -45,7 +45,7 @@ import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
-import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon } from './shell.js'
+import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon, syncSettingsForm } from './shell.js'
 
 function getInitialFolderPath() {
   const injected = window.__RISTA_INITIAL_FOLDER__
@@ -470,6 +470,7 @@ _This file lives at \`~/Documents/Rista/welcome.md\`. Feel free to edit or delet
 // File-switch latency ≤ 80 ms p95. Log a warning if exceeded.
 markLaunchStart()
 buildShell()
+syncSettingsForm()
 mountAssistantRail()
 buildZenExitHint()
 // The terminal drawer lives in the persistent shell now, not the editor UI —

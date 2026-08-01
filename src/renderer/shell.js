@@ -615,7 +615,7 @@ function syncSettingsTabs() {
   })
 }
 
-function syncSettingsForm() {
+export function syncSettingsForm() {
   const settings = getSettings()
   // Gate experimental-only controls: check showExperimental + individual toggles
   document.querySelectorAll("#settings-panel [data-experimental-feature]").forEach(el => {
