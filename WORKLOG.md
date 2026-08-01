@@ -364,3 +364,29 @@ npm test           # 119/119 passing (10 new session-restore tests)
 npm run build      # JS — passes
 npm test           # 129/129 passing (10 new history tests)
 ```
+
+## Session: 2026-08-01 — Crash recovery, DOM helpers, final cleanup
+
+### Changes
+
+1. **Migrated 14 modules to shared `$()` DOM helper** (Task 1.2)
+   - Replaced 30+ `document.getElementById()` calls with `$()` from `state.js`
+   - Modules: ai-chat, assistant-rail, bookmarks-view, calendar-view, graph-modal,
+     graph-view, outline-view, panels.js, properties-view, related-notes-view,
+     tags-view, wiki-quality-view, zen-mode, shell
+   - Removed duplicate import in ai-chat.js
+
+2. **Added unsaved buffer recovery** (Task 3.6)
+   - `src/renderer/crash-recovery.js` — saves dirty tabs to localStorage every 30s
+   - `schedulePeriodicSave()`, `loadRecoveryBuffer()`, `hasRecoveryBuffer()`,
+     `saveRecoveryBuffer()`, `clearRecoveryBuffer()`
+   - Wired into `tabs.js` boot path: checks for crash recovery data before
+     restoring session, applies unsaved content to matching tabs
+   - 10 unit tests covering save/load/clear/corrupt/null handling
+
+### Build Status
+
+```bash
+npm run build      # JS — passes
+npm test           # 139/139 passing (10 new crash-recovery tests)
+```

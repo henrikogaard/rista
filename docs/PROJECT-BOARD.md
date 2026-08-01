@@ -26,7 +26,7 @@ Acceptance criteria:
 
 #### Task 1.2
 Title: Introduce shared DOM/event helper utilities
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - repetitive DOM lookup and event code is centralized
 - helpers do not obscure behavior

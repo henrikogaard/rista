@@ -17,6 +17,7 @@ import { refreshFileExplorerState } from './file-explorer-view.js'
 import { jumpToLine } from './outline-view.js'
 import { mergeFrontmatterWithBody } from './markdown.js'
 import { isAttachmentFile, isSpatialFile, isLikelyBinaryFile } from './attachment-preview.js'
+import { schedulePeriodicSave, loadRecoveryBuffer, hasRecoveryBuffer, clearRecoveryBuffer } from './crash-recovery.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -90,6 +91,21 @@ async function tryAwaitRebuildLinkIndex() {
 
 async function tryRestoreSession() {
   if (!state.folderPath) return
+  // Check for unsaved crash recovery first
+  if (hasRecoveryBuffer()) {
+    const unsaved = loadRecoveryBuffer()
+    if (unsaved && unsaved.length) {
+      for (const u of unsaved) {
+        if (u.path && u.content) {
+          const tab = state.tabs.find(t => t.path === u.path)
+          if (tab) {
+            tab.content = u.content
+            tab.dirty = true
+          }
+        }
+      }
+    }
+  }
   const session = loadSession(state.folderPath)
   if (!session || !session.tabs?.length) return
   for (const saved of session.tabs) {
@@ -493,6 +509,7 @@ export async function openFolder() {
   tryRebuildLinkIndex()
   showWelcomeScreen()
 
+  schedulePeriodicSave(() => state.tabs)
   await tryRestoreSession()}
 
 export async function openFolderPath(folderPath) {
