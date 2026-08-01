@@ -561,3 +561,22 @@ npm run build      # passes
 cd src-tauri && cargo check  # passes
 cd src-tauri && cargo clippy # clean
 ```
+
+## Session: 2026-08-01 — relativeFilePath consolidation, test fixes, state helpers
+
+### Changes
+
+1. **Consolidated duplicated `relativePath()` into shared helper**
+   - `semantic-index.js` and `wiki-quality.js` had identical `relativePath(path, folderPath)` functions copy-pasted (3 lines + function signature). Extracted to `state.js` as `export function relativeFilePath()` and both modules import from there.
+
+2. **Fixed 2 test files that broke from the import addition**
+   - `tests/semantic-index.test.js` and `tests/wiki-quality.test.js` wrote temp modules to `/tmp`, but now their sources import `./state.js` which resolves relative to the module's directory. Changed to write temp modules into `src/renderer/`.
+
+3. **Added 10 tests for `relativeFilePath`**
+   - `tests/state-helpers.test.js` — covers folder prefix stripping, trailing slash, backslash normalization, null/empty path, null/empty folderPath, and nested subfolder paths.
+
+### Build Status
+```bash
+npm test           # 216/216 passing
+npm run build      # passes
+```
