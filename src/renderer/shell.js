@@ -841,7 +841,7 @@ export function buildShell() {
         <!-- Editor area -->
         <div class="editor-area">
           <!-- Welcome / editor wrapper -->
-          <div id="editor-wrapper" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div id="editor-wrapper" >
             ${buildWelcome()}
           </div>
 
