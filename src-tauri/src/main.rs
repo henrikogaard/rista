@@ -1242,10 +1242,8 @@ fn main() {
                 RunEvent::Reopen {
                     has_visible_windows,
                     ..
-                } => {
-                    if !has_visible_windows && app.webview_windows().is_empty() {
-                        let _ = create_window(app.clone(), None, None);
-                    }
+                } if !has_visible_windows && app.webview_windows().is_empty() => {
+                    let _ = create_window(app.clone(), None, None);
                 }
                 _ => {}
             }
