@@ -2,17 +2,17 @@ import './tauri-api.js'
 import { markLaunchStart, markLaunchDone } from './perf-budget.js'
 import { initTheme } from './theme.js'
 import { applySettings, getSettings } from './settings.js'
-import { initKeybindings, matchesBinding } from './keybindings.js'
+import { initKeybindings } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
-import { state } from './state.js'
-import { getFocusedTab } from './state.js'
+import { state, getFocusedEditor, getFocusedTab, featureEnabled } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
-import { registerEnsureRichEditorMounted, registerFocusPane, closeCommandDialog } from './commands.js'
+import { createNoteFromSelection } from './link-index.js'
+import { registerEnsureRichEditorMounted, registerFocusPane, insertHeading, insertList, insertCodeBlock, insertHorizontalRule, insertCallout, insertImage } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
-import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette, openCommandPaletteFiles, openCommandPaletteCommands } from './command-palette.js'
-import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
+import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles } from './command-palette.js'
+import { toggleZenMode, buildZenExitHint } from './zen-mode.js'
 import { exportToHtml } from './preview.js'
 import { exportToDocx } from './export-docx.js'
 import { openSearchPanel } from './search-panel.js'
@@ -20,42 +20,19 @@ import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview, registerAttachmentPreviewCallbacks } from './attachment-preview.js'
 import { toggleTerminalDrawer, handleTerminalInput } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
-import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
-import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
-import { getLinkIndex, resolveWikilink, onLinkIndexChange } from './link-index.js'
-import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
-import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon, wikiQualityIcon, relatedNotesIcon } from './icons.js'
-import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks, fileExplorerHeaderActions } from './file-explorer-view.js'
-import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks, agentsViewHeaderActions } from './agents-view.js'
-import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
-import { buildTagsPanel, mountTagsPanel, renderTagsPanel, handleTagsPanelEvent } from './tags-view.js'
-import { buildWikiQualityPanel, mountWikiQualityPanel, renderWikiQualityPanel, handleWikiQualityPanelEvent } from './wiki-quality-view.js'
-import { buildRelatedNotesPanel, mountRelatedNotesPanel, renderRelatedNotesPanel, handleRelatedNotesPanelEvent } from './related-notes-view.js'
-import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
-import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
-import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
-import { createSession } from './agents-sidebar.js'
-import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
+import { getLinkIndex, resolveWikilink } from './link-index.js'
+import { initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
+import { openDiagramBuilder } from './diagram-builder.js'
+import { toggleRightPanel, toggleRightSidebar } from './right-panel.js'
 import { ensureFirstRunSample } from './first-run.js'
 import { getAvailableTemplates, resolveTemplateVars } from './templates.js'
-import { initInspectorPanel } from './inspector.js'
-import { initAiChatPanel, openAiSession } from './ai-chat.js'
+import { openAiSession } from './ai-chat.js'
 import { mountAssistantRail, openAssistantWidgetForDock } from './assistant-rail.js'
 import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
-import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon, syncSettingsForm } from './shell.js'
-
-function getInitialFolderPath() {
-  const injected = window.__RISTA_INITIAL_FOLDER__
-  return typeof injected === 'string' && injected ? injected : null
-}
-
-function getInitialFilePath() {
-  const injected = window.__RISTA_INITIAL_FILE__
-  return typeof injected === 'string' && injected ? injected : null
-}
+import { buildShell, registerShellCallbacks, toggleSettingsPanel, toggleAppTheme, applySelectedAppIcon, syncSettingsForm } from './shell.js'
 
 // ── Workspace (pane layout, editor mounting, toggles) ────────────
 import {
@@ -129,216 +106,23 @@ applySettings()
 applySelectedAppIcon()
 initRightSidebarWidth()
 initKeybindings()
-_featureEnabled('featureDiagramBuilder') && initDiagrams(getTheme())
+featureEnabled('featureDiagramBuilder') && initDiagrams(getTheme())
 
 // ── Cross-module callback registration ───────────────────────────
 registerEnsureRichEditorMounted(ensureRichEditorMounted)
 registerFocusPane(focusPane)
 
-function _featureEnabled(key) { return getSettings()[key] || getSettings().showExperimental; }
 
-// ── Initialize widget system (right + left sidebars) ─────────────
-// File explorer and Agents default to the left sidebar.
-registerFileExplorerCallbacks({
-  openFolder,
+// ── Panel registrations (extracted to panels.js) ─────────────────
+import { initPanels } from './panels.js'
+initPanels({
+  openFile,
+  refreshTree,
+  openAiSession,
+  openAiChatSurface,
+  createDailyNote,
   collapseAllFolders,
-  renderTree: () => { refreshTree() },
-})
-registerRightPanel('files', {
-  title: 'Files',
-  icon: folderIcon(),
-  flex: 3,
-  defaultSide: 'left',
-  defaultActive: true,
-  build: buildFileExplorerPanel,
-  headerActions: fileExplorerHeaderActions,
-  onMount: mountFileExplorerPanel,
-  onUnmount: () => {},
-  onRefresh: refreshFileExplorerState,
-})
-
-registerAgentsViewCallbacks({
-  createSession: async () => {
-    const session = await createSession()
-    if (session) refreshAgentsPanel()
-  },
-  openSession: (sessionPath) => {
-    openAiChatSurface()
-    openAiSession(sessionPath)
-  },
-})
-_featureEnabled('featureAgents') && registerRightPanel('agents', {
-  title: 'Agents',
-  icon: agentsIcon(),
-  flex: 1,
-  defaultSide: 'left',
-  build: buildAgentsPanel,
-  headerActions: agentsViewHeaderActions,
-  onMount: mountAgentsPanel,
-  onUnmount: () => {},
-  onRefresh: refreshAgentsPanel,
-})
-
-_featureEnabled('featureInspector') && initInspectorPanel(openFile, closeRightPanel)
-
-let _graphUnsubscribe = null
-function rerenderGraphFromIndex() {
-  setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
-  renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
-}
-_featureEnabled('featureGraphView') && registerRightPanel('graph', {
-  title: 'Graph',
-  icon: graphIcon(),
-  flex: 2,
-  build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
-  onMount: () => {
-    rerenderGraphFromIndex()
-    // Re-draw whenever the link index rebuilds (folder open, file edited,
-    // file moved/created/deleted by the AI agent, etc.)
-    _graphUnsubscribe?.()
-    _graphUnsubscribe = onLinkIndexChange(() => rerenderGraphFromIndex())
-  },
-  onUnmount: () => {
-    _graphUnsubscribe?.()
-    _graphUnsubscribe = null
-    destroyGraph()
-  },
-  onRefresh: () => {
-    // When the focused tab changes, push the new path so local mode follows it
-    if (getGraphLocalMode()) {
-      setGraphLocalMode(true, getFocusedTab()?.path || null)
-    }
-  },
-})
-
-_featureEnabled('featureAgents') && initAiChatPanel(openFile, closeRightPanel)
-
-// Gate behind featureProperties toggle to match settings UI
-_featureEnabled('featureProperties') && registerRightPanel('properties', {
-  title: 'Properties',
-  icon: propertiesIcon(),
-  flex: 1,
-  defaultSide: 'left',
-  defaultActive: true,
-  build: buildPropertiesPanel,
-  onMount: mountPropertiesPanel,
-  onUnmount: () => {},
-  onRefresh: renderProperties,
-})
-
-registerRightPanel('outline', {
-  title: 'Outline',
-  icon: outlineIcon(),
-  flex: 1,
-  build: buildOutlinePanel,
-  onMount: mountOutlinePanel,
-  onUnmount: () => {},
-  onRefresh: renderOutline,
-})
-
-let _tagsUnsubscribe = null
-_featureEnabled('featureTags') && registerRightPanel('tags', {
-  title: 'Tags',
-  icon: tagIcon(),
-  flex: 1,
-  defaultSide: 'left',
-  build: buildTagsPanel,
-  onMount: () => {
-    mountTagsPanel(openFile, (tag) => {
-      state.tagFilter = tag
-      refreshTree()
-    }, () => {
-      state.tagFilter = null
-      refreshTree()
-    })
-    const body = document.getElementById('tags-view-body')
-    body?.addEventListener('click', handleTagsPanelEvent)
-    body?.addEventListener('keydown', handleTagsPanelEvent)
-    _tagsUnsubscribe?.()
-    _tagsUnsubscribe = onLinkIndexChange(() => renderTagsPanel())
-  },
-  onUnmount: () => {
-    const body = document.getElementById('tags-view-body')
-    body?.removeEventListener('click', handleTagsPanelEvent)
-    body?.removeEventListener('keydown', handleTagsPanelEvent)
-    _tagsUnsubscribe?.()
-    _tagsUnsubscribe = null
-  },
-  onRefresh: renderTagsPanel,
-})
-
-let _relatedNotesUnsubscribe = null
-_featureEnabled('featureRelatedNotes') && registerRightPanel('related-notes', {
-  title: 'Related',
-  icon: relatedNotesIcon(),
-  flex: 1,
-  build: buildRelatedNotesPanel,
-  onMount: () => {
-    mountRelatedNotesPanel(openFile)
-    const body = document.getElementById('related-notes-body')
-    body?.addEventListener('click', handleRelatedNotesPanelEvent)
-    body?.addEventListener('keydown', handleRelatedNotesPanelEvent)
-    _relatedNotesUnsubscribe?.()
-    _relatedNotesUnsubscribe = onLinkIndexChange(() => renderRelatedNotesPanel())
-  },
-  onUnmount: () => {
-    const body = document.getElementById('related-notes-body')
-    body?.removeEventListener('click', handleRelatedNotesPanelEvent)
-    body?.removeEventListener('keydown', handleRelatedNotesPanelEvent)
-    _relatedNotesUnsubscribe?.()
-    _relatedNotesUnsubscribe = null
-  },
-  onRefresh: renderRelatedNotesPanel,
-})
-
-let _wikiQualityUnsubscribe = null
-_featureEnabled('featureWikiQuality') && registerRightPanel('wiki-quality', {
-  title: 'Wiki',
-  icon: wikiQualityIcon(),
-  flex: 1,
-  build: buildWikiQualityPanel,
-  onMount: () => {
-    mountWikiQualityPanel(openFile, { refreshTree })
-    const body = document.getElementById('wiki-quality-body')
-    body?.addEventListener('click', handleWikiQualityPanelEvent)
-    body?.addEventListener('keydown', handleWikiQualityPanelEvent)
-    _wikiQualityUnsubscribe?.()
-    _wikiQualityUnsubscribe = onLinkIndexChange(() => renderWikiQualityPanel())
-  },
-  onUnmount: () => {
-    const body = document.getElementById('wiki-quality-body')
-    body?.removeEventListener('click', handleWikiQualityPanelEvent)
-    body?.removeEventListener('keydown', handleWikiQualityPanelEvent)
-    _wikiQualityUnsubscribe?.()
-    _wikiQualityUnsubscribe = null
-  },
-  onRefresh: renderWikiQualityPanel,
-})
-
-_featureEnabled('featureBookmarks') && setBookmarksOpenFile((item) => openFile(item))
-_featureEnabled('featureBookmarks') && registerRightPanel('bookmarks', {
-  title: 'Bookmarks',
-  icon: bookmarkIcon(),
-  flex: 1,
-  build: buildBookmarksPanel,
-  onMount: mountBookmarksPanel,
-  onUnmount: unmountBookmarksPanel,
-  onRefresh: renderBookmarks,
-})
-
-_featureEnabled('featureCalendar') && registerRightPanel('calendar', {
-  title: 'Calendar',
-  icon: calendarIcon(),
-  flex: 0,
-  build: () => `<div id="calendar-panel-body" class="widget-fill"></div>`,
-  onMount: () => {
-    const body = document.getElementById('calendar-panel-body')
-    if (body && !body.firstChild) {
-      const panel = buildCalendarPanel({ onDateClick: (dateStr) => createDailyNote(dateStr), folderPath: state.folderPath })
-      body.appendChild(panel)
-    }
-  },
-  onUnmount: () => { document.getElementById('calendar-panel-body')?.replaceChildren() },
+  openFolderPath,
 })
 
 // ── Transclusion resolver ───────────────────────────────────────
@@ -430,41 +214,6 @@ registerTabCallbacks({
   openQuickOpen: openCommandPaletteFiles,
 })
 
-// ── First-run sample document ────────────────────────────────────
-const FIRST_RUN_SAMPLE = `# Welcome to Rista ✦
-
-A local-first Markdown editor. Your files, your folder — no cloud, no accounts.
-
-## Getting started
-
-Open a folder with **⌘O** to see all your notes in the sidebar.
-Press **⌘K** to jump to any file or run a command.
-
-## Writing shortcuts
-
-| Action | Shortcut |
-|---|---|
-| Bold | ⌘B |
-| Italic | ⌘I |
-| Inline code | ⌘\` |
-| Find & replace | ⌘F |
-| Project search | ⇧⌘F |
-| Zen mode | ⇧⌘↵ |
-
-## Views
-
-Toggle between **Edit**, **Split**, and **Preview** using the buttons in the toolbar.
-
-## Tips
-
-- Type \`---\` on its own line for a horizontal rule
-- Type \`"quotes"\` and they become "smart quotes" automatically
-- Use \`#tag\` anywhere in a note to build a tag index
-
----
-
-_This file lives at \`~/Documents/Rista/welcome.md\`. Feel free to edit or delete it._
-`
 
 // ── Boot ─────────────────────────────────────────────────────────
 // Perf budget (#61): cold launch ≤ 400 ms to first interactive frame.
@@ -586,5 +335,72 @@ registerCommands([
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
   { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
   { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⇧⌘D', action: () => createDailyNote() },
+  { id: 'jump-projects', label: 'Jump to Projects', description: 'Navigate to the Projects folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Projects' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Projects', 'info') }
+  } },
+  { id: 'jump-areas', label: 'Jump to Areas', description: 'Navigate to the Areas folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Areas' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Areas', 'info') }
+  } },
+  { id: 'jump-resources', label: 'Jump to Resources', description: 'Navigate to the Resources folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Resources' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Resources', 'info') }
+  } },
+  { id: 'jump-archive', label: 'Jump to Archive', description: 'Navigate to the Archive folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Archive' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Archive', 'info') }
+  } },
+  { id: 'insert-inbox-item', label: 'Insert Inbox Item', description: 'Add a GTD inbox item at cursor', shortcut: '', action: () => {
+    const view = getFocusedEditor()
+    if (!view) { showStatusNotice('Open an editor first', 'error'); return }
+    const { state: s, dispatch } = view
+    dispatch(s.update({ changes: { from: s.selection.main.head, insert: '- [ ] ' } }))
+    view.focus()
+  } },
+  { id: 'insert-next-action', label: 'Insert Next Action', description: 'Add a GTD next action at cursor', shortcut: '', action: () => {
+    const view = getFocusedEditor()
+    if (!view) { showStatusNotice('Open an editor first', 'error'); return }
+    const { state: s, dispatch } = view
+    dispatch(s.update({ changes: { from: s.selection.main.head, insert: '- [ ] (next) ' } }))
+    view.focus()
+  } },
+  { id: 'insert-waiting-item', label: 'Insert Waiting Item', description: 'Add a GTD waiting-for item at cursor', shortcut: '', action: () => {
+    const view = getFocusedEditor()
+    if (!view) { showStatusNotice('Open an editor first', 'error'); return }
+    const { state: s, dispatch } = view
+    dispatch(s.update({ changes: { from: s.selection.main.head, insert: '- [ ] (waiting) ' } }))
+    view.focus()
+  } },
+  { id: 'create-note-from-selection', label: 'Create Note from Selection', description: 'Turn selected text into a new linked note', shortcut: '', action: async () => {
+    const pane = state.focusedPane
+    const view = editorViews[pane]
+    if (!view || !state.folderPath) { showStatusNotice('Select text in a Markdown editor first', 'error'); return }
+    const sel = view.state.selection.main
+    const selected = view.state.sliceDoc(sel.from, sel.to)
+    if (!selected.trim()) { showStatusNotice('Select some text first', 'error'); return }
+    const result = await createNoteFromSelection(state.folderPath, selected, view)
+    if (!result) { showStatusNotice('Could not create note', 'error'); return }
+    if (result.existing) {
+      showStatusNotice('Note already exists — inserted wikilink', 'info')
+    } else {
+      await refreshTree()
+      await tryAwaitRebuildLinkIndex()
+      showStatusNotice(`Created ${result.name}`, 'info')
+    }
+  }},
+  // Insert commands for discoverability via command palette (Task 6.4)
+  { id: 'insert-heading-1', label: 'Insert Heading 1', description: 'Add a level 1 heading at cursor', shortcut: '', action: () => insertHeading(1) },
+  { id: 'insert-heading-2', label: 'Insert Heading 2', description: 'Add a level 2 heading at cursor', shortcut: '', action: () => insertHeading(2) },
+  { id: 'insert-heading-3', label: 'Insert Heading 3', description: 'Add a level 3 heading at cursor', shortcut: '', action: () => insertHeading(3) },
+  { id: 'insert-bullet-list', label: 'Insert Bullet List', description: 'Start a bullet list at cursor', shortcut: '', action: () => insertList('bullet') },
+  { id: 'insert-numbered-list', label: 'Insert Numbered List', description: 'Start a numbered list at cursor', shortcut: '', action: () => insertList('ordered') },
+  { id: 'insert-task-list', label: 'Insert Task List', description: 'Start a task list at cursor', shortcut: '', action: () => insertList('task') },
+  { id: 'insert-callout-note', label: 'Insert Callout (Note)', description: 'Add a note-style callout block', shortcut: '', action: () => insertCallout('note') },
+  { id: 'insert-callout-tip', label: 'Insert Callout (Tip)', description: 'Add a tip-style callout block', shortcut: '', action: () => insertCallout('tip') },
+  { id: 'insert-callout-warning', label: 'Insert Callout (Warning)', description: 'Add a warning-style callout block', shortcut: '', action: () => insertCallout('warning') },
+  { id: 'insert-code-block', label: 'Insert Code Block', description: 'Add a fenced code block at cursor', shortcut: '', action: () => insertCodeBlock() },
+  { id: 'insert-horizontal-rule', label: 'Insert Horizontal Rule', description: 'Add a thematic break at cursor', shortcut: '', action: () => insertHorizontalRule() },
+  { id: 'insert-image', label: 'Insert Image', description: 'Pick and insert an image reference', shortcut: '', action: () => insertImage() },
 ])
 

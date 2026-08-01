@@ -2,10 +2,10 @@ import { state, $, settingsValue } from './state.js'
 import { buildRightPanelContainer } from './right-panel.js'
 import { buildTerminalDrawer } from './terminal-drawer.js'
 import { toggleTheme, getTheme } from './theme.js'
-import { applySettings, getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, ASSISTANT_DOCK_OPTIONS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
+import { getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, ASSISTANT_DOCK_OPTIONS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, closeIcon } from './icons.js'
 import { clearPreviewCache } from './preview.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
@@ -819,7 +819,7 @@ function showFileContextMenu(x, y, filePath, isFolder) {
 
 // ── Build app shell ───────────────────────────────────────────────
 export function buildShell() {
-  document.getElementById('root').innerHTML = `
+  $('root').innerHTML = `
     <div class="app" id="app">
       <!-- Native macOS overlay chrome lives above every app column. -->
       <div class="brandrail" id="brandrail" data-tauri-drag-region="deep">
@@ -841,13 +841,12 @@ export function buildShell() {
         <!-- Editor area -->
         <div class="editor-area">
           <!-- Welcome / editor wrapper -->
-          <div id="editor-wrapper" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+          <div id="editor-wrapper" >
             ${buildWelcome()}
           </div>
 
           ${buildTerminalDrawer()}
 
-          <!-- Statusbar -->
           <!-- Statusbar -->
           <div class="statusbar">
             <div class="statusbar__metrics">
@@ -863,10 +862,6 @@ export function buildShell() {
                   ${gearIcon()}
                 </div>
               </div>
-              <div class="st st-brand">Rísta</div>
-            </div>
-          </div>
-
               <div class="st st-brand">Rísta</div>
             </div>
           </div>

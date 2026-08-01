@@ -1,6 +1,7 @@
 import { getAllTagNames, getFilesForTag } from './link-index.js'
 import { state } from './state.js'
 
+import { $ } from './state.js'
 let _openFile = null
 let _onSelectTag = null
 let _onClearTag = null
@@ -17,7 +18,7 @@ export function mountTagsPanel(openFile, onSelectTag, onClearTag) {
 }
 
 export function renderTagsPanel() {
-  const body = document.getElementById('tags-view-body')
+  const body = $('tags-view-body')
   if (!body) return
 
   const tags = getAllTagNames()

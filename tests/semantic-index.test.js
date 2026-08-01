@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..')
 
 async function importSemanticIndexModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/semantic-index.js'), 'utf8')
-  const modulePath = path.join(os.tmpdir(), `rista-semantic-index-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const modulePath = path.join(root, "src/renderer", `rista-semantic-index-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   fs.writeFileSync(modulePath, source)
   const mod = await import(`file://${modulePath}`)
   fs.rmSync(modulePath, { force: true })

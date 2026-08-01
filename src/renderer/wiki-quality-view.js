@@ -2,6 +2,7 @@ import { getLinkIndex, rebuildLinkIndex, resolveWikilink } from './link-index.js
 import { state } from './state.js'
 import { analyzeWikiQuality } from './wiki-quality.js'
 
+import { $ } from './state.js'
 let _openFile = null
 let _refreshTree = null
 const DISMISSED_KEY = 'rista-wiki-quality-dismissed'
@@ -17,7 +18,7 @@ export function mountWikiQualityPanel(openFile, options = {}) {
 }
 
 export function renderWikiQualityPanel() {
-  const body = document.getElementById('wiki-quality-body')
+  const body = $('wiki-quality-body')
   if (!body) return
 
   if (!state.folderPath) {

@@ -1,5 +1,6 @@
 import { state } from './state.js'
 
+import { $ } from './state.js'
 let hintEl = null
 let fadeTimer = null
 
@@ -9,7 +10,7 @@ export function buildZenExitHint() {
   hintEl.className = 'zen-exit-hint'
   hintEl.textContent = 'Esc to exit Zen Mode'
   hintEl.addEventListener('click', exitZenMode)
-  const root = document.getElementById('root')
+  const root = $('root')
   if (root) root.appendChild(hintEl)
 }
 

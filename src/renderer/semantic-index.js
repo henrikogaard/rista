@@ -1,3 +1,4 @@
+import { relativeFilePath } from "./state.js"
 const STOPWORDS = new Set([
   'about', 'after', 'again', 'also', 'and', 'are', 'because', 'been', 'before', 'being',
   'between', 'but', 'can', 'could', 'did', 'does', 'doing', 'for', 'from', 'had',
@@ -34,7 +35,7 @@ export function buildSemanticIndex(linkIndex, options = {}) {
       path,
       name: path.split(/[/\\]/).pop(),
       title,
-      relativePath: relativePath(path, folderPath),
+      relativePath: relativeFilePath(path, folderPath),
       sections,
       counts,
       weights: new Map(),
@@ -282,13 +283,4 @@ function addTokens(counts, tokens, weight) {
 
 function noteTitle(path) {
   return String(path || '').split(/[/\\]/).pop().replace(/\.md$/i, '')
-}
-
-function relativePath(path, folderPath) {
-  const normalizedPath = String(path || '').replace(/\\/g, '/')
-  const normalizedFolder = String(folderPath || '').replace(/\\/g, '/').replace(/\/+$/, '')
-  if (normalizedFolder && normalizedPath.startsWith(normalizedFolder)) {
-    return normalizedPath.slice(normalizedFolder.length).replace(/^\/+/, '')
-  }
-  return normalizedPath
 }

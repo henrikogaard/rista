@@ -18,7 +18,7 @@ Rísta becomes structurally reliable. Pane modes, workspace split, tabs, and edi
 
 #### Task 1.1
 Title: Split renderer entry into dedicated modules
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - [src/renderer/index.js](../src/renderer/index.js) is reduced to bootstrapping and wiring
 - app shell, panes, tabs, commands, and tree logic live in separate files
@@ -26,14 +26,14 @@ Acceptance criteria:
 
 #### Task 1.2
 Title: Introduce shared DOM/event helper utilities
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - repetitive DOM lookup and event code is centralized
 - helpers do not obscure behavior
 
 #### Task 1.3
 Title: Add `ARCHITECTURE.md`
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - renderer module responsibilities are documented
 - pane/workspace rendering model is described
@@ -42,21 +42,21 @@ Acceptance criteria:
 
 #### Task 1.4
 Title: Define formal pane and workspace state contract
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - pane mode, split mode, workspace mode, tabs, and focus are explicitly documented in code
 - layout is derived from state only
 
 #### Task 1.5
 Title: Create transition helpers for pane/workspace changes
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - pane/workspace transitions happen through dedicated functions
 - no layout-critical state mutation is scattered across unrelated handlers
 
 #### Task 1.6
 Title: Remove remaining DOM-driven implicit state behavior
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - the UI no longer relies on previous DOM placement to determine current behavior
 
@@ -64,21 +64,21 @@ Acceptance criteria:
 
 #### Task 1.7
 Title: Centralize CodeMirror surface mounting
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - Markdown editor host has one canonical owner per pane
 - standalone and split mode both work reliably
 
 #### Task 1.8
 Title: Centralize WYSIWYG surface mounting
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - WYSIWYG mounts cleanly in standalone and split modes
 - stale hosts are not left behind
 
 #### Task 1.9
 Title: Centralize preview surface rendering
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - standalone preview and split preview use clearly separated containers
 - preview state does not distort future pane layouts
@@ -92,21 +92,21 @@ The app remains fast under large folders, long documents, and frequent edits.
 
 #### Task 2.1
 Title: Separate debounce pipelines for save, preview, stats, and headings
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - saving does not unnecessarily throttle preview or insights
 - preview and stats do not recompute on selection-only changes
 
 #### Task 2.2
 Title: Prevent redundant preview rerenders
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - preview updates only when document content changes
 - no extra rerender happens when toggling focus only
 
 #### Task 2.3
 Title: Benchmark preview performance on large documents
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - benchmark fixtures exist
 - results are documented for long docs, many headings, and tables
@@ -115,21 +115,21 @@ Acceptance criteria:
 
 #### Task 2.4
 Title: Make tree updates incremental
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - tree is not rebuilt completely for every file change
 - expanded state is preserved
 
 #### Task 2.5
 Title: Lazy render deep folder branches
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - large folders open faster
 - inactive deep branches do not fully render immediately
 
 #### Task 2.6
 Title: Batch watcher event bursts
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - multiple file changes do not cause UI thrash
 
@@ -142,21 +142,21 @@ Users can rely on Rísta for real work without fear of silent corruption or weir
 
 #### Task 3.1
 Title: Add `TEST-CASES.md`
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - core manual regression cases are documented
 - includes standalone and split mode transitions
 
 #### Task 3.2
 Title: Add unit tests for markdown helpers and pane transitions
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - markdown helpers have coverage
 - pane transition logic has coverage
 
 #### Task 3.3
 Title: Add smoke tests for app boot and folder open
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - boot and open-folder failures are caught automatically
 
@@ -164,21 +164,21 @@ Acceptance criteria:
 
 #### Task 3.4
 Title: Detect external file conflicts for dirty tabs
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - user is warned before overwriting external changes
 - conflict options are clear
 
 #### Task 3.5
 Title: Add session restore for open tabs
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - relaunch can reopen previous tabs
 - state restore is predictable
 
 #### Task 3.6
 Title: Add unsaved buffer recovery
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - crash/relaunch can recover unsaved text when enabled
 
@@ -186,19 +186,19 @@ Acceptance criteria:
 
 #### Task 3.7
 Title: Fix preload unsubscribe behavior
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - unsubscribing one listener does not remove unrelated listeners
 
 #### Task 3.8
 Title: Replace filename-based explorer identity with full paths
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - duplicate filenames do not confuse the explorer
 
 #### Task 3.9
 Title: Normalize IPC return shapes
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - renderer gets consistent success/error structures
 
@@ -211,26 +211,26 @@ The app supports writing, navigating, and organizing notes efficiently.
 
 #### Task 4.1
 Title: Build command palette shell
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - `Cmd/Ctrl+K` opens palette
 - palette dismisses cleanly
 
 #### Task 4.2
 Title: Add file search to command palette
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - files can be fuzzy-searched and opened from the palette
 
 #### Task 4.3
 Title: Add command search to command palette
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - view toggles and insert actions are searchable
 
 #### Task 4.4
 Title: Add keyboard-first palette navigation
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - arrows, enter, and escape work smoothly
 
@@ -238,21 +238,21 @@ Acceptance criteria:
 
 #### Task 4.5
 Title: Rebuild find and replace
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - find next/prev, replace one/all work reliably
 - behavior scales to large files
 
 #### Task 4.6
 Title: Improve outline/headings navigation
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - heading hierarchy is clearer
 - clicking headings navigates reliably
 
 #### Task 4.7
 Title: Add recent files and pinned files
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - recently used files are accessible quickly
 - users can pin important files
@@ -266,14 +266,14 @@ Rísta supports PARA, GTD, and Zettelkasten naturally without forcing complexity
 
 #### Task 5.1
 Title: Add starter workspace templates
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can choose PARA, GTD, Zettelkasten, or plain notes
 - templates create folders/files only, not hidden structures
 
 #### Task 5.2
 Title: Add note templates
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - templates exist for daily, meeting, project, reference, and zettel notes
 
@@ -281,25 +281,25 @@ Acceptance criteria:
 
 #### Task 5.3
 Title: Improve internal link insertion
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - inserting links to local notes is fast and discoverable
 
 #### Task 5.4
 Title: Add optional wiki-link support
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can enable or ignore wiki links
 
 #### Task 5.5
 Title: Add backlink discovery
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can inspect notes that reference the current note
 
 #### Task 5.6
 Title: Add quick linked-note creation from selection
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - selected text can become a new linked note quickly
 
@@ -307,13 +307,13 @@ Acceptance criteria:
 
 #### Task 5.7
 Title: Add PARA navigation helpers
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can jump between Projects, Areas, Resources, and Archive quickly
 
 #### Task 5.8
 Title: Improve task/GTD insertion flows
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - inbox, next action, waiting, and someday patterns are easy to insert
 
@@ -326,13 +326,13 @@ Rísta feels like a serious Markdown IDE, not just a text editor.
 
 #### Task 6.1
 Title: Audit markdown round-tripping in WYSIWYG
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - toggling between WYSIWYG and Markdown preserves structure reliably
 
 #### Task 6.2
 Title: Harden tables, callouts, and lists in WYSIWYG
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - these structures render and round-trip cleanly
 
@@ -340,19 +340,19 @@ Acceptance criteria:
 
 #### Task 6.3
 Title: Add optional Vim mode
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - Vim mode is optional, persisted, and isolated from normal mode
 
 #### Task 6.4
 Title: Expand insert commands and toolbar tools
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - common Markdown structures are easy to insert by mouse or keyboard
 
 #### Task 6.5
 Title: Improve dual-pane comparison workflows
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - comparing two files side by side is smooth and reliable
 
@@ -365,13 +365,13 @@ The app feels memorable, calm, and premium.
 
 #### Task 7.1
 Title: Refine typography and spacing system
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - UI hierarchy feels consistent across the app
 
 #### Task 7.2
 Title: Improve active, focus, and hover states
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - state changes are clear without feeling loud
 
@@ -379,19 +379,19 @@ Acceptance criteria:
 
 #### Task 7.3
 Title: Finish aurora welcome screen
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - welcome screen feels premium and intentional
 
 #### Task 7.4
 Title: Improve empty-tab and empty-file states
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - empty states feel informative and visually integrated
 
 #### Task 7.5
 Title: Refine logo and branding usage
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - branding is polished across app, README, and About surfaces
 
@@ -399,7 +399,7 @@ Acceptance criteria:
 
 #### Task 7.6
 Title: Deep tune dark and light themes
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - editor, preview, WYSIWYG, explorer, and dialogs feel coherent in both themes
 
@@ -412,14 +412,14 @@ The app can be shipped with confidence and improved sustainably.
 
 #### Task 8.1
 Title: Rebuild PDF export as document-only export
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - exported PDF contains only document content
 - app chrome is not included
 
 #### Task 8.2
 Title: Audit packaging outputs and platform polish
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - icons, menus, About panel, and packaged output are polished
 
@@ -427,13 +427,13 @@ Acceptance criteria:
 
 #### Task 8.3
 Title: Define release checklist
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - release checklist includes build, regression pass, and packaging verification
 
 #### Task 8.4
 Title: Define milestone-based changelog process
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - changes are grouped by milestone/release, not random commits
 

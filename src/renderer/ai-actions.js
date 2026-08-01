@@ -1,8 +1,7 @@
 import { showStatusNotice } from './tabs.js'
-import { state, getFocusedEditor, getFocusedTab } from './state.js'
+import { state, getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 import { showContextMenu } from './context-menu.js'
-import { searchFiles } from './link-index.js'
 import { PROVIDERS } from './ai-providers.js'
 import { queueAiReviewItem } from './ai-review.js'
 import { saveActive } from './tabs.js'
@@ -154,37 +153,3 @@ function relativeProjectPath(path) {
   return normalizedPath.slice(normalizedRoot.length).replace(/^\/+/, '')
 }
 
-export async function askNotesRag(question) {
-  const settings = getSettings()
-  const config = getProviderConfig(settings)
-  if (!config) return { error: 'Unknown AI provider' }
-  if (config.provider.transport === 'cli') {
-    return { error: cliActionMessage(config.provider) }
-  }
-  if (!settings.aiApiKey && !config.provider.noApiKey) {
-    return { error: 'Please set an API key in Settings → AI' }
-  }
-
-  const results = searchFiles(question, { limit: 5 })
-  const context = results
-    .filter(r => r.contentMatch || r.nameMatch)
-    .map(r => `--- ${r.name} ---\n${r.preview || ''}`)
-    .join('\n\n')
-
-  const messages = [
-    { role: 'system', content: `You are a knowledge assistant. Answer the user's question based on these notes from their wiki:\n\n${context}\n\nIf the notes don't contain relevant information, say so.` },
-    { role: 'user', content: question },
-  ]
-
-  try {
-    return await window.fjord.aiChat({
-      provider: config.providerKey,
-      apiKey: config.apiKey,
-      model: config.model,
-      baseUrl: config.baseUrl,
-      messages,
-    })
-  } catch (err) {
-    return { error: err.message || 'Request failed' }
-  }
-}

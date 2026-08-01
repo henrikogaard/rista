@@ -1,3 +1,4 @@
+import { relativeFilePath } from "./state.js"
 const DEFAULT_LIMIT = 8
 const CAPITALIZED_PHRASE_RE = /\b[A-Z][A-Za-z0-9]+(?:[ -]+[A-Z][A-Za-z0-9]+){1,3}\b/g
 
@@ -66,7 +67,7 @@ function collectUnresolvedLinks(files, allPaths, folderPath, resolveLink, dismis
         linkText,
         sourcePath,
         sourceName: noteTitle(sourcePath),
-        sourceRelativePath: relativePath(sourcePath, folderPath),
+        sourceRelativePath: relativeFilePath(sourcePath, folderPath),
       })
     }
   }
@@ -88,7 +89,7 @@ function collectOrphanNotes(files, backlinks, folderPath, dismissed) {
       key,
       path,
       title: noteTitle(path),
-      relativePath: relativePath(path, folderPath),
+      relativePath: relativeFilePath(path, folderPath),
     })
   }
 
@@ -112,7 +113,7 @@ function collectDuplicateTitles(allPaths, folderPath, dismissed) {
       key: wikiQualityFindingKey('duplicate-title', group.paths.slice().sort().join('|'), group.title),
       title: group.title,
       paths: group.paths.sort((a, b) => compareByDepthThenRelative(a, b, folderPath)),
-      relativePaths: group.paths.map(path => relativePath(path, folderPath)),
+      relativePaths: group.paths.map(path => relativeFilePath(path, folderPath)),
     }))
     .filter(group => !dismissed.has(group.key))
     .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
@@ -123,7 +124,7 @@ function collectNearDuplicateNotes(files, folderPath, dismissed) {
     .map(([path, entry]) => ({
       path,
       title: noteTitle(path),
-      relativePath: relativePath(path, folderPath),
+      relativePath: relativeFilePath(path, folderPath),
       tokens: tokenSet(stripMarkdownNoise(entry?.content || '')),
     }))
     .filter(entry => entry.tokens.size >= 5)
@@ -140,7 +141,7 @@ function collectNearDuplicateNotes(files, folderPath, dismissed) {
         key,
         title: `${entries[i].title} / ${entries[j].title}`,
         paths,
-        relativePaths: paths.map(path => relativePath(path, folderPath)),
+        relativePaths: paths.map(path => relativeFilePath(path, folderPath)),
         similarity: Math.round(similarity * 100) / 100,
       })
     }
@@ -173,7 +174,7 @@ function collectGlossaryCandidates(files, folderPath, dismissed) {
       count: candidate.count,
       fileCount: candidate.files.size,
       files: Array.from(candidate.files).sort((a, b) =>
-        relativePath(a, folderPath).localeCompare(relativePath(b, folderPath), undefined, { sensitivity: 'base' })
+        relativeFilePath(a, folderPath).localeCompare(relativeFilePath(b, folderPath), undefined, { sensitivity: 'base' })
       ),
     }))
     .filter(candidate => !dismissed.has(candidate.key))
@@ -241,18 +242,9 @@ function noteTitle(path) {
     .replace(/\.md$/i, '')
 }
 
-function relativePath(path, folderPath) {
-  const normalizedPath = String(path || '').replace(/\\/g, '/')
-  const normalizedFolder = String(folderPath || '').replace(/\\/g, '/').replace(/\/+$/, '')
-  if (normalizedFolder && normalizedPath.startsWith(normalizedFolder)) {
-    return normalizedPath.slice(normalizedFolder.length).replace(/^\/+/, '')
-  }
-  return normalizedPath
-}
-
 function compareByDepthThenRelative(a, b, folderPath) {
-  const aRelative = relativePath(a, folderPath)
-  const bRelative = relativePath(b, folderPath)
+  const aRelative = relativeFilePath(a, folderPath)
+  const bRelative = relativeFilePath(b, folderPath)
   const aDepth = aRelative.split('/').length
   const bDepth = bRelative.split('/').length
   return aDepth - bDepth || aRelative.localeCompare(bRelative, undefined, { sensitivity: 'base' })

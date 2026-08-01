@@ -1,4 +1,4 @@
-import { state } from './state.js'
+import { $ } from './state.js'
 import { getLinkIndex } from './link-index.js'
 import { buildGraphView, renderGraph, destroyGraph } from './graph-view.js'
 
@@ -24,9 +24,9 @@ export function openGraphModal(openFileFn) {
   if (_graphOpen) return
   _graphOpen = true
 
-  const overlay = document.getElementById('graph-modal-overlay')
-  const modal = document.getElementById('graph-modal')
-  const body = document.getElementById('graph-modal-body')
+  const overlay = $('graph-modal-overlay')
+  const modal = $('graph-modal')
+  const body = $('graph-modal-body')
   if (!overlay || !modal || !body) return
 
   overlay.classList.add('open')
@@ -40,13 +40,13 @@ export function openGraphModal(openFileFn) {
   })
 
   overlay.addEventListener('click', closeGraphModal, { once: true })
-  document.getElementById('graph-modal-close')?.addEventListener('click', closeGraphModal, { once: true })
+  $('graph-modal-close')?.addEventListener('click', closeGraphModal, { once: true })
 }
 
 export function closeGraphModal() {
   _graphOpen = false
-  const overlay = document.getElementById('graph-modal-overlay')
-  const modal = document.getElementById('graph-modal')
+  const overlay = $('graph-modal-overlay')
+  const modal = $('graph-modal')
   if (overlay) overlay.classList.remove('open')
   if (modal) modal.classList.remove('open')
   destroyGraph()

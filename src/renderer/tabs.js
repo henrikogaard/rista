@@ -8,7 +8,7 @@ import { attachWelcomeProjectHandlers, buildWelcome, syncWorkspaceChrome } from 
 import { addRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
-import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex, getFilesForTag } from './link-index.js'
+import { rebuildLinkIndex, updateLinkIndexForFile, getFilesForTag } from './link-index.js'
 import { refreshRightPanel } from './right-panel.js'
 import { saveSnapshot } from './history.js'
 import { exportAsWebsite } from './publish.js'
@@ -17,6 +17,7 @@ import { refreshFileExplorerState } from './file-explorer-view.js'
 import { jumpToLine } from './outline-view.js'
 import { mergeFrontmatterWithBody } from './markdown.js'
 import { isAttachmentFile, isSpatialFile, isLikelyBinaryFile } from './attachment-preview.js'
+import { schedulePeriodicSave, loadRecoveryBuffer, hasRecoveryBuffer } from './crash-recovery.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null
@@ -60,13 +61,7 @@ export function scheduleMetricsUpdate() {
   }, METRICS_DEBOUNCE_MS)
 }
 
-export function flushMetricsUpdate() {
-  if (_metricsTimer) {
-    clearTimeout(_metricsTimer)
-    _metricsTimer = null
-    updateActiveMetrics()
-  }
-}
+
 
 function clearExternalConflict(tab) {
   if (!tab) return
@@ -90,6 +85,21 @@ async function tryAwaitRebuildLinkIndex() {
 
 async function tryRestoreSession() {
   if (!state.folderPath) return
+  // Check for unsaved crash recovery first
+  if (hasRecoveryBuffer()) {
+    const unsaved = loadRecoveryBuffer()
+    if (unsaved && unsaved.length) {
+      for (const u of unsaved) {
+        if (u.path && u.content) {
+          const tab = state.tabs.find(t => t.path === u.path)
+          if (tab) {
+            tab.content = u.content
+            tab.dirty = true
+          }
+        }
+      }
+    }
+  }
   const session = loadSession(state.folderPath)
   if (!session || !session.tabs?.length) return
   for (const saved of session.tabs) {
@@ -493,6 +503,7 @@ export async function openFolder() {
   tryRebuildLinkIndex()
   showWelcomeScreen()
 
+  schedulePeriodicSave(() => state.tabs)
   await tryRestoreSession()}
 
 export async function openFolderPath(folderPath) {

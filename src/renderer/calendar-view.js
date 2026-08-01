@@ -1,5 +1,6 @@
 import { getSettings } from './settings.js'
 
+import { $ } from './state.js'
 const DAY_NAMES = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -164,12 +165,3 @@ export function buildCalendarPanel({ onDateClick, folderPath } = {}) {
   return panel
 }
 
-/**
- * Refresh the daily notes map and re-render an existing calendar panel.
- */
-export async function refreshCalendarPanel(folderPath) {
-  const panel = document.getElementById('calendar-panel')
-  if (!panel) return
-  _dailyNotesMap = await getDailyNotesMap(folderPath)
-  renderCalendar(_currentYear, _currentMonth, _dailyNotesMap, panel)
-}

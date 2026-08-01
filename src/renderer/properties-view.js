@@ -1,8 +1,9 @@
 import { parseFrontmatter, applyFrontmatter } from './tags.js'
-import { state, getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
+import { getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
 import { updateEditorDoc } from './editor.js'
 import { refreshPreview } from './preview.js'
 
+import { $ } from './state.js'
 const RESERVED_NAMES = new Set(['aliases', 'tags', 'cssclasses'])
 
 function escapeHtml(str) {
@@ -62,7 +63,7 @@ export function buildPropertiesPanel() {
 }
 
 export function renderProperties() {
-  const body = document.getElementById('properties-view-body')
+  const body = $('properties-view-body')
   if (!body) return
   const tab = getActiveTab()
   if (!tab) {
@@ -193,7 +194,7 @@ function removeProperty(key) {
 }
 
 function addProperty() {
-  const input = document.getElementById('prop-add-key')
+  const input = $('prop-add-key')
   if (!input) return
   const key = (input.value || '').trim()
   if (!key) return
@@ -238,7 +239,7 @@ function updateBannerSettings(partial = {}) {
 
 function readBannerForm() {
   return {
-    banner: document.getElementById('banner-image-input')?.value || '',
+    banner: $('banner-image-input')?.value || '',
     banner_x: document.querySelector('[data-banner-axis="banner_x"]')?.value,
     banner_y: document.querySelector('[data-banner-axis="banner_y"]')?.value,
   }
@@ -246,7 +247,7 @@ function readBannerForm() {
 
 export function mountPropertiesPanel() {
   renderProperties()
-  const body = document.getElementById('properties-view-body')
+  const body = $('properties-view-body')
   if (!body) return
 
   body.addEventListener('change', (event) => {

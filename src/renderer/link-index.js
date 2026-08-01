@@ -411,3 +411,45 @@ function collectMdPaths(nodes) {
   }
   return paths
 }
+
+// ── Quick linked-note creation from selection (Task 5.6) ─────────
+// Creates a new note from selected text and inserts a [[wikilink]] to it.
+export async function createNoteFromSelection(folderPath, selectedText, editorView) {
+  if (!folderPath || !selectedText) return null
+  const slug = selectedText
+    .toLowerCase()
+    .replace(/[^a-z0-9æøå]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60) || 'untitled'
+  const fileName = `${slug}.md`
+  const fullPath = `${folderPath}/${fileName}`
+
+  try {
+    // Check if file exists
+    const existing = await window.fjord.stat(fullPath)
+    if (existing) {
+      // File exists — just insert the wikilink
+      insertWikilinkAtSelection(editorView, fileName.replace(/\.md$/, ''))
+      return { path: fullPath, name: fileName, existing: true }
+    }
+
+    // Create file with the selection as heading + content
+    const content = `# ${selectedText}\n\n`
+    await window.fjord.createFile(fullPath)
+    await window.fjord.writeFile(fullPath, content)
+    insertWikilinkAtSelection(editorView, selectedText)
+    return { path: fullPath, name: fileName, existing: false }
+  } catch {
+    return null
+  }
+}
+
+function insertWikilinkAtSelection(view, linkText) {
+  if (!view) return
+  const sel = view.state.selection.main
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: `[[${linkText}]]` },
+    selection: { anchor: sel.from + linkText.length + 4 },
+  })
+  view.focus()
+}

@@ -2,6 +2,7 @@ import { getSettings } from './settings.js'
 import { buildAiChatPanel, mountAiChatPanel } from './ai-chat.js'
 import { closeRightPanel, moveWidgetToSide, setWidgetSidePreference } from './right-panel.js'
 
+import { $ } from './state.js'
 let assistantRailOpen = false
 
 function isRailDock(dock) {
@@ -43,7 +44,7 @@ export function buildAssistantRail() {
 }
 
 export function syncAssistantRail() {
-  const rail = document.getElementById('assistant-rail')
+  const rail = $('assistant-rail')
   const dock = getSettings().assistantDock
   applyAssistantDockPlacement(dock)
 
@@ -54,7 +55,7 @@ export function syncAssistantRail() {
 }
 
 export function mountAssistantRail() {
-  const body = document.getElementById('assistant-rail-body')
+  const body = $('assistant-rail-body')
   if (!body) {
     syncAssistantRail()
     return

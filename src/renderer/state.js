@@ -4,6 +4,7 @@ import { getSettings } from './settings.js'
 export const $ = id => document.getElementById(id)
 export const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e }
 export const settingsValue = key => getSettings()[key]
+export const featureEnabled = key => getSettings()[key] || getSettings().showExperimental
 
 // ── App state ────────────────────────────────────────────────────
 export const state = {
@@ -191,4 +192,14 @@ export function storeSplitSnapshot() {
     focusedPane: state.focusedPane,
   }
   cleanSplitSnapshot()
+}
+
+// ── Path helpers ───────────────────────────────────────────────────
+export function relativeFilePath(path, folderPath) {
+  const normalizedPath = String(path || '').replace(/\\/g, '/')
+  const normalizedFolder = String(folderPath || '').replace(/\\/g, '/').replace(/\/+$/, '')
+  if (normalizedFolder && normalizedPath.startsWith(normalizedFolder)) {
+    return normalizedPath.slice(normalizedFolder.length).replace(/^\/+/, '')
+  }
+  return normalizedPath
 }

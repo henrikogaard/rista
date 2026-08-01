@@ -78,8 +78,8 @@ Responsibilities:
 - app metadata
 
 Files:
-- [src/main/main.js](../src/main/main.js)
-- [src/main/preload.js](../src/main/preload.js)
+- [src-tauri/src/main.rs](../src-tauri/src/main.rs)
+- [src/renderer/tauri-api.js](../src/renderer/tauri-api.js)
 
 Design direction:
 - keep main process thin

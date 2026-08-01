@@ -12,6 +12,7 @@ import {
 } from './bookmarks.js'
 import { showContextMenu } from './context-menu.js'
 
+import { $ } from './state.js'
 let _openFile = null
 let _unsubscribe = null
 
@@ -65,7 +66,7 @@ function renderItems(items, depth = 0) {
 }
 
 export function renderBookmarks() {
-  const body = document.getElementById('bookmarks-view-body')
+  const body = $('bookmarks-view-body')
   if (!body) return
   const list = getBookmarks()
   if (list.length === 0) {
@@ -148,7 +149,7 @@ function onFooterClick(event) {
 
 export function mountBookmarksPanel() {
   renderBookmarks()
-  const body = document.getElementById('bookmarks-view-body')
+  const body = $('bookmarks-view-body')
   if (!body) return
   body.addEventListener('click', onItemClick)
   body.addEventListener('contextmenu', onContextMenu)

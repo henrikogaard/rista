@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..')
 
 async function importWikiQualityModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/wiki-quality.js'), 'utf8')
-  const modulePath = path.join(os.tmpdir(), `rista-wiki-quality-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const modulePath = path.join(root, "src/renderer", `rista-wiki-quality-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   fs.writeFileSync(modulePath, source)
   const mod = await import(`file://${modulePath}`)
   fs.rmSync(modulePath, { force: true })

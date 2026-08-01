@@ -1,5 +1,5 @@
 import { EditorState, Compartment, Annotation, RangeSetBuilder } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, drawSelection, dropCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view'
+import { EditorView, keymap, drawSelection, dropCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
@@ -7,9 +7,9 @@ import { syntaxHighlighting, HighlightStyle, syntaxTree } from '@codemirror/lang
 import { tags } from '@lezer/highlight'
 import { vim } from '@replit/codemirror-vim'
 import { selectNextOccurrence } from '@codemirror/search'
-import { autocompletion, CompletionContext } from '@codemirror/autocomplete'
+import { autocompletion } from '@codemirror/autocomplete'
 import { getAllMdFileNames } from './link-index.js'
-import { checkTableAtCursor, hideTableToolbar, tableTabForward, tableTabBackward } from './table-editor.js'
+import { checkTableAtCursor, tableTabForward, tableTabBackward } from './table-editor.js'
 
 // ── Minimal highlight style matching Rísta palette ──
 const fjordHighlight = HighlightStyle.define([
@@ -304,24 +304,6 @@ export function updateEditorTheme(view, isDark) {
   const newTheme = isDark ? fjordThemeDark : fjordThemeLight
   view.dispatch({
     effects: themeCompartment.reconfigure(newTheme),
-  })
-}
-
-export function updateTypewriterMode(view, enabled) {
-  view.dispatch({
-    effects: typewriterCompartment.reconfigure(enabled ? typewriterExtension : typewriterOff),
-  })
-}
-
-export function updateSpellcheck(view, enabled) {
-  view.dispatch({
-    effects: spellcheckCompartment.reconfigure(enabled ? spellcheckOn : spellcheckOff),
-  })
-}
-
-export function updateVimMode(view, enabled) {
-  view.dispatch({
-    effects: vimCompartment.reconfigure(enabled ? vim() : vimOff),
   })
 }
 

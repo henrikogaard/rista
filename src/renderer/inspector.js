@@ -1,5 +1,5 @@
 import { state, $, getFocusedTab } from './state.js'
-import { getOutgoingLinks, getBacklinks, getAllMdFileNames, getTagsForFile, getAllTagNames, getFilesForTag, getUnlinkedMentions } from './link-index.js'
+import { getOutgoingLinks, getBacklinks, getTagsForFile, getAllTagNames, getFilesForTag, getUnlinkedMentions } from './link-index.js'
 import { getStats, extractHeadings } from './markdown.js'
 import { getSettings } from './settings.js'
 import { registerRightPanel } from './right-panel.js'

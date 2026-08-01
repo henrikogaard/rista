@@ -5,7 +5,6 @@ import { processDiagrams } from './diagrams.js'
 import { getTheme } from './theme.js'
 import { getSettings } from './settings.js'
 import { formatGoalStatus, isGoalReached } from './word-goals.js'
-import { renderInspectorContent } from './inspector.js'
 import { resolveWikilink, getLinkIndex } from './link-index.js'
 
 // ── Preview content cache (Task 2.2) ──────────────────────────

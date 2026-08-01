@@ -63,7 +63,7 @@ rista/
 │   └── fonts.css           # Self-hosted @fontsource imports
 ├── src/
 │   └── renderer/
-│       ├── index.js        # App entry — UI construction, state, event wiring, panel registration
+│       ├── index.js        # App entry — bootstrapping, wiring, init
 │       ├── workspace.js    # Pane layout, toolbar, split mode, editor mounting
 │       ├── shell.js        # App shell HTML builder, settings panel, statusbar, welcome screen
 │       ├── editor.js       # CodeMirror 6 setup, themes, plugins (focus, typewriter, live preview, POS)
@@ -77,6 +77,7 @@ rista/
 │       ├── tabs.js         # Tab management, auto-save, file switching
 │       ├── right-panel.js  # Right sidebar widget system registration
 │       ├── commands.js     # Editor commands (wraps CodeMirror + WYSIWYG actions)
+│       ├── panels.js       # Right/left sidebar panel registrations, gated by feature flags
 │       └── styles/
 │           └── main.css    # All CSS — tokens, both themes, layout, all components
 ├── src-tauri/

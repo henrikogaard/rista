@@ -1,4 +1,5 @@
 import { state, $ } from './state.js'
+import { getSettings } from './settings.js'
 import { getLinkIndex, searchFiles } from './link-index.js'
 import { buildSemanticIndex, searchSemanticIndex } from './semantic-index.js'
 
@@ -132,7 +133,10 @@ function runSearch() {
   }
 
   try {
-    const semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
+    const settings = getSettings()
+    const semanticEnabled = settings.featureSemanticIndex || settings.showExperimental
+    const semanticIndex = semanticEnabled
+      ? buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath }) : null
     searchIndexStatus = semanticIndex
     searchIndexError = ''
     const fileResults = searchFiles(searchQuery, { limit: 50 })
