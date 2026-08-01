@@ -287,7 +287,7 @@ Acceptance criteria:
 
 #### Task 5.4
 Title: Add optional wiki-link support
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can enable or ignore wiki links
 
@@ -340,7 +340,7 @@ Acceptance criteria:
 
 #### Task 6.3
 Title: Add optional Vim mode
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - Vim mode is optional, persisted, and isolated from normal mode
 
@@ -419,7 +419,7 @@ Acceptance criteria:
 
 #### Task 8.2
 Title: Audit packaging outputs and platform polish
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - icons, menus, About panel, and packaged output are polished
 

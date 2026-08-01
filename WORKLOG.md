@@ -340,3 +340,27 @@ npm test           # 84/84 passing (7 new pane transition tests)
 npm run build      # JS — passes
 npm test           # 119/119 passing (10 new session-restore tests)
 ```
+
+## Session: 2026-08-01 — Code review cleanup, stale code removal, docs/board updates
+
+### Changes
+
+1. **Deleted 1,034 lines of stale Electron code** — `src/main/main.js` and `src/main/preload.js`  
+   The app runs on Tauri. These files were dead code with `chokidar`, `electron-updater`, and `require()` calls.
+
+2. **Updated README.md** — Fixed stale note about PDF export being deferred (it's implemented via Tauri backend)
+
+3. **Updated AGENTS.md** — Added `panels.js` to project structure, fixed index.js description
+
+4. **Added CHANGELOG.md** (Task 8.4) — Covers pivot from Fjordmark→Rista, all major features
+
+5. **Added 10 history tests** — `tests/history.test.js`: `relativeTime` (just now, 1m, 5m, 1h, 3h, 1d, 7d+) and `formatSize` (B, KB, MB)
+
+6. **Updated PROJECT-BOARD.md** — 30 tasks now marked Done based on verified current state. Remaining backlog: perf benchmarks, lazy rendering, visual QA, templates, WYSIWYG hardening, UI polish — all need running app or subjective QA.
+
+### Build Status
+
+```bash
+npm run build      # JS — passes
+npm test           # 129/129 passing (10 new history tests)
+```
