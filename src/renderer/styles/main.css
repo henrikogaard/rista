@@ -1856,8 +1856,11 @@ body.is-resizing-sidebar .sidebar-resizer::before {
 }
 .workspace-tabs__empty {
   font-size: 11px;
-  color: var(--text2);
+  color: var(--text3);
   white-space: nowrap;
+  padding: 4px 12px;
+  font-style: italic;
+  opacity: 0.7;
 }
 .workspace-pane__empty {
   flex: 1;
@@ -2767,6 +2770,37 @@ body.is-resizing-split .workspace-resizer::before {
     var(--surface-bg-1);
   box-shadow: 0 24px 70px rgba(0,0,0,0.34), inset 0 1px 0 var(--surface-edge);
   backdrop-filter: blur(calc(var(--surface-blur) * 0.9));
+}
+
+/* ── Empty state surfaces ── */
+.editor-empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  padding: 32px;
+  color: var(--text2);
+  font-size: 12px;
+  text-align: center;
+  user-select: none;
+}
+.editor-empty-state__kicker {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.editor-empty-state__action {
+  color: var(--accent-hi);
+  cursor: default;
+  transition: color 0.1s;
+}
+.editor-empty-state__action:hover,
+.editor-empty-state__action:focus-visible {
+  color: var(--text1);
 }
 
 .welcome__start {

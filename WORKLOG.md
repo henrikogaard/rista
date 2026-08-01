@@ -464,3 +464,34 @@ npm test           # 139/139 passing
 npm run build      # JS — passes
 npm test           # 166/166 passing (6 new benchmark, 13 new smoke, 8 new theme tests)
 ```
+
+## Session: 2026-08-01 — Code review fixes, lazy rendering, polish improvements
+
+### Changes
+
+1. **Code review — import cleanup** — Merged duplicate `getTheme`/`toggleTheme` imports and `state`/`getFocusedTab` imports in index.js. Moved initialization functions after all imports for clarity.
+
+2. **Task 2.5 — Lazy render deep folders** — Added `LAZY_RENDER_DEPTH = 3` constant. Folders deeper than 3 levels defer child rendering until first expansion.
+
+3. **Task 2.6 — Watcher batching** — Added explanatory comment on `scheduleTreeRefresh()` debounce that already batches watcher events.
+
+4. **Task 7.2 — Focus-visible states** — Added `:focus-visible` outline styling for `.tree-file` and `.tree-folder` for keyboard navigation.
+
+5. **Task 7.4 — Empty state CSS** — Added `.editor-empty-state` surface styles (kicker, action links). Refined `.workspace-tabs__empty` with italic style, padding, and reduced opacity.
+
+6. **PROJECT-BOARD.md** — Tasks 2.5, 2.6 marked Done.
+
+### Remaining (needs running app / subjective QA)
+
+- Issue #63: Epic refocus (needs visual design decisions)
+- Issue #62: Nordic identity (needs subjective QA on every surface)
+- Issue #59: Feel like welcome screen (needs GUI comparison)
+- Issue #42: Reference themes (needs visual tuning)
+- Issue #52: Table editing (code + CSS already implemented)
+- Tasks 6.1, 6.2, 6.5, 7.5: WYSIWYG hardening, dual-pane, branding polish
+
+### Build Status
+```bash
+npm test           # 166/166 passing
+npm run build      # passes
+```

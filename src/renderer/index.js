@@ -5,8 +5,7 @@ import { applySettings, getSettings } from './settings.js'
 import { initKeybindings } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
-import { state, getFocusedEditor } from './state.js'
-import { getFocusedTab } from './state.js'
+import { state, getFocusedEditor, getFocusedTab } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
 import { createNoteFromSelection } from './link-index.js'
@@ -35,16 +34,6 @@ import { registerAiReviewCallbacks } from './ai-review.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
 import { buildShell, registerShellCallbacks, toggleSettingsPanel, toggleAppTheme, applySelectedAppIcon, syncSettingsForm } from './shell.js'
-
-function getInitialFolderPath() {
-  const injected = window.__RISTA_INITIAL_FOLDER__
-  return typeof injected === 'string' && injected ? injected : null
-}
-
-function getInitialFilePath() {
-  const injected = window.__RISTA_INITIAL_FILE__
-  return typeof injected === 'string' && injected ? injected : null
-}
 
 // ── Workspace (pane layout, editor mounting, toggles) ────────────
 import {
