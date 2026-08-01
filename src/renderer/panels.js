@@ -17,15 +17,12 @@ import { getLinkIndex, onLinkIndexChange } from './link-index.js'
 import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon, wikiQualityIcon, relatedNotesIcon } from './icons.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel } from './ai-chat.js'
-import { state, featureEnabled } from './state.js'
-import { getFocusedTab } from './state.js'
+import { state, $, featureEnabled, getFocusedTab, fileName } from './state.js'
 
-import { $ } from './state.js'
-
-export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSurface, createDailyNote, collapseAllFolders, openFolderPath }) {
+export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSurface, createDailyNote, collapseAllFolders, openFolder }) {
   const rerenderGraphFromIndex = () => {
     setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
-    renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
+    renderGraph(getLinkIndex(), (path) => openFile({ path, name: fileName(path) }))
   }
 
   // ── File explorer (left sidebar, always active) ──────────────
@@ -119,6 +116,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
     title: 'Outline',
     icon: outlineIcon(),
     flex: 1,
+    defaultActive: true,
     build: buildOutlinePanel,
     onMount: mountOutlinePanel,
     onUnmount: () => {},

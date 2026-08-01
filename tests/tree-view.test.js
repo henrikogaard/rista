@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..')
 
 async function importModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/tree-view.js'), 'utf8')
-  const modulePath = path.join(root, `.tmp-tree-view-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const modulePath = path.join(root, 'src/renderer', `.tmp-tree-view-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   // Polyfill document for module
   const wrapped = `
 globalThis.document = { 

@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..')
 
 async function importMarkdownModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/markdown.js'), 'utf8')
-  const modulePath = path.join(root, `.tmp-markdown-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const modulePath = path.join(root, 'src/renderer', `.tmp-markdown-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   fs.writeFileSync(modulePath, source)
   try {
     return await import(`file://${modulePath}`)

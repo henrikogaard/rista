@@ -1,4 +1,4 @@
-import { state, $, getFocusedTab } from './state.js'
+import { state, $, getFocusedTab, escapeHtml } from './state.js'
 
 // ── Terminal Drawer ──────────────────────────────────────────────
 // A compact workspace shell for running project commands.
@@ -376,10 +376,4 @@ const ANSI_CLASS_MAP = {
   90: 'ansi-fg-gray',
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+

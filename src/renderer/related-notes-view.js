@@ -1,10 +1,8 @@
-import { getFocusedTab } from './state.js'
+import { state, $, getFocusedTab, escapeHtml, fileName } from './state.js'
 import { getLinkIndex } from './link-index.js'
 import { buildSemanticIndex, findRelatedNotes } from './semantic-index.js'
-import { state } from './state.js'
 import { getSettings } from './settings.js'
 
-import { $ } from './state.js'
 let _openFile = null
 
 export function buildRelatedNotesPanel() {
@@ -69,7 +67,7 @@ export function handleRelatedNotesPanelEvent(event) {
   event.preventDefault()
   const path = row.dataset.path
   if (!path) return
-  _openFile?.({ path, name: path.split(/[/\\]/).pop() })
+  _openFile?.({ path, name: fileName(path) })
 }
 
 function renderStatus(index) {
@@ -100,13 +98,7 @@ function renderRelatedNote(item) {
   `
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+
 
 function escapeAttribute(value) {
   return escapeHtml(value).replace(/'/g, '&#39;')

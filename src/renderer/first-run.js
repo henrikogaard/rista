@@ -37,7 +37,7 @@ Toggle between **Edit**, **Split**, and **Preview** using the buttons in the too
 _This file lives at \`~/Documents/Rista/welcome.md\`. Feel free to edit or delete it._
 `
 
-export async function ensureFirstRunSample(openSingleFilePath) {
+export async function ensureFirstRunSample() {
   if (!window.fjord || localStorage.getItem('rista-onboarded')) return
   localStorage.setItem('rista-onboarded', '1')
   try {
@@ -50,6 +50,9 @@ export async function ensureFirstRunSample(openSingleFilePath) {
     if (!existing) {
       await window.fjord.writeFile(samplePath, FIRST_RUN_SAMPLE)
     }
-    await openSingleFilePath(samplePath)
+    // Deliberately do NOT open the sample: the welcome screen (with its
+    // "Open folder…" CTA) stays visible on first run. Opening it as a single
+    // file collapses the sidebar and hides the chrome a new user needs.
+    // The sample still exists so opening ~/Documents/Rista shows content.
   } catch (_) { /* non-fatal — empty state is fine */ }
 }

@@ -590,3 +590,262 @@ npm run build      # passes
 cargo check        # passes
 cargo clippy       # clean
 ```
+
+## Session: 2026-08-01 — fix blank-screen boot crash (code review of landed changes)
+
+### Problem
+App launched to a blank screen. `npm run build` passed and 216/216 tests passed,
+so the failure was a runtime boot exception, not a build error.
+
+### Root cause (two stacked ReferenceErrors, in boot order)
+
+1. **`openFolder is not defined`** — `eb22253` (panel extraction) created
+   `initPanels()` in `panels.js` destructuring `openFolderPath`, but its body
+   passes `openFolder` to `registerFileExplorerCallbacks()` (used by the File
+   explorer "Open Folder" button). `openFolder` is neither a parameter nor an
+   import — free variable → ReferenceError during `initPanels()`, which runs
+   *before* `buildShell()` → `#root` never populated.
+
+2. **`getInitialFolderPath is not defined`** — `1985d43` deleted the
+   `getInitialFolderPath()` / `getInitialFilePath()` local helpers from
+   `index.js` but kept the callsites at boot. Rust still injects
+   `window.__RISTA_INITIAL_FOLDER__` / `__RISTA_INITIAL_FILE__` via
+   `initialization_script` (main.rs:568/573), so the helpers were load-bearing.
+
+### Fix
+- `panels.js`: destructure `openFolder` instead of the unused `openFolderPath`
+  (matches the pre-refactor `registerFileExplorerCallbacks({ openFolder, ... })`
+  contract).
+- `index.js`: pass `openFolder` into `initPanels(...)`.
+- `index.js`: restore the two initial-path helpers.
+
+### Verification
+- Reproduced in headless Chromium against `dist/app` with the dev mock:
+  before fix → `#root` empty + `ReferenceError: openFolder is not defined`;
+  after fix → full shell renders (sidebar, editor, statusbar present), no page
+  errors.
+- Audited all dead-export removal commits (3b41e2f, ae1d602, b7a440a, 41eb8e3,
+  143dbf4, 9d83e92, 375c01e) — no other removed exports are still referenced.
+- `npm test` 216/216, `npm run build` passes.
+
+### Gap
+The smoke tests only assert module exports/file contents; nothing executes
+`initPanels()` or the boot sequence, so both ReferenceErrors shipped green.
+A boot smoke test that runs the bundle in a DOM (the dev harness exists in
+`.claude/devharness/`) would have caught these.
+
+## Session: 2026-08-01 — first-run chrome defaults, boot smoke test, toolbar consolidation
+
+### Problem
+After the blank-screen fix, the "declutter" UI defaults (PR #67) made the app
+hard to use for new users: toolbar hidden by default, right sidebar had no
+default widget, and first-run auto-opened the sample file as a single file
+which collapsed the sidebar.
+
+### Changes
+
+1. **P0 — first-run chrome defaults**
+   - `state.js`: `toolbarVisible: true` (was `false`)
+   - `right-panel.js`: `RIGHT_SIDEBAR_DEFAULT_WIDGET = 'outline'` (was `null`),
+     bumped `SIDEBAR_LAYOUT_VERSION` to 2 with a migration that restores
+     outline when the right rail is empty
+   - `panels.js`: outline widget registered `defaultActive: true`
+   - `first-run.js` / `index.js`: first run now keeps the welcome screen
+     visible (creates the sample file but does NOT auto-open it as a single
+     file, which previously collapsed the sidebar)
+
+2. **P1 — boot smoke test** (`tests/boot-exec.test.js`)
+   - Bundles the current renderer in-memory (esbuild) and executes it in a Node
+     VM with a stub DOM, asserting `#root` is populated and the shell renders.
+   - Verified it catches the exact regression class: reintroducing the
+     `openFolder is not defined` bug fails the test with the same ReferenceError
+     that caused the blank screen.
+
+3. **P2 — onboarding polish**
+   - `preview.js` / `main.css`: empty-state statusbar shows
+     "No file open — ⌘K to open" hint
+   - `index.js`: `updateActiveMetrics()` called at boot so the hint renders
+     without waiting for a file
+   - Empty right-rail: already handled (container collapses when no widgets);
+   P0.2's outline default means the rail is populated at boot.
+
+4. **P3 — toolbar consolidation**
+   - `workspace.js`: new `applyToolbarVisibility(pane)` is the single source of
+     truth for `.workspace-toolbar`/`.workspace-pane-row` visibility; both
+     `syncWorkspaceUi` and `toggleToolbar` route through it (they previously
+     fought: inline styles vs `.hidden` class, and the toolbar ignored
+     `toolbarVisible` while the pane-row respected it).
+
+### Verification
+- `npm test` 217/217 passing (216 + boot-exec)
+- `npm run build` clean
+- Headless-browser repro: welcome screen + sidebar visible + outline active +
+  statusbar hint on first run; toolbar visible (40px flex) when a file opens
+- Packaged + installed to /Applications, launched with cleared app data:
+  AX tree shows welcome screen, FILES sidebar with "Open folder…", OUTLINE
+  widget, "No file open — ⌘K to open" hint — no blank screen
+
+### Follow-up: dead settings gear (found during UI/UX assessment)
+- `shell.js`: `performGlobalControl()` was an empty function — the statusbar
+  settings gear (`#settings-btn`) did nothing on click (pointerdown → empty
+  handler). Settings only opened via ⌘, or the app menu. Wired it to
+  `toggleSettingsPanel()`; verified open/close in browser repro.
+- Also confirmed dead `#toolbar-toggle` / `#sidebar-toggle` lookups in
+  workspace.js (no such elements exist — harmless null-safe no-ops, but the
+  View-menu items remain the real toggle path).
+
+## Session: 2026-08-01 — UI/UX polish pass (assessment follow-up)
+
+### Changes
+
+1. **Statusbar toggle buttons** — sidebar / toolbar / right-sidebar now have
+   on-canvas affordances in the statusbar (previously only View-menu +
+   keyboard shortcuts). Rendered in shell.js with the ids the existing sync
+   functions already target (`#sidebar-toggle`, `#toolbar-toggle`,
+   `#right-sidebar-toggle`), wired through `performGlobalControl`, and synced
+   at boot via `syncAppToggleButtons`. `toggleSidebar` now also sets the
+   `active` class (was aria-pressed only).
+
+2. **Spacing token scale** — introduced `--space-1..32` on `:root` and
+   migrated all 504 padding/margin + 147 gap values to tokens (no more raw px
+   rhythm). Verified byte-identical computed styles pre/post migration in a
+   headless browser (padding/margin/gap/font-size/height all matched).
+   Fixed 2 negatives the migration mangled (`-var(--space-N)` →
+   `calc(-1 * var(--space-N))`); updated ui-contract test assertion.
+
+3. **Toolbar state single source** — removed the build-time `hidden` class
+   bake from `renderEditorToolbar`/pane-row; `applyToolbarVisibility` (run by
+   `syncWorkspaceUi` after every mount) is now the only place the class is set.
+
+4. **Overlay AX hygiene** — closed settings/command-dialog overlays and
+   panels now get `visibility: hidden` (with a transition delay so the fade
+   still works), so closed overlays leave the accessibility tree.
+
+5. **Type floor** — all 7 sub-10px fonts (9px ×7, 8px ×1) raised to 10px.
+
+### Verification
+- 217/217 tests, build clean
+- Headless repro: computed styles identical pre/post token migration; all 3
+  toggle buttons render, light up, and toggle their surfaces (sidebar
+  collapse/restore, toolbar, right outline); closed overlays visibility:hidden,
+  open -> visible
+- Packaged + reinstalled /Applications/Rísta.app, launches clean
+
+## Session: 2026-08-01 — P1-P5 codebase cleanup
+
+### P1 — escapeHtml extraction
+- Added shared `escapeHtml` (5-entity version) to state.js; removed 16 local
+  copies across renderer modules. The 3-replace local variants under-escaped
+  quotes — the shared version is safe in text + attribute contexts.
+- Fixed test harnesses that wrote temp modules to repo root (benchmark,
+  markdown-render, keybindings, tree-view, word-goals, session-restore,
+  ui-contract) to write inside src/renderer so relative imports resolve.
+  bookmarks.test.js got a fileName shim.
+
+### P2 — orphaned popover pipeline removed
+- `renderStatsPopover` / `renderTocPopover` / `updateCursorStatus` +
+  `onEditorSelectionChange` wrote into `#stats-content` / `#toc-content` /
+  `#st-cursor` — elements that no longer exist (old insights panel replaced
+  by the outline widget). Removed functions, the CodeMirror onSelectionChange
+  wiring, and ~150 lines of dead CSS (.insights-*, .stats-grid, .stat-card,
+  .popover/.pop-tabs, .toc-*, .tab-bar).
+- Also removed a pre-existing selector-less CSS fragment (`color: var(--text1);`)
+  that was in HEAD.
+
+### P3 — filename/path helpers centralized
+- Added `fileName(path)` + `stripMarkdownExtension(name)` to state.js;
+  migrated ~35 call sites (split(/[/\\]/).pop() and .replace(/\.md$/i, ''))
+  across 20 modules. Removed local basename helpers in graph-view/publish.
+- Fixed 4 regex-mangled lines from the migration (markdown, semantic-index,
+  attachment-preview, calendar-view, export-docx, tabs) and consolidated
+  duplicate `./state.js` imports in 9 files.
+
+### P4 — rightWidgets Set: non-issue
+- Verified `state.rightWidgets` is lazily created as a Set by
+  ensureStateShape() — all 30+ usages are Set-safe (.has/.add/.delete/clear).
+  No change needed; earlier assessment was wrong.
+
+### P5 — resize loop dedup + other claims
+- Extracted shared `startDragResize` into state.js; both sidebar resizers
+  (tabs.js left, right-panel.js right) now delegate to it (~40 lines of
+  duplicated pointer/rAF logic removed). Verified drag works in browser repro.
+- `syncWorkspaceChrome` vs `syncFolderUi` and `getActiveWidgetIdsForSide`
+  were already correctly separated — non-issues.
+
+### Verification
+- 217/217 tests (2 test files updated for the new architecture)
+- Build clean; browser repro boots with welcome screen, outline widget,
+  toggle buttons, statusbar hint, zero page errors; simulated sidebar drag
+  updates --sidebar-width 220->350px and cleans up
+- Packaged + reinstalled /Applications/Rísta.app, launches clean
+
+## Session: 2026-08-01 — Obsidian-style structure + Octarine warm accent preset
+
+User asked how to make the UI look better (references: Obsidian, Octarine).
+Chose "Both (structure + accent preset)".
+
+### Changes
+
+1. **File tree structure (Obsidian-style)**
+   - New `markdownFileIcon()` in icons.js; tree rows now show a document
+     glyph instead of the plain dot (`tree-file__dot` → `tree-file__icon`),
+     tinted with the accent on active rows.
+   - Nested folder levels get a subtle vertical indent guide via
+     `.tree-children::before` (border under the chevron column).
+
+2. **Outline empty state**
+   - "No note open" / "No headings" now show an icon above the text
+     (`.outline-view__empty-icon`), centered.
+
+3. **Octarine-style warm accent presets**
+   - `ember` (dark): warm amber `#e0933c` accent on warm dark browns.
+   - `ember-paper` (light): warm `#c07a2d` accent on warm paper.
+   - Both appear automatically in Settings → Appearance (preset picker reads
+     THEME_PRESETS); added matching `settings-swatch--ember*` swatch classes.
+
+### Verification
+- 217/217 tests, build clean
+- Browser repro: tree renders 13px file icons with correct tint, indent guide
+  container present, Ember accent `#e0933c` applies to root, both swatches
+  show warm colors, presets visible in Settings
+- Packaged + reinstalled /Applications/Rísta.app
+
+### Follow-up: visible UI changes + black-window root cause
+- Black window root cause: stale embedded assets — `tauri::generate_context!()`
+  embeds dist/app at Rust compile time; cargo's incremental cache didn't
+  re-run the macro with new dist content. Fixed with a clean rebuild
+  (`rm -rf target/release/build/rista-*` + cargo build), repackage, reinstall.
+- Folder rows now render a folder icon + chevron (previously chevron only) —
+  the most visible Obsidian signature alongside the file icons.
+- Note: most UI polish is subtle; the warm Ember preset is opt-in via
+  Settings → Appearance → Dark preset.
+
+## Session: 2026-08-02 — Obsidian/Octarine visual overhaul (default warm theme)
+
+User asked for a look "nearly identical to Octarine/Obsidian" while keeping
+all features/functionality. Changes are visual-only:
+
+1. **Ember is now the default theme** — DEFAULT_SETTINGS darkThemePreset
+   `'ember'` (warm amber accent #e0933c), lightThemePreset `'ember-paper'`.
+   The app now boots warm by default, no opt-in needed.
+
+2. **Warm-tuned all chrome tokens** — borders, hover/active fills, quiet
+   borders, tab shadows, and 100+ scattered white-based fills changed from
+   cold `rgba(255,255,255,N)` to warm `rgba(255,238,214,N)` (a single sed
+   pass, 0 cold whites remain). Light-theme overrides untouched.
+
+3. **Folder count badges** — tree folders now show child counts
+   (Octarine's "Newsletter (6)" pattern) via `.tree-folder__count`.
+
+4. **Folder icons** — tree folders render a folder icon + chevron
+   (previously chevron only), matching Obsidian's folder glyphs.
+
+5. Pane separation + tab active states already existed (accent top-bar,
+   tinted active tab); now warm-tinted to match.
+
+### Verification
+- 217/217 tests, build clean
+- Browser repro: default accent #e0933c, bg0 #14100c, warm border
+  rgba(255,238,214,0.07), folder count badge renders, folder + file icons
+  present, zero page errors
+- Packaged + installed /Applications/Rísta.app, launches clean

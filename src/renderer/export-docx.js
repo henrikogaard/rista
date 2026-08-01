@@ -1,5 +1,5 @@
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx'
-import { getFocusedTab } from './state.js'
+import { getFocusedTab, stripMarkdownExtension } from './state.js'
 
 export async function exportToDocx() {
   const tab = getFocusedTab()
@@ -52,7 +52,7 @@ export async function exportToDocx() {
   }
   const base64 = btoa(binary)
 
-  const fileName = tab.name.replace(/\.md$/, '')
+  const fileName = stripMarkdownExtension(tab.name)
   await window.fjord.saveDocx(base64, fileName)
 }
 

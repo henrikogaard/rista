@@ -1,3 +1,5 @@
+import { markdownFileIcon, folderIcon } from './icons.js'
+
 const TREE_ROOT_INDENT = 8
 const TREE_DEPTH_INDENT = 10
 const TREE_FILE_INDENT = 20
@@ -35,9 +37,10 @@ export function renderFileTree({
       folder.title = item.name
       folder.dataset.path = item.path
       folder.dataset.type = 'folder'
-      folder.innerHTML = `<svg viewBox="0 0 6 10"><path d="M1 1l4 4-4 4" stroke-width="1.5" stroke="currentColor" fill="none" stroke-linecap="round"/></svg>${item.name}`
+      folder.innerHTML = `<span class="tree-folder__chevron"><svg viewBox="0 0 6 10"><path d="M1 1l4 4-4 4" stroke-width="1.5" stroke="currentColor" fill="none" stroke-linecap="round"/></svg></span><span class="tree-folder__icon">${folderIcon()}</span><span class="tree-folder__name">${item.name}</span>${item.children?.length ? `<span class="tree-folder__count">${item.children.length}</span>` : ''}`
 
       const children = document.createElement('div')
+      children.className = 'tree-children'
       children.style.display = isOpen ? 'block' : 'none'
       if (isOpen || depth < LAZY_RENDER_DEPTH) {
         if (item.children) {
@@ -95,7 +98,7 @@ export function renderFileTree({
     file.dataset.type = 'file'
     file.style.paddingLeft = `${TREE_FILE_INDENT + depth * TREE_DEPTH_INDENT}px`
     file.title = item.path
-    file.innerHTML = `<div class="tree-file__dot"></div>${item.name}`
+    file.innerHTML = `<span class="tree-file__icon">${markdownFileIcon()}</span>${item.name}`
     file.classList.toggle('active', activePaths.has(item.path))
     let clickTimer = null
     file.addEventListener('click', () => {

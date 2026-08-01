@@ -1,4 +1,4 @@
-import { state } from './state.js'
+import { state, fileName } from './state.js'
 import { searchFiles, rebuildLinkIndex } from './link-index.js'
 import { refreshTree } from './tabs.js'
 
@@ -140,7 +140,7 @@ export const TOOLS = [
       for (const tab of state.tabs) {
         if (tab.path === src) {
           tab.path = dst
-          tab.name = dst.split(/[/\\]/).pop()
+          tab.name = fileName(dst)
         }
       }
       await refreshTree()

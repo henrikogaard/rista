@@ -1,7 +1,7 @@
 import { collectFolderPaths, renderFileTree, highlightTreeFiles } from './tree-view.js'
 import { updateEditorDoc } from './editor.js'
 import { markFileSwitchStart, markFileSwitchDone } from './perf-budget.js'
-import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, saveTimers, draggedTab, setDraggedTab, getTabForPane, setTabForPane, getFocusedTab, getGroupTabs, addTabToPane, removeTabFromPane, getTabPane, isTabOpenAnywhere, cleanSplitSnapshot, storeSplitSnapshot } from './state.js'
+import { state, $, el, PANE_KEYS, editorViews, richEditors, syncingRichEditor, saveTimers, draggedTab, setDraggedTab, getTabForPane, setTabForPane, getFocusedTab, getGroupTabs, addTabToPane, removeTabFromPane, getTabPane, isTabOpenAnywhere, cleanSplitSnapshot, storeSplitSnapshot, fileName, stripMarkdownExtension, startDragResize } from './state.js'
 import { refreshPreview, updateActiveMetrics, exportToPdf } from './preview.js'
 import { getSettings, updateSetting } from './settings.js'
 import { attachWelcomeProjectHandlers, buildWelcome, syncWorkspaceChrome } from './shell.js'
@@ -106,7 +106,7 @@ async function tryRestoreSession() {
     try {
       const content = await window.fjord.readFile(saved.path)
       if (content !== null && content !== undefined) {
-        const tab = { path: saved.path, name: saved.path.split('/').pop(), content, dirty: false, pinned: saved.pinned || false }
+        const tab = { path: saved.path, name: fileName(saved.path), content, dirty: false, pinned: saved.pinned || false }
         state.tabs.push(tab)
         addTabToPane(tab, 'primary')
       }
@@ -256,7 +256,7 @@ async function createFileInFolder(folderPath) {
     placeholder: 'untitled',
   })
   if (!name) return
-  const sanitized = sanitizeTreeName(name).replace(/\.md$/i, '')
+  const sanitized = stripMarkdownExtension(sanitizeTreeName(name))
   if (!sanitized) return
   const filePath = `${folderPath}/${sanitized}.md`
   try {
@@ -451,38 +451,16 @@ export function highlightActiveFile() {
 
 export function startSidebarResize(event) {
   if (state.sidebarVisible === false) return
-  event.preventDefault()
-  const resizer = $('sidebar-resizer')
-  document.body.classList.add('is-resizing-sidebar')
-  resizer?.setPointerCapture?.(event.pointerId)
-  let pendingWidth = getSettings().sidebarWidth
-  let frame = 0
-
-  const applyWidth = () => {
-    frame = 0
-    document.documentElement.style.setProperty('--sidebar-width', `${pendingWidth}px`)
-  }
-
-  const onMove = moveEvent => {
-    pendingWidth = Math.min(420, Math.max(180, moveEvent.clientX))
-    if (!frame) frame = requestAnimationFrame(applyWidth)
-  }
-
-  const onUp = () => {
-    if (frame) {
-      cancelAnimationFrame(frame)
-      applyWidth()
-    }
-    updateSetting('sidebarWidth', pendingWidth)
-    document.body.classList.remove('is-resizing-sidebar')
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-    window.removeEventListener('pointercancel', onUp)
-  }
-
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-  window.addEventListener('pointercancel', onUp)
+  startDragResize(event, {
+    min: 180,
+    max: 420,
+    initial: getSettings().sidebarWidth,
+    bodyClass: 'is-resizing-sidebar',
+    captureTarget: $('sidebar-resizer'),
+    computeWidth: moveEvent => moveEvent.clientX,
+    setWidth: px => document.documentElement.style.setProperty('--sidebar-width', `${px}px`),
+    onCommit: px => updateSetting('sidebarWidth', px),
+  })
 }
 
 // ── Open folder ──────────────────────────────────────────────────
@@ -538,7 +516,7 @@ export async function openSingleFilePath(filePath) {
   syncFolderUi()
   syncWorkspaceChrome()
   await window.fjord.watchFolder?.(parentPath(filePath))
-  const name = filePath.split(/[\\/]/).pop()
+  const name = fileName(filePath)
   await openFile({ path: filePath, name })
   const sidebar = $('sidebar')
   if (sidebar) sidebar.classList.add('collapsed')
@@ -1054,7 +1032,7 @@ export function handleAppCommand(command, data) {
   if (command === 'view:quick-open') _callbacks.openQuickOpen?.()
   if (command === 'view:settings') _callbacks.toggleSettings?.()
   if (command === 'file:open' && data?.path) {
-    const name = data.path.split('/').pop()
+    const name = fileName(data.path)
     if (state.folderPath) openFile({ path: data.path, name })
     else openSingleFilePath(data.path)
   }

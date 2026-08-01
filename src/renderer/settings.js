@@ -158,6 +158,17 @@ export const THEME_PRESETS = {
       amber: '#c49250',
       atmosphere: { ambientIntensity: 46, surfaceOpacity: 83, surfaceBlur: 20 },
     },
+    {
+      value: 'ember',
+      label: 'Ember',
+      bg: ['#14100c', '#1b1611', '#231c15', '#2c231a', '#392d21', '#48392a'],
+      text: ['#ece3d6', '#a89881', '#6e5f4c'],
+      accent: '#e0933c',
+      green: '#7fa25c',
+      red: '#c05d4a',
+      amber: '#d98f3e',
+      atmosphere: { ambientIntensity: 44, surfaceOpacity: 84, surfaceBlur: 20 },
+    },
   ],
   light: [
     {
@@ -248,6 +259,17 @@ export const THEME_PRESETS = {
       amber: '#92773a',
       atmosphere: { ambientIntensity: 26, surfaceOpacity: 90, surfaceBlur: 14 },
     },
+    {
+      value: 'ember-paper',
+      label: 'Ember Paper',
+      bg: ['#f0e9df', '#e9e0d2', '#ddd0bd', '#cdbda4', '#b6a285', '#a28c6d'],
+      text: ['#241d15', '#574a38', '#97876f'],
+      accent: '#c07a2d',
+      green: '#6f8f52',
+      red: '#a85a48',
+      amber: '#b5742f',
+      atmosphere: { ambientIntensity: 30, surfaceOpacity: 90, surfaceBlur: 16 },
+    },
   ],
 }
 
@@ -290,8 +312,8 @@ export const DEFAULT_SETTINGS = {
   typewriterScrolling: false,
   spellcheck: false,
   vimMode: false,
-  darkThemePreset: 'nordic-night',
-  lightThemePreset: 'nordic-paper',
+  darkThemePreset: 'ember',
+  lightThemePreset: 'ember-paper',
   autoSaveDelay: 800,
   tabIndentation: 'spaces',
   indentWidth: 2,

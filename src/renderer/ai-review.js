@@ -1,4 +1,4 @@
-import { state } from './state.js'
+import { state, fileName } from './state.js'
 
 const _items = []
 const _listeners = new Set()
@@ -179,6 +179,6 @@ export function openAiReviewItem(itemId) {
   if (!targetPath) return
   _openFile({
     path: targetPath,
-    name: targetPath.split(/[/\\]/).pop(),
+    name: fileName(targetPath),
   })
 }

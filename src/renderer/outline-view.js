@@ -1,14 +1,7 @@
 import { extractHeadings } from './markdown.js'
-import { state, editorViews, getFocusedTab } from './state.js'
+import { state, $, editorViews, getFocusedTab, escapeHtml } from './state.js'
+import { outlineIcon } from './icons.js'
 
-import { $ } from './state.js'
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
 
 let _cachedHeadings = []
 let _activeLine = null
@@ -27,12 +20,12 @@ export function renderOutline() {
   const tab = getFocusedTab()
   if (!tab) {
     _cachedHeadings = []
-    body.innerHTML = `<div class="outline-view__empty">No note open</div>`
+    body.innerHTML = `<div class="outline-view__empty"><span class="outline-view__empty-icon">${outlineIcon()}</span><span>No note open</span></div>`
     return
   }
   _cachedHeadings = extractHeadings(tab.content || '')
   if (_cachedHeadings.length === 0) {
-    body.innerHTML = `<div class="outline-view__empty">No headings in this note</div>`
+    body.innerHTML = `<div class="outline-view__empty"><span class="outline-view__empty-icon">${outlineIcon()}</span><span>No headings in this note</span></div>`
     return
   }
   const minLevel = Math.min(..._cachedHeadings.map(h => h.level))

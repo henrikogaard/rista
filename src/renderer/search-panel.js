@@ -1,4 +1,4 @@
-import { state, $ } from './state.js'
+import { state, $, escapeHtml, fileName } from './state.js'
 import { getSettings } from './settings.js'
 import { getLinkIndex, searchFiles } from './link-index.js'
 import { buildSemanticIndex, searchSemanticIndex } from './semantic-index.js'
@@ -234,7 +234,7 @@ function searchIndexFooter() {
 function buildOpenTarget(result) {
   if (!result) return null
   const path = result.path
-  const name = result.name || path?.split(/[/\\]/).pop()
+  const name = result.name || fileName(result.path)
   if (result.heading && Number.isFinite(Number(result.line)) && Number(result.line) > 0) {
     return {
       path,
@@ -250,12 +250,7 @@ function scrollSelectedIntoView() {
   if (selected) selected.scrollIntoView({ block: 'nearest' })
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
+
 
 function escapeAttr(text) {
   return String(text)

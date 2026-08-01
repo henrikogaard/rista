@@ -20,7 +20,8 @@ const BENCHMARK_BUDGETS = {
 
 async function importMarkdownModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/markdown.js'), 'utf8')
-  const modulePath = path.join(root, `.tmp-bench-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  // Write inside src/renderer/ so relative imports (./state.js) resolve.
+  const modulePath = path.join(root, 'src/renderer', `.tmp-bench-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   fs.writeFileSync(modulePath, source)
   try {
     return await import(`file://${modulePath}`)

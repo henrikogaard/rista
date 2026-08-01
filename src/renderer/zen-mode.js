@@ -1,6 +1,4 @@
-import { state } from './state.js'
-
-import { $ } from './state.js'
+import { state, $ } from './state.js'
 let hintEl = null
 let fadeTimer = null
 

@@ -2,14 +2,7 @@ const STORAGE_KEY = 'rista-recent-projects'
 const PINNED_STORAGE_KEY = 'rista-pinned-projects'
 const MAX_RECENT = 10
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
+
 
 function projectName(folderPath) {
   return String(folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath
@@ -140,3 +133,5 @@ export function renderPinnedProjectsHtml({ empty = false } = {}) {
 
   return `<div class="pinned-list">${items}</div>`
 }
+
+import { escapeHtml } from './state.js'

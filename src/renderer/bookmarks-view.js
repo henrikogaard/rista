@@ -12,17 +12,11 @@ import {
 } from './bookmarks.js'
 import { showContextMenu } from './context-menu.js'
 
-import { $ } from './state.js'
+import { $, escapeHtml, fileName } from './state.js'
 let _openFile = null
 let _unsubscribe = null
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+
 
 export function setBookmarksOpenFile(fn) {
   _openFile = fn
@@ -96,7 +90,7 @@ function onItemClick(event) {
     removeBookmark(path)
     return
   }
-  _openFile?.({ path, name: path.split('/').pop() })
+  _openFile?.({ path, name: fileName(path) })
 }
 
 function onContextMenu(event) {
@@ -114,7 +108,7 @@ function onContextMenu(event) {
       ...groups.map(g => ({ label: g.name, action: () => moveBookmarkToGroup(path, g.id) })),
     ]
     showContextMenu(event.clientX, event.clientY, [
-      { label: 'Open', action: () => _openFile?.({ path, name: path.split('/').pop() }) },
+      { label: 'Open', action: () => _openFile?.({ path, name: fileName(path) }) },
       { label: 'Move Up', action: () => moveBookmark(path, 'up') },
       { label: 'Move Down', action: () => moveBookmark(path, 'down') },
       { label: 'Move to Group…', submenu: moveSubmenu },
@@ -165,7 +159,7 @@ export function mountBookmarksPanel() {
     const item = event.target.closest('.bookmark-item')
     if (!item) return
     event.preventDefault()
-    _openFile?.({ path: item.dataset.path, name: item.dataset.path.split('/').pop() })
+    _openFile?.({ path: item.dataset.path, name: item.dataset.fileName(path) })
   })
 
   const footer = document.querySelector('.bookmarks-view__footer')

@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { homeDir } from '@tauri-apps/api/path'
+import { fileName } from './state.js'
 
 const commandListeners = new Set()
 
@@ -16,10 +17,6 @@ function emitCommand(command, extra = {}) {
 function ensureMdPath(path) {
   if (!path) return path
   return /\.(md|markdown)$/i.test(path) ? path : `${path}.md`
-}
-
-function fileName(path) {
-  return String(path || '').split(/[\\/]/).pop()
 }
 
 async function pickSavePath(defaultPath, filters) {

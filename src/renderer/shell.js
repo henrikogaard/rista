@@ -1,15 +1,14 @@
-import { state, $, settingsValue } from './state.js'
+import { state, $, settingsValue, PANE_KEYS, editorViews, richEditors, syncingRichEditor, fileName } from './state.js'
 import { buildRightPanelContainer } from './right-panel.js'
 import { buildTerminalDrawer } from './terminal-drawer.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, ASSISTANT_DOCK_OPTIONS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, closeIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, closeIcon, sidebarIcon, editorSplitIcon, rightSidebarIcon } from './icons.js'
 import { clearPreviewCache } from './preview.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
-import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
 import { showContextMenu } from './context-menu.js'
 import { renderPinnedProjectsHtml, renderRecentProjectsHtml, removeRecentProject, togglePinnedProject, unpinProject } from './recent-projects.js'
 import { PROVIDERS } from './ai-providers.js'
@@ -702,7 +701,7 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
-const GLOBAL_CONTROL_SELECTOR = '#settings-btn'
+const GLOBAL_CONTROL_SELECTOR = '#settings-btn, #sidebar-toggle, #toolbar-toggle, #right-sidebar-toggle'
 function handleWindowDragRegionMouseDown(event) {
   if (event.button !== 0) return
   if (event.target.closest('input, textarea, select, button, [role="button"], [data-action], a')) return
@@ -722,6 +721,20 @@ function handleGlobalControlPointerDown(event) {
 }
 
 function performGlobalControl(id) {
+  switch (id) {
+    case 'settings-btn': toggleSettingsPanel(); break
+    case 'sidebar-toggle': _callbacks.toggleSidebar?.(); syncAppToggleButtons(); break
+    case 'toolbar-toggle': _callbacks.toggleToolbar?.(); syncAppToggleButtons(); break
+    case 'right-sidebar-toggle': _callbacks.toggleRightSidebar?.(); syncAppToggleButtons(); break
+  }
+}
+
+// Keep the statusbar chrome toggles in sync with app state (boot + after toggles).
+// The right-sidebar button is synced by right-panel's syncRightPanelToggles() on
+// every renderSidebar(); sidebar/toolbar are synced here and by their own toggles.
+function syncAppToggleButtons() {
+  $('sidebar-toggle')?.classList.toggle('active', state.sidebarVisible)
+  $('toolbar-toggle')?.classList.toggle('active', state.toolbarVisible)
 }
 
 function handleGlobalControlKeydown(event) {
@@ -775,7 +788,7 @@ export function toggleAppTheme() {
 
 // ── File context menu ─────────────────────────────────────────────
 function showFileContextMenu(x, y, filePath, isFolder) {
-  const fileName = filePath.split('/').pop() || filePath.split('\\').pop()
+  const fileName = fileName(filePath)
   const items = []
 
   if (isFolder) {
@@ -857,6 +870,15 @@ export function buildShell() {
             </div>
             <div class="statusbar__controls">
               <div class="app-controls" id="app-controls" aria-label="Global controls">
+                <div class="theme-btn theme-btn--toggle" id="sidebar-toggle" title="Toggle Sidebar (⌘B)" aria-label="Toggle Sidebar" role="button" tabindex="0">
+                  ${sidebarIcon()}
+                </div>
+                <div class="theme-btn theme-btn--toggle" id="toolbar-toggle" title="Toggle Toolbar (⌘\)" aria-label="Toggle Toolbar" role="button" tabindex="0">
+                  ${editorSplitIcon()}
+                </div>
+                <div class="theme-btn theme-btn--toggle" id="right-sidebar-toggle" title="Toggle Outline (⌘⇧R)" aria-label="Toggle Outline" role="button" tabindex="0">
+                  ${rightSidebarIcon()}
+                </div>
                 <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
                   ${gearIcon()}
                 </div>
@@ -1134,6 +1156,7 @@ export function buildShell() {
   $('settings-panel').addEventListener('keydown', handleSettingsKeydown)
 
   _callbacks.syncToolbarToggle?.()
+  syncAppToggleButtons()
 
   // File explorer's Open / Collapse-all / file-tree click handlers are wired
   // by file-explorer-view.js on widget mount, since they live inside the

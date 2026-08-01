@@ -1,4 +1,4 @@
-import { state } from './state.js'
+import { state, fileName } from './state.js'
 
 const PREFIX = 'rista-bookmarks-'
 
@@ -94,7 +94,7 @@ export function addBookmark(path, name) {
   const list = load()
   // Don't duplicate
   for (const item of walk(list)) if (item?.type === 'file' && item.path === path) return
-  list.push({ id: makeId(), type: 'file', path, name: name || path.split('/').pop(), addedAt: Date.now() })
+  list.push({ id: makeId(), type: 'file', path, name: name || fileName(path), addedAt: Date.now() })
   _cached = list
   save()
 }

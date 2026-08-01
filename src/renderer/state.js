@@ -6,6 +6,65 @@ export const el = (tag, cls, html) => { const e = document.createElement(tag); i
 export const settingsValue = key => getSettings()[key]
 export const featureEnabled = key => getSettings()[key] || getSettings().showExperimental
 
+// Shared HTML escaping — used for any user-controlled text interpolated into
+// templates. The 5-entity version is safe in both text and attribute contexts.
+export function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// Shared path helpers — both slash directions, cross-platform.
+export function fileName(path) {
+  return String(path || '').split(/[\\/]/).pop() || ''
+}
+
+export function stripMarkdownExtension(name) {
+  return String(name || '').replace(/\.md$/i, '')
+}
+
+// Shared pointer-drag resize loop: rAF-throttled width apply, pointer capture,
+// move/up/cancel cleanup. Used by the left and right sidebar resizers.
+// opts: { min, max, initial, bodyClass, captureTarget, setWidth(px), onCommit(px) }
+export function startDragResize(event, opts) {
+  if (!opts || !opts.setWidth) return
+  event.preventDefault()
+  document.body.classList.add(opts.bodyClass)
+  opts.captureTarget?.setPointerCapture?.(event.pointerId)
+  let pendingWidth = opts.initial
+  let frame = 0
+
+  const applyWidth = () => {
+    frame = 0
+    opts.setWidth(pendingWidth)
+  }
+
+  const onMove = moveEvent => {
+    const next = opts.computeWidth ? opts.computeWidth(moveEvent, pendingWidth) : pendingWidth
+    pendingWidth = Math.min(opts.max ?? Infinity, Math.max(opts.min ?? 0, next))
+    if (!frame) frame = requestAnimationFrame(applyWidth)
+  }
+
+  const onUp = () => {
+    if (frame) {
+      cancelAnimationFrame(frame)
+      applyWidth()
+    }
+    document.body.classList.remove(opts.bodyClass)
+    opts.onCommit?.(pendingWidth)
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+}
+
 // ── App state ────────────────────────────────────────────────────
 export const state = {
   folderPath: null,
@@ -42,7 +101,7 @@ export const state = {
     primary: 'right',
     secondary: 'right',
   },
-  toolbarVisible: false,
+  toolbarVisible: true,
   sidebarVisible: true,
   sidebarMode: 'explorer', // 'explorer' | 'agents'
   inspectorOpen: false,

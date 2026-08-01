@@ -15,13 +15,17 @@ async function importBookmarks() {
   const modPath = path.join(os.tmpdir(), `rista-bm-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
 
   // Patch the module to use our mocks
-  // The module does `import { state } from './state.js'` — we need to provide a shim
+  // The module imports { state, fileName } from './state.js' — provide shims
   const patched = source
-    .replace("import { state } from './state.js'", '')
-    .replace("import { state }", '')
+    .replace(/import \{[^}]*\} from '\.\/state\.js'/, '')
     .replace(/\bstate\.folderPath\b/g, 'MOCK_STATE.folderPath')
+    .replace(/\bfileName\(/g, 'MOCK_FILE_NAME(')
 
-  fs.writeFileSync(modPath, patched)
+  // define shims inside the module before its code runs
+  const shim = `const MOCK_STATE = { folderPath: '/test/project' };\nconst MOCK_FILE_NAME = (p) => String(p || '').split(/[\\\\/]/).pop() || '';\n`
+  const final = shim + patched
+
+  fs.writeFileSync(modPath, final)
   const mod = await import(`file://${modPath}`)
   fs.rmSync(modPath, { force: true })
   return mod

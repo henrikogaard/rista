@@ -1,4 +1,4 @@
-import { $ } from './state.js'
+import { $, escapeHtml, fileName, stripMarkdownExtension } from './state.js'
 import { showStatusNotice } from './tabs.js'
 
 // ── Attachment Preview ───────────────────────────────────────────
@@ -199,7 +199,7 @@ async function renderCanvasWorkspace(host, tab) {
       node.style.top = `${Number(card.y || 40)}px`
       node.dataset.path = card.path
       node.innerHTML = `
-        <div class="canvas-card__title">${escapeHtml(card.title || card.path.split(/[\\/]/).pop())}</div>
+        <div class="canvas-card__title">${escapeHtml(card.title || fileName(card.path))}</div>
         <div class="canvas-card__path">${escapeHtml(card.path || '')}</div>
       `
       node.addEventListener('dblclick', () => {
@@ -216,7 +216,7 @@ async function renderCanvasWorkspace(host, tab) {
     if (!path) return
     doc.cards.push({
       path,
-      title: path.split(/[\\/]/).pop().replace(/\.md$/i, ''),
+      title: stripMarkdownExtension(fileName(path)),
       x: 60 + doc.cards.length * 18,
       y: 60 + doc.cards.length * 12,
     })
@@ -284,9 +284,4 @@ function enableCardDrag(node, card, rerender) {
   })
 }
 
-function escapeHtml(text) {
-  return String(text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
+

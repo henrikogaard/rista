@@ -1,5 +1,5 @@
 import { showStatusNotice } from './tabs.js'
-import { state } from './state.js'
+import { state, escapeHtml, fileName, stripMarkdownExtension } from './state.js'
 import { renderMarkdown } from './markdown.js'
 import { getLinkIndex } from './link-index.js'
 import { getSettings } from './settings.js'
@@ -7,19 +7,8 @@ import { getSettings } from './settings.js'
 // ── Static Site Export ──────────────────────────────────────────
 // Exports all markdown files in the project as a static HTML website.
 
-function escapeHtml(value = '') {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
 
-function baseNameNoExt(filePath) {
-  const name = filePath.split(/[/\\]/).pop()
-  return name.replace(/\.md$/i, '')
-}
+
 
 function resolveWikilinksToHtml(html, allBaseNames) {
   // Replace wikilink anchors: <a class="wikilink" data-wikilink="NoteName" href="#">...
@@ -123,7 +112,7 @@ function buildSitePageHtml({ title, bodyHtml, nav, colors, settings }) {
 <body>
   <div class="site-layout">
     <nav class="site-nav">
-      <div class="site-nav__title">${escapeHtml(state.folderPath?.split('/').pop() || 'Notes')}</div>
+      <div class="site-nav__title">${escapeHtml(fileName(state.folderPath) || 'Notes')}</div>
       ${nav}
     </nav>
     <main class="page">
@@ -137,7 +126,7 @@ function buildSitePageHtml({ title, bodyHtml, nav, colors, settings }) {
 function buildNavLinks(allFiles, currentBaseName) {
   return allFiles
     .map(f => {
-      const base = baseNameNoExt(f.path)
+      const base = stripMarkdownExtension(fileName(f.path))
       const activeClass = base === currentBaseName ? ' active' : ''
       return `<a class="site-nav__link${activeClass}" href="${encodeURIComponent(base)}.html">${escapeHtml(base)}</a>`
     })
@@ -147,11 +136,11 @@ function buildNavLinks(allFiles, currentBaseName) {
 function buildIndexHtml(allFiles, colors, settings) {
   const previewFont = settings.previewFontCustom || settings.previewFont || "'DM Sans', system-ui, sans-serif"
   const previewFontSize = settings.previewFontSize || 13
-  const projectName = state.folderPath?.split('/').pop() || 'Notes'
+  const projectName = fileName(state.folderPath) || 'Notes'
 
   const listItems = allFiles
     .map(f => {
-      const base = baseNameNoExt(f.path)
+      const base = stripMarkdownExtension(fileName(f.path))
       return `<li><a href="${encodeURIComponent(base)}.html">${escapeHtml(base)}</a></li>`
     })
     .join('\n        ')
@@ -235,10 +224,10 @@ export async function exportAsWebsite() {
 
   // Collect all md files from the link index
   const allPaths = Array.from(index.allPaths).sort((a, b) => a.localeCompare(b))
-  const allBaseNames = allPaths.map(p => baseNameNoExt(p))
+  const allBaseNames = allPaths.map(p => stripMarkdownExtension(fileName(p)))
   const allFiles = allPaths.map(p => ({
     path: p,
-    baseName: baseNameNoExt(p),
+    baseName: stripMarkdownExtension(fileName(p)),
     content: index.files.get(p)?.content || '',
   }))
 

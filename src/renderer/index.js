@@ -5,7 +5,7 @@ import { applySettings, getSettings } from './settings.js'
 import { initKeybindings } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
-import { state, getFocusedEditor, getFocusedTab, featureEnabled } from './state.js'
+import { state, getFocusedEditor, getFocusedTab, featureEnabled, fileName } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
 import { createNoteFromSelection } from './link-index.js'
@@ -13,7 +13,7 @@ import { registerEnsureRichEditorMounted, registerFocusPane, insertHeading, inse
 import { toggleFindReplace } from './find-replace.js'
 import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles } from './command-palette.js'
 import { toggleZenMode, buildZenExitHint } from './zen-mode.js'
-import { exportToHtml } from './preview.js'
+import { exportToHtml, updateActiveMetrics } from './preview.js'
 import { exportToDocx } from './export-docx.js'
 import { openSearchPanel } from './search-panel.js'
 import { registerWikilinkCallback } from './preview.js'
@@ -100,6 +100,16 @@ function openAiChatSurface() {
   openAssistantWidgetForDock(dock)
 }
 
+function getInitialFolderPath() {
+  const injected = window.__RISTA_INITIAL_FOLDER__
+  return typeof injected === 'string' && injected ? injected : null
+}
+
+function getInitialFilePath() {
+  const injected = window.__RISTA_INITIAL_FILE__
+  return typeof injected === 'string' && injected ? injected : null
+}
+
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
@@ -122,7 +132,7 @@ initPanels({
   openAiChatSurface,
   createDailyNote,
   collapseAllFolders,
-  openFolderPath,
+  openFolder,
 })
 
 // ── Transclusion resolver ───────────────────────────────────────
@@ -170,7 +180,7 @@ registerAiReviewCallbacks({
 })
 
 registerAttachmentPreviewCallbacks({
-  openFilePath: (path) => openFile({ path, name: path.split(/[\\/]/).pop() }),
+  openFilePath: (path) => openFile({ path, name: fileName(path) }),
 })
 
 registerWorkspaceCallbacks({
@@ -189,7 +199,7 @@ registerWorkspaceCallbacks({
   renderAttachmentPreview,
 })
 
-registerWikilinkCallback((path) => openFile({ path, name: path.split(/[\\/]/).pop() }))
+registerWikilinkCallback((path) => openFile({ path, name: fileName(path) }))
 
 registerTabCallbacks({
   buildEditorUI,
@@ -229,6 +239,7 @@ handleTerminalInput()
 // Activate default left-sidebar widgets (Files) before the editor UI exists.
 restoreRightPanel()
 syncFolderUi()
+updateActiveMetrics()
 const initialFolderPath = getInitialFolderPath()
 const initialFilePath = getInitialFilePath()
 if (initialFilePath) {
@@ -242,7 +253,7 @@ if (initialFilePath) {
         openSingleFilePath(filePath)
         return
       }
-      ensureFirstRunSample(openSingleFilePath)
+      ensureFirstRunSample()
     })
     .catch(() => {})
 }

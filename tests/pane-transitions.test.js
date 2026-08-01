@@ -152,7 +152,7 @@ test('state defaults are set correctly', async () => {
   assert.deepEqual(state.splitEditableMode, { primary: 'markdown', secondary: 'markdown' })
   assert.deepEqual(state.splitPreviewSide, { primary: 'right', secondary: 'right' })
   assert.equal(state.sidebarVisible, true)
-  assert.equal(state.toolbarVisible, false)
+  assert.equal(state.toolbarVisible, true)
   assert.equal(state.inspectorOpen, false)
   assert.equal(state.rightPanel, null)
   assert.equal(state.settingsOpen, false)
