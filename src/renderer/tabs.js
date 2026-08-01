@@ -76,6 +76,38 @@ function clearExternalConflict(tab) {
   if (!state.tabs.some(t => t.externalConflict)) clearStatusNotice()
 }
 
+function tryRebuildLinkIndex() {
+  if (getSettings().featureWikilinks || getSettings().showExperimental) {
+    rebuildLinkIndex().catch(() => {})
+  }
+}
+
+async function tryAwaitRebuildLinkIndex() {
+  if (getSettings().featureWikilinks || getSettings().showExperimental) {
+    try { await rebuildLinkIndex() } catch {}
+  }
+}
+
+async function tryRestoreSession() {
+  if (!state.folderPath) return
+  const session = loadSession(state.folderPath)
+  if (!session || !session.tabs?.length) return
+  for (const saved of session.tabs) {
+    try {
+      const content = await window.fjord.readFile(saved.path)
+      if (content !== null && content !== undefined) {
+        const tab = { path: saved.path, name: saved.path.split('/').pop(), content, dirty: false, pinned: saved.pinned || false }
+        state.tabs.push(tab)
+        addTabToPane(tab, 'primary')
+      }
+    } catch {}
+  }
+  if (session.activeTabPath) {
+    const activeTab = state.tabs.find(t => t.path === session.activeTabPath)
+    if (activeTab) activateTab(activeTab)
+  }
+}
+
 function confirmExternalOverwrite(tab, confirmOverwrite = false) {
   if (!tab?.externalConflict) return true
   if (tab.externalContent === tab.content) {
@@ -195,7 +227,7 @@ function showTreeContextMenu(item, event) {
       const result = await window.fjord.duplicateFile?.(item.path)
       if (result) {
         await refreshTree()
-        if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
+        await tryAwaitRebuildLinkIndex()
       }
     }},
     { label: 'Delete', action: () => deleteTreeItem(item) },
@@ -225,7 +257,7 @@ async function createFileInFolder(folderPath) {
     }
     state.expandedFolders.add(folderPath)
     await refreshTree()
-    if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
+    await tryAwaitRebuildLinkIndex()
     await openFile({ path: filePath, name: `${sanitized}.md`, type: 'file' })
   } catch {
     showStatusNotice('Could not create file. Check the folder permissions.', 'error')
@@ -287,7 +319,7 @@ async function renameTreeItem(item) {
     }
     await refreshTree()
     renderTabs()
-    if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
+    await tryAwaitRebuildLinkIndex()
   } catch {
     showStatusNotice(`Could not rename ${item.type}. Check the folder permissions.`, 'error')
   }
@@ -372,7 +404,7 @@ async function deleteTreeItem(item) {
       }
     }
     await refreshTree()
-    if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
+    await tryAwaitRebuildLinkIndex()
   } catch {}
 }
 
@@ -458,28 +490,10 @@ export async function openFolder() {
   syncWorkspaceChrome()
   await window.fjord.watchFolder(p)
   await refreshTree()
-  if (getSettings().featureWikilinks || getSettings().showExperimental) { rebuildLinkIndex().catch(() => {}) }
+  tryRebuildLinkIndex()
   showWelcomeScreen()
 
-  // Try restoring session
-  const session = loadSession(state.folderPath)
-  if (session && session.tabs?.length) {
-    for (const saved of session.tabs) {
-      try {
-        const content = await window.fjord.readFile(saved.path)
-        if (content !== null && content !== undefined) {
-          const tab = { path: saved.path, name: saved.path.split('/').pop(), content, dirty: false, pinned: saved.pinned || false }
-          state.tabs.push(tab)
-          addTabToPane(tab, 'primary')
-        }
-      } catch {}
-    }
-    if (session.activeTabPath) {
-      const activeTab = state.tabs.find(t => t.path === session.activeTabPath)
-      if (activeTab) activateTab(activeTab)
-    }
-  }
-}
+  await tryRestoreSession()}
 
 export async function openFolderPath(folderPath) {
   if (!window.fjord || !folderPath) return
@@ -493,28 +507,10 @@ export async function openFolderPath(folderPath) {
   syncWorkspaceChrome()
   await window.fjord.watchFolder(folderPath)
   await refreshTree()
-  if (getSettings().featureWikilinks || getSettings().showExperimental) { rebuildLinkIndex().catch(() => {}) }
+  tryRebuildLinkIndex()
   showWelcomeScreen()
 
-  // Try restoring session
-  const session = loadSession(state.folderPath)
-  if (session && session.tabs?.length) {
-    for (const saved of session.tabs) {
-      try {
-        const content = await window.fjord.readFile(saved.path)
-        if (content !== null && content !== undefined) {
-          const tab = { path: saved.path, name: saved.path.split('/').pop(), content, dirty: false, pinned: saved.pinned || false }
-          state.tabs.push(tab)
-          addTabToPane(tab, 'primary')
-        }
-      } catch {}
-    }
-    if (session.activeTabPath) {
-      const activeTab = state.tabs.find(t => t.path === session.activeTabPath)
-      if (activeTab) activateTab(activeTab)
-    }
-  }
-}
+  await tryRestoreSession()}
 
 export async function openSingleFilePath(filePath) {
   if (!window.fjord || !filePath) return
