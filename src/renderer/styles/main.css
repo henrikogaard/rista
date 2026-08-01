@@ -4911,7 +4911,7 @@ body.is-dragging-widget .widget-stack:empty::before {
 .tag-pill {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 10px;
+  border-radius: 0;
   background: var(--accent-dim);
   color: var(--accent);
   font-size: 11px;
@@ -5747,7 +5747,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   color: var(--text1);
   background: var(--bg3);
   border: 1px solid var(--surface-edge);
-  border-radius: 4px;
+  border-radius: 0;
   box-shadow: var(--shadow-sm);
   white-space: nowrap;
   max-width: 240px;
@@ -6084,7 +6084,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: 4px;
+  border-radius: 0;
   cursor: pointer;
   color: var(--text2);
   font-size: 14px;
@@ -6130,7 +6130,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   aspect-ratio: 1;
   font-size: 11px;
   color: var(--text2);
-  border-radius: 4px;
+  border-radius: 0;
   cursor: pointer;
   user-select: none;
   transition: background 0.1s, color 0.1s;
@@ -6205,7 +6205,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: 0;
   transition: color 0.1s, background 0.1s;
 }
 .ai-chat__clear:hover { color: var(--text1); background: rgba(255,255,255,0.04); }
@@ -6235,7 +6235,7 @@ body.is-dragging-widget .widget-stack:empty::before {
 }
 .ai-chat__msg {
   padding: 8px 12px;
-  border-radius: 10px;
+  border-radius: 0;
   font-size: 12.5px;
   line-height: 1.55;
   max-width: 92%;
@@ -6269,7 +6269,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   gap: 6px;
   align-self: flex-start;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: 0;
   background: rgba(255,255,255,0.025);
   border: 1px solid var(--surface-edge);
   color: var(--text2);
@@ -6324,7 +6324,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   font-size: 12.5px;
   line-height: 1.5;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 0;
   resize: none;
   min-height: 34px;
   max-height: 140px;
@@ -6343,7 +6343,7 @@ body.is-dragging-widget .widget-stack:empty::before {
   border: none;
   padding: 0 14px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
