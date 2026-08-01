@@ -850,8 +850,7 @@ export function buildShell() {
           <!-- Statusbar -->
           <div class="statusbar">
             <div class="statusbar__metrics">
-              <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>
-              <div class="st st--filename" id="st-filename" title="Current file">—</div>
+              <div class="st st--filename" id="st-filename" title="Current file">---</div>
               <div class="st" id="st-words">—</div>
               <div class="st st--optional" id="st-readtime">—</div>
               <span class="st st--update" id="st-update" hidden></span>
@@ -862,7 +861,6 @@ export function buildShell() {
                   ${gearIcon()}
                 </div>
               </div>
-              <div class="st st-brand">Rísta</div>
             </div>
           </div>
         </div>

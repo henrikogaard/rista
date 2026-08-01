@@ -9,7 +9,7 @@ import { showContextMenu } from './context-menu.js'
 const _widgets = new Map()
 const SIDES = ['right', 'left']
 const STACK_ID = { right: 'right-sidebar-stack', left: 'left-widget-stack' }
-const RIGHT_SIDEBAR_DEFAULT_WIDGET = 'outline'
+const RIGHT_SIDEBAR_DEFAULT_WIDGET = null
 const SIDEBAR_LAYOUT_VERSION = 1
 const LAYOUT_VERSION_KEY = 'rista-sidebar-layout-version'
 const RIGHT_SIDEBAR_TAB_GROUPS = [

@@ -375,8 +375,11 @@ function serializeNode(node) {
     case 'ol':
       return serializeList(node, true)
     case 'pre': {
-      const code = node.textContent?.replace(/\n+$/, '') || ''
-      return `\`\`\`\n${code}\n\`\`\``
+      const codeEl = node.querySelector('code')
+      const language = codeEl?.getAttribute('class')?.match(/language-(\S+)/)
+      const langAttr = language ? language[1] : ''
+      const code = (codeEl?.textContent || node.textContent || '').replace(/\n+$/, '') || ''
+      return '```' + langAttr + '\n' + code + '\n' + '```'
     }
     case 'blockquote': {
       const content = serializeBlockChildren(node) || serializeInlineChildren(node)
