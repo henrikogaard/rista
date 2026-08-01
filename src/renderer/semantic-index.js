@@ -1,4 +1,4 @@
-import { relativeFilePath } from "./state.js"
+import { fileName, stripMarkdownExtension, relativeFilePath } from './state.js'
 const STOPWORDS = new Set([
   'about', 'after', 'again', 'also', 'and', 'are', 'because', 'been', 'before', 'being',
   'between', 'but', 'can', 'could', 'did', 'does', 'doing', 'for', 'from', 'had',
@@ -33,7 +33,7 @@ export function buildSemanticIndex(linkIndex, options = {}) {
 
     documents.push({
       path,
-      name: path.split(/[/\\]/).pop(),
+      name: fileName(path),
       title,
       relativePath: relativeFilePath(path, folderPath),
       sections,
@@ -282,5 +282,5 @@ function addTokens(counts, tokens, weight) {
 }
 
 function noteTitle(path) {
-  return String(path || '').split(/[/\\]/).pop().replace(/\.md$/i, '')
+  return stripMarkdownExtension(fileName(path))
 }

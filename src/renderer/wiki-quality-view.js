@@ -1,8 +1,6 @@
 import { getLinkIndex, rebuildLinkIndex, resolveWikilink } from './link-index.js'
-import { state } from './state.js'
+import { state, $, escapeHtml, fileName, stripMarkdownExtension } from './state.js'
 import { analyzeWikiQuality } from './wiki-quality.js'
-
-import { $ } from './state.js'
 let _openFile = null
 let _refreshTree = null
 const DISMISSED_KEY = 'rista-wiki-quality-dismissed'
@@ -78,7 +76,7 @@ export function handleWikiQualityPanelEvent(event) {
   event.preventDefault()
   const path = row.dataset.path || row.dataset.sourcePath
   if (!path) return
-  _openFile?.({ path, name: path.split(/[/\\]/).pop() })
+  _openFile?.({ path, name: fileName(path) })
 }
 
 function renderSummary(summary) {
@@ -174,13 +172,7 @@ function renderSection(title, items, total, renderItem) {
   `
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+
 
 function escapeAttribute(value) {
   return escapeHtml(value).replace(/'/g, '&#39;')
@@ -205,7 +197,7 @@ export async function createMissingNoteFromFinding(linkText) {
   const target = cleanMissingTarget(linkText)
   if (!target) return
   const filePath = `${state.folderPath}/${target.endsWith('.md') ? target : `${target}.md`}`
-  const title = filePath.split(/[/\\]/).pop().replace(/\.md$/i, '')
+  const title = stripMarkdownExtension(fileName(filePath))
   const parent = filePath.replace(/[/\\][^/\\]+$/, '')
   if (parent && parent !== state.folderPath) {
     try { await window.fjord.createDir?.(parent) } catch {}
@@ -216,7 +208,7 @@ export async function createMissingNoteFromFinding(linkText) {
   }
   await _refreshTree?.()
   try { await rebuildLinkIndex() } catch {}
-  _openFile?.({ path: filePath, name: filePath.split(/[/\\]/).pop() })
+  _openFile?.({ path: filePath, name: fileName(filePath) })
   renderWikiQualityPanel()
 }
 

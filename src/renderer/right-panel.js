@@ -1,4 +1,4 @@
-import { state, $ } from './state.js'
+import { state, $, escapeHtml, startDragResize } from './state.js'
 import { showContextMenu } from './context-menu.js'
 
 // ── Sidebar Widget System ────────────────────────────────────────
@@ -9,8 +9,8 @@ import { showContextMenu } from './context-menu.js'
 const _widgets = new Map()
 const SIDES = ['right', 'left']
 const STACK_ID = { right: 'right-sidebar-stack', left: 'left-widget-stack' }
-const RIGHT_SIDEBAR_DEFAULT_WIDGET = null
-const SIDEBAR_LAYOUT_VERSION = 1
+const RIGHT_SIDEBAR_DEFAULT_WIDGET = 'outline'
+const SIDEBAR_LAYOUT_VERSION = 2
 const LAYOUT_VERSION_KEY = 'rista-sidebar-layout-version'
 const RIGHT_SIDEBAR_TAB_GROUPS = [
   { id: 'context', label: 'Context', groups: ['context'] },
@@ -187,6 +187,13 @@ function applySidebarLayoutMigration() {
 
   activeRightContext.forEach(id => state.rightWidgets.delete(id))
   if (preferred) state.rightWidgets.add(preferred)
+
+  // v2: restore the outline as the default right-rail surface when the rail
+  // is empty (declutter in PR #67 removed it and left first-run users with
+  // no right-sidebar anchor).
+  if (storedVersion < 2 && getActiveWidgetIdsForSide('right').length === 0 && _widgets.has('outline')) {
+    state.rightWidgets.add('outline')
+  }
 
   try { localStorage.setItem(LAYOUT_VERSION_KEY, String(SIDEBAR_LAYOUT_VERSION)) } catch {}
   persistWidgetState()
@@ -499,9 +506,7 @@ function syncRightPanelToggles() {
   }
 }
 
-function escapeHtml(value = '') {
-  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
+
 
 // ── Event delegation ────────────────────────────────────────────
 // Wire once when this module is imported.
@@ -754,37 +759,17 @@ function startWidgetDrag(event, handle) {
 export function startRightSidebarResize(event) {
   const container = $('right-panel-container')
   if (!container) return
-  event.preventDefault()
-  document.body.classList.add('is-resizing-right-sidebar')
   const startX = event.clientX
   const startWidth = container.getBoundingClientRect().width
-  let pendingWidth = startWidth
-  let frame = 0
-
-  const applyWidth = () => {
-    frame = 0
-    document.documentElement.style.setProperty('--right-sidebar-width', `${pendingWidth}px`)
-  }
-
-  const onMove = (e) => {
-    const delta = startX - e.clientX
-    pendingWidth = Math.max(220, Math.min(640, startWidth + delta))
-    if (!frame) frame = requestAnimationFrame(applyWidth)
-  }
-  const onUp = () => {
-    document.body.classList.remove('is-resizing-right-sidebar')
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-    window.removeEventListener('pointercancel', onUp)
-    if (frame) {
-      cancelAnimationFrame(frame)
-      applyWidth()
-    }
-    try { localStorage.setItem('rista-right-sidebar-width', `${pendingWidth}px`) } catch {}
-  }
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-  window.addEventListener('pointercancel', onUp)
+  startDragResize(event, {
+    min: 220,
+    max: 640,
+    initial: startWidth,
+    bodyClass: 'is-resizing-right-sidebar',
+    computeWidth: e => startWidth + (startX - e.clientX),
+    setWidth: px => document.documentElement.style.setProperty('--right-sidebar-width', `${px}px`),
+    onCommit: px => { try { localStorage.setItem('rista-right-sidebar-width', `${px}px`) } catch {} },
+  })
 }
 
 /**

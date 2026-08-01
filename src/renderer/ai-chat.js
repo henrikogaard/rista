@@ -1,4 +1,4 @@
-import { state, $, getFocusedTab } from './state.js'
+import { state, $, getFocusedTab, escapeHtml } from './state.js'
 import { getSettings } from './settings.js'
 import { PROVIDERS } from './ai-providers.js'
 import { registerRightPanel } from './right-panel.js'
@@ -46,13 +46,7 @@ function getProviderConfig() {
   }
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+
 
 function buildPanel() {
   const config = getProviderConfig()

@@ -1,4 +1,4 @@
-import { $, el, state } from './state.js'
+import { $, el, state, fileName } from './state.js'
 import { getAllTagNames, getFilesForTag, getLinkIndex } from './link-index.js'
 import { extractHeadings } from './markdown.js'
 
@@ -82,7 +82,7 @@ function getResults(query) {
   if (_tagFiles) {
     return _tagFiles
       .map(path => {
-        const name = path.split(/[/\\]/).pop()
+        const name = fileName(path)
         const { match, score } = fuzzyMatch(trimmed, name)
         return { type: 'file', item: { path, name }, score, match }
       })
@@ -294,7 +294,7 @@ function selectResult(result) {
         // Single file: open it directly
         closeCommandPalette()
         if (_callbacks.openFile) {
-          const name = files[0].split(/[/\\]/).pop()
+          const name = fileName(files[0])
           _callbacks.openFile({ path: files[0], name })
         }
       } else {

@@ -1,3 +1,4 @@
+import { escapeHtml, fileName } from './state.js'
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
@@ -125,7 +126,7 @@ function resolveSpatialEmbeds(markdown) {
   return String(markdown || '').replace(/^!\[\[([^\]|]+?\.(?:fdraw|fcanvas)\.json)(?:\|([^\]]+))?\]\]$/gmi, (match, target, label) => {
     const cleanTarget = target.trim()
     const type = cleanTarget.toLowerCase().endsWith(SPATIAL_DRAWING_EXT) ? 'Drawing' : 'Canvas'
-    const title = (label || cleanTarget.split(/[\\/]/).pop()).trim()
+    const title = (label || fileName(cleanTarget)).trim()
     return `
 <a class="spatial-embed" href="${escapeHtml(cleanTarget)}">
   <span class="spatial-embed__type">${type}</span>
@@ -161,7 +162,7 @@ function renderObsidianAttachmentEmbed(target, meta, options) {
 }
 
 function parseObsidianEmbedMeta(target, meta) {
-  const fallback = target.split(/[\\/]/).pop()
+  const fallback = fileName(target)
   const value = String(meta || '').trim()
   if (!value || /^\d+(?:x\d+)?$/i.test(value)) {
     return { label: fallback }
@@ -301,7 +302,7 @@ function resolveWorkspaceAttachment(target, options = {}) {
   if (!attachmentPaths.length) return ''
   const cleanTarget = normalizeLocalPath(String(target || '').replace(/\\/g, '/')).replace(/^\/+/, '')
   const targetLower = cleanTarget.toLowerCase()
-  const basenameLower = cleanTarget.split('/').pop().toLowerCase()
+  const basenameLower = fileName(cleanTarget).toLowerCase()
   const folderPath = normalizeLocalPath(String(options.folderPath || '')).replace(/\/+$/, '')
 
   const exact = attachmentPaths.find(path => {
@@ -314,7 +315,7 @@ function resolveWorkspaceAttachment(target, options = {}) {
   if (exact) return normalizeLocalPath(exact)
 
   const byName = attachmentPaths.find(path => {
-    const name = String(path || '').split(/[\\/]/).pop().toLowerCase()
+    const name = fileName(path).toLowerCase()
     return name === basenameLower
   })
   return byName ? normalizeLocalPath(byName) : ''
@@ -559,14 +560,7 @@ function titleizeCalloutType(type = '') {
     .replace(/\b\w/g, letter => letter.toUpperCase()) || 'Note'
 }
 
-function escapeHtml(value = '') {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
+
 
 // Extract headings for ToC. Skips fenced code blocks. Returns line number
 // (1-indexed) so consumers can jump the editor to the heading.

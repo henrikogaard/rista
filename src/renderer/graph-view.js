@@ -2,10 +2,9 @@
 // Canvas-based 2D graph of wikilinks. Force-directed layout, pre-warmed
 // before first paint so it doesn't open mid-explosion.
 
-import { state } from './state.js'
+import { state, $, fileName, stripMarkdownExtension } from './state.js'
 import { resolveWikilink } from './link-index.js'
 
-import { $ } from './state.js'
 export function buildGraphView() {
   return `
     <div class="graph-view" id="graph-view">
@@ -173,7 +172,7 @@ export function renderGraph(linkIndex, onNodeClick) {
     pathToIdx.set(path, _nodes.length)
     _nodes.push({
       id: path,
-      name: basename(path),
+      name: stripMarkdownExtension(fileName(path)),
       x: (Math.random() - 0.5) * 200,
       y: (Math.random() - 0.5) * 200,
       vx: 0,
@@ -361,9 +360,6 @@ function nodeRadius(node) {
   return 3 + Math.min(5, Math.sqrt(node.degree))
 }
 
-function basename(p) {
-  return p.split(/[/\\]/).pop().replace(/\.md$/i, '')
-}
 
 function simulate(coolingFactor) {
   // coolingFactor: 0..1 — used during pre-warm to scale damping/repulsion

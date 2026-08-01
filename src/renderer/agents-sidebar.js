@@ -1,4 +1,4 @@
-import { state, $ } from './state.js'
+import { state, $, escapeHtml } from './state.js'
 
 // ── Agents Sidebar ───────────────────────────────────────────────
 // Local session history stored in .rista/sessions/
@@ -84,12 +84,7 @@ function formatTime(ts) {
   return d.toLocaleDateString()
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
+
 
 function escapeAttr(text) {
   return String(text)

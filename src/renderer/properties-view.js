@@ -1,18 +1,10 @@
 import { parseFrontmatter, applyFrontmatter } from './tags.js'
-import { getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
+import { $, getFocusedTab, editorViews, getTabForPane, PANE_KEYS, escapeHtml } from './state.js'
 import { updateEditorDoc } from './editor.js'
 import { refreshPreview } from './preview.js'
-
-import { $ } from './state.js'
 const RESERVED_NAMES = new Set(['aliases', 'tags', 'cssclasses'])
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+
 
 function detectType(value) {
   if (Array.isArray(value)) return 'list'

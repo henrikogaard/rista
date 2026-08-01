@@ -1,4 +1,4 @@
-import { state } from './state.js'
+import { state, stripMarkdownExtension } from './state.js'
 import { getSettings } from './settings.js'
 
 // ── Version History ─────────────────────────────────────────────
@@ -15,7 +15,7 @@ function getHistoryDir(filePath) {
   if (filePath.startsWith(state.folderPath)) {
     rel = filePath.slice(state.folderPath.length).replace(/^[/\\]+/, '')
   }
-  const key = rel.replace(/\.md$/i, '').replace(/[/\\]/g, '__')
+  const key = stripMarkdownExtension(rel).replace(/[/\\]/g, '__')
   return `${state.folderPath}/${HISTORY_DIR}/${key}`
 }
 
@@ -59,7 +59,7 @@ export async function getSnapshots(filePath) {
       .filter(name => name.endsWith('.md'))
       .map(name => {
         const path = `${dir}/${name}`
-        const timestampStr = name.replace(/\.md$/, '')
+        const timestampStr = stripMarkdownExtension(name)
         const parsed = parseTimestamp(timestampStr)
         return {
           timestamp: parsed,

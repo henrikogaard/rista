@@ -1,9 +1,9 @@
 import ToastEditor from '@toast-ui/editor'
 import { createEditor, updateSmartTypography, updateFocusMode, updateLivePreview, updatePosHighlight } from './editor.js'
-import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab } from './state.js'
+import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab, fileName } from './state.js'
 import { getTheme } from './theme.js'
 import { updateSetting, getSettings } from './settings.js'
-import { refreshPreview, updateActiveMetrics, onEditorSelectionChange, exportToPdf, handleImagePaste, getWorkspaceAttachmentPaths } from './preview.js'
+import { refreshPreview, updateActiveMetrics, exportToPdf, handleImagePaste, getWorkspaceAttachmentPaths } from './preview.js'
 import { getRenderableMarkdown, htmlToMarkdown, renderDocumentBanner } from './markdown.js'
 import { toggleCommandPalette } from './command-palette.js'
 import { toggleFindReplace, updateFind, handleFindKeydown, findNext, findPrev, replaceOne, replaceAll } from './find-replace.js'
@@ -40,6 +40,18 @@ export function syncToolbarToggle() {
   node.setAttribute('aria-pressed', state.toolbarVisible ? 'true' : 'false')
 }
 
+// Single source of truth for editor-toolbar + pane-row visibility.
+// The `.hidden` class is what the CSS keys off (toolbar → height 0,
+// pane-row → display none); callers must go through here so the two
+// mechanisms can't drift (toggleToolbar vs syncWorkspaceUi used to fight).
+function applyToolbarVisibility(pane) {
+  const tab = getTabForPane(pane)
+  const show = Boolean(state.toolbarVisible && tab && !tab.isAttachment && !tab.isSpatial && !tab.isBinary)
+  document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)?.classList.toggle('hidden', !show)
+  document.querySelector(`.workspace-pane-row[data-pane="${pane}"]`)?.classList.toggle('hidden', !show)
+  return show
+}
+
 // ── Split slot selector HTML ─────────────────────────────────────
 export function renderSplitSlotSelector(pane, slot) {
   const splitView = getSplitView(pane)
@@ -67,7 +79,7 @@ export function renderSplitSlotSelector(pane, slot) {
 export function renderEditorToolbar(pane) {
   const paneView = getPaneView(pane)
   return `
-    <div class="workspace-toolbar${state.toolbarVisible ? '' : ' hidden'}" data-pane="${pane}">
+    <div class="workspace-toolbar" data-pane="${pane}">
       <div class="ic" title="Undo" data-action="editor-cmd" data-cmd="undo">
         <svg viewBox="0 0 16 16"><path d="M3 7h6a4 4 0 1 1 0 8H5"/><path d="M3 4L1 7l2 3"/></svg>
       </div>
@@ -158,7 +170,7 @@ export function renderEditorToolbar(pane) {
         </div>
       </div>
     </div>
-    <div class="workspace-pane-row${state.toolbarVisible ? '' : ' hidden'}" data-pane="${pane}">
+    <div class="workspace-pane-row" data-pane="${pane}">
       <div class="pane-label" id="pl-source-${pane}">${paneView === 'split' ? renderSplitSlotSelector(pane, 'left') : 'source'}</div>
       <div class="pane-label" id="pl-preview-${pane}">${paneView === 'split' ? renderSplitSlotSelector(pane, 'right') : 'preview'}</div>
     </div>
@@ -297,7 +309,6 @@ export function mountEditor(pane) {
     parent: host,
     doc: getTabForPane(pane)?.content || '',
     onChange: content => _callbacks.onEditorChange?.(pane, content),
-    onSelectionChange: editorState => onEditorSelectionChange(pane, editorState),
     onPaste: file => handleImagePaste(file, editorViews[pane], pane, (p, c) => _callbacks.onEditorChange?.(p, c)),
     onRichPaste: (html, editorView) => {
       const md = htmlToMarkdown(html)
@@ -493,13 +504,10 @@ export function syncWorkspaceUi() {
     const tab = getTabForPane(pane)
     const empty = $(`workspace-${pane}-empty`)
     const panesMain = $(`panes-main-${pane}`)
-    const toolbar = document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)
-    const paneRow = document.querySelector(`.workspace-pane-row[data-pane="${pane}"]`)
     if (pane === 'secondary' && !dual) return
     if (panesMain) panesMain.style.display = tab ? 'flex' : 'none'
     if (empty && pane === 'secondary') empty.style.display = tab ? 'none' : 'flex'
-    if (toolbar) toolbar.style.display = tab && !tab.isAttachment && !tab.isSpatial && !tab.isBinary ? 'flex' : 'none'
-    if (paneRow) paneRow.style.display = tab && state.toolbarVisible && !tab.isAttachment && !tab.isSpatial && !tab.isBinary ? 'flex' : 'none'
+    applyToolbarVisibility(pane)
 
     // Handle non-markdown previews: hide editor/preview, show only preview host
     if (tab?.isAttachment || tab?.isSpatial || tab?.isBinary) {
@@ -674,7 +682,7 @@ export function wireEditorUiEvents() {
   handleSearchInput(target => {
     if (!target) return
     if (typeof target === 'string') {
-      _callbacks.openFile?.({ path: target, name: target.split('/').pop() })
+      _callbacks.openFile?.({ path: target, name: fileName(target) })
       return
     }
     _callbacks.openFile?.(target)
@@ -823,12 +831,7 @@ export function setSplitPaneView(pane, slot, view) {
 // ── Toggle functions ─────────────────────────────────────────────
 export function toggleToolbar() {
   state.toolbarVisible = !state.toolbarVisible
-  document.querySelectorAll('.workspace-toolbar').forEach(node => {
-    node.classList.toggle('hidden', !state.toolbarVisible)
-  })
-  document.querySelectorAll('.workspace-pane-row').forEach(node => {
-    node.classList.toggle('hidden', !state.toolbarVisible)
-  })
+  PANE_KEYS.forEach(pane => applyToolbarVisibility(pane))
   syncToolbarToggle()
 }
 
@@ -843,7 +846,10 @@ export function toggleSidebar() {
   const sb = $('sidebar')
   if (sb) sb.classList.toggle('collapsed', !state.sidebarVisible)
   const control = $('sidebar-toggle')
-  if (control) control.setAttribute('aria-pressed', state.sidebarVisible ? 'true' : 'false')
+  if (control) {
+    control.classList.toggle('active', state.sidebarVisible)
+    control.setAttribute('aria-pressed', state.sidebarVisible ? 'true' : 'false')
+  }
 }
 
 export function toggleDd(id) {

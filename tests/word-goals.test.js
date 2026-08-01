@@ -16,7 +16,7 @@ function mockLocalStorage(initial = {}) {
 
 async function importModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/word-goals.js'), 'utf8')
-  const modulePath = path.join(root, `.tmp-word-goals-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const modulePath = path.join(root, 'src/renderer', `.tmp-word-goals-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   fs.writeFileSync(modulePath, 'globalThis.localStorage = globalThis.__TEST_STORAGE__;\n' + source)
   try {
     return await import(`file://${modulePath}`)

@@ -78,3 +78,8 @@ export function wikiQualityIcon() {
 export function relatedNotesIcon() {
   return `<svg viewBox="0 0 16 16"><circle cx="5" cy="5" r="2" fill="none" stroke="currentColor"/><circle cx="11" cy="5" r="2" fill="none" stroke="currentColor"/><circle cx="8" cy="11" r="2" fill="none" stroke="currentColor"/><path d="M6.7 5.8l1 3.2M9.3 5.8l-1 3.2M6.8 5h2.4" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>`
 }
+
+// Small document glyph for file-tree rows (replaces the plain dot).
+export function markdownFileIcon() {
+  return `<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L12.5 4v10.5h-8.5z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M9.5 1.5V4H12" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M6 8.2l1.2 1.2L9.6 7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+}

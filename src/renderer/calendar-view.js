@@ -1,6 +1,6 @@
 import { getSettings } from './settings.js'
 
-import { $ } from './state.js'
+import { $, stripMarkdownExtension } from './state.js'
 const DAY_NAMES = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -37,7 +37,7 @@ export async function getDailyNotesMap(folderPath) {
     const tree = await window.fjord.readFolder(dirPath)
     for (const item of tree) {
       if (item.type === 'file' && /^\d{4}-\d{2}-\d{2}\.md$/.test(item.name)) {
-        const dateKey = item.name.replace(/\.md$/, '')
+        const dateKey = stripMarkdownExtension(item.name)
         map.set(dateKey, item.path)
       }
     }

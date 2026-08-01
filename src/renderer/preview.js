@@ -1,5 +1,5 @@
-import { $, state, getTabForPane, getFocusedTab, getFocusedEditor } from './state.js'
-import { renderMarkdown, extractHeadings, getStats } from './markdown.js'
+import { $, state, getTabForPane, getFocusedTab } from './state.js'
+import { renderMarkdown, getStats } from './markdown.js'
 import { showStatusNotice } from './tabs.js'
 import { processDiagrams } from './diagrams.js'
 import { getTheme } from './theme.js'
@@ -117,9 +117,10 @@ export function updateActiveMetrics() {
   if (!tab) {
     if (words) words.textContent = '—'
     const fname = $('st-filename')
-    if (fname) fname.textContent = '—'
-    renderStatsPopover(getStats('', getSettings().readingSpeed))
-    renderTocPopover([])
+    if (fname) {
+      fname.innerHTML = '<span class="st-filename__empty">No file open — ⌘K to open</span>'
+      fname.title = 'Quick open (⌘K)'
+    }
     return
   }
   const stats = getStats(markdown, getSettings().readingSpeed)
@@ -143,54 +144,6 @@ export function updateActiveMetrics() {
   if (readTime) {
     readTime.textContent = stats.readMin < 1 ? '< 1 min read' : `~${stats.readMin} min read`
   }
-  renderStatsPopover(stats)
-  renderTocPopover(extractHeadings(markdown))
-}
-
-export function updateCursorStatus(editorState = getFocusedEditor()?.state) {
-  const cursor = $('st-cursor')
-  if (!cursor) return
-  if (!editorState) {
-    cursor.textContent = 'Ln 1, Col 1'
-    return
-  }
-  const head = editorState.selection.main.head
-  const line = editorState.doc.lineAt(head)
-  const lineNumber = line.number
-  const column = head - line.from + 1
-  cursor.textContent = `Ln ${lineNumber}, Col ${column}`
-}
-
-export function onEditorSelectionChange(pane, editorState) {
-  if (pane !== state.focusedPane) return
-  updateCursorStatus(editorState)
-}
-
-export function renderStatsPopover(s) {
-  const c = $('stats-content')
-  if (!c) return
-  c.innerHTML = `
-    <div class="stat-card"><div class="num">${s.words}</div><div class="row"><span class="lbl">Words</span></div></div>
-    <div class="stat-card"><div class="num">${s.chars}</div><div class="row"><span class="lbl">Characters</span></div></div>
-    <div class="stat-card"><div class="num">${s.sentences || 0}</div><div class="row"><span class="lbl">Sentences</span></div></div>
-    <div class="stat-card"><div class="num">${s.paragraphs}</div><div class="row"><span class="lbl">Paragraphs</span></div></div>
-    <div class="stat-card"><div class="num" style="font-size:15px">${s.readMin < 1 ? '< 1' : s.readMin} min</div><div class="row"><span class="lbl">Read time</span></div></div>
-    <div class="stat-card"><div class="num">${s.avgSentenceLen || 0}</div><div class="row"><span class="lbl">Avg words/sentence</span></div></div>
-    <div class="stat-card"><div class="num">${s.avgWordLen || 0}</div><div class="row"><span class="lbl">Avg word length</span></div></div>
-    <div class="stat-card"><div class="num">${s.fkGrade || 0}</div><div class="row"><span class="lbl">FK Grade Level</span></div></div>
-  `
-}
-
-export function renderTocPopover(headings) {
-  const c = $('toc-content')
-  if (!c) return
-  if (!headings.length) {
-    c.innerHTML = `<div class="toc-empty"><div class="icon">🏔️</div><div class="msg">No headers yet</div></div>`
-    return
-  }
-  c.innerHTML = headings.map(h =>
-    `<div class="toc-item h${h.level}">${h.text}</div>`
-  ).join('')
 }
 
 // ── PDF Export ──────────────────────────────────────────────────────

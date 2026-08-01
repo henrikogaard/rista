@@ -234,20 +234,30 @@ test('file watcher refreshes are batched instead of immediate per-event tree reb
 test('sidebar resize updates CSS during drag and persists once on release', () => {
   const tabs = read('src/renderer/tabs.js')
   const rightPanel = read('src/renderer/right-panel.js')
+  const state = read('src/renderer/state.js')
   const css = read('src/renderer/styles/main.css')
 
+  // Both resizers delegate to the shared drag-resize loop.
+  assert.match(state, /export function startDragResize/)
+  assert.match(state, /requestAnimationFrame\(applyWidth\)/)
+  assert.match(state, /cancelAnimationFrame\(frame\)/)
+  assert.match(state, /opts\.onCommit\?\.\(pendingWidth\)/)
+
+  // Left sidebar: width var + persist to settings on release.
   assert.match(tabs, /function startSidebarResize/)
-  assert.match(tabs, /requestAnimationFrame\(applyWidth\)/)
+  assert.match(tabs, /startDragResize\(event, \{/)
   assert.match(tabs, /style\.setProperty\('--sidebar-width'/)
-  assert.match(tabs, /cancelAnimationFrame\(frame\)/)
-  assert.match(tabs, /onUp[\s\S]*updateSetting\('sidebarWidth', pendingWidth\)/)
-  assert.doesNotMatch(tabs, /onMove[\s\S]{0,220}updateSetting\('sidebarWidth'/)
-  assert.match(rightPanel, /requestAnimationFrame\(applyWidth\)/)
+  assert.match(tabs, /onCommit: px => updateSetting\('sidebarWidth', px\)/)
+  assert.doesNotMatch(tabs, /onMove[\s\S]{0,220}updateSetting\('sidebarWidth'/)  
+
+  // Right sidebar: width var + persist to localStorage on release.
+  assert.match(rightPanel, /startRightSidebarResize\(event\)/)
+  assert.match(rightPanel, /startDragResize\(event, \{/)
   assert.match(rightPanel, /style\.setProperty\('--right-sidebar-width'/)
-  assert.match(rightPanel, /cancelAnimationFrame\(frame\)/)
-  assert.match(rightPanel, /onUp[\s\S]*localStorage\.setItem\('rista-right-sidebar-width'/)
+  assert.match(rightPanel, /localStorage\.setItem\('rista-right-sidebar-width'/)
+
   assert.match(css, /\.sidebar-resizer\s*\{[\s\S]*background: transparent/)
-  assert.match(css, /\.sidebar-resizer\s*\{[\s\S]*margin-left: -5px/)
+  assert.match(css, /\.sidebar-resizer\s*\{[\s\S]*margin-left: -5px|margin-left: calc\(-1 \* var\(--space-5\)\)/)
   assert.match(css, /\.sidebar-resizer::before\s*\{[\s\S]*width: 1px/)
 })
 
@@ -1041,7 +1051,7 @@ test('fonts.css loads only self-hosted fonts (no CDN imports)', () => {
 
 async function importPerfBudgetModule() {
   const source = fs.readFileSync(path.join(root, 'src/renderer/perf-budget.js'), 'utf8')
-  const modulePath = path.join(root, `.tmp-perf-budget-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
+  const modulePath = path.join(root, 'src/renderer', `.tmp-perf-budget-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`)
   fs.writeFileSync(modulePath, source)
   try {
     return await import(`file://${modulePath}`)

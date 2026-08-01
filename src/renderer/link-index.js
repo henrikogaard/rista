@@ -1,4 +1,4 @@
-import { state } from './state.js'
+import { state, fileName, stripMarkdownExtension } from './state.js'
 import { getAllTags } from './tags.js'
 
 // ── Link Indexer ─────────────────────────────────────────────────
@@ -184,8 +184,8 @@ export function resolveWikilink(linkText, allPaths, folderPath) {
 
   // Try exact match
   const exact = Array.from(allPaths).find(p => {
-    const name = p.split(/[/\\]/).pop()
-    const base = name.replace(/\.md$/i, '')
+    const name = fileName(p)
+    const base = stripMarkdownExtension(name)
     return base === normalized
   })
   if (exact) return exact
@@ -196,14 +196,14 @@ export function resolveWikilink(linkText, allPaths, folderPath) {
     const relative = folderPath && p.startsWith(folderPath)
       ? p.slice(folderPath.length).replace(/^[/\\]+/, '')
       : p
-    const withoutExt = relative.replace(/\\/g, '/').replace(/\.md$/i, '')
+    const withoutExt = relative.replacestripMarkdownExtension((/\\/g, '/'))
     return withoutExt === normalizedPath
   })
   if (byPath) return byPath
 
   // Try with .md suffix
   const withExt = Array.from(allPaths).find(p => {
-    const name = p.split(/[/\\]/).pop()
+    const name = fileName(p)
     return name === normalized + '.md' || name === normalized
   })
   if (withExt) return withExt
@@ -283,7 +283,7 @@ export function getBacklinks(path) {
       : ''
     return {
       sourcePath,
-      sourceName: sourcePath.split(/[/\\]/).pop().replace(/\.md$/i, ''),
+      sourceName: stripMarkdownExtension(fileName(sourcePath)),
       linkTexts: matchingLinks,
       context,
     }
@@ -301,7 +301,7 @@ export function getBacklinks(path) {
  */
 export function getUnlinkedMentions(targetPath, { limit = 50 } = {}) {
   if (!targetPath) return []
-  const targetName = targetPath.split(/[/\\]/).pop().replace(/\.md$/i, '')
+  const targetName = stripMarkdownExtension(fileName(targetPath))
   if (!targetName) return []
   // Word-boundary match, case-insensitive. Escape regex metacharacters in the
   // note name so titles like "C++" don't break the pattern.
@@ -336,7 +336,7 @@ export function getUnlinkedMentions(targetPath, { limit = 50 } = {}) {
       if (mentionRe.test(noLinks)) {
         results.push({
           sourcePath,
-          sourceName: sourcePath.split(/[/\\]/).pop().replace(/\.md$/i, ''),
+          sourceName: stripMarkdownExtension(fileName(sourcePath)),
           line: i + 1,
           context: line.trim(),
         })
@@ -351,7 +351,7 @@ export function getUnlinkedMentions(targetPath, { limit = 50 } = {}) {
 
 export function getAllMdFileNames() {
   return Array.from(_index.allPaths)
-    .map(p => p.split(/[/\\]/).pop().replace(/\.md$/i, ''))
+    .map(p => stripMarkdownExtension(fileName(p)))
     .sort((a, b) => a.localeCompare(b))
 }
 
@@ -362,7 +362,7 @@ export function searchFiles(query, options = {}) {
   const results = []
 
   for (const [path, { content }] of _index.files) {
-    const name = path.split(/[/\\]/).pop()
+    const name = fileName(path)
     const nameMatch = name.toLowerCase().includes(q)
     let contentMatch = false
     let preview = ''
@@ -429,7 +429,7 @@ export async function createNoteFromSelection(folderPath, selectedText, editorVi
     const existing = await window.fjord.stat(fullPath)
     if (existing) {
       // File exists — just insert the wikilink
-      insertWikilinkAtSelection(editorView, fileName.replace(/\.md$/, ''))
+      insertWikilinkAtSelection(editorView, stripMarkdownExtension(fileName))
       return { path: fullPath, name: fileName, existing: true }
     }
 

@@ -1,7 +1,5 @@
 import { getAllTagNames, getFilesForTag } from './link-index.js'
-import { state } from './state.js'
-
-import { $ } from './state.js'
+import { state, $, escapeHtml, fileName } from './state.js'
 let _openFile = null
 let _onSelectTag = null
 let _onClearTag = null
@@ -66,17 +64,11 @@ export function handleTagsPanelEvent(event) {
   renderTagsPanel()
   if (files.length === 1 && _openFile) {
     const path = files[0]
-    _openFile({ path, name: path.split(/[/\\]/).pop() })
+    _openFile({ path, name: fileName(path) })
   }
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+
 
 function escapeAttribute(value) {
   return escapeHtml(value).replace(/'/g, '&#39;')

@@ -1,4 +1,4 @@
-import { state, $, getFocusedTab } from './state.js'
+import { state, $, getFocusedTab, escapeHtml, fileName } from './state.js'
 import { getOutgoingLinks, getBacklinks, getTagsForFile, getAllTagNames, getFilesForTag, getUnlinkedMentions } from './link-index.js'
 import { getStats, extractHeadings } from './markdown.js'
 import { getSettings } from './settings.js'
@@ -300,7 +300,7 @@ export function handleInspectorClick(event, openFileFn) {
     const snapshotPath = historyItem.dataset.snapshotPath
     loadSnapshot(snapshotPath).then(content => {
       if (content != null) {
-        const name = snapshotPath.split(/[/\\]/).pop()
+        const name = fileName(snapshotPath)
         openFileFn?.({ path: snapshotPath, name: `[snapshot] ${name}` })
       }
     })
@@ -317,7 +317,7 @@ export function handleInspectorClick(event, openFileFn) {
   const link = event.target.closest('.inspector-link[data-link-path]')
   if (link && link.dataset.linkPath) {
     const linkPath = link.dataset.linkPath
-    openFileFn?.({ path: linkPath, name: linkPath.split('/').pop() })
+    openFileFn?.({ path: linkPath, name: fileName(linkPath) })
     return
   }
 
@@ -331,7 +331,7 @@ export function handleInspectorClick(event, openFileFn) {
     const others = files.filter(p => p !== current)
     if (others.length > 0) {
       const path = others[0]
-      openFileFn?.({ path, name: path.split(/[/\\]/).pop() })
+      openFileFn?.({ path, name: fileName(path) })
     }
     return
   }
@@ -365,12 +365,7 @@ export function handleInspectorClick(event, openFileFn) {
   }
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
+
 
 function escapeAttr(text) {
   return String(text)
