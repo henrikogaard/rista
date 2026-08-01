@@ -275,3 +275,43 @@ npm test           # 69/69 passing (verified 2026-08-01)
 npm run build      # JS — passes (verified 2026-08-01)
 npm test           # 77/77 passing (8 new tests added)
 ```
+
+
+---
+
+## Session: 2026-08-01 (continued) — Preview cache, debounce tree, pane tests, keyboard extraction
+
+### Changes
+
+1. **Preview content cache** (Task 2.2)
+   - Added `_previewCache` per pane: `refreshPreview()` now skips re-render when markdown content hasn't changed
+   - Added `clearPreviewCache()` export to invalidate cache on theme toggle
+   - Theme toggle in `shell.js` now clears the preview cache, wired via import
+
+2. **Reduce tree refresh scope** (Task 2.4)
+   - `handleExternalFileChange()` now only triggers `scheduleTreeRefresh()` on structural events (create/delete/rename), not on content-only 'change' events
+   - This avoids unnecessary full tree rebuilds for simple file edits
+
+3. **Pane transition unit tests** (Task 3.2) — 7 new tests
+   - `getPaneView` — default return for unknown panes
+   - `makeSplitView` — all 4 slot combinations
+   - `getSplitEditableView` — default markdown
+   - `getSplitPreviewSide` — default right
+   - `paneUsesWysiwyg`/`paneUsesMarkdown` — all view states
+   - `getWysiwygMountSlot` — correct slot assignment
+   - `state defaults` — full initial state audit
+
+4. **Keyboard shortcut extraction** (Task 1.1 — index.js slimming)
+   - Extracted `keyboard.js` module from `index.js` (70 lines)
+   - `initKeyboardShortcuts()` — all keydown handlers
+   - `initAutoHideChrome()` — typing-based chrome fading
+   - `index.js` reduced from 639→590 lines
+
+5. **Dead code removed** — `updateStats()` export from `preview.js` (zero callers, just calls `updateActiveMetrics()`)
+
+### Build Status
+
+```bash
+npm run build      # JS — passes (verified 2026-08-01)
+npm test           # 84/84 passing (7 new pane transition tests)
+```

@@ -1085,7 +1085,11 @@ export async function handleExternalFileChange({ event, path: changedPath } = {}
     }
   }
 
-  if (state.folderPath) scheduleTreeRefresh()
+  // Task 2.4: only rebuild the tree for structural events (add/delete/rename),
+  // not for content-only changes which don't affect the file listing.
+  if (state.folderPath && event !== 'change') {
+    scheduleTreeRefresh()
+  }
 }
 
 // ── Tab strip overflow handling ─────────────────────────────────

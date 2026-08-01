@@ -6,6 +6,7 @@ import { applySettings, getSettings, setSettings, updateSetting, resetSettings, 
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
 import { sunIcon, moonIcon, gearIcon, toolbarIcon, sidebarIcon, workspaceSplitIcon, closeIcon, terminalIcon, rightSidebarIcon } from './icons.js'
+import { clearPreviewCache } from './preview.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
 import { PANE_KEYS, editorViews, richEditors, syncingRichEditor } from './state.js'
@@ -753,6 +754,7 @@ export function toggleAppTheme() {
   syncSettingsForm()
   applySelectedAppIcon()
   clearDiagramCache()
+  clearPreviewCache()
   initDiagrams(t)
   const themeBtn = $('theme-btn')
   if (themeBtn) themeBtn.innerHTML = t === 'dark' ? sunIcon() : moonIcon()

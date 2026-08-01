@@ -8,12 +8,24 @@ import { formatGoalStatus, isGoalReached } from './word-goals.js'
 import { renderInspectorContent } from './inspector.js'
 import { resolveWikilink, getLinkIndex } from './link-index.js'
 
+// ── Preview content cache (Task 2.2) ──────────────────────────
+// Avoid re-rendering when markdown hasn't changed.
+const _previewCache = { primary: '', secondary: '' }
 let _wikilinkCallback = null
 export function registerWikilinkCallback(fn) {
   _wikilinkCallback = fn
 }
 
+export function clearPreviewCache(pane) {
+  if (pane) _previewCache[pane] = ''
+  else { _previewCache.primary = ''; _previewCache.secondary = '' }
+}
+
 export async function refreshPreview(pane, markdown) {
+  // Skip re-render when markdown content hasn't changed for this pane
+  if (_previewCache[pane] === markdown) return
+  _previewCache[pane] = markdown
+
   const theme = getTheme()
   const activeTab = getTabForPane(pane)
   const settings = getSettings()
@@ -180,11 +192,6 @@ export function renderTocPopover(headings) {
   c.innerHTML = headings.map(h =>
     `<div class="toc-item h${h.level}">${h.text}</div>`
   ).join('')
-}
-
-export function updateStats(markdown) {
-  void markdown
-  updateActiveMetrics()
 }
 
 // ── PDF Export ──────────────────────────────────────────────────────
