@@ -243,6 +243,6 @@ npm test           # 68/68 passing (verified 2026-08-01)
 ## Notes
 
 - Phase 0 cleanup is complete. 21 issues closed, 4 remaining (all polish/design).
-- AGENTS.md is updated to current Tauri architecture. CLAUDE.md still has stale Electron content and should be deleted.
+- AGENTS.md is updated to current Tauri architecture. CLAUDE.md deleted (was stale Electron-era duplicate of AGENTS.md).
 - The `docs/` directory still references `Fjordmark` in many doc titles — cosmetic rename needed.
 - Feature flags: non-core modules (agents, graph, calendar, etc.) are off by default. Enable via Settings -> Experimental -> showExperimental.
