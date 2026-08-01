@@ -5,7 +5,7 @@ import { applySettings, getSettings } from './settings.js'
 import { initKeybindings } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
-import { state, getFocusedEditor, getFocusedTab } from './state.js'
+import { state, getFocusedEditor, getFocusedTab, featureEnabled } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
 import { createNoteFromSelection } from './link-index.js'
@@ -106,13 +106,12 @@ applySettings()
 applySelectedAppIcon()
 initRightSidebarWidth()
 initKeybindings()
-_featureEnabled('featureDiagramBuilder') && initDiagrams(getTheme())
+featureEnabled('featureDiagramBuilder') && initDiagrams(getTheme())
 
 // ── Cross-module callback registration ───────────────────────────
 registerEnsureRichEditorMounted(ensureRichEditorMounted)
 registerFocusPane(focusPane)
 
-function _featureEnabled(key) { return getSettings()[key] || getSettings().showExperimental; }
 
 // ── Panel registrations (extracted to panels.js) ─────────────────
 import { initPanels } from './panels.js'

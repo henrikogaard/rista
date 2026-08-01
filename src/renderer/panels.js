@@ -17,12 +17,10 @@ import { getLinkIndex, onLinkIndexChange } from './link-index.js'
 import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon, wikiQualityIcon, relatedNotesIcon } from './icons.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel } from './ai-chat.js'
-import { state } from './state.js'
+import { state, featureEnabled } from './state.js'
 import { getFocusedTab } from './state.js'
-import { getSettings } from './settings.js'
 
 import { $ } from './state.js'
-function _featureEnabled(key) { return getSettings()[key] || getSettings().showExperimental }
 
 export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSurface, createDailyNote, collapseAllFolders, openFolderPath }) {
   const rerenderGraphFromIndex = () => {
@@ -61,7 +59,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
       openAiSession(sessionPath)
     },
   })
-  _featureEnabled('featureAgents') && registerRightPanel('agents', {
+  featureEnabled('featureAgents') && registerRightPanel('agents', {
     title: 'Agents',
     icon: agentsIcon(),
     flex: 1,
@@ -74,11 +72,11 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
   })
 
   // ── Inspector (gated) ────────────────────────────────────────
-  _featureEnabled('featureInspector') && initInspectorPanel(openFile, closeRightPanel)
+  featureEnabled('featureInspector') && initInspectorPanel(openFile, closeRightPanel)
 
   // ── Graph (gated) ────────────────────────────────────────────
   let _graphUnsubscribe = null
-  _featureEnabled('featureGraphView') && registerRightPanel('graph', {
+  featureEnabled('featureGraphView') && registerRightPanel('graph', {
     title: 'Graph',
     icon: graphIcon(),
     flex: 2,
@@ -101,10 +99,10 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
   })
 
   // ── AI chat (gated) ──────────────────────────────────────────
-  _featureEnabled('featureAgents') && initAiChatPanel(openFile, closeRightPanel)
+  featureEnabled('featureAgents') && initAiChatPanel(openFile, closeRightPanel)
 
   // ── Properties (gated) ───────────────────────────────────────
-  _featureEnabled('featureProperties') && registerRightPanel('properties', {
+  featureEnabled('featureProperties') && registerRightPanel('properties', {
     title: 'Properties',
     icon: propertiesIcon(),
     flex: 1,
@@ -129,7 +127,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
 
   // ── Tags (gated) ─────────────────────────────────────────────
   let _tagsUnsubscribe = null
-  _featureEnabled('featureTags') && registerRightPanel('tags', {
+  featureEnabled('featureTags') && registerRightPanel('tags', {
     title: 'Tags',
     icon: tagIcon(),
     flex: 1,
@@ -161,7 +159,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
 
   // ── Related Notes (gated) ────────────────────────────────────
   let _relatedNotesUnsubscribe = null
-  _featureEnabled('featureRelatedNotes') && registerRightPanel('related-notes', {
+  featureEnabled('featureRelatedNotes') && registerRightPanel('related-notes', {
     title: 'Related',
     icon: relatedNotesIcon(),
     flex: 1,
@@ -186,7 +184,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
 
   // ── Wiki Quality (gated) ─────────────────────────────────────
   let _wikiQualityUnsubscribe = null
-  _featureEnabled('featureWikiQuality') && registerRightPanel('wiki-quality', {
+  featureEnabled('featureWikiQuality') && registerRightPanel('wiki-quality', {
     title: 'Wiki',
     icon: wikiQualityIcon(),
     flex: 1,
@@ -210,8 +208,8 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
   })
 
   // ── Bookmarks (gated) ────────────────────────────────────────
-  _featureEnabled('featureBookmarks') && setBookmarksOpenFile((item) => openFile(item))
-  _featureEnabled('featureBookmarks') && registerRightPanel('bookmarks', {
+  featureEnabled('featureBookmarks') && setBookmarksOpenFile((item) => openFile(item))
+  featureEnabled('featureBookmarks') && registerRightPanel('bookmarks', {
     title: 'Bookmarks',
     icon: bookmarkIcon(),
     flex: 1,
@@ -222,7 +220,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
   })
 
   // ── Calendar (gated) ─────────────────────────────────────────
-  _featureEnabled('featureCalendar') && registerRightPanel('calendar', {
+  featureEnabled('featureCalendar') && registerRightPanel('calendar', {
     title: 'Calendar',
     icon: calendarIcon(),
     flex: 0,

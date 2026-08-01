@@ -7,6 +7,7 @@ function mockLocalStorage(initial = {}) {
     getItem(key) { return store.get(key) ?? null },
     setItem(key, value) { store.set(key, String(value)) },
     removeItem(key) { store.delete(key) },
+    _dump() { return Object.fromEntries(store) },
   }
 }
 
@@ -14,15 +15,36 @@ function mockTabs(dirtyPaths) {
   return dirtyPaths.map(p => ({ path: p, name: p.split('/').pop(), content: '# Test\nHello', dirty: true }))
 }
 
-// We can't import crash-recovery.js directly since it's ESM with side-effect-free exports.
-// Instead, test the module's contract by importing it the same way other tests do.
 const fs = require('node:fs')
 const path = require('node:path')
 
+let _moduleCounter = 0
+
+/**
+ * Import crash-recovery.js wrapped in a localStorage shim.
+ * Captures the mock storage reference synchronously before the
+ * dynamic import() yields to the event loop, preventing concurrent
+ * sibling tests from overwriting globalThis.__TEST_STORAGE__ before
+ * the module evaluates.
+ */
 async function importModule() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/crash-recovery.js'), 'utf8')
-  const tmp = path.join(__dirname, '..', `.tmp-crash-${process.pid}-${Date.now()}.mjs`)
-  fs.writeFileSync(tmp, 'globalThis.localStorage = globalThis.__TEST_STORAGE__;\n' + source)
+  const id = ++_moduleCounter
+
+  // Capture storage state synchronously before yielding to import().
+  const storage = globalThis.__TEST_STORAGE__
+  const initialData = storage && typeof storage._dump === 'function'
+    ? storage._dump()
+    : {}
+  const initCode = `const __store = new Map(${JSON.stringify(Object.entries(initialData))});
+globalThis.localStorage = {
+  getItem(k) { return __store.get(k) ?? null },
+  setItem(k, v) { __store.set(k, String(v)) },
+  removeItem(k) { __store.delete(k) },
+};`
+
+  const tmp = path.join(__dirname, '..', `.tmp-crash-${process.pid}-${id}.mjs`)
+  fs.writeFileSync(tmp, initCode + '\n' + source)
   try {
     return await import(`file://${tmp}`)
   } finally {
@@ -90,23 +112,21 @@ test('loadRecoveryBuffer clears the buffer', async () => {
   assert.equal(hasRecoveryBuffer(), false)
 })
 
-
 test('handles corrupt localStorage gracefully', async () => {
   globalThis.__TEST_STORAGE__ = mockLocalStorage({
     'rista-crash-recovery': '{bad json',
   })
   const { hasRecoveryBuffer, loadRecoveryBuffer } = await importModule()
-  assert.equal(hasRecoveryBuffer(), true) // key exists
+  assert.equal(hasRecoveryBuffer(), true)
   const loaded = loadRecoveryBuffer()
-  assert.strictEqual(loaded, null) // but parse fails -> returns null + clears
+  assert.strictEqual(loaded, null)
 })
 
 test('loadRecoveryBuffer returns null for incomplete data', async () => {
   globalThis.__TEST_STORAGE__ = mockLocalStorage({
-    'rista-crash-recovery': JSON.stringify([{ path: '/a.md' }]), // no content
+    'rista-crash-recovery': JSON.stringify([{ path: '/a.md' }]),
   })
   const { loadRecoveryBuffer } = await importModule()
-  // Should still return the data (content validation is higher-level)
   const loaded = loadRecoveryBuffer()
   assert.ok(loaded)
   assert.equal(loaded.length, 1)
