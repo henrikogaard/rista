@@ -2,6 +2,7 @@ import { getFocusedTab } from './state.js'
 import { getLinkIndex } from './link-index.js'
 import { buildSemanticIndex, findRelatedNotes } from './semantic-index.js'
 import { state } from './state.js'
+import { getSettings } from './settings.js'
 
 import { $ } from './state.js'
 let _openFile = null
@@ -32,8 +33,14 @@ export function renderRelatedNotesPanel() {
   let semanticIndex
   let related
   try {
-    semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
-    related = findRelatedNotes(semanticIndex, tab.path, { limit: 8 })
+    const settings = getSettings()
+    const semanticEnabled = settings.featureSemanticIndex || settings.showExperimental
+    if (semanticEnabled) {
+      semanticIndex = buildSemanticIndex(getLinkIndex(), { folderPath: state.folderPath })
+      related = findRelatedNotes(semanticIndex, tab.path, { limit: 8 })
+    } else {
+      related = []
+    }
   } catch (err) {
     body.innerHTML = renderRelatedError(err)
     return
