@@ -29,11 +29,7 @@ export function saveRecoveryBuffer(tabs) {
   }
 }
 
-export function clearRecoveryBuffer() {
-  try {
-    localStorage.removeItem(STORAGE_KEY)
-  } catch { /* ignore */ }
-}
+
 
 export function hasRecoveryBuffer() {
   try {

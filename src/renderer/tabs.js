@@ -61,13 +61,7 @@ export function scheduleMetricsUpdate() {
   }, METRICS_DEBOUNCE_MS)
 }
 
-export function flushMetricsUpdate() {
-  if (_metricsTimer) {
-    clearTimeout(_metricsTimer)
-    _metricsTimer = null
-    updateActiveMetrics()
-  }
-}
+
 
 function clearExternalConflict(tab) {
   if (!tab) return

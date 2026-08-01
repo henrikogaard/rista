@@ -165,7 +165,6 @@ test('crash-recovery module loads and exports API', async () => {
   assert.equal(typeof mod.saveRecoveryBuffer, 'function', 'exports saveRecoveryBuffer')
   assert.equal(typeof mod.loadRecoveryBuffer, 'function', 'exports loadRecoveryBuffer')
   assert.equal(typeof mod.hasRecoveryBuffer, 'function', 'exports hasRecoveryBuffer')
-  assert.equal(typeof mod.clearRecoveryBuffer, 'function', 'exports clearRecoveryBuffer')
   assert.equal(typeof mod.schedulePeriodicSave, 'function', 'exports schedulePeriodicSave')
 })
 

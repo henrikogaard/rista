@@ -90,14 +90,6 @@ test('loadRecoveryBuffer clears the buffer', async () => {
   assert.equal(hasRecoveryBuffer(), false)
 })
 
-test('clearRecoveryBuffer clears stored data', async () => {
-  globalThis.__TEST_STORAGE__ = mockLocalStorage()
-  const { saveRecoveryBuffer, clearRecoveryBuffer, hasRecoveryBuffer } = await importModule()
-
-  saveRecoveryBuffer(mockTabs(['/docs/a.md']))
-  clearRecoveryBuffer()
-  assert.equal(hasRecoveryBuffer(), false)
-})
 
 test('handles corrupt localStorage gracefully', async () => {
   globalThis.__TEST_STORAGE__ = mockLocalStorage({

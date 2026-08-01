@@ -1068,17 +1068,8 @@ test('perf budget module exports instrumentation functions', async () => {
   assert.equal(typeof perfBudget.markLaunchDone, 'function', 'markLaunchDone should be exported')
   assert.equal(typeof perfBudget.markFileSwitchStart, 'function', 'markFileSwitchStart should be exported')
   assert.equal(typeof perfBudget.markFileSwitchDone, 'function', 'markFileSwitchDone should be exported')
-  assert.equal(typeof perfBudget.measureFileSwitch, 'function', 'measureFileSwitch should be exported')
 })
 
-test('measureFileSwitch function wraps and returns result', async () => {
-  const { measureFileSwitch } = await importPerfBudgetModule()
-
-  const testValue = 42
-  const result = measureFileSwitch(() => testValue)
-
-  assert.equal(result, testValue, 'measureFileSwitch should return the function result')
-})
 
 test('Tauri CSP enforces local-only origins (zero Google Fonts)', () => {
   const conf = read('src-tauri/tauri.conf.json')

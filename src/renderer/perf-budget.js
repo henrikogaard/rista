@@ -33,12 +33,4 @@ export function markFileSwitchDone() {
   })
 }
 
-export function measureFileSwitch(fn) {
-  const start = performance.now()
-  const result = fn()
-  const elapsed = performance.now() - start
-  if (elapsed > FILE_SWITCH_BUDGET_MS) {
-    console.warn(`[perf] File switch exceeded budget: ${Math.round(elapsed)}ms > ${FILE_SWITCH_BUDGET_MS}ms`)
-  }
-  return result
-}
+
