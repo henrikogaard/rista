@@ -580,3 +580,13 @@ cd src-tauri && cargo clippy # clean
 npm test           # 216/216 passing
 npm run build      # passes
 ```
+
+## Session: 2026-08-01 — relativeFilePath consolidation, .gitignore, test fixes
+
+### Build Status
+```bash
+npm test           # 216/216 passing
+npm run build      # passes
+cargo check        # passes
+cargo clippy       # clean
+```
