@@ -8,7 +8,7 @@ import { attachWelcomeProjectHandlers, buildWelcome, syncWorkspaceChrome } from 
 import { addRecentProject } from './recent-projects.js'
 import { showContextMenu } from './context-menu.js'
 import { saveSession, loadSession } from './session-restore.js'
-import { rebuildLinkIndex, updateLinkIndexForFile, removeFromLinkIndex, getFilesForTag } from './link-index.js'
+import { rebuildLinkIndex, updateLinkIndexForFile, getFilesForTag } from './link-index.js'
 import { refreshRightPanel } from './right-panel.js'
 import { saveSnapshot } from './history.js'
 import { exportAsWebsite } from './publish.js'
@@ -17,7 +17,7 @@ import { refreshFileExplorerState } from './file-explorer-view.js'
 import { jumpToLine } from './outline-view.js'
 import { mergeFrontmatterWithBody } from './markdown.js'
 import { isAttachmentFile, isSpatialFile, isLikelyBinaryFile } from './attachment-preview.js'
-import { schedulePeriodicSave, loadRecoveryBuffer, hasRecoveryBuffer, clearRecoveryBuffer } from './crash-recovery.js'
+import { schedulePeriodicSave, loadRecoveryBuffer, hasRecoveryBuffer } from './crash-recovery.js'
 
 let _sessionTimer = null
 let _treeRefreshTimer = null

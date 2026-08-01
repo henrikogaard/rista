@@ -1,4 +1,4 @@
-import { $, state, editorViews, richEditors, syncingRichEditor, paneUsesWysiwyg, getTabForPane, getWysiwygMountSlot, getFocusedEditor } from './state.js'
+import { $, state, editorViews, richEditors, syncingRichEditor, paneUsesWysiwyg, getTabForPane, getFocusedEditor } from './state.js'
 import { undo, redo } from '@codemirror/commands'
 import { getSettings } from './settings.js'
 import { getRenderableMarkdown, mergeFrontmatterWithBody } from './markdown.js'

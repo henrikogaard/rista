@@ -11,7 +11,7 @@ import { buildWikiQualityPanel, mountWikiQualityPanel, renderWikiQualityPanel, h
 import { buildRelatedNotesPanel, mountRelatedNotesPanel, renderRelatedNotesPanel, handleRelatedNotesPanelEvent } from './related-notes-view.js'
 import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
 import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
-import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
+import { buildCalendarPanel } from './calendar-view.js'
 import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
 import { getLinkIndex, onLinkIndexChange } from './link-index.js'
 import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon, wikiQualityIcon, relatedNotesIcon } from './icons.js'
