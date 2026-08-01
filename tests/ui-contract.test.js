@@ -1078,3 +1078,14 @@ test('measureFileSwitch function wraps and returns result', async () => {
 
   assert.equal(result, testValue, 'measureFileSwitch should return the function result')
 })
+
+test('Tauri CSP enforces local-only origins (zero Google Fonts)', () => {
+  const conf = read('src-tauri/tauri.conf.json')
+  const cspMatch = conf.match(/"csp": "([^"]+)"/)
+  assert.ok(cspMatch, 'tauri.conf.json must have a CSP string')
+  const cspValue = cspMatch[1]
+  assert.doesNotMatch(cspValue, /fonts\.googleapis\.com/, 'CSP must not allow fonts.googleapis.com')
+  assert.doesNotMatch(cspValue, /fonts\.gstatic\.com/, 'CSP must not allow fonts.gstatic.com')
+  const externalUrls = cspValue.match(/https?:\/\/(?!localhost|asset\.localhost)[^\s;"]+/g)
+  assert.strictEqual(externalUrls, null, 'CSP must not contain unexpected external URLs, found: ' + externalUrls)
+})
