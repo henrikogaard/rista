@@ -164,7 +164,7 @@ Acceptance criteria:
 
 #### Task 3.4
 Title: Detect external file conflicts for dirty tabs
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - user is warned before overwriting external changes
 - conflict options are clear
@@ -198,7 +198,7 @@ Acceptance criteria:
 
 #### Task 3.9
 Title: Normalize IPC return shapes
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - renderer gets consistent success/error structures
 
@@ -211,26 +211,26 @@ The app supports writing, navigating, and organizing notes efficiently.
 
 #### Task 4.1
 Title: Build command palette shell
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - `Cmd/Ctrl+K` opens palette
 - palette dismisses cleanly
 
 #### Task 4.2
 Title: Add file search to command palette
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - files can be fuzzy-searched and opened from the palette
 
 #### Task 4.3
 Title: Add command search to command palette
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - view toggles and insert actions are searchable
 
 #### Task 4.4
 Title: Add keyboard-first palette navigation
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - arrows, enter, and escape work smoothly
 
@@ -238,21 +238,21 @@ Acceptance criteria:
 
 #### Task 4.5
 Title: Rebuild find and replace
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - find next/prev, replace one/all work reliably
 - behavior scales to large files
 
 #### Task 4.6
 Title: Improve outline/headings navigation
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - heading hierarchy is clearer
 - clicking headings navigates reliably
 
 #### Task 4.7
 Title: Add recent files and pinned files
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - recently used files are accessible quickly
 - users can pin important files
@@ -427,13 +427,13 @@ Acceptance criteria:
 
 #### Task 8.3
 Title: Define release checklist
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - release checklist includes build, regression pass, and packaging verification
 
 #### Task 8.4
 Title: Define milestone-based changelog process
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - changes are grouped by milestone/release, not random commits
 
