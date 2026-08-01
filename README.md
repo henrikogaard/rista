@@ -136,7 +136,7 @@ rista/
 
 ## Current Tauri Notes
 
-The first Tauri cut preserves HTML, DOCX, and static-site export. PDF export is deferred because Electron's Chromium-only `printToPDF()` does not have a direct Tauri equivalent.
+Rísta exports to PDF via its own Tauri backend (generates HTML from the preview pipeline, writes to a temp file, and opens it in the system browser). HTML, DOCX, and static-site export are also implemented.
 
 ## License
 

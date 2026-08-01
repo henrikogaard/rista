@@ -18,7 +18,7 @@ Rísta becomes structurally reliable. Pane modes, workspace split, tabs, and edi
 
 #### Task 1.1
 Title: Split renderer entry into dedicated modules
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - [src/renderer/index.js](../src/renderer/index.js) is reduced to bootstrapping and wiring
 - app shell, panes, tabs, commands, and tree logic live in separate files
@@ -33,7 +33,7 @@ Acceptance criteria:
 
 #### Task 1.3
 Title: Add `ARCHITECTURE.md`
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - renderer module responsibilities are documented
 - pane/workspace rendering model is described
@@ -42,14 +42,14 @@ Acceptance criteria:
 
 #### Task 1.4
 Title: Define formal pane and workspace state contract
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - pane mode, split mode, workspace mode, tabs, and focus are explicitly documented in code
 - layout is derived from state only
 
 #### Task 1.5
 Title: Create transition helpers for pane/workspace changes
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - pane/workspace transitions happen through dedicated functions
 - no layout-critical state mutation is scattered across unrelated handlers
@@ -64,21 +64,21 @@ Acceptance criteria:
 
 #### Task 1.7
 Title: Centralize CodeMirror surface mounting
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - Markdown editor host has one canonical owner per pane
 - standalone and split mode both work reliably
 
 #### Task 1.8
 Title: Centralize WYSIWYG surface mounting
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - WYSIWYG mounts cleanly in standalone and split modes
 - stale hosts are not left behind
 
 #### Task 1.9
 Title: Centralize preview surface rendering
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - standalone preview and split preview use clearly separated containers
 - preview state does not distort future pane layouts
@@ -92,14 +92,14 @@ The app remains fast under large folders, long documents, and frequent edits.
 
 #### Task 2.1
 Title: Separate debounce pipelines for save, preview, stats, and headings
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - saving does not unnecessarily throttle preview or insights
 - preview and stats do not recompute on selection-only changes
 
 #### Task 2.2
 Title: Prevent redundant preview rerenders
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - preview updates only when document content changes
 - no extra rerender happens when toggling focus only
@@ -115,7 +115,7 @@ Acceptance criteria:
 
 #### Task 2.4
 Title: Make tree updates incremental
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - tree is not rebuilt completely for every file change
 - expanded state is preserved
@@ -142,7 +142,7 @@ Users can rely on Rísta for real work without fear of silent corruption or weir
 
 #### Task 3.1
 Title: Add `TEST-CASES.md`
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - core manual regression cases are documented
 - includes standalone and split mode transitions
@@ -171,7 +171,7 @@ Acceptance criteria:
 
 #### Task 3.5
 Title: Add session restore for open tabs
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - relaunch can reopen previous tabs
 - state restore is predictable
@@ -186,13 +186,13 @@ Acceptance criteria:
 
 #### Task 3.7
 Title: Fix preload unsubscribe behavior
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - unsubscribing one listener does not remove unrelated listeners
 
 #### Task 3.8
 Title: Replace filename-based explorer identity with full paths
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - duplicate filenames do not confuse the explorer
 
@@ -412,7 +412,7 @@ The app can be shipped with confidence and improved sustainably.
 
 #### Task 8.1
 Title: Rebuild PDF export as document-only export
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - exported PDF contains only document content
 - app chrome is not included
