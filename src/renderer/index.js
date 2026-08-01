@@ -2,17 +2,17 @@ import './tauri-api.js'
 import { markLaunchStart, markLaunchDone } from './perf-budget.js'
 import { initTheme } from './theme.js'
 import { applySettings, getSettings } from './settings.js'
-import { initKeybindings, matchesBinding } from './keybindings.js'
+import { initKeybindings } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
 import { state } from './state.js'
 import { getFocusedTab } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
-import { registerEnsureRichEditorMounted, registerFocusPane, closeCommandDialog } from './commands.js'
+import { registerEnsureRichEditorMounted, registerFocusPane } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
-import { registerCommandPaletteCallbacks, registerCommands, toggleCommandPalette, closeCommandPalette as closePalette, openCommandPaletteFiles, openCommandPaletteCommands } from './command-palette.js'
-import { toggleZenMode, exitZenMode, buildZenExitHint } from './zen-mode.js'
+import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles } from './command-palette.js'
+import { toggleZenMode, buildZenExitHint } from './zen-mode.js'
 import { exportToHtml } from './preview.js'
 import { exportToDocx } from './export-docx.js'
 import { openSearchPanel } from './search-panel.js'
@@ -20,32 +20,20 @@ import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview, registerAttachmentPreviewCallbacks } from './attachment-preview.js'
 import { toggleTerminalDrawer, handleTerminalInput } from './terminal-drawer.js'
 import { openGraphModal } from './graph-modal.js'
-import { buildGraphView, renderGraph, destroyGraph, setGraphLocalMode, getGraphLocalMode } from './graph-view.js'
-import { buildCalendarPanel, refreshCalendarPanel } from './calendar-view.js'
-import { getLinkIndex, resolveWikilink, onLinkIndexChange } from './link-index.js'
-import { registerRightPanel, initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
-import { graphIcon, calendarIcon, outlineIcon, bookmarkIcon, propertiesIcon, folderIcon, agentsIcon, tagIcon, wikiQualityIcon, relatedNotesIcon } from './icons.js'
-import { buildFileExplorerPanel, mountFileExplorerPanel, refreshFileExplorerState, registerFileExplorerCallbacks, fileExplorerHeaderActions } from './file-explorer-view.js'
-import { buildAgentsPanel, mountAgentsPanel, refreshAgentsPanel, registerAgentsViewCallbacks, agentsViewHeaderActions } from './agents-view.js'
-import { buildOutlinePanel, mountOutlinePanel, renderOutline } from './outline-view.js'
-import { buildTagsPanel, mountTagsPanel, renderTagsPanel, handleTagsPanelEvent } from './tags-view.js'
-import { buildWikiQualityPanel, mountWikiQualityPanel, renderWikiQualityPanel, handleWikiQualityPanelEvent } from './wiki-quality-view.js'
-import { buildRelatedNotesPanel, mountRelatedNotesPanel, renderRelatedNotesPanel, handleRelatedNotesPanelEvent } from './related-notes-view.js'
-import { buildBookmarksPanel, mountBookmarksPanel, unmountBookmarksPanel, renderBookmarks, setBookmarksOpenFile } from './bookmarks-view.js'
-import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './properties-view.js'
-import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
-import { createSession } from './agents-sidebar.js'
-import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
+import { getLinkIndex, resolveWikilink } from './link-index.js'
+import { initRightSidebarWidth, restoreRightPanel } from './right-panel.js'
+import { mountBookmarksPanel } from './bookmarks-view.js'
+import { openDiagramBuilder } from './diagram-builder.js'
+import { toggleRightPanel, toggleRightSidebar } from './right-panel.js'
 import { ensureFirstRunSample } from './first-run.js'
 import { getAvailableTemplates, resolveTemplateVars } from './templates.js'
-import { initInspectorPanel } from './inspector.js'
-import { initAiChatPanel, openAiSession } from './ai-chat.js'
+import { openAiSession } from './ai-chat.js'
 import { mountAssistantRail, openAssistantWidgetForDock } from './assistant-rail.js'
 import { executeToolByName } from './ai-tools.js'
 import { registerAiReviewCallbacks } from './ai-review.js'
 
 // ── Shell (HTML + settings panel) ────────────────────────────────
-import { buildShell, registerShellCallbacks, toggleSettingsPanel, closeSettingsPanel, toggleAppTheme, applySelectedAppIcon, syncSettingsForm } from './shell.js'
+import { buildShell, registerShellCallbacks, toggleSettingsPanel, toggleAppTheme, applySelectedAppIcon, syncSettingsForm } from './shell.js'
 
 function getInitialFolderPath() {
   const injected = window.__RISTA_INITIAL_FOLDER__
@@ -137,208 +125,16 @@ registerFocusPane(focusPane)
 
 function _featureEnabled(key) { return getSettings()[key] || getSettings().showExperimental; }
 
-// ── Initialize widget system (right + left sidebars) ─────────────
-// File explorer and Agents default to the left sidebar.
-registerFileExplorerCallbacks({
-  openFolder,
+// ── Panel registrations (extracted to panels.js) ─────────────────
+import { initPanels } from './panels.js'
+initPanels({
+  openFile,
+  refreshTree,
+  openAiSession,
+  openAiChatSurface,
+  createDailyNote,
   collapseAllFolders,
-  renderTree: () => { refreshTree() },
-})
-registerRightPanel('files', {
-  title: 'Files',
-  icon: folderIcon(),
-  flex: 3,
-  defaultSide: 'left',
-  defaultActive: true,
-  build: buildFileExplorerPanel,
-  headerActions: fileExplorerHeaderActions,
-  onMount: mountFileExplorerPanel,
-  onUnmount: () => {},
-  onRefresh: refreshFileExplorerState,
-})
-
-registerAgentsViewCallbacks({
-  createSession: async () => {
-    const session = await createSession()
-    if (session) refreshAgentsPanel()
-  },
-  openSession: (sessionPath) => {
-    openAiChatSurface()
-    openAiSession(sessionPath)
-  },
-})
-_featureEnabled('featureAgents') && registerRightPanel('agents', {
-  title: 'Agents',
-  icon: agentsIcon(),
-  flex: 1,
-  defaultSide: 'left',
-  build: buildAgentsPanel,
-  headerActions: agentsViewHeaderActions,
-  onMount: mountAgentsPanel,
-  onUnmount: () => {},
-  onRefresh: refreshAgentsPanel,
-})
-
-_featureEnabled('featureInspector') && initInspectorPanel(openFile, closeRightPanel)
-
-let _graphUnsubscribe = null
-function rerenderGraphFromIndex() {
-  setGraphLocalMode(getGraphLocalMode(), getFocusedTab()?.path || null)
-  renderGraph(getLinkIndex(), (path) => openFile({ path, name: path.split('/').pop() }))
-}
-_featureEnabled('featureGraphView') && registerRightPanel('graph', {
-  title: 'Graph',
-  icon: graphIcon(),
-  flex: 2,
-  build: () => `<div id="graph-panel-body" class="widget-fill">${buildGraphView()}</div>`,
-  onMount: () => {
-    rerenderGraphFromIndex()
-    // Re-draw whenever the link index rebuilds (folder open, file edited,
-    // file moved/created/deleted by the AI agent, etc.)
-    _graphUnsubscribe?.()
-    _graphUnsubscribe = onLinkIndexChange(() => rerenderGraphFromIndex())
-  },
-  onUnmount: () => {
-    _graphUnsubscribe?.()
-    _graphUnsubscribe = null
-    destroyGraph()
-  },
-  onRefresh: () => {
-    // When the focused tab changes, push the new path so local mode follows it
-    if (getGraphLocalMode()) {
-      setGraphLocalMode(true, getFocusedTab()?.path || null)
-    }
-  },
-})
-
-_featureEnabled('featureAgents') && initAiChatPanel(openFile, closeRightPanel)
-
-// Gate behind featureProperties toggle to match settings UI
-_featureEnabled('featureProperties') && registerRightPanel('properties', {
-  title: 'Properties',
-  icon: propertiesIcon(),
-  flex: 1,
-  defaultSide: 'left',
-  defaultActive: true,
-  build: buildPropertiesPanel,
-  onMount: mountPropertiesPanel,
-  onUnmount: () => {},
-  onRefresh: renderProperties,
-})
-
-registerRightPanel('outline', {
-  title: 'Outline',
-  icon: outlineIcon(),
-  flex: 1,
-  build: buildOutlinePanel,
-  onMount: mountOutlinePanel,
-  onUnmount: () => {},
-  onRefresh: renderOutline,
-})
-
-let _tagsUnsubscribe = null
-_featureEnabled('featureTags') && registerRightPanel('tags', {
-  title: 'Tags',
-  icon: tagIcon(),
-  flex: 1,
-  defaultSide: 'left',
-  build: buildTagsPanel,
-  onMount: () => {
-    mountTagsPanel(openFile, (tag) => {
-      state.tagFilter = tag
-      refreshTree()
-    }, () => {
-      state.tagFilter = null
-      refreshTree()
-    })
-    const body = document.getElementById('tags-view-body')
-    body?.addEventListener('click', handleTagsPanelEvent)
-    body?.addEventListener('keydown', handleTagsPanelEvent)
-    _tagsUnsubscribe?.()
-    _tagsUnsubscribe = onLinkIndexChange(() => renderTagsPanel())
-  },
-  onUnmount: () => {
-    const body = document.getElementById('tags-view-body')
-    body?.removeEventListener('click', handleTagsPanelEvent)
-    body?.removeEventListener('keydown', handleTagsPanelEvent)
-    _tagsUnsubscribe?.()
-    _tagsUnsubscribe = null
-  },
-  onRefresh: renderTagsPanel,
-})
-
-let _relatedNotesUnsubscribe = null
-_featureEnabled('featureRelatedNotes') && registerRightPanel('related-notes', {
-  title: 'Related',
-  icon: relatedNotesIcon(),
-  flex: 1,
-  build: buildRelatedNotesPanel,
-  onMount: () => {
-    mountRelatedNotesPanel(openFile)
-    const body = document.getElementById('related-notes-body')
-    body?.addEventListener('click', handleRelatedNotesPanelEvent)
-    body?.addEventListener('keydown', handleRelatedNotesPanelEvent)
-    _relatedNotesUnsubscribe?.()
-    _relatedNotesUnsubscribe = onLinkIndexChange(() => renderRelatedNotesPanel())
-  },
-  onUnmount: () => {
-    const body = document.getElementById('related-notes-body')
-    body?.removeEventListener('click', handleRelatedNotesPanelEvent)
-    body?.removeEventListener('keydown', handleRelatedNotesPanelEvent)
-    _relatedNotesUnsubscribe?.()
-    _relatedNotesUnsubscribe = null
-  },
-  onRefresh: renderRelatedNotesPanel,
-})
-
-let _wikiQualityUnsubscribe = null
-_featureEnabled('featureWikiQuality') && registerRightPanel('wiki-quality', {
-  title: 'Wiki',
-  icon: wikiQualityIcon(),
-  flex: 1,
-  build: buildWikiQualityPanel,
-  onMount: () => {
-    mountWikiQualityPanel(openFile, { refreshTree })
-    const body = document.getElementById('wiki-quality-body')
-    body?.addEventListener('click', handleWikiQualityPanelEvent)
-    body?.addEventListener('keydown', handleWikiQualityPanelEvent)
-    _wikiQualityUnsubscribe?.()
-    _wikiQualityUnsubscribe = onLinkIndexChange(() => renderWikiQualityPanel())
-  },
-  onUnmount: () => {
-    const body = document.getElementById('wiki-quality-body')
-    body?.removeEventListener('click', handleWikiQualityPanelEvent)
-    body?.removeEventListener('keydown', handleWikiQualityPanelEvent)
-    _wikiQualityUnsubscribe?.()
-    _wikiQualityUnsubscribe = null
-  },
-  onRefresh: renderWikiQualityPanel,
-})
-
-_featureEnabled('featureBookmarks') && setBookmarksOpenFile((item) => openFile(item))
-_featureEnabled('featureBookmarks') && registerRightPanel('bookmarks', {
-  title: 'Bookmarks',
-  icon: bookmarkIcon(),
-  flex: 1,
-  build: buildBookmarksPanel,
-  onMount: mountBookmarksPanel,
-  onUnmount: unmountBookmarksPanel,
-  onRefresh: renderBookmarks,
-})
-
-_featureEnabled('featureCalendar') && registerRightPanel('calendar', {
-  title: 'Calendar',
-  icon: calendarIcon(),
-  flex: 0,
-  build: () => `<div id="calendar-panel-body" class="widget-fill"></div>`,
-  onMount: () => {
-    const body = document.getElementById('calendar-panel-body')
-    if (body && !body.firstChild) {
-      const panel = buildCalendarPanel({ onDateClick: (dateStr) => createDailyNote(dateStr), folderPath: state.folderPath })
-      body.appendChild(panel)
-    }
-  },
-  onUnmount: () => { document.getElementById('calendar-panel-body')?.replaceChildren() },
+  openFolderPath,
 })
 
 // ── Transclusion resolver ───────────────────────────────────────

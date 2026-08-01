@@ -255,7 +255,7 @@ test('sidebar resize updates CSS during drag and persists once on release', () =
 })
 
 test('tag pane is a movable widget backed by the link index tag data', () => {
-  const index = read('src/renderer/index.js')
+  const index = read('src/renderer/panels.js')
   const tagsView = read('src/renderer/tags-view.js')
   const explorer = read('src/renderer/file-explorer-view.js')
   const tabs = read('src/renderer/tabs.js')
@@ -387,7 +387,7 @@ test('frontmatter can be hidden in rendered document modes and drive a banner im
 
 test('properties panel exposes focused banner controls backed by frontmatter', () => {
   const properties = read('src/renderer/properties-view.js')
-  const index = read('src/renderer/index.js')
+  const index = read('src/renderer/panels.js')
   const rightPanel = read('src/renderer/right-panel.js')
   const css = read('src/renderer/styles/main.css')
 
@@ -850,7 +850,7 @@ test('assistant can dock as widget or dedicated side rail', () => {
 })
 
 test('right sidebar exposes wiki maintenance quality signals', () => {
-  const index = read('src/renderer/index.js')
+  const index = read('src/renderer/panels.js')
   const view = read('src/renderer/wiki-quality-view.js')
   const analyzer = read('src/renderer/wiki-quality.js')
   const icons = read('src/renderer/icons.js')
@@ -891,7 +891,7 @@ test('markdown renderer documents and handles common Obsidian compatibility synt
 })
 
 test('right sidebar exposes related notes from the local semantic index', () => {
-  const index = read('src/renderer/index.js')
+  const index = read('src/renderer/panels.js')
   const view = read('src/renderer/related-notes-view.js')
   const semantic = read('src/renderer/semantic-index.js')
   const icons = read('src/renderer/icons.js')

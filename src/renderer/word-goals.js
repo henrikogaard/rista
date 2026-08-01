@@ -56,5 +56,5 @@ export function formatGoalStatus(currentWords, filePath) {
 
 export function isGoalReached(currentWords, filePath) {
   const docGoal = getDocumentGoal(filePath)
-  return docGoal && currentWords >= docGoal
+  if (!docGoal) return false; return currentWords >= docGoal
 }
