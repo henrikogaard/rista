@@ -10,7 +10,7 @@ import { getFocusedTab } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
 import { createNoteFromSelection } from './link-index.js'
-import { registerEnsureRichEditorMounted, registerFocusPane } from './commands.js'
+import { registerEnsureRichEditorMounted, registerFocusPane, insertHeading, insertList, insertLink, insertTable, insertCodeBlock, insertHorizontalRule, insertCallout, wrapInline, wrapSelection, insertImage } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
 import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles } from './command-palette.js'
 import { toggleZenMode, buildZenExitHint } from './zen-mode.js'
@@ -437,5 +437,18 @@ registerCommands([
       showStatusNotice(`Created ${result.name}`, 'info')
     }
   }},
+  // Insert commands for discoverability via command palette (Task 6.4)
+  { id: 'insert-heading-1', label: 'Insert Heading 1', description: 'Add a level 1 heading at cursor', shortcut: '', action: () => insertHeading(1) },
+  { id: 'insert-heading-2', label: 'Insert Heading 2', description: 'Add a level 2 heading at cursor', shortcut: '', action: () => insertHeading(2) },
+  { id: 'insert-heading-3', label: 'Insert Heading 3', description: 'Add a level 3 heading at cursor', shortcut: '', action: () => insertHeading(3) },
+  { id: 'insert-bullet-list', label: 'Insert Bullet List', description: 'Start a bullet list at cursor', shortcut: '', action: () => insertList('bullet') },
+  { id: 'insert-numbered-list', label: 'Insert Numbered List', description: 'Start a numbered list at cursor', shortcut: '', action: () => insertList('ordered') },
+  { id: 'insert-task-list', label: 'Insert Task List', description: 'Start a task list at cursor', shortcut: '', action: () => insertList('task') },
+  { id: 'insert-callout-note', label: 'Insert Callout (Note)', description: 'Add a note-style callout block', shortcut: '', action: () => insertCallout('note') },
+  { id: 'insert-callout-tip', label: 'Insert Callout (Tip)', description: 'Add a tip-style callout block', shortcut: '', action: () => insertCallout('tip') },
+  { id: 'insert-callout-warning', label: 'Insert Callout (Warning)', description: 'Add a warning-style callout block', shortcut: '', action: () => insertCallout('warning') },
+  { id: 'insert-code-block', label: 'Insert Code Block', description: 'Add a fenced code block at cursor', shortcut: '', action: () => insertCodeBlock() },
+  { id: 'insert-horizontal-rule', label: 'Insert Horizontal Rule', description: 'Add a thematic break at cursor', shortcut: '', action: () => insertHorizontalRule() },
+  { id: 'insert-image', label: 'Insert Image', description: 'Pick and insert an image reference', shortcut: '', action: () => insertImage() },
 ])
 

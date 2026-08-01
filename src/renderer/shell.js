@@ -866,10 +866,6 @@ export function buildShell() {
               <div class="st st-brand">Rísta</div>
             </div>
           </div>
-
-              <div class="st st-brand">Rísta</div>
-            </div>
-          </div>
         </div>
 
         ${buildAssistantRail()}

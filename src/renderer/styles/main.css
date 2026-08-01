@@ -2723,6 +2723,35 @@ body.is-resizing-split .workspace-resizer::before {
   opacity: 0.18;
 }
 
+/* Aurora gradient mesh — Nordic aurora borealis waves */
+.welcome::after {
+  content: '';
+  position: absolute;
+  inset: -40% -20%;
+  z-index: 0;
+  opacity: 0.14;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 30%, rgba(124,196,168,0.30), transparent 70%),
+    radial-gradient(ellipse 60% 80% at 70% 20%, rgba(100,160,210,0.25), transparent 65%),
+    radial-gradient(ellipse 50% 50% at 50% 60%, rgba(160,120,200,0.15), transparent 60%),
+    radial-gradient(ellipse 40% 40% at 85% 70%, rgba(80,200,150,0.12), transparent 55%);
+  filter: blur(40px);
+  animation: auroraDrift 24s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+[data-theme="light"] .welcome::after {
+  opacity: 0.08;
+}
+
+@keyframes auroraDrift {
+  0%   { transform: translate(0%, 0%) scale(1); }
+  25%  { transform: translate(-2%, 2%) scale(1.02); }
+  50%  { transform: translate(3%, -1%) scale(1.05); }
+  75%  { transform: translate(-1%, -2%) scale(1.01); }
+  100% { transform: translate(2%, 1%) scale(1.03); }
+}
+
 .welcome__content {
   position: relative;
   z-index: 1;

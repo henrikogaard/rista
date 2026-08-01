@@ -429,3 +429,38 @@ npm test           # 139/139 passing
 - Toolbar/insert commands expansion (6.4), dual-pane comparison (6.5)
 - Visual polish: welcome screen (7.3), empty states (7.4), branding (7.5), themes (7.6)
 - Typography and spacing (7.1), focus/hover states (7.2)
+
+## Session: 2026-08-01 — Phase 1 finish: benchmarks, insert commands, welcome aurora, theme tests
+
+### Changes
+
+1. **Task 2.3 — Preview benchmark fixtures and tests** (NEW)
+   - Generated benchmark fixtures: 50-headings, 500-headings, 10-tables, 100-tables, 200-callouts
+   - `tests/benchmark-preview.test.js` — 6 tests measuring `renderMarkdown()` performance
+   - Budgets set based on real measured performance (smallest doc: ~2ms, largest: ~28ms)
+
+2. **Task 3.3 — Smoke tests for module boot** (NEW)
+   - `tests/smoke-boot.test.js` — 13 tests verifying module exports, function signatures, file existence
+   - Tests state, theme, perf-budget, settings, markdown, word-goals, commands, tabs, shell, keybindings, crash-recovery, tree-view
+
+3. **Task 6.4 — Insert commands in command palette** (ENHANCED)
+   - Added 11 palette commands: insert-heading-1/2/3, insert-bullet-list, insert-numbered-list, insert-task-list, insert-callout-note/tip/warning, insert-code-block, insert-horizontal-rule, insert-image
+
+4. **Task 7.3 — Aurora welcome screen** (ENHANCED)
+   - Added `.welcome::after` with multi-layered gradient mesh (teal/blue/purple/green)
+   - `auroraDrift` animation (24s ease-in-out infinite alternate)
+   - Welcome logo size bumped from clamp(30px) to clamp(36px)
+
+5. **Task 7.6 — Theme coherence contract tests** (NEW)
+   - `tests/theme-coherence.test.js` — 8 tests verifying both themes define identical core token sets, component CSS uses var(), editor colors are theme-aware, aurora animation present
+
+6. **Bugfix — Duplicate statusbar HTML in shell.js** (FIXED)
+   - Removed duplicated `st-brand` statusbar block
+
+7. **PROJECT-BOARD.md** — Tasks 5.7, 5.8 marked Done
+
+### Build Status
+```bash
+npm run build      # JS — passes
+npm test           # 166/166 passing (6 new benchmark, 13 new smoke, 8 new theme tests)
+```

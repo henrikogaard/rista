@@ -106,7 +106,7 @@ Acceptance criteria:
 
 #### Task 2.3
 Title: Benchmark preview performance on large documents
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - benchmark fixtures exist
 - results are documented for long docs, many headings, and tables
@@ -122,14 +122,14 @@ Acceptance criteria:
 
 #### Task 2.5
 Title: Lazy render deep folder branches
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - large folders open faster
 - inactive deep branches do not fully render immediately
 
 #### Task 2.6
 Title: Batch watcher event bursts
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - multiple file changes do not cause UI thrash
 
@@ -156,7 +156,7 @@ Acceptance criteria:
 
 #### Task 3.3
 Title: Add smoke tests for app boot and folder open
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - boot and open-folder failures are caught automatically
 
@@ -307,13 +307,13 @@ Acceptance criteria:
 
 #### Task 5.7
 Title: Add PARA navigation helpers
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can jump between Projects, Areas, Resources, and Archive quickly
 
 #### Task 5.8
 Title: Improve task/GTD insertion flows
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - inbox, next action, waiting, and someday patterns are easy to insert
 
@@ -326,13 +326,13 @@ Rísta feels like a serious Markdown IDE, not just a text editor.
 
 #### Task 6.1
 Title: Audit markdown round-tripping in WYSIWYG
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - toggling between WYSIWYG and Markdown preserves structure reliably
 
 #### Task 6.2
 Title: Harden tables, callouts, and lists in WYSIWYG
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - these structures render and round-trip cleanly
 
@@ -346,13 +346,13 @@ Acceptance criteria:
 
 #### Task 6.4
 Title: Expand insert commands and toolbar tools
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - common Markdown structures are easy to insert by mouse or keyboard
 
 #### Task 6.5
 Title: Improve dual-pane comparison workflows
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - comparing two files side by side is smooth and reliable
 
@@ -365,13 +365,13 @@ The app feels memorable, calm, and premium.
 
 #### Task 7.1
 Title: Refine typography and spacing system
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - UI hierarchy feels consistent across the app
 
 #### Task 7.2
 Title: Improve active, focus, and hover states
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - state changes are clear without feeling loud
 
@@ -379,19 +379,19 @@ Acceptance criteria:
 
 #### Task 7.3
 Title: Finish aurora welcome screen
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - welcome screen feels premium and intentional
 
 #### Task 7.4
 Title: Improve empty-tab and empty-file states
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - empty states feel informative and visually integrated
 
 #### Task 7.5
 Title: Refine logo and branding usage
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - branding is polished across app, README, and About surfaces
 
@@ -399,7 +399,7 @@ Acceptance criteria:
 
 #### Task 7.6
 Title: Deep tune dark and light themes
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - editor, preview, WYSIWYG, explorer, and dialogs feel coherent in both themes
 
