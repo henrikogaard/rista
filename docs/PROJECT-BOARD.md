@@ -56,7 +56,7 @@ Acceptance criteria:
 
 #### Task 1.6
 Title: Remove remaining DOM-driven implicit state behavior
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - the UI no longer relies on previous DOM placement to determine current behavior
 
@@ -149,7 +149,7 @@ Acceptance criteria:
 
 #### Task 3.2
 Title: Add unit tests for markdown helpers and pane transitions
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - markdown helpers have coverage
 - pane transition logic has coverage
@@ -178,7 +178,7 @@ Acceptance criteria:
 
 #### Task 3.6
 Title: Add unsaved buffer recovery
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - crash/relaunch can recover unsaved text when enabled
 
@@ -273,7 +273,7 @@ Acceptance criteria:
 
 #### Task 5.2
 Title: Add note templates
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - templates exist for daily, meeting, project, reference, and zettel notes
 
@@ -281,7 +281,7 @@ Acceptance criteria:
 
 #### Task 5.3
 Title: Improve internal link insertion
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - inserting links to local notes is fast and discoverable
 
@@ -293,7 +293,7 @@ Acceptance criteria:
 
 #### Task 5.5
 Title: Add backlink discovery
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can inspect notes that reference the current note
 

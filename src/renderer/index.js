@@ -9,6 +9,7 @@ import { state } from './state.js'
 import { getFocusedTab } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
+import { createNoteFromSelection } from './link-index.js'
 import { registerEnsureRichEditorMounted, registerFocusPane } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
 import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles } from './command-palette.js'
@@ -382,5 +383,22 @@ registerCommands([
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
   { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
   { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⇧⌘D', action: () => createDailyNote() },
+  { id: 'create-note-from-selection', label: 'Create Note from Selection', description: 'Turn selected text into a new linked note', shortcut: '', action: async () => {
+    const pane = state.focusedPane
+    const view = editorViews[pane]
+    if (!view || !state.folderPath) { showStatusNotice('Select text in a Markdown editor first', 'error'); return }
+    const sel = view.state.selection.main
+    const selected = view.state.sliceDoc(sel.from, sel.to)
+    if (!selected.trim()) { showStatusNotice('Select some text first', 'error'); return }
+    const result = await createNoteFromSelection(state.folderPath, selected, view)
+    if (!result) { showStatusNotice('Could not create note', 'error'); return }
+    if (result.existing) {
+      showStatusNotice('Note already exists — inserted wikilink', 'info')
+    } else {
+      await refreshTree()
+      await tryAwaitRebuildLinkIndex()
+      showStatusNotice(`Created ${result.name}`, 'info')
+    }
+  }},
 ])
 
