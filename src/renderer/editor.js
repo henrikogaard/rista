@@ -307,24 +307,6 @@ export function updateEditorTheme(view, isDark) {
   })
 }
 
-export function updateTypewriterMode(view, enabled) {
-  view.dispatch({
-    effects: typewriterCompartment.reconfigure(enabled ? typewriterExtension : typewriterOff),
-  })
-}
-
-export function updateSpellcheck(view, enabled) {
-  view.dispatch({
-    effects: spellcheckCompartment.reconfigure(enabled ? spellcheckOn : spellcheckOff),
-  })
-}
-
-export function updateVimMode(view, enabled) {
-  view.dispatch({
-    effects: vimCompartment.reconfigure(enabled ? vim() : vimOff),
-  })
-}
-
 export function updateSmartTypography(view, enabled) {
   view.dispatch({
     effects: smartTypographyCompartment.reconfigure(enabled ? smartTypographyExtension : smartTypographyOff),
