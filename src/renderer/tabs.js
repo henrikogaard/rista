@@ -174,7 +174,7 @@ function showTreeContextMenu(item, event) {
       const result = await window.fjord.duplicateFile?.(item.path)
       if (result) {
         await refreshTree()
-        try { await rebuildLinkIndex() } catch {}
+        if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
       }
     }},
     { label: 'Delete', action: () => deleteTreeItem(item) },
@@ -204,7 +204,7 @@ async function createFileInFolder(folderPath) {
     }
     state.expandedFolders.add(folderPath)
     await refreshTree()
-    try { await rebuildLinkIndex() } catch {}
+    if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
     await openFile({ path: filePath, name: `${sanitized}.md`, type: 'file' })
   } catch {
     showStatusNotice('Could not create file. Check the folder permissions.', 'error')
@@ -266,7 +266,7 @@ async function renameTreeItem(item) {
     }
     await refreshTree()
     renderTabs()
-    try { await rebuildLinkIndex() } catch {}
+    if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
   } catch {
     showStatusNotice(`Could not rename ${item.type}. Check the folder permissions.`, 'error')
   }
@@ -351,7 +351,7 @@ async function deleteTreeItem(item) {
       }
     }
     await refreshTree()
-    try { await rebuildLinkIndex() } catch {}
+    if (getSettings().featureWikilinks || getSettings().showExperimental) { try { await rebuildLinkIndex() } catch {} }
   } catch {}
 }
 
@@ -437,7 +437,7 @@ export async function openFolder() {
   syncWorkspaceChrome()
   await window.fjord.watchFolder(p)
   await refreshTree()
-  rebuildLinkIndex().catch(() => {})
+  if (getSettings().featureWikilinks || getSettings().showExperimental) { rebuildLinkIndex().catch(() => {}) }
   showWelcomeScreen()
 
   // Try restoring session
@@ -472,7 +472,7 @@ export async function openFolderPath(folderPath) {
   syncWorkspaceChrome()
   await window.fjord.watchFolder(folderPath)
   await refreshTree()
-  rebuildLinkIndex().catch(() => {})
+  if (getSettings().featureWikilinks || getSettings().showExperimental) { rebuildLinkIndex().catch(() => {}) }
   showWelcomeScreen()
 
   // Try restoring session

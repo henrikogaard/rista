@@ -1,4 +1,4 @@
-# AGENTS.md — Fjordmark
+# AGENTS.md — Rista
 
 Handoff document for Codex. Read this before touching any file.
 
