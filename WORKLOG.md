@@ -226,7 +226,7 @@ Recommended next move:
 ```bash
 npm run build      # JS — passes (verified 2026-08-01)
 cargo check        # Rust — passes (verified 2026-08-01)
-npm test           # 68/68 passing (verified 2026-08-01)
+npm test           # 69/69 passing (verified 2026-08-01)
 ```
 
 ## Files Most Relevant To Continue
@@ -242,7 +242,6 @@ npm test           # 68/68 passing (verified 2026-08-01)
 
 ## Notes
 
-- Phase 0 cleanup is complete. 21 issues closed, 4 remaining (all polish/design).
-- AGENTS.md is updated to current Tauri architecture. CLAUDE.md deleted (was stale Electron-era duplicate of AGENTS.md).
-- The `docs/` directory still references `Rista` in many doc titles — cosmetic rename needed.
+- Phase 1 cleanup is complete. All 4 open code issues addressed (feature-gating audits, table alignment, advanced controls gating, boot gating). 3 remaining (all visual QA).
+- AGENTS.md is updated to current Tauri architecture. CLAUDE.md deleted (was stale Electron-era duplicate. CLAUDE.md in stale worktree deleted of AGENTS.md).
 - Feature flags: non-core modules (agents, graph, calendar, etc.) are off by default. Enable via Settings -> Experimental -> showExperimental.
