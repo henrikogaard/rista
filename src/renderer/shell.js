@@ -13,6 +13,7 @@ import { showContextMenu } from './context-menu.js'
 import { renderPinnedProjectsHtml, renderRecentProjectsHtml, removeRecentProject, togglePinnedProject, unpinProject } from './recent-projects.js'
 import { PROVIDERS } from './ai-providers.js'
 import { buildAssistantRail } from './assistant-rail.js'
+import { showStatusNotice } from './tabs.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -530,7 +531,7 @@ function handleSettingsKeydown(event) {
     const conflict = findConflict(activeKeybindingCapture, combo)
     if (conflict) {
       const binding = getAllBindings()[conflict]
-      alert(`${combo} is already assigned to ${binding?.label || conflict}`)
+      showStatusNotice(`${combo} is already assigned to ${binding?.label || conflict}`, 'warning')
       return
     }
 
@@ -1111,7 +1112,7 @@ export function buildShell() {
       refreshRenderedDocuments()
       _callbacks.syncAssistantRail?.()
     } catch {
-      alert('Invalid settings file')
+      showStatusNotice('Invalid settings file', 'error')
     }
   })
   $('settings-overlay').addEventListener('click', closeSettingsPanel)

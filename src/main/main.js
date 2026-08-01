@@ -599,7 +599,7 @@ ipcMain.handle('export:docx', async (_, base64Data, fileName) => {
 // ── IPC: Settings export ──────────────────────────────────────────
 ipcMain.handle('settings:export', async (_, jsonString) => {
   const savePath = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: 'fjordmark-settings.json',
+    defaultPath: 'rista-settings.json',
     filters: [{ name: 'JSON files', extensions: ['json'] }],
   })
   if (savePath.canceled || !savePath.filePath) return false

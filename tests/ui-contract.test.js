@@ -248,7 +248,7 @@ test('sidebar resize updates CSS during drag and persists once on release', () =
   assert.match(rightPanel, /requestAnimationFrame\(applyWidth\)/)
   assert.match(rightPanel, /style\.setProperty\('--right-sidebar-width'/)
   assert.match(rightPanel, /cancelAnimationFrame\(frame\)/)
-  assert.match(rightPanel, /onUp[\s\S]*localStorage\.setItem\('fjordmark-right-sidebar-width'/)
+  assert.match(rightPanel, /onUp[\s\S]*localStorage\.setItem\('rista-right-sidebar-width'/)
   assert.match(css, /\.sidebar-resizer\s*\{[\s\S]*background: transparent/)
   assert.match(css, /\.sidebar-resizer\s*\{[\s\S]*margin-left: -5px/)
   assert.match(css, /\.sidebar-resizer::before\s*\{[\s\S]*width: 1px/)
@@ -620,7 +620,7 @@ test('agents sidebar stores local session metadata with status summaries', () =>
   const view = read('src/renderer/agents-view.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(agents, /\.fjordmark\/sessions/)
+  assert.match(agents, /\.rista\/sessions/)
   assert.match(agents, /runtime/)
   assert.match(agents, /status/)
   assert.match(agents, /summary/)

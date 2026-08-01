@@ -1,5 +1,6 @@
 import { $, state, getTabForPane, getFocusedTab, getFocusedEditor } from './state.js'
 import { renderMarkdown, extractHeadings, getStats } from './markdown.js'
+import { showStatusNotice } from './tabs.js'
 import { processDiagrams } from './diagrams.js'
 import { getTheme } from './theme.js'
 import { getSettings } from './settings.js'
@@ -12,19 +13,6 @@ export function registerWikilinkCallback(fn) {
   _wikilinkCallback = fn
 }
 
-// ── Debounced preview ───────────────────────────────────────────
-// Separate debounce for preview to avoid tying it to save debounce.
-// File-switch renders stay instant via direct refreshPreview() call.
-let _previewDebounceTimer = null
-export function schedulePreviewRefresh(pane) {
-  clearTimeout(_previewDebounceTimer)
-  _previewDebounceTimer = setTimeout(async () => {
-    const tab = getTabForPane(pane)
-    if (tab) await refreshPreview(pane, tab.content)
-  }, 250)
-}
-
-// ── Preview ───────────────────────────────────────────────────────
 export async function refreshPreview(pane, markdown) {
   const theme = getTheme()
   const activeTab = getTabForPane(pane)
@@ -203,7 +191,7 @@ export function updateStats(markdown) {
 export async function exportToPdf() {
   const tab = getFocusedTab()
   if (!tab) {
-    alert('No file open')
+    showStatusNotice('No file open', 'error')
     return
   }
   try {
@@ -224,10 +212,10 @@ export async function exportToPdf() {
     if (success) {
       // Success notification could be added here
     } else {
-      alert('Failed to export PDF')
+      showStatusNotice('Failed to export PDF', 'error')
     }
   } catch (err) {
-    alert('Error exporting PDF: ' + err.message)
+    showStatusNotice('Error exporting PDF: ' + err.message, 'error')
   }
 }
 
@@ -251,7 +239,7 @@ export async function exportToHtml() {
       settings,
     })
   } catch (err) {
-    alert('Error exporting HTML: ' + err.message)
+    showStatusNotice('Error exporting HTML: ' + err.message, 'error')
   }
 }
 

@@ -1,6 +1,6 @@
 import { state } from './state.js'
 
-const PREFIX = 'fjordmark-bookmarks-'
+const PREFIX = 'rista-bookmarks-'
 
 function hashPath(folderPath) {
   let hash = 0

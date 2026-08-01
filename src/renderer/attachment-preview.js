@@ -1,4 +1,5 @@
 import { state, $ } from './state.js'
+import { showStatusNotice } from './tabs.js'
 
 // ── Attachment Preview ───────────────────────────────────────────
 // Handles preview of images and PDFs in the workspace.
@@ -171,7 +172,7 @@ async function renderDrawingEditor(host, tab) {
   })
   host.querySelector('[data-action="save"]')?.addEventListener('click', async () => {
     const ok = await window.fjord.writeFile(tab.path, JSON.stringify(doc, null, 2))
-    if (!ok) alert('Failed to save drawing')
+    if (!ok) showStatusNotice('Failed to save drawing', 'error')
   })
 
   renderAll()
@@ -242,7 +243,7 @@ async function renderCanvasWorkspace(host, tab) {
 
   host.querySelector('[data-action="save"]')?.addEventListener('click', async () => {
     const ok = await window.fjord.writeFile(tab.path, JSON.stringify(doc, null, 2))
-    if (!ok) alert('Failed to save canvas')
+    if (!ok) showStatusNotice('Failed to save canvas', 'error')
   })
 
   renderCards()

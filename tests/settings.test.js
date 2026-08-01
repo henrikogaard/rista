@@ -62,7 +62,7 @@ async function importAiProvidersModule() {
 
 test('settings sanitizes invalid assistant dock values', async () => {
   global.localStorage = mockLocalStorage({
-    'fjordmark-settings': JSON.stringify({ assistantDock: 'floating-panel' }),
+    'rista-settings': JSON.stringify({ assistantDock: 'floating-panel' }),
   })
 
   const { getSettings } = await importSettingsModule()

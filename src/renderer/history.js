@@ -2,10 +2,10 @@ import { state } from './state.js'
 import { getSettings } from './settings.js'
 
 // ── Version History ─────────────────────────────────────────────
-// Saves snapshots of files to .fjordmark/history/{basename}/{timestamp}.md
+// Saves snapshots of files to .rista/history/{basename}/{timestamp}.md
 // for lightweight local versioning.
 
-const HISTORY_DIR = '.fjordmark/history'
+const HISTORY_DIR = '.rista/history'
 
 function getHistoryDir(filePath) {
   if (!state.folderPath) return null

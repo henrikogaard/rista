@@ -11,7 +11,7 @@ const SIDES = ['right', 'left']
 const STACK_ID = { right: 'right-sidebar-stack', left: 'left-widget-stack' }
 const RIGHT_SIDEBAR_DEFAULT_WIDGET = 'outline'
 const SIDEBAR_LAYOUT_VERSION = 1
-const LAYOUT_VERSION_KEY = 'fjordmark-sidebar-layout-version'
+const LAYOUT_VERSION_KEY = 'rista-sidebar-layout-version'
 const RIGHT_SIDEBAR_TAB_GROUPS = [
   { id: 'context', label: 'Context', groups: ['context'] },
   { id: 'knowledge', label: 'Knowledge', groups: ['project-health'] },
@@ -43,12 +43,12 @@ export function buildRightPanelContainer() {
   </div>`
 }
 
-const WIDGETS_KEY = 'fjordmark-right-widgets'
-const COLLAPSED_KEY = 'fjordmark-right-widgets-collapsed'
-const ORDER_KEY = 'fjordmark-right-widgets-order'
-const FLEX_KEY = 'fjordmark-right-widgets-flex'
-const SIDE_KEY = 'fjordmark-widget-side'
-const SEEN_KEY = 'fjordmark-widget-seen'
+const WIDGETS_KEY = 'rista-right-widgets'
+const COLLAPSED_KEY = 'rista-right-widgets-collapsed'
+const ORDER_KEY = 'rista-right-widgets-order'
+const FLEX_KEY = 'rista-right-widgets-flex'
+const SIDE_KEY = 'rista-widget-side'
+const SEEN_KEY = 'rista-widget-seen'
 
 function loadWidgetState() {
   try {
@@ -780,7 +780,7 @@ export function startRightSidebarResize(event) {
       cancelAnimationFrame(frame)
       applyWidth()
     }
-    try { localStorage.setItem('fjordmark-right-sidebar-width', `${pendingWidth}px`) } catch {}
+    try { localStorage.setItem('rista-right-sidebar-width', `${pendingWidth}px`) } catch {}
   }
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp)
@@ -800,7 +800,7 @@ export function restoreRightPanel() {
 
 export function initRightSidebarWidth() {
   try {
-    const saved = localStorage.getItem('fjordmark-right-sidebar-width')
+    const saved = localStorage.getItem('rista-right-sidebar-width')
     if (saved) document.documentElement.style.setProperty('--right-sidebar-width', saved)
   } catch {}
 }

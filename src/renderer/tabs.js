@@ -65,7 +65,7 @@ function confirmExternalOverwrite(tab, confirmOverwrite = false) {
   return confirm(`External changes detected for "${tab.name}". Saving now will overwrite the version on disk. Continue?`)
 }
 
-function showStatusNotice(message, tone = 'info', { sticky = false } = {}) {
+export function showStatusNotice(message, tone = 'info', { sticky = false } = {}) {
   const node = $('st-update')
   if (!node) return
   node.textContent = message
@@ -522,7 +522,7 @@ export async function openSingleFilePath(filePath) {
 
 export async function createDailyNote(dateOverride) {
   if (!window.fjord || !state.folderPath) {
-    alert('Open a folder first')
+    showStatusNotice('Open a folder first', 'error')
     return
   }
   const settings = getSettings()
@@ -551,7 +551,7 @@ export async function createDailyNote(dateOverride) {
 
 export async function createNewFile() {
   if (!window.fjord || !state.folderPath) {
-    alert('Open a folder first')
+    showStatusNotice('Open a folder first', 'error')
     return
   }
   const created = await window.fjord.newMarkdownFile(state.folderPath)

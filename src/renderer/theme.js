@@ -1,5 +1,5 @@
 // Theme manager — persists to localStorage
-const STORAGE_KEY = 'fjordmark-theme'
+const STORAGE_KEY = 'rista-theme'
 
 export function getTheme() {
   return localStorage.getItem(STORAGE_KEY) || 'dark'

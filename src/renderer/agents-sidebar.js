@@ -1,9 +1,9 @@
 import { state, $ } from './state.js'
 
 // ── Agents Sidebar ───────────────────────────────────────────────
-// Local session history stored in .fjordmark/sessions/
+// Local session history stored in .rista/sessions/
 
-const SESSIONS_DIR = '.fjordmark/sessions'
+const SESSIONS_DIR = '.rista/sessions'
 
 export async function loadSessions() {
   if (!state.folderPath) return []

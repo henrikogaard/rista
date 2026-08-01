@@ -1,4 +1,4 @@
-const PREFIX = 'fjordmark-session-'
+const PREFIX = 'rista-session-'
 
 function hashPath(folderPath) {
   let hash = 0

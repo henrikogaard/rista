@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'fjordmark-keybindings'
+const STORAGE_KEY = 'rista-keybindings'
 
 const defaultBindings = {
   'save': 'Mod+S',

@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'fjordmark-word-goals'
+const STORAGE_KEY = 'rista-word-goals'
 
 let sessionGoal = null
 let sessionStartWords = 0

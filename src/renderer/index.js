@@ -110,6 +110,7 @@ import {
   handleAppCommand,
   handleExternalFileChange,
   createDailyNote,
+  showStatusNotice,
 } from './tabs.js'
 
 function openAiChatSurface() {
@@ -534,8 +535,8 @@ registerCommands([
     if (!choice) return
     const idx = parseInt(choice, 10) - 1
     const template = Number.isFinite(idx) && templates[idx] ? templates[idx] : templates.find(t => t.name.toLowerCase() === choice.toLowerCase())
-    if (!template) { alert('Template not found'); return }
-    if (!state.folderPath) { alert('Open a folder first'); return }
+    if (!template) { showStatusNotice('Template not found', 'error'); return }
+    if (!state.folderPath) { showStatusNotice('Open a folder first', 'error'); return }
     const fileName = prompt('File name:', `${template.name.toLowerCase().replace(/\s+/g, '-')}.md`)
     if (!fileName) return
     const content = resolveTemplateVars(template.content)
@@ -546,17 +547,17 @@ registerCommands([
     await openFile({ path: fullPath, name: fileName })
   }},
   { id: 'import-content', label: 'Import Content', description: 'Create a note from external content', shortcut: '', action: async () => {
-    if (!state.folderPath) { alert('Open a folder first'); return }
+    if (!state.folderPath) { showStatusNotice('Open a folder first', 'error'); return }
     const title = prompt('Title:') || 'Untitled'
     const body = prompt('Body (Markdown):') || ''
     const sourceUrl = prompt('Source URL:') || ''
     const result = await window.fjord.importContent({ folderPath: state.folderPath, title, body, sourceUrl })
-    if (result.error) { alert('Import failed: ' + result.error); return }
+    if (result.error) { showStatusNotice('Import failed: ' + result.error, 'error'); return }
     await refreshTree()
     await openFile({ path: result.path, name: result.name })
   }},
   { id: 'new-canvas', label: 'New Canvas', description: 'Create a spatial canvas document', shortcut: '', action: async () => {
-    if (!state.folderPath) { alert('Open a folder first'); return }
+    if (!state.folderPath) { showStatusNotice('Open a folder first', 'error'); return }
     const name = prompt('Canvas file name:', 'workspace.fcanvas.json')
     if (!name) return
     const fileName = name.endsWith('.fcanvas.json') ? name : `${name}.fcanvas.json`
@@ -567,7 +568,7 @@ registerCommands([
     await openFile({ path: fullPath, name: fileName })
   }},
   { id: 'new-drawing', label: 'New Drawing', description: 'Create an embedded drawing document', shortcut: '', action: async () => {
-    if (!state.folderPath) { alert('Open a folder first'); return }
+    if (!state.folderPath) { showStatusNotice('Open a folder first', 'error'); return }
     const name = prompt('Drawing file name:', 'drawing.fdraw.json')
     if (!name) return
     const fileName = name.endsWith('.fdraw.json') ? name : `${name}.fdraw.json`

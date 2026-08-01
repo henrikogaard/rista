@@ -1,3 +1,4 @@
+import { showStatusNotice } from './tabs.js'
 import { state } from './state.js'
 import { renderMarkdown } from './markdown.js'
 import { getLinkIndex } from './link-index.js'
@@ -221,7 +222,7 @@ function buildIndexHtml(allFiles, colors, settings) {
 
 export async function exportAsWebsite() {
   if (!state.folderPath) {
-    alert('Open a folder first')
+    showStatusNotice('Open a folder first', 'error')
     return
   }
 
@@ -268,8 +269,8 @@ export async function exportAsWebsite() {
   // Write all files via IPC
   const ok = await window.fjord.exportSite({ outputDir, files })
   if (ok) {
-    alert(`Exported ${files.length} pages to:\n${outputDir}`)
+    showStatusNotice(`Exported ${files.length} pages to ${outputDir}`, 'success')
   } else {
-    alert('Export failed. Check permissions and try again.')
+    showStatusNotice('Export failed. Check permissions and try again.', 'error')
   }
 }

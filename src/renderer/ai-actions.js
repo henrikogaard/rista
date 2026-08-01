@@ -1,3 +1,4 @@
+import { showStatusNotice } from './tabs.js'
 import { state, getFocusedEditor, getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 import { showContextMenu } from './context-menu.js'
@@ -56,18 +57,18 @@ async function runAiAction(action, selectedText, view, range) {
   const config = getProviderConfig(settings)
   if (!config) return
   if (config.provider.transport === 'cli') {
-    alert(cliActionMessage(config.provider))
+    showStatusNotice(cliActionMessage(config.provider), 'info')
     return
   }
   if (!settings.aiApiKey && !config.provider.noApiKey) {
-    alert('Please set an API key in Settings → AI')
+    showStatusNotice('Please set an API key in Settings → AI', 'error')
     return
   }
 
   const tab = getFocusedTab()
   const relativePath = relativeProjectPath(tab?.path)
   if (!tab?.path || !relativePath) {
-    alert('Open a project note before running source-aware AI actions.')
+    showStatusNotice('Open a project note before running source-aware AI actions.', 'error')
     return
   }
 
@@ -89,7 +90,7 @@ async function runAiAction(action, selectedText, view, range) {
       messages,
     })
     if (result?.error) {
-      alert('AI error: ' + result.error)
+      showStatusNotice('AI error: ' + result.error, 'error')
       return
     }
     const text = result?.text
@@ -104,9 +105,9 @@ async function runAiAction(action, selectedText, view, range) {
       source: action.label,
       sourceNotes: sourceContext.sourceNotes,
     })
-    alert(`Queued for review: ${reviewItem.summary}`)
+    showStatusNotice(`Queued for review: ${reviewItem.summary}`, 'success')
   } catch (err) {
-    alert('AI error: ' + (err.message || 'Request failed'))
+    showStatusNotice('AI error: ' + (err.message || 'Request failed'), 'error')
   }
 }
 

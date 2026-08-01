@@ -1,5 +1,5 @@
-const STORAGE_KEY = 'fjordmark-recent-projects'
-const PINNED_STORAGE_KEY = 'fjordmark-pinned-projects'
+const STORAGE_KEY = 'rista-recent-projects'
+const PINNED_STORAGE_KEY = 'rista-pinned-projects'
 const MAX_RECENT = 10
 
 function escapeHtml(value) {

@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'fjordmark-settings'
+const STORAGE_KEY = 'rista-settings'
 const AI_PROVIDER_KEYS = [
   'openai',
   'anthropic',
