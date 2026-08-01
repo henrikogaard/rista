@@ -512,3 +512,19 @@ npm run build      # passes
 cargo build        # passes
 cargo clippy       # clean
 ```
+
+## Session: 2026-08-01 — Test isolation fix, featureEnabled dedup, untracked test commits
+
+### Changes
+
+1. **Fixed crash-recovery test race condition** — `importModule()` helper now captures localStorage state synchronously before `import()` yields to event loop. All 9 crash-recovery tests pass reliably (previously: corrupt-LS test flaked).
+
+2. **Deduplicated `_featureEnabled()`** — Identical function existed in both `index.js:115` and `panels.js:25`. Extracted to `state.js` as `featureEnabled()` and imported by both callers. `getSettings` import removed from `panels.js`.
+
+3. **Committed 4 previously uncommitted test files** — `bookmarks.test.js` (8 tests), `table-editor.test.js` (7 tests), `tags.test.js` (13 tests), `templates.test.js` (8 tests). All were created in a prior session but never staged.
+
+### Build Status
+```bash
+npm test           # 201/201 passing
+npm run build      # passes
+```
