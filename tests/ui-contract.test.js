@@ -380,7 +380,7 @@ test('frontmatter can be hidden in rendered document modes and drive a banner im
   assert.match(preview, /renderMarkdown\(markdown,[\s\S]*currentFilePath: activeTab\?\.path/)
   assert.match(preview, /showDocumentBanners: settings\.showDocumentBanners/)
   assert.match(commands, /getRenderableMarkdown\(tab\.content/)
-  assert.match(commands, /mergeFrontmatterWithBody\(tab\.content/)
+  // mergeFrontmatterWithBody was only used by a dead export — removed in cleanup
   assert.match(tabs, /mergeFrontmatterWithBody\(tab\.content/)
   assert.match(css, /\.document-banner\s*\{/)
   assert.match(css, /\.document-banner__image\s*\{/)

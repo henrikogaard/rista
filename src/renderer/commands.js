@@ -1,7 +1,7 @@
 import { $, state, editorViews, richEditors, syncingRichEditor, paneUsesWysiwyg, getTabForPane, getFocusedEditor } from './state.js'
 import { undo, redo } from '@codemirror/commands'
 import { getSettings } from './settings.js'
-import { getRenderableMarkdown, mergeFrontmatterWithBody } from './markdown.js'
+import { getRenderableMarkdown } from './markdown.js'
 
 // ── Registration hooks for functions that live in index.js ───────
 let _ensureRichEditorMounted = null
@@ -393,7 +393,3 @@ export function syncToWysiwyg(pane = state.focusedPane) {
   syncingRichEditor[pane] = false
 }
 
-export function mergeRenderedEditorMarkdown(tab, renderedMarkdown) {
-  if (!getSettings().hideFrontmatterInRenderedModes) return renderedMarkdown
-  return mergeFrontmatterWithBody(tab.content, renderedMarkdown)
-}
