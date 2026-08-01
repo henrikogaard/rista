@@ -2,7 +2,7 @@ import { state, $, getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 import { PROVIDERS } from './ai-providers.js'
 import { registerRightPanel } from './right-panel.js'
-import { TOOLS, toolsForProvider, executeToolByName, getToolSpec } from './ai-tools.js'
+import { toolsForProvider, executeToolByName, getToolSpec } from './ai-tools.js'
 import { queueAiReviewItem } from './ai-review.js'
 
 // ── AI Chat Panel ──────────────────────────────────────────────

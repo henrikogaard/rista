@@ -1,8 +1,7 @@
-import { state } from './state.js'
+import { $ } from './state.js'
 import { getLinkIndex } from './link-index.js'
 import { buildGraphView, renderGraph, destroyGraph } from './graph-view.js'
 
-import { $ } from './state.js'
 // ── Graph Modal ──────────────────────────────────────────────────
 let _graphOpen = false
 

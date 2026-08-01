@@ -1,5 +1,5 @@
 import { showStatusNotice } from './tabs.js'
-import { state, getFocusedEditor, getFocusedTab } from './state.js'
+import { state, getFocusedTab } from './state.js'
 import { getSettings } from './settings.js'
 import { showContextMenu } from './context-menu.js'
 import { searchFiles } from './link-index.js'

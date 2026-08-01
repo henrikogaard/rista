@@ -1,4 +1,4 @@
-import { state, $ } from './state.js'
+import { $ } from './state.js'
 import { showStatusNotice } from './tabs.js'
 
 // ── Attachment Preview ───────────────────────────────────────────

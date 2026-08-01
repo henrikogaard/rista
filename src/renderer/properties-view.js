@@ -1,5 +1,5 @@
 import { parseFrontmatter, applyFrontmatter } from './tags.js'
-import { state, getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
+import { getFocusedTab, editorViews, getTabForPane, PANE_KEYS } from './state.js'
 import { updateEditorDoc } from './editor.js'
 import { refreshPreview } from './preview.js'
 
