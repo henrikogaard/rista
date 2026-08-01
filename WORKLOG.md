@@ -245,3 +245,33 @@ npm test           # 69/69 passing (verified 2026-08-01)
 - Phase 1 cleanup is complete. All 4 open code issues addressed (feature-gating audits, table alignment, advanced controls gating, boot gating). 3 remaining (all visual QA).
 - AGENTS.md is updated to current Tauri architecture. CLAUDE.md deleted (was stale Electron-era duplicate. CLAUDE.md in stale worktree deleted of AGENTS.md).
 - Feature flags: non-core modules (agents, graph, calendar, etc.) are off by default. Enable via Settings -> Experimental -> showExperimental.
+
+
+---
+
+## Session: 2026-08-01 — Debounce separation, docs cleanup, test coverage
+
+### Changes
+
+1. **Fixed stale absolute paths in documentation** (5 docs files)
+   - Replaced `/Users/henrik/Repos/Rísta/...` and `/Users/henrik/Dev/Repos/rista/...` paths with correct relative paths
+   - From within `docs/`, references to `docs/*.md` use `./`, source files use `../src/`, root files use `../`
+
+2. **Separated metrics update pipeline** (Task 2.1 from PROJECT-BOARD)
+   - `syncTabRepresentations()` no longer calls `updateActiveMetrics()` synchronously on every keystroke
+   - Metrics (stats, headings, reading time) now debounced at 150ms via `scheduleMetricsUpdate()`
+   - `flushMetricsUpdate()` flushes the debounce immediately on save
+   - Prevents expensive `getStats()` / `extractHeadings()` calls from blocking the editing path
+
+3. **Added 9 new unit tests** for markdown helpers
+   - `getStats` — word, char, sentence, paragraph counts; empty docs; long docs; CJK text
+   - `extractHeadings` — correct levels and line numbers; empty docs
+   - `parseFrontmatterBlock` — valid frontmatter, no frontmatter, empty delimiter block
+   - `mergeFrontmatterWithBody` — preserves original frontmatter
+
+### Build Status
+
+```bash
+npm run build      # JS — passes (verified 2026-08-01)
+npm test           # 77/77 passing (8 new tests added)
+```

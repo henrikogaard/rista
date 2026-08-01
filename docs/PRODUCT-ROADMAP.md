@@ -58,7 +58,7 @@ Make the app structurally reliable so new features do not destabilize editing, l
 ### Milestone 1.1: Renderer Refactor
 
 Tasks:
-- Split [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) into focused modules.
+- Split [src/renderer/index.js](../src/renderer/index.js) into focused modules.
 - Keep a thin renderer entry file.
 - Move DOM builders out of state/behavior code.
 - Add shared DOM and event helpers.
@@ -99,7 +99,7 @@ Tasks:
 ### Milestone 1.5: Architecture Documentation
 
 Tasks:
-- Keep [WORKLOG.md](/Users/henrik/Repos/Rísta/WORKLOG.md) current.
+- Keep [WORKLOG.md](./WORKLOG.md) current.
 - Add `ARCHITECTURE.md`.
 - Document renderer module ownership.
 - Document pane and workspace transition rules.

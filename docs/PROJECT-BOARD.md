@@ -20,7 +20,7 @@ Rísta becomes structurally reliable. Pane modes, workspace split, tabs, and edi
 Title: Split renderer entry into dedicated modules
 Status: Backlog
 Acceptance criteria:
-- [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) is reduced to bootstrapping and wiring
+- [src/renderer/index.js](../src/renderer/index.js) is reduced to bootstrapping and wiring
 - app shell, panes, tabs, commands, and tree logic live in separate files
 - build still passes
 

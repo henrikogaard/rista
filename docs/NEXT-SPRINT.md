@@ -18,7 +18,7 @@ Target:
 - begin extracting app shell, pane layout, tabs, and tree logic into modules
 
 Definition of done:
-- [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) is meaningfully smaller
+- [src/renderer/index.js](../src/renderer/index.js) is meaningfully smaller
 - at least 2-3 modules are created
 - build passes
 
@@ -37,7 +37,7 @@ Target:
 - create the manual regression checklist and use it after layout/editor changes
 
 Definition of done:
-- [TEST-CASES.md](/Users/henrik/Repos/Rísta/docs/TEST-CASES.md) exists
+- [TEST-CASES.md](./TEST-CASES.md) exists
 - core pane transitions are covered
 
 ### 4. Fix path-based explorer highlighting
@@ -94,7 +94,7 @@ Target:
 - keep handoff quality high while refactors are underway
 
 Definition of done:
-- [WORKLOG.md](/Users/henrik/Repos/Rísta/WORKLOG.md) reflects the latest architecture and sprint status
+- [WORKLOG.md](./WORKLOG.md) reflects the latest architecture and sprint status
 
 ## Suggested Execution Order
 

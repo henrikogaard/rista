@@ -5,8 +5,8 @@
 This document defines the target architecture for Rísta as it evolves into a fast, robust, visually polished Markdown IDE for writing, note organization, and long-term knowledge work.
 
 It is intended to support the roadmap in:
-- [PRODUCT-ROADMAP.md](/Users/henrik/Repos/Rísta/docs/PRODUCT-ROADMAP.md)
-- [PROJECT-BOARD.md](/Users/henrik/Repos/Rísta/docs/PROJECT-BOARD.md)
+- [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md)
+- [PROJECT-BOARD.md](./PROJECT-BOARD.md)
 
 ## Architecture Goals
 
@@ -78,8 +78,8 @@ Responsibilities:
 - app metadata
 
 Files:
-- [src/main/main.js](/Users/henrik/Repos/Rísta/src/main/main.js)
-- [src/main/preload.js](/Users/henrik/Repos/Rísta/src/main/preload.js)
+- [src/main/main.js](../src/main/main.js)
+- [src/main/preload.js](../src/main/preload.js)
 
 Design direction:
 - keep main process thin
@@ -516,7 +516,7 @@ This should be implemented in stages.
 ## Immediate Architecture Priorities
 
 1. Validate the new standalone vs split rendering path
-2. Break [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) into modules
+2. Break [src/renderer/index.js](../src/renderer/index.js) into modules
 3. Add `TEST-CASES.md`
 4. Fix path-based file identity
 5. Fix preload unsubscribe behavior

@@ -47,6 +47,27 @@ export function scheduleTreeRefresh() {
   _treeRefreshTimer = setTimeout(() => refreshTree(), 120)
 }
 
+// ── Debounced metrics pipeline (stats + headings) ─────────────
+// Separated from the synchronous keystroke path so expensive
+// getStats() / extractHeadings() calls do not block editing.
+let _metricsTimer = null
+const METRICS_DEBOUNCE_MS = 150
+
+export function scheduleMetricsUpdate() {
+  clearTimeout(_metricsTimer)
+  _metricsTimer = setTimeout(() => {
+    updateActiveMetrics()
+  }, METRICS_DEBOUNCE_MS)
+}
+
+export function flushMetricsUpdate() {
+  if (_metricsTimer) {
+    clearTimeout(_metricsTimer)
+    _metricsTimer = null
+    updateActiveMetrics()
+  }
+}
+
 function clearExternalConflict(tab) {
   if (!tab) return
   tab.externalConflict = false
@@ -848,7 +869,7 @@ export function moveTabToPane(tab, fromPane, toPane) {
   _callbacks.syncFocusedPaneUi?.()
   renderTabs()
   highlightActiveFile()
-  updateActiveMetrics()
+  scheduleMetricsUpdate()
 }
 
 // ── Tab drag handlers ────────────────────────────────────────────
@@ -953,7 +974,7 @@ export function syncTabRepresentations(tab, sourcePane, { source } = {}) {
     if (source !== 'wysiwyg') _callbacks.maybeRefreshWysiwygPane?.(pane)
   })
   highlightActiveFile()
-  updateActiveMetrics()
+  scheduleMetricsUpdate()
 }
 
 export async function saveTab(tab, options = {}) {

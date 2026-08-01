@@ -5,8 +5,8 @@
 This is the short, implementation-facing architecture reference for Rísta.
 
 For deeper planning context, see:
-- [ARCHITECTURE-PLAN.md](/Users/henrik/Dev/Repos/rista/docs/ARCHITECTURE-PLAN.md)
-- [PRODUCT-ROADMAP.md](/Users/henrik/Dev/Repos/rista/docs/PRODUCT-ROADMAP.md)
+- [ARCHITECTURE-PLAN.md](./ARCHITECTURE-PLAN.md)
+- [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md)
 
 ## High-Level Structure
 
