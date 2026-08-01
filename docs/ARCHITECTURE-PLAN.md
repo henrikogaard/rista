@@ -69,7 +69,7 @@ The architecture itself should reduce unnecessary work:
 ### Main Process
 
 Responsibilities:
-- Electron window lifecycle
+- Window lifecycle
 - menus and app commands
 - file and folder dialogs
 - file system access
