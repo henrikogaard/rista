@@ -495,3 +495,20 @@ npm test           # 166/166 passing (6 new benchmark, 13 new smoke, 8 new theme
 npm test           # 166/166 passing
 npm run build      # passes
 ```
+
+## Session: 2026-08-01 — Dead export removal, overlay propagation, Rust radius fix
+
+### Changes
+
+1. **#62 — Export and Rust radii** — Remaining hardcoded border-radius in publish.js JS template strings (4 values: nav links, code, pre, img) and Rust PDF export CSS (3 values: code, pre, img). All zeroed.
+2. **#59 — Overlay backgrounds** — Applied ambient aurora gradient to graph-modal, command-dialog, command-palette, and tree-prompt overlays (dark + light variants), matching the settings-overlay pattern.
+3. **Dead exports removed** — askNotesRag (ai-actions.js), clearAttachmentPreview (attachment-preview.js), refreshCalendarPanel (calendar-view.js), slidersIcon, toolbarIcon (icons.js). All never imported or referenced elsewhere.
+4. **Test updated** — Removed toolbarIcon assertion from ui-contract.test.js.
+
+### Build Status
+```bash
+npm test           # 164/164 passing
+npm run build      # passes
+cargo build        # passes
+cargo clippy       # clean
+```
