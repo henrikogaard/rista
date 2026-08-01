@@ -193,3 +193,13 @@ export function storeSplitSnapshot() {
   }
   cleanSplitSnapshot()
 }
+
+// ── Path helpers ───────────────────────────────────────────────────
+export function relativeFilePath(path, folderPath) {
+  const normalizedPath = String(path || '').replace(/\\/g, '/')
+  const normalizedFolder = String(folderPath || '').replace(/\\/g, '/').replace(/\/+$/, '')
+  if (normalizedFolder && normalizedPath.startsWith(normalizedFolder)) {
+    return normalizedPath.slice(normalizedFolder.length).replace(/^\/+/, '')
+  }
+  return normalizedPath
+}
