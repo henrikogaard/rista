@@ -38,8 +38,6 @@ test("status bar collapsed to metrics and settings only", () => {
   assert.match(shell, /st-filename/)
   assert.match(shell, /st-words/)
   assert.match(shell, /st-readtime/)
-  assert.match(shell, /st--mode/)
-  assert.match(shell, /st-brand/)
   assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
   assert.doesNotMatch(shell, /aria-label="Toggle terminal"/)
@@ -175,7 +173,6 @@ test('global and pane icon semantics stay distinct and labelled', () => {
   // Statusbar collapsed to metrics + settings. Mode toggles live in Cmd-K only.
   assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
-  assert.match(shell, /st-brand/)
   assert.doesNotMatch(shell, /aria-label="Toggle workspace split layout"/)
   assert.match(workspace, /title="Markdown source"/)
   assert.match(workspace, /title="Pane split preview"/)
@@ -314,7 +311,7 @@ test('global brand rail owns the native window chrome above every column', () =>
   const rightPanel = read('src/renderer/right-panel.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(css, /--brandrail-height:\s*44px/)
+  assert.match(css, /--brandrail-height:\s*36px/)
   assert.match(shell, /<div class="app" id="app">[\s\S]*<div class="brandrail" id="brandrail" data-tauri-drag-region="deep">[\s\S]*<div class="layout">/)
   assert.doesNotMatch(shell, /sidebar-drag-region/)
   assert.doesNotMatch(rightPanel, /right-sidebar__drag-region/)

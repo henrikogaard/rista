@@ -44,7 +44,7 @@
   --radius-xs: 0px;
   --radius-sm: 0px;
   --radius-md: 0px;
-  --brandrail-height: 44px;
+  --brandrail-height: 36px;
 }
 
 /* ══════════════════════════════════════
@@ -3023,14 +3023,7 @@ body.is-resizing-split .workspace-resizer::before {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.st-dot { width: 6px; height: 6px; border-radius: 0; background: var(--green); }
-.st--mode,
-.st-brand {
   color: var(--text1);
-}
-.st-brand {
-  font-weight: 600;
-  letter-spacing: 0.02em;
 }
 /* Filename display in statusbar (#35) */
 .st--filename {
@@ -3073,10 +3066,6 @@ body.is-resizing-split .workspace-resizer::before {
 @media (max-width: 760px) {
   .st--filename { display: none; }
   .st--optional { display: none; }
-}
-
-@media (max-width: 620px) {
-  .st-brand { display: none; }
 }
 
 @media (max-width: 520px) {
