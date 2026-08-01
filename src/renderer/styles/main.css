@@ -397,7 +397,11 @@ textarea,
 .settings-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(6, 8, 12, 0.55);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.30)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.20)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.12)) 0, transparent 40%),
+    rgba(6, 8, 12, 0.55);
   backdrop-filter: blur(2px);
   opacity: 0;
   pointer-events: none;
@@ -546,6 +550,14 @@ textarea,
   box-shadow: 0 18px 48px rgba(60,42,24,0.12);
   border-color: rgba(53,42,30,0.08);
 }
+[data-theme="light"] .settings-overlay {
+  background:
+    radial-gradient(circle at 15% 20%, rgba(59, 131, 111, calc(var(--ambient-opacity) * 0.16)) 0, transparent 32%),
+    radial-gradient(circle at 72% 18%, rgba(91, 127, 166, calc(var(--ambient-opacity) * 0.10)) 0, transparent 38%),
+    radial-gradient(circle at 52% 42%, rgba(113, 86, 132, calc(var(--ambient-opacity) * 0.06)) 0, transparent 40%),
+    rgba(43,34,27,0.28);
+}
+
 
 .settings-panel__header,
 .settings-panel__footer {
@@ -2515,7 +2527,7 @@ body.is-resizing-split .workspace-resizer::before {
   margin: 0.15em 0;
 }
 /* Inline code: style the content span (backtick marks are hidden) */
-.cm-host .cm-inline-code { background: rgba(var(--bg3-rgb), 0.55); border-radius: 3px; padding: 0 3px; font-family: var(--mono); font-size: 0.88em; }
+.cm-host .cm-inline-code { background: rgba(var(--bg3-rgb), 0.55); border-radius: var(--radius-xs); padding: 0 3px; font-family: var(--mono); font-size: 0.88em; }
 /* Parts-of-speech highlighting (#57) */
 .cm-host .cm-pos-adverb  { text-decoration: underline; text-decoration-color: var(--amber); text-decoration-style: dotted; text-underline-offset: 2px; }
 .cm-host .cm-pos-passive { background: rgba(var(--amber-rgb, 215,153,33), 0.10); border-radius: 2px; }
@@ -2772,36 +2784,29 @@ body.is-resizing-split .workspace-resizer::before {
   backdrop-filter: blur(calc(var(--surface-blur) * 0.9));
 }
 
-/* ── Empty state surfaces ── */
-.editor-empty-state {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 6px;
-  padding: 32px;
-  color: var(--text2);
-  font-size: 12px;
-  text-align: center;
-  user-select: none;
-}
-.editor-empty-state__kicker {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text3);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.editor-empty-state__action {
-  color: var(--accent-hi);
-  cursor: default;
-  transition: color 0.1s;
-}
-.editor-empty-state__action:hover,
-.editor-empty-state__action:focus-visible {
-  color: var(--text1);
-}
+
+/* ── Third-party vendor overrides (#62) ──────────────────────────── */
+/* Zero out all border-radius in toastui WYSIWYG for carved identity */
+.toastui-editor-defaultUI,
+.toastui-editor-defaultUI-toolbar,
+.toastui-editor-dropdown-toolbar,
+.toastui-editor-mode-switch,
+.toastui-editor-popup,
+.toastui-editor-popup-add-link,
+.toastui-editor-popup-add-image,
+.toastui-editor-toolbar-icons,
+.toastui-editor-toolbar-divider,
+.toastui-editor-md-tab-container,
+.toastui-editor-md-tab,
+.toastui-editor-ww-tab,
+.toastui-editor-contents * { border-radius: 0 !important; }
+
+/* Toastui context menu overrides */
+.toastui-editor-context-menu { border-radius: 0 !important; }
+.toastui-editor-context-menu .menu-item { border-radius: 0 !important; }
+.toastui-editor-context-menu .menu-item:first-child { border-radius: 0 !important; }
+.toastui-editor-context-menu .menu-item:last-child { border-radius: 0 !important; }
+
 
 .welcome__start {
   width: min(760px, calc(100vw - 48px));

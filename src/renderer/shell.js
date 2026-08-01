@@ -848,7 +848,6 @@ export function buildShell() {
           ${buildTerminalDrawer()}
 
           <!-- Statusbar -->
-          <!-- Statusbar -->
           <div class="statusbar">
             <div class="statusbar__metrics">
               <div class="st st--mode"><div class="st-dot"></div><span id="st-mode">Markdown</span></div>

@@ -215,41 +215,6 @@ registerTabCallbacks({
   openQuickOpen: openCommandPaletteFiles,
 })
 
-// ── First-run sample document ────────────────────────────────────
-const FIRST_RUN_SAMPLE = `# Welcome to Rista ✦
-
-A local-first Markdown editor. Your files, your folder — no cloud, no accounts.
-
-## Getting started
-
-Open a folder with **⌘O** to see all your notes in the sidebar.
-Press **⌘K** to jump to any file or run a command.
-
-## Writing shortcuts
-
-| Action | Shortcut |
-|---|---|
-| Bold | ⌘B |
-| Italic | ⌘I |
-| Inline code | ⌘\` |
-| Find & replace | ⌘F |
-| Project search | ⇧⌘F |
-| Zen mode | ⇧⌘↵ |
-
-## Views
-
-Toggle between **Edit**, **Split**, and **Preview** using the buttons in the toolbar.
-
-## Tips
-
-- Type \`---\` on its own line for a horizontal rule
-- Type \`"quotes"\` and they become "smart quotes" automatically
-- Use \`#tag\` anywhere in a note to build a tag index
-
----
-
-_This file lives at \`~/Documents/Rista/welcome.md\`. Feel free to edit or delete it._
-`
 
 // ── Boot ─────────────────────────────────────────────────────────
 // Perf budget (#61): cold launch ≤ 400 ms to first interactive frame.
