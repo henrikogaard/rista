@@ -390,3 +390,42 @@ npm test           # 129/129 passing (10 new history tests)
 npm run build      # JS — passes
 npm test           # 139/139 passing (10 new crash-recovery tests)
 ```
+
+## Session: 2026-08-01 — Workspace templates, linked-note creation, PARA/GTD commands
+
+### Changes
+
+1. **Starter workspace templates** (Task 5.1)
+   - `src/renderer/workspace-templates.js` — PARA, GTD, Zettelkasten, Plain templates
+   - Each template creates folder structure + seed files via `applyWorkspaceTemplate()`
+
+2. **Quick linked-note creation from selection** (Task 5.6)
+   - `createNoteFromSelection()` in `link-index.js` — creates new note from selected text, inserts `[[wikilink]]`
+   - Wired into command palette as "Create Note from Selection"
+
+3. **PARA navigation helpers** (Task 5.7)
+   - 4 command palette items: Jump to Projects, Areas, Resources, Archive
+   - Expands the target folder in the tree
+
+4. **GTD task insertion flows** (Task 5.8)
+   - 3 command palette items: Insert Inbox Item, Next Action, Waiting Item
+   - Inserts formatted Markdown checklists at cursor
+
+5. **PROJECT-BOARD.md updated**
+   - Tasks 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8 marked Done
+
+### Build Status
+
+```bash
+npm run build      # JS — passes
+npm test           # 139/139 passing
+```
+
+### Remaining backlog (all need running app for visual/functional QA)
+
+- Perf benchmarks (2.3), lazy rendering (2.5), watcher batching (2.6)
+- Smoke tests for boot (3.3)
+- WYSIWYG round-tripping (6.1), table/callout hardening (6.2)
+- Toolbar/insert commands expansion (6.4), dual-pane comparison (6.5)
+- Visual polish: welcome screen (7.3), empty states (7.4), branding (7.5), themes (7.6)
+- Typography and spacing (7.1), focus/hover states (7.2)

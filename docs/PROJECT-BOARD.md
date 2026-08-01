@@ -266,7 +266,7 @@ Rísta supports PARA, GTD, and Zettelkasten naturally without forcing complexity
 
 #### Task 5.1
 Title: Add starter workspace templates
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - users can choose PARA, GTD, Zettelkasten, or plain notes
 - templates create folders/files only, not hidden structures
@@ -299,7 +299,7 @@ Acceptance criteria:
 
 #### Task 5.6
 Title: Add quick linked-note creation from selection
-Status: Backlog
+Status: Done
 Acceptance criteria:
 - selected text can become a new linked note quickly
 

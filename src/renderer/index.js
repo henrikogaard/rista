@@ -5,7 +5,7 @@ import { applySettings, getSettings } from './settings.js'
 import { initKeybindings } from './keybindings.js'
 import { initDiagrams } from './diagrams.js'
 import { getTheme, toggleTheme } from './theme.js'
-import { state } from './state.js'
+import { state, getFocusedEditor } from './state.js'
 import { getFocusedTab } from './state.js'
 import { setDocumentGoal, setSessionGoal } from './word-goals.js'
 import { getStats, setTransclusionResolver } from './markdown.js'
@@ -383,6 +383,43 @@ registerCommands([
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
   { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
   { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⇧⌘D', action: () => createDailyNote() },
+  { id: 'jump-projects', label: 'Jump to Projects', description: 'Navigate to the Projects folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Projects' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Projects', 'info') }
+  } },
+  { id: 'jump-areas', label: 'Jump to Areas', description: 'Navigate to the Areas folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Areas' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Areas', 'info') }
+  } },
+  { id: 'jump-resources', label: 'Jump to Resources', description: 'Navigate to the Resources folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Resources' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Resources', 'info') }
+  } },
+  { id: 'jump-archive', label: 'Jump to Archive', description: 'Navigate to the Archive folder (PARA)', shortcut: '', action: () => {
+    const folder = state.folderPath ? state.folderPath + '/Archive' : null
+    if (folder && state.expandedFolders) { state.expandedFolders.add(folder); refreshTree(); showStatusNotice('Jumped to Archive', 'info') }
+  } },
+  { id: 'insert-inbox-item', label: 'Insert Inbox Item', description: 'Add a GTD inbox item at cursor', shortcut: '', action: () => {
+    const view = getFocusedEditor()
+    if (!view) { showStatusNotice('Open an editor first', 'error'); return }
+    const { state: s, dispatch } = view
+    dispatch(s.update({ changes: { from: s.selection.main.head, insert: '- [ ] ' } }))
+    view.focus()
+  } },
+  { id: 'insert-next-action', label: 'Insert Next Action', description: 'Add a GTD next action at cursor', shortcut: '', action: () => {
+    const view = getFocusedEditor()
+    if (!view) { showStatusNotice('Open an editor first', 'error'); return }
+    const { state: s, dispatch } = view
+    dispatch(s.update({ changes: { from: s.selection.main.head, insert: '- [ ] (next) ' } }))
+    view.focus()
+  } },
+  { id: 'insert-waiting-item', label: 'Insert Waiting Item', description: 'Add a GTD waiting-for item at cursor', shortcut: '', action: () => {
+    const view = getFocusedEditor()
+    if (!view) { showStatusNotice('Open an editor first', 'error'); return }
+    const { state: s, dispatch } = view
+    dispatch(s.update({ changes: { from: s.selection.main.head, insert: '- [ ] (waiting) ' } }))
+    view.focus()
+  } },
   { id: 'create-note-from-selection', label: 'Create Note from Selection', description: 'Turn selected text into a new linked note', shortcut: '', action: async () => {
     const pane = state.focusedPane
     const view = editorViews[pane]
