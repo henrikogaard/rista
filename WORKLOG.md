@@ -223,26 +223,26 @@ Recommended next move:
 
 ## Build Status
 
-Latest verified command:
-
 ```bash
-npm run build
+npm run build      # JS — passes (verified 2026-08-01)
+cargo check        # Rust — passes (verified 2026-08-01)
+npm test           # 68/68 passing (verified 2026-08-01)
 ```
-
-Latest result:
-- passes successfully
-- re-verified after split state normalization fix
 
 ## Files Most Relevant To Continue
 
-- `src/renderer/index.js`
+- `src/renderer/index.js` (682 lines — next extraction target)
 - `src/renderer/styles/main.css`
 - `src/renderer/editor.js`
 - `src/renderer/markdown.js`
-- `src/renderer/settings.js`
+- `src/renderer/settings.js` (+ feature flag system)
+- `src/renderer/shell.js` (+ collapsed statusbar)
+- `docs/TEST-CASES.md` (needs manual QA pass)
+- `src-tauri/src/main.rs` (+ PDF export implementation)
 
 ## Notes
 
-- Do not trust the old worklog content that described WYSIWYG as complete. That was from a much earlier implementation and is no longer accurate.
-- The repo has a dirty worktree with many intentional changes. Avoid resetting unrelated files.
-- The user was considering continuing in another Codex chat and asked for this markdown handoff specifically so work can continue there.
+- Phase 0 cleanup is complete. 21 issues closed, 4 remaining (all polish/design).
+- AGENTS.md is updated to current Tauri architecture. CLAUDE.md still has stale Electron content and should be deleted.
+- The `docs/` directory still references `Fjordmark` in many doc titles — cosmetic rename needed.
+- Feature flags: non-core modules (agents, graph, calendar, etc.) are off by default. Enable via Settings -> Experimental -> showExperimental.

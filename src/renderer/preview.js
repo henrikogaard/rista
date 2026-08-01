@@ -12,6 +12,18 @@ export function registerWikilinkCallback(fn) {
   _wikilinkCallback = fn
 }
 
+// ── Debounced preview ───────────────────────────────────────────
+// Separate debounce for preview to avoid tying it to save debounce.
+// File-switch renders stay instant via direct refreshPreview() call.
+let _previewDebounceTimer = null
+export function schedulePreviewRefresh(pane) {
+  clearTimeout(_previewDebounceTimer)
+  _previewDebounceTimer = setTimeout(async () => {
+    const tab = getTabForPane(pane)
+    if (tab) await refreshPreview(pane, tab.content)
+  }, 250)
+}
+
 // ── Preview ───────────────────────────────────────────────────────
 export async function refreshPreview(pane, markdown) {
   const theme = getTheme()

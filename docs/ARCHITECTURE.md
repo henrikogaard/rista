@@ -168,11 +168,39 @@ Dirty tabs should not silently lose to external file changes.
 
 Design state and tabs so session restore and crash recovery can be added cleanly.
 
-## Near-Term Priorities
+## Completed Work (Phase 0 Cleanup — 2026-08-01)
 
-1. Validate pane/surface stability after current fixes
-2. Refactor renderer into modules
-3. Add `TEST-CASES.md`
-4. Fix path-based identity issues
-5. Fix preload unsubscribe behavior
-6. Rebuild PDF export correctly
+### Feature Flags & Survivor Set
+- 16 non-core module toggles in `settings.js`, all off by default
+- `showExperimental` master toggle gates the experimental section
+- Panels wrapped with `_featureEnabled()` in `index.js`
+- Survivor set documented in `AGENTS.md`: core on by default, non-core opt-in
+
+### Statusbar Collapse
+- Statusbar reduced to metrics (mode, filename, word count, reading time) + settings gear
+- All mode-toggles removed from statusbar; reachable via Cmd-K or keyboard shortcuts
+- Tests updated to match
+
+### PDF Export
+- `export_pdf()` Rust stub replaced with real implementation
+- Generates print-ready HTML via `export_html_document()`, writes to temp file, opens in system browser
+- Tauri bridge updated to pass payload
+
+### Build Fix
+- Removed pre-existing orphan code in `editor.js` that broke esbuild
+- Both JS and Rust builds pass cleanly
+
+### Documentation
+- `AGENTS.md` updated from stale Electron/Fjordmark to current Tauri/Rísta architecture
+- All agent instructions reflect the 2-layer (Tauri shell + vanilla JS renderer) setup
+
+## Near-Term Priorities (Remaining)
+
+1. #62 — Tighten 0-radius Nordic identity end-to-end (purely visual audit)
+2. #59 — Make the whole app feel like the welcome screen (design consistency)
+3. #52 — Pleasant inline table editing (UX evaluation of table-editor.js)
+4. #42 — Ship reference-quality dark and light themes (visual tuning)
+5. Validate pane/surface stability via TEST-CASES.md manual QA pass
+6. Separate debounce pipelines for save vs preview
+7. Reduce tree refresh scope after file changes
+8. Refactor `index.js` into focused modules
