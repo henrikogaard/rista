@@ -1,4 +1,4 @@
-# Fjordmark Project Board
+# Rísta Project Board
 
 This document turns the product roadmap into concrete epics, milestones, issue-style tasks, and acceptance criteria.
 
@@ -12,7 +12,7 @@ This document turns the product roadmap into concrete epics, milestones, issue-s
 ## Epic 1: Stable Editing Core
 
 Outcome:
-Fjordmark becomes structurally reliable. Pane modes, workspace split, tabs, and editor surfaces behave predictably.
+Rísta becomes structurally reliable. Pane modes, workspace split, tabs, and editor surfaces behave predictably.
 
 ### Milestone 1: Renderer Refactor
 
@@ -20,7 +20,7 @@ Fjordmark becomes structurally reliable. Pane modes, workspace split, tabs, and 
 Title: Split renderer entry into dedicated modules
 Status: Backlog
 Acceptance criteria:
-- [src/renderer/index.js](/Users/henrik/Repos/Fjordmark/src/renderer/index.js) is reduced to bootstrapping and wiring
+- [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) is reduced to bootstrapping and wiring
 - app shell, panes, tabs, commands, and tree logic live in separate files
 - build still passes
 
@@ -136,7 +136,7 @@ Acceptance criteria:
 ## Epic 3: Robustness and Trust
 
 Outcome:
-Users can rely on Fjordmark for real work without fear of silent corruption or weird state loss.
+Users can rely on Rísta for real work without fear of silent corruption or weird state loss.
 
 ### Milestone 6: Regression Safety
 
@@ -260,7 +260,7 @@ Acceptance criteria:
 ## Epic 5: Notes System Workflows
 
 Outcome:
-Fjordmark supports PARA, GTD, and Zettelkasten naturally without forcing complexity on everyone.
+Rísta supports PARA, GTD, and Zettelkasten naturally without forcing complexity on everyone.
 
 ### Milestone 11: Templates and Starter Structures
 
@@ -320,7 +320,7 @@ Acceptance criteria:
 ## Epic 6: Power Editing
 
 Outcome:
-Fjordmark feels like a serious Markdown IDE, not just a text editor.
+Rísta feels like a serious Markdown IDE, not just a text editor.
 
 ### Milestone 14: WYSIWYG Hardening
 

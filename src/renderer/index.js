@@ -36,6 +36,8 @@ import { buildPropertiesPanel, mountPropertiesPanel, renderProperties } from './
 import { openDiagramBuilder, closeDiagramBuilder } from './diagram-builder.js'
 import { createSession } from './agents-sidebar.js'
 import { toggleRightPanel, closeRightPanel, toggleRightSidebar } from './right-panel.js'
+import { ensureFirstRunSample } from './first-run.js'
+import { getAvailableTemplates, resolveTemplateVars } from './templates.js'
 import { initInspectorPanel } from './inspector.js'
 import { initAiChatPanel, openAiSession } from './ai-chat.js'
 import { mountAssistantRail, openAssistantWidgetForDock } from './assistant-rail.js'
@@ -425,37 +427,6 @@ registerTabCallbacks({
   openQuickOpen: openCommandPaletteFiles,
 })
 
-// ── Templates ────────────────────────────────────────────────────
-const BUILT_IN_TEMPLATES = [
-  { name: 'Blog Post', content: '# {{title}}\n\n*{{date}}*\n\n' },
-  { name: 'Meeting Notes', content: '# Meeting Notes — {{date}}\n\n## Attendees\n\n- \n\n## Agenda\n\n1. \n\n## Notes\n\n\n\n## Action Items\n\n- [ ] ' },
-  { name: 'Daily Note', content: '# {{date}}\n\n## Tasks\n\n- [ ] \n\n## Notes\n\n' },
-  { name: 'README', content: '# Project Name\n\n## Description\n\n\n\n## Installation\n\n```bash\nnpm install\n```\n\n## Usage\n\n## License\n\nMIT' },
-  { name: 'Changelog', content: '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- \n\n### Changed\n\n### Fixed\n' },
-]
-
-async function getAvailableTemplates() {
-  const builtIn = [...BUILT_IN_TEMPLATES]
-  if (state.folderPath && window.fjord.readTemplates) {
-    try {
-      const userTemplates = await window.fjord.readTemplates(state.folderPath)
-      return [...builtIn, ...userTemplates]
-    } catch { /* ignore */ }
-  }
-  return builtIn
-}
-
-function resolveTemplateVars(content) {
-  const now = new Date()
-  const date = now.toISOString().split('T')[0]
-  let resolved = content.replace(/\{\{date\}\}/g, date)
-  if (resolved.includes('{{title}}')) {
-    const title = prompt('Title:') || 'Untitled'
-    resolved = resolved.replace(/\{\{title\}\}/g, title)
-  }
-  return resolved.replace(/\{\{cursor\}\}/g, '')
-}
-
 // ── First-run sample document ────────────────────────────────────
 const FIRST_RUN_SAMPLE = `# Welcome to Rista ✦
 
@@ -518,24 +489,7 @@ if (initialFilePath) {
         openSingleFilePath(filePath)
         return
       }
-      // First-run: create a sample welcome document so new users aren't dropped
-      // into a blank screen. Only runs once (guarded by localStorage flag).
-      if (window.fjord && !localStorage.getItem('rista-onboarded')) {
-        localStorage.setItem('rista-onboarded', '1')
-        try {
-          const home = await window.fjord.getHomeDir?.()
-          if (home) {
-            const dir = `${home}/Documents/Rista`
-            const samplePath = `${dir}/welcome.md`
-            await window.fjord.createDir(dir).catch(() => {})
-            const existing = await window.fjord.stat(samplePath).catch(() => null)
-            if (!existing) {
-              await window.fjord.writeFile(samplePath, FIRST_RUN_SAMPLE)
-            }
-            await openSingleFilePath(samplePath)
-          }
-        } catch (_) { /* non-fatal — user just sees empty state */ }
-      }
+      ensureFirstRunSample(openSingleFilePath)
     })
     .catch(() => {})
 }

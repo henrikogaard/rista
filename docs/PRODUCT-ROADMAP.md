@@ -1,8 +1,8 @@
-# Fjordmark Product Roadmap
+# Rísta Product Roadmap
 
 ## Vision
 
-Fjordmark should become a fast, local-first Markdown IDE for thought and writing:
+Rísta should become a fast, local-first Markdown IDE for thought and writing:
 
 - lightweight enough for "open folder and write"
 - structured enough for serious note systems like PARA, GTD, and Zettelkasten
@@ -26,7 +26,7 @@ The product should serve two overlapping audiences:
    State must be explicit, transitions predictable, and failures recoverable.
 
 4. Beautiful but purposeful.
-   Fjordmark should feel premium, atmospheric, and minimal without sacrificing usability.
+   Rísta should feel premium, atmospheric, and minimal without sacrificing usability.
 
 5. Progressive complexity.
    A new user can ignore advanced features. A power user can build a serious note workflow on top.
@@ -58,7 +58,7 @@ Make the app structurally reliable so new features do not destabilize editing, l
 ### Milestone 1.1: Renderer Refactor
 
 Tasks:
-- Split [src/renderer/index.js](/Users/henrik/Repos/Fjordmark/src/renderer/index.js) into focused modules.
+- Split [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) into focused modules.
 - Keep a thin renderer entry file.
 - Move DOM builders out of state/behavior code.
 - Add shared DOM and event helpers.
@@ -99,7 +99,7 @@ Tasks:
 ### Milestone 1.5: Architecture Documentation
 
 Tasks:
-- Keep [WORKLOG.md](/Users/henrik/Repos/Fjordmark/WORKLOG.md) current.
+- Keep [WORKLOG.md](/Users/henrik/Repos/Rísta/WORKLOG.md) current.
 - Add `ARCHITECTURE.md`.
 - Document renderer module ownership.
 - Document pane and workspace transition rules.
@@ -107,7 +107,7 @@ Tasks:
 ## Phase 2: Performance and Scalability
 
 Goal:
-Make Fjordmark feel instant, even with large note folders and long documents.
+Make Rísta feel instant, even with large note folders and long documents.
 
 ### Milestone 2.1: Separate Expensive Update Pipelines
 
@@ -149,7 +149,7 @@ Tasks:
 ## Phase 3: Robustness and Trust
 
 Goal:
-Users should trust Fjordmark with real notes and documents.
+Users should trust Rísta with real notes and documents.
 
 ### Milestone 3.1: Regression Matrix
 
@@ -238,7 +238,7 @@ Tasks:
 ## Phase 5: PARA / GTD / Zettelkasten Support
 
 Goal:
-Let structured thinkers use Fjordmark deeply without forcing a workflow on casual users.
+Let structured thinkers use Rísta deeply without forcing a workflow on casual users.
 
 ### Milestone 5.1: Workspace Templates
 
@@ -281,7 +281,7 @@ Tasks:
 ## Phase 6: Power Tools and Advanced Writing
 
 Goal:
-Make Fjordmark feel like a real Markdown IDE.
+Make Rísta feel like a real Markdown IDE.
 
 ### Milestone 6.1: WYSIWYG Hardening
 
@@ -319,7 +319,7 @@ Tasks:
 ## Phase 7: Visual Design and Product Polish
 
 Goal:
-Turn Fjordmark into a visually distinctive, premium-feeling Markdown IDE.
+Turn Rísta into a visually distinctive, premium-feeling Markdown IDE.
 
 ### Milestone 7.1: Visual System
 

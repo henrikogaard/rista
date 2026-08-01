@@ -1,12 +1,12 @@
-# Fjordmark Architecture Plan
+# Rísta Architecture Plan
 
 ## Purpose
 
-This document defines the target architecture for Fjordmark as it evolves into a fast, robust, visually polished Markdown IDE for writing, note organization, and long-term knowledge work.
+This document defines the target architecture for Rísta as it evolves into a fast, robust, visually polished Markdown IDE for writing, note organization, and long-term knowledge work.
 
 It is intended to support the roadmap in:
-- [PRODUCT-ROADMAP.md](/Users/henrik/Repos/Fjordmark/docs/PRODUCT-ROADMAP.md)
-- [PROJECT-BOARD.md](/Users/henrik/Repos/Fjordmark/docs/PROJECT-BOARD.md)
+- [PRODUCT-ROADMAP.md](/Users/henrik/Repos/Rísta/docs/PRODUCT-ROADMAP.md)
+- [PROJECT-BOARD.md](/Users/henrik/Repos/Rísta/docs/PROJECT-BOARD.md)
 
 ## Architecture Goals
 
@@ -78,8 +78,8 @@ Responsibilities:
 - app metadata
 
 Files:
-- [src/main/main.js](/Users/henrik/Repos/Fjordmark/src/main/main.js)
-- [src/main/preload.js](/Users/henrik/Repos/Fjordmark/src/main/preload.js)
+- [src/main/main.js](/Users/henrik/Repos/Rísta/src/main/main.js)
+- [src/main/preload.js](/Users/henrik/Repos/Rísta/src/main/preload.js)
 
 Design direction:
 - keep main process thin
@@ -396,7 +396,7 @@ Plan for:
 
 ## Note-System Architecture Considerations
 
-Fjordmark should support PARA/GTD/Zettelkasten by layering tools on top of plain files.
+Rísta should support PARA/GTD/Zettelkasten by layering tools on top of plain files.
 
 That means:
 - avoid hard-coding one note methodology
@@ -516,7 +516,7 @@ This should be implemented in stages.
 ## Immediate Architecture Priorities
 
 1. Validate the new standalone vs split rendering path
-2. Break [src/renderer/index.js](/Users/henrik/Repos/Fjordmark/src/renderer/index.js) into modules
+2. Break [src/renderer/index.js](/Users/henrik/Repos/Rísta/src/renderer/index.js) into modules
 3. Add `TEST-CASES.md`
 4. Fix path-based file identity
 5. Fix preload unsubscribe behavior
@@ -524,7 +524,7 @@ This should be implemented in stages.
 
 ## Summary
 
-The most important architectural decision for Fjordmark is this:
+The most important architectural decision for Rísta is this:
 
 Treat the app as a state-driven document workspace, not a DOM-mutating editor shell.
 
