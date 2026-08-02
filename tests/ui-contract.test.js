@@ -47,7 +47,7 @@ test('fresh workspaces open one calm live-preview document surface', () => {
   assert.match(index, /state\.paneView\.secondary = initialViewMode/)
 })
 
-test("status bar collapsed to metrics and settings only", () => {
+test("status bar stays metrics-only while the activity rail owns workspace actions", () => {
   const shell = read("src/renderer/shell.js")
   const css = read("src/renderer/styles/main.css")
 
@@ -57,7 +57,9 @@ test("status bar collapsed to metrics and settings only", () => {
   assert.match(shell, /st-readtime/)
   assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
-  assert.doesNotMatch(shell, /aria-label="Toggle terminal"/)
+  assert.match(shell, /<nav class="activity-rail"/)
+  assert.match(shell, /aria-label="Toggle terminal"/)
+  assert.doesNotMatch(shell, /statusbar__controls/)
   assert.doesNotMatch(shell, /aria-label="Toggle right widgets panel"/)
 })
 test('settings panel uses compact tabs and visual preset swatches', () => {
@@ -159,14 +161,43 @@ test('split workspace has an actionable empty secondary pane', () => {
   assert.match(workspace, /state\.secondaryTab = null/)
 })
 
-test('editor modes remain visible when the formatting toolbar is hidden', () => {
+test('editor controls collapse as one shelf and stay recoverable from the pane header', () => {
   const workspace = read('src/renderer/workspace.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(workspace, /classList\.toggle\('formatting-hidden', !state\.toolbarVisible\)/)
+  assert.match(workspace, /classList\.toggle\('collapsed', !state\.toolbarVisible\)/)
+  assert.match(workspace, /data-action="toggle-toolbar"[^>]*aria-label="Toggle editor controls"/)
+  assert.match(workspace, /querySelectorAll\('\[data-action="toggle-toolbar"\]'\)/)
   assert.match(workspace, /getPaneView\(pane\) === 'split'/)
-  assert.match(css, /\.workspace-toolbar\.formatting-hidden > :not\(\.workspace-toolbar__right\)/)
-  assert.match(css, /\.workspace-toolbar\.formatting-hidden \.workspace-toolbar__right/)
+  assert.match(css, /\.workspace-toolbar\.collapsed\s*\{[\s\S]*height: 0/)
+  assert.doesNotMatch(css, /\.workspace-toolbar\.formatting-hidden/)
+})
+
+test('editor shelf prioritizes rich text, markdown, and split while keeping advanced actions discoverable', () => {
+  const workspace = read('src/renderer/workspace.js')
+
+  assert.match(workspace, /data-view="wysiwyg"[^>]*>Rich Text<\/div>[\s\S]*data-view="markdown"[^>]*>Markdown<\/div>[\s\S]*data-view="split"[^>]*>Split<\/div>/)
+  assert.match(workspace, /editor-more-trigger/)
+  assert.match(workspace, /data-action="set-view" data-view="preview"[^>]*>Rendered preview<\/div>/)
+  assert.match(workspace, /data-action="toggle-workspace-split"[^>]*>Open files side by side<\/div>/)
+})
+
+test('the Nordic shell exposes a compact activity rail and a full-width terminal workspace drawer', () => {
+  const shell = read('src/renderer/shell.js')
+  const terminal = read('src/renderer/terminal-drawer.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(shell, /<nav class="activity-rail"/)
+  assert.match(shell, /id="sidebar-toggle"[^>]*aria-label="Toggle library"/)
+  assert.match(shell, /id="tools-btn"[^>]*aria-label="Search tools and commands"/)
+  assert.match(shell, /id="new-note-btn"[^>]*aria-label="Create new note"/)
+  assert.match(shell, /id="daily-note-btn"[^>]*aria-label="Open daily note"/)
+  assert.match(shell, /id="terminal-toggle"[^>]*aria-label="Toggle terminal"/)
+  assert.match(shell, /class="workspace-shell"[\s\S]*class="workspace-shell__main"[\s\S]*class="editor-area"[\s\S]*buildRightPanelContainer\(\)[\s\S]*buildTerminalDrawer\(\)/)
+  assert.match(terminal, /class="terminal-drawer__shortcut"[^>]*>⌘J<\/div>/)
+  assert.match(css, /--activity-rail-width:/)
+  assert.match(css, /\.workspace-shell\s*\{[\s\S]*display: flex[\s\S]*flex-direction: column/)
+  assert.match(css, /\.workspace-shell__main\s*\{[\s\S]*display: flex/)
 })
 
 test('floating surfaces use calm rounded geometry without carding the editor canvas', () => {
@@ -195,7 +226,7 @@ test('advanced tools stay registered and gain a single discoverable launcher', (
   assert.match(rightPanel, /function isWidgetAvailable/)
   assert.match(rightPanel, /export function refreshAvailablePanels/)
   assert.match(shell, /id="tools-btn"/)
-  assert.match(shell, /aria-label="Open tools and commands"/)
+  assert.match(shell, /aria-label="Search tools and commands"/)
   assert.match(index, /openCommandPaletteCommands/)
   assert.match(index, /label: 'Open AI Assistant'/)
   assert.match(index, /label: 'Toggle Properties'/)
@@ -225,6 +256,18 @@ test('workspace polish keeps split mode quiet, legible, and intentional', () => 
   assert.match(css, /\.settings-group\s*\{[\s\S]*border-top: 1px solid var\(--quiet-border\)/)
   assert.match(css, /\.app\[data-workspace-mode="dual"\] #workspace-secondary:has\(#tabs-secondary\.is-empty\) \.workspace-toolbar/)
   assert.match(css, /\.app\[data-workspace-mode="dual"\] \.workspace-resizer::before\s*\{[\s\S]*height: 48px/)
+})
+
+test('approved rich-text surface keeps controls legible and document accents warm', () => {
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(css, /\.workspace-toolbar \.ic,[\s\S]*opacity: 0\.78/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents h1\s*\{[\s\S]*font-size: 2em/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents\s*\{[\s\S]*max-width: var\(--max-prose-width\)[\s\S]*margin: 0 auto/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-toolbar\s*\{[\s\S]*display: none/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-main\s*\{[\s\S]*height: 100% !important/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents blockquote\s*\{[\s\S]*border-left: 2px solid var\(--accent\)/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents ol li::marker\s*\{[\s\S]*color: var\(--accent-hi\)/)
 })
 
 test('global and pane icon semantics stay distinct and labelled', () => {
@@ -357,6 +400,8 @@ test('right sidebar widget tabs expose only honest visible hit targets', () => {
   const css = read('src/renderer/styles/main.css')
 
   assert.match(rightPanel, /class="right-sidebar__tab/)
+  assert.match(rightPanel, /RIGHT_SIDEBAR_TAB_ORDER = \['outline', 'properties'/)
+  assert.match(rightPanel, /ids\.sort\(\(a, b\) => tabOrderIndex\(a\) - tabOrderIndex\(b\)\)/)
   assert.match(css, /\.right-sidebar__tabs\s*\{[\s\S]*cursor: default/)
   assert.match(css, /\.right-sidebar__tab\s*\{[\s\S]*width: 22px/)
   assert.match(css, /\.right-sidebar__tab\s*\{[\s\S]*flex: 0 0 22px/)
@@ -393,7 +438,7 @@ test('global brand rail owns the native window chrome above every column', () =>
   assert.match(shell, /<div class="app" id="app">[\s\S]*<div class="brandrail" id="brandrail" data-tauri-drag-region="deep">[\s\S]*<div class="layout">/)
   assert.doesNotMatch(shell, /sidebar-drag-region/)
   assert.doesNotMatch(rightPanel, /right-sidebar__drag-region/)
-  assert.match(shell, /<div class="editor-area">[\s\S]*<div class="statusbar">[\s\S]*\$\{buildRightPanelContainer\(\)\}/)
+  assert.match(shell, /<div class="workspace-shell">[\s\S]*<div class="workspace-shell__main">[\s\S]*<div class="editor-area">[\s\S]*\$\{buildRightPanelContainer\(\)\}[\s\S]*<div class="statusbar">/)
   assert.match(css, /\.layout\s*\{[\s\S]*min-height: 0/)
   assert.match(css, /\.editor-area\s*\{[\s\S]*min-height: 0/)
   assert.match(css, /\.brandrail\s*\{[\s\S]*height: var\(--brandrail-height\)/)
@@ -466,8 +511,10 @@ test('properties panel exposes focused banner controls backed by frontmatter', (
   const rightPanel = read('src/renderer/right-panel.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'left'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'right'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*group: 'context'/)
   assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultActive: true/)
+  assert.match(index, /registerRightPanel\('outline'[\s\S]*group: 'context'/)
   assert.match(rightPanel, /hooks\?\.defaultSide === 'left'/)
   assert.match(properties, /renderBannerSettings/)
   assert.match(properties, /class="banner-settings"/)

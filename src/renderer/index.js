@@ -160,6 +160,7 @@ registerShellCallbacks({
   openFolder,
   openProjectSearch: openSearchPanel,
   createNewFile,
+  createDailyNote,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   openWorkspaceInNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),
   collapseAllFolders,

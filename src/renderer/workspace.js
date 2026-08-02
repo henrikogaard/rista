@@ -1,6 +1,6 @@
 import ToastEditor from '@toast-ui/editor'
 import { createEditor, updateSmartTypography, updateFocusMode, updateLivePreview, updatePosHighlight } from './editor.js'
-import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab, fileName } from './state.js'
+import { state, $, el, PANE_KEYS, editorViews, richEditors, richEditorMountTarget, saveTimers, getPaneView, getSplitView, paneUsesWysiwyg, paneUsesMarkdown, getWysiwygMountSlot, getSplitEditableView, getTabForPane, cleanSplitSnapshot, storeSplitSnapshot, getFocusedTab, fileName, escapeHtml } from './state.js'
 import { getTheme } from './theme.js'
 import { updateSetting, getSettings } from './settings.js'
 import { refreshPreview, updateActiveMetrics, exportToPdf, handleImagePaste, getWorkspaceAttachmentPaths } from './preview.js'
@@ -13,7 +13,7 @@ import { toggleRightPanel, refreshRightPanel, restoreRightPanel } from './right-
 import { buildSearchPanel, handleSearchInput } from './search-panel.js'
 import { buildGraphModal } from './graph-modal.js'
 import { showAiContextMenu } from './ai-actions.js'
-import { workspaceSplitIcon } from './icons.js'
+import { chevronIcon, editorSplitIcon } from './icons.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -36,24 +36,42 @@ export function syncSplitToggles() {
 }
 
 export function syncToolbarToggle() {
-  const node = $('toolbar-toggle')
-  if (!node) return
-  node.classList.toggle('active', state.toolbarVisible)
-  node.title = state.toolbarVisible ? 'Hide toolbars' : 'Show toolbars'
-  node.setAttribute('aria-pressed', state.toolbarVisible ? 'true' : 'false')
+  document.querySelectorAll('[data-action="toggle-toolbar"]').forEach(node => {
+    node.classList.toggle('active', state.toolbarVisible)
+    node.title = state.toolbarVisible ? 'Hide editor controls (⌘\\)' : 'Show editor controls (⌘\\)'
+    node.setAttribute('aria-pressed', state.toolbarVisible ? 'true' : 'false')
+  })
 }
 
-// The view modes are permanent editor navigation. Only formatting controls
-// follow toolbarVisible; split-slot controls stay available in Split mode.
+// Formatting and view controls are one on-demand shelf. The quiet control in
+// each pane header remains available when the shelf is collapsed.
 function applyToolbarVisibility(pane) {
   const tab = getTabForPane(pane)
   const showModeBar = Boolean(tab && !tab.isAttachment && !tab.isSpatial && !tab.isBinary)
   const toolbar = document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)
   toolbar?.classList.toggle('hidden', !showModeBar)
-  toolbar?.classList.toggle('formatting-hidden', !state.toolbarVisible)
+  toolbar?.classList.toggle('collapsed', !state.toolbarVisible)
   const showPaneRow = showModeBar && getPaneView(pane) === 'split'
   document.querySelector(`.workspace-pane-row[data-pane="${pane}"]`)?.classList.toggle('hidden', !showPaneRow)
   return showModeBar
+}
+
+function syncWorkspaceBreadcrumb(pane) {
+  const node = $(`workspace-breadcrumb-${pane}`)
+  if (!node) return
+  const tab = getTabForPane(pane)
+  if (!tab?.path) {
+    node.innerHTML = ''
+    node.classList.add('hidden')
+    return
+  }
+  const workspacePath = String(state.folderPath || '').replace(/\\/g, '/')
+  const relativePath = String(tab.path).replace(/\\/g, '/').replace(`${workspacePath}/`, '')
+  const parts = relativePath.split('/').filter(Boolean)
+  node.innerHTML = parts.map((part, index) => `
+    <span class="workspace-breadcrumb__part${index === parts.length - 1 ? ' current' : ''}">${escapeHtml(part.replace(/\.md$/i, ''))}</span>
+  `).join('<span class="workspace-breadcrumb__separator" aria-hidden="true">/</span>')
+  node.classList.remove('hidden')
 }
 
 // ── Split slot selector HTML ─────────────────────────────────────
@@ -84,16 +102,8 @@ export function renderEditorToolbar(pane) {
   const paneView = getPaneView(pane)
   return `
     <div class="workspace-toolbar" data-pane="${pane}">
-      <div class="ic" title="Undo" data-action="editor-cmd" data-cmd="undo">
-        <svg viewBox="0 0 16 16"><path d="M3 7h6a4 4 0 1 1 0 8H5"/><path d="M3 4L1 7l2 3"/></svg>
-      </div>
-      <div class="ic" title="Redo" data-action="editor-cmd" data-cmd="redo">
-        <svg viewBox="0 0 16 16"><path d="M13 7H7a4 4 0 1 0 0 8h4"/><path d="M13 4l2 3-2 3"/></svg>
-      </div>
-      <div class="tb-sep"></div>
-
       <div class="dd" id="dd-h-${pane}">
-        <div class="ic hd" data-action="toggle-dropdown" data-dropdown="dd-h-${pane}">
+        <div class="ic hd" data-action="toggle-dropdown" data-dropdown="dd-h-${pane}" title="Text style">
           <span class="t">H</span>
           <svg class="arr" viewBox="0 0 8 6"><path d="M1 1.5l3 3 3-3"/></svg>
         </div>
@@ -105,8 +115,13 @@ export function renderEditorToolbar(pane) {
         </div>
       </div>
 
+      <div class="ic" title="Bold" data-action="wrap-inline" data-before="**" data-after="**"><span class="t">B</span></div>
+      <div class="ic" title="Italic" data-action="wrap-inline" data-before="*" data-after="*"><span class="t t-i">I</span></div>
+      <div class="ic" title="Link" data-action="insert-link">
+        <svg viewBox="0 0 16 16"><path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/></svg>
+      </div>
       <div class="dd" id="dd-l-${pane}">
-        <div class="ic" data-action="toggle-dropdown" data-dropdown="dd-l-${pane}">
+        <div class="ic" data-action="toggle-dropdown" data-dropdown="dd-l-${pane}" title="Lists">
           <svg viewBox="0 0 16 16"><circle cx="3" cy="5" r="1.1" fill="currentColor" stroke="none"/><circle cx="3" cy="8.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r="1.1" fill="currentColor" stroke="none"/><line x1="6.5" y1="5" x2="14" y2="5"/><line x1="6.5" y1="8.5" x2="14" y2="8.5"/><line x1="6.5" y1="12" x2="11" y2="12"/></svg>
         </div>
         <div class="dd-menu" id="ddm-l-${pane}">
@@ -116,69 +131,39 @@ export function renderEditorToolbar(pane) {
         </div>
       </div>
 
-      <div class="ic" title="Blockquote" data-action="wrap-selection" data-prefix="> ">
-        <svg viewBox="0 0 16 16"><path d="M3 5h10M3 8h7M3 11h5"/></svg>
-      </div>
-      <div class="dd" id="dd-c-${pane}">
-        <div class="ic" title="Callout" data-action="toggle-dropdown" data-dropdown="dd-c-${pane}">
-          <svg viewBox="0 0 16 16"><path d="M3 3.5h10v7H7l-3.5 2.5V3.5Z"/><line x1="5.5" y1="6" x2="10.5" y2="6"/><line x1="5.5" y1="8.5" x2="9" y2="8.5"/></svg>
+      <div class="dd editor-more" id="dd-more-${pane}">
+        <div class="editor-more-trigger" data-action="toggle-dropdown" data-dropdown="dd-more-${pane}" role="button" tabindex="0">
+          <span>More</span>
+          <svg class="arr" viewBox="0 0 8 6"><path d="M1 1.5l3 3 3-3"/></svg>
         </div>
-        <div class="dd-menu" id="ddm-c-${pane}">
-          <div class="dd-item" data-action="insert-callout" data-callout-type="note">Note</div>
-          <div class="dd-item" data-action="insert-callout" data-callout-type="info">Info</div>
-          <div class="dd-item" data-action="insert-callout" data-callout-type="tip">Tip</div>
-          <div class="dd-item" data-action="insert-callout" data-callout-type="warning">Warning</div>
-          <div class="dd-item" data-action="insert-callout" data-callout-type="danger">Danger</div>
+        <div class="dd-menu editor-more-menu" id="ddm-more-${pane}">
+          <div class="dd-item" data-action="editor-cmd" data-cmd="undo">Undo</div>
+          <div class="dd-item" data-action="editor-cmd" data-cmd="redo">Redo</div>
+          <div class="dd-item divider" data-action="wrap-inline" data-before="~~" data-after="~~">Strikethrough</div>
+          <div class="dd-item" data-action="wrap-inline" data-before="\`" data-after="\`">Inline code</div>
+          <div class="dd-item" data-action="insert-code-block">Code block</div>
+          <div class="dd-item" data-action="wrap-selection" data-prefix="> ">Blockquote</div>
+          <div class="dd-item" data-action="insert-callout" data-callout-type="note">Callout</div>
+          <div class="dd-item" data-action="insert-horizontal-rule">Horizontal rule</div>
+          <div class="dd-item divider" data-action="insert-table">Table</div>
+          <div class="dd-item" data-action="insert-image">Image</div>
+          <div class="dd-item" data-action="insert-diagram">Diagram</div>
+          <div class="dd-item" data-action="toggle-find-replace">Find & Replace</div>
+          <div class="dd-item divider" data-action="set-view" data-view="preview" title="Rendered preview">Rendered preview</div>
+          ${pane === 'primary' ? '<div class="dd-item" id="workspace-split-toggle" data-action="toggle-workspace-split">Open files side by side</div>' : ''}
         </div>
-      </div>
-      <div class="tb-sep"></div>
-
-      <div class="ic" title="Bold" data-action="wrap-inline" data-before="**" data-after="**"><span class="t">B</span></div>
-      <div class="ic" title="Italic" data-action="wrap-inline" data-before="*" data-after="*"><span class="t t-i">I</span></div>
-      <div class="ic" title="Strikethrough" data-action="wrap-inline" data-before="~~" data-after="~~">
-        <svg viewBox="0 0 16 16"><line x1="3" y1="8" x2="13" y2="8"/><path d="M5.5 5.5c0-1.1 1-2 2.5-2s2.5.9 2.5 2M5.5 10.5c0 1.1 1 2 2.5 2s2.5-.9 2.5-2"/></svg>
-      </div>
-      <div class="ic" title="Inline code" data-action="wrap-inline" data-before="\`" data-after="\`">
-        <svg viewBox="0 0 16 16"><path d="M5.5 5L2 8l3.5 3M10.5 5L14 8l-3.5 3"/></svg>
-      </div>
-      <div class="ic" title="Code block" data-action="insert-code-block">
-        <svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="none"/><path d="M5.5 6L4 8l1.5 2M10.5 6L12 8l-2 2"/></svg>
-      </div>
-      <div class="ic" title="Link" data-action="insert-link">
-        <svg viewBox="0 0 16 16"><path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/></svg>
-      </div>
-      <div class="ic" title="Horizontal rule" data-action="insert-horizontal-rule">
-        <svg viewBox="0 0 16 16"><line x1="2" y1="8" x2="14" y2="8" stroke-width="2"/></svg>
-      </div>
-      <div class="tb-sep"></div>
-
-      <div class="ic" title="Table" data-action="insert-table">
-        <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="2" y1="7" x2="14" y2="7"/><line x1="7" y1="3" x2="7" y2="13"/></svg>
-      </div>
-      <div class="ic" title="Image" data-action="insert-image">
-        <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 10l3.5-3.5 2.5 2.5 2-2 4 4"/><circle cx="11.5" cy="5.5" r="1" fill="currentColor" stroke="none"/></svg>
-      </div>
-      <div class="ic" title="Diagram" data-action="insert-diagram">
-        <svg viewBox="0 0 16 16"><rect x="1.5" y="2" width="5" height="3.5" rx="0.8"/><rect x="9.5" y="5" width="5" height="3.5" rx="0.8"/><rect x="5" y="10.5" width="5" height="3.5" rx="0.8"/><path d="M4 5.5V8.5L7.5 10.5M12 8.5V9.5L9.5 10.5" fill="none"/></svg>
-      </div>
-      <div class="ic" title="Find & Replace" data-action="toggle-find-replace">
-        <svg viewBox="0 0 16 16"><circle cx="6" cy="6" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
       </div>
 
       <div class="workspace-toolbar__right">
         <div class="vseg">
-          <div class="vb${paneView === 'markdown' ? ' active' : ''}" data-action="set-view" data-view="markdown" title="Markdown source" aria-label="Markdown source" role="button" tabindex="0">MD</div>
-          <div class="vb${paneView === 'split' ? ' active' : ''}" data-action="set-view" data-view="split" title="Pane split preview" aria-label="Pane split preview" role="button" tabindex="0">Split</div>
           <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg" title="Rich text editor" aria-label="Rich text editor" role="button" tabindex="0">Rich Text</div>
-          <div class="vb${paneView === 'preview' ? ' active' : ''}" data-action="set-view" data-view="preview" title="Rendered preview" aria-label="Rendered preview" role="button" tabindex="0">Preview</div>
+          <div class="vb${paneView === 'markdown' ? ' active' : ''}" data-action="set-view" data-view="markdown" title="Markdown source" aria-label="Markdown source" role="button" tabindex="0">Markdown</div>
+          <div class="vb${paneView === 'split' ? ' active' : ''}" data-action="set-view" data-view="split" title="Pane split preview" aria-label="Pane split preview" role="button" tabindex="0">Split</div>
         </div>
-        ${pane === 'primary' ? `
-          <div class="workspace-toolbar__mode-separator" aria-hidden="true"></div>
-          <div class="vb workspace-layout-toggle${state.workspaceMode === 'dual' ? ' active' : ''}" id="workspace-split-toggle" data-action="toggle-workspace-split" title="Open files side by side" aria-label="Open files side by side" aria-pressed="${state.workspaceMode === 'dual' ? 'true' : 'false'}" role="button" tabindex="0">
-            ${workspaceSplitIcon()}
-            <span>Side by side</span>
-          </div>
-        ` : ''}
+        <div class="workspace-toolbar__mode-separator" aria-hidden="true"></div>
+        <div class="editor-shelf-hide" data-action="toggle-toolbar" aria-label="Hide editor controls" role="button" tabindex="0">
+          ${chevronIcon()}
+        </div>
       </div>
     </div>
     <div class="workspace-pane-row" data-pane="${pane}">
@@ -220,7 +205,11 @@ export function buildEditorUI() {
                 <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </div>
             </div>
+            <div class="editor-controls-toggle" data-action="toggle-toolbar" aria-label="Toggle editor controls" aria-pressed="${state.toolbarVisible ? 'true' : 'false'}" role="button" tabindex="0">
+              ${editorSplitIcon()}
+            </div>
           </div>
+          <div class="workspace-breadcrumb hidden" id="workspace-breadcrumb-primary"></div>
           ${renderEditorToolbar('primary')}
           <div class="panes-main" id="panes-main-primary">
             <div class="single-surface" id="single-surface-primary">
@@ -253,7 +242,11 @@ export function buildEditorUI() {
                 <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </div>
             </div>
+            <div class="editor-controls-toggle" data-action="toggle-toolbar" aria-label="Toggle editor controls" aria-pressed="${state.toolbarVisible ? 'true' : 'false'}" role="button" tabindex="0">
+              ${editorSplitIcon()}
+            </div>
           </div>
+          <div class="workspace-breadcrumb hidden" id="workspace-breadcrumb-secondary"></div>
           ${renderEditorToolbar('secondary')}
           <div class="panes-main" id="panes-main-secondary">
             <div class="single-surface" id="single-surface-secondary">
@@ -518,6 +511,7 @@ export function syncWorkspaceUi() {
     if (pane === 'secondary' && !dual) return
     if (panesMain) panesMain.style.display = tab ? 'flex' : 'none'
     if (empty && pane === 'secondary') empty.style.display = tab ? 'none' : 'flex'
+    syncWorkspaceBreadcrumb(pane)
     applyToolbarVisibility(pane)
 
     // Handle non-markdown previews: hide editor/preview, show only preview host
@@ -657,6 +651,16 @@ export function wireEditorUiEvents() {
   $('workspace-resizer')?.addEventListener('pointerdown', startWorkspaceSplitResize)
   document.querySelectorAll('.workspace-toolbar').forEach(node => {
     node.addEventListener('click', handleToolbarClick)
+  })
+  document.querySelectorAll('.workspace-pane__header').forEach(node => {
+    node.addEventListener('click', handleToolbarClick)
+    node.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      const control = event.target.closest('[data-action]')
+      if (!control) return
+      event.preventDefault()
+      control.click()
+    })
   })
   document.querySelectorAll('.workspace-pane-row').forEach(node => {
     node.addEventListener('click', handleToolbarClick)

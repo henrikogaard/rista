@@ -16,7 +16,13 @@ const RIGHT_SIDEBAR_TAB_GROUPS = [
   { id: 'context', label: 'Context', groups: ['context'] },
   { id: 'knowledge', label: 'Knowledge', groups: ['project-health'] },
 ]
+const RIGHT_SIDEBAR_TAB_ORDER = ['outline', 'properties', 'related-notes', 'ai-chat']
 const RIGHT_SIDEBAR_SOLO_GROUPS = new Set(['context', 'project-health'])
+
+function tabOrderIndex(id) {
+  const index = RIGHT_SIDEBAR_TAB_ORDER.indexOf(id)
+  return index === -1 ? RIGHT_SIDEBAR_TAB_ORDER.length : index
+}
 
 /**
  * Register a widget.
@@ -256,6 +262,7 @@ function renderTabs() {
   for (const group of RIGHT_SIDEBAR_TAB_GROUPS) {
     const ids = idsByGroup.get(group.id) || []
     if (ids.length === 0) continue
+    ids.sort((a, b) => tabOrderIndex(a) - tabOrderIndex(b))
     chunks.push(`<div class="right-sidebar__group-label">${escapeHtml(group.label)}</div>`)
     chunks.push(...ids.map(renderTab))
   }

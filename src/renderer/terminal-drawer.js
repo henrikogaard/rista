@@ -1,4 +1,5 @@
 import { state, $, getFocusedTab, escapeHtml } from './state.js'
+import { terminalIcon, chevronIcon, closeIcon } from './icons.js'
 
 // ── Terminal Drawer ──────────────────────────────────────────────
 // A compact workspace shell for running project commands.
@@ -113,7 +114,7 @@ export function buildTerminalDrawer() {
     <div class="terminal-drawer" id="terminal-drawer" data-experimental-feature="featureTerminal">
       <div class="terminal-drawer__header">
         <div class="terminal-drawer__identity">
-          <div class="terminal-drawer__title">Terminal</div>
+          <div class="terminal-drawer__title">${terminalIcon()}<span>Terminal</span></div>
           <div class="terminal-drawer__prompt-chip">
             <span class="terminal-drawer__cwd" id="terminal-cwd">~</span>
             <span class="terminal-shell" id="terminal-shell">shell</span>
@@ -122,8 +123,12 @@ export function buildTerminalDrawer() {
         <div class="terminal-drawer__path" id="terminal-path"></div>
         <div class="terminal-drawer__status" id="terminal-status">Ready</div>
         <div class="terminal-drawer__action" id="terminal-clear-btn" title="Clear terminal" role="button" tabindex="0">Clear</div>
+        <div class="terminal-drawer__shortcut" title="Toggle terminal">⌘J</div>
+        <div class="terminal-drawer__collapse" id="terminal-collapse-btn" title="Collapse terminal" aria-label="Collapse terminal" role="button" tabindex="0">
+          ${chevronIcon()}
+        </div>
         <div class="terminal-drawer__close" id="terminal-close-btn" title="Close terminal" role="button" tabindex="0">
-          <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          ${closeIcon()}
         </div>
       </div>
       <div class="terminal-drawer__output" id="terminal-output">
@@ -153,6 +158,7 @@ export function toggleTerminalDrawer() {
     syncTerminalPath()
     syncShellInfo()
   }
+  syncTerminalToggle()
 }
 
 export function openTerminalDrawer() {
@@ -162,12 +168,18 @@ export function openTerminalDrawer() {
   $('terminal-input')?.focus()
   syncTerminalPath()
   syncShellInfo()
+  syncTerminalToggle()
 }
 
 export function closeTerminalDrawer() {
   const drawer = $('terminal-drawer')
   if (!drawer) return
   drawer.classList.remove('open')
+  syncTerminalToggle()
+}
+
+function syncTerminalToggle() {
+  $('terminal-toggle')?.classList.toggle('active', $('terminal-drawer')?.classList.contains('open'))
 }
 
 function syncTerminalPath() {
@@ -326,6 +338,7 @@ export function handleTerminalInput() {
   })
 
   $('terminal-close-btn')?.addEventListener('click', closeTerminalDrawer)
+  $('terminal-collapse-btn')?.addEventListener('click', closeTerminalDrawer)
   $('terminal-clear-btn')?.addEventListener('click', clearTerminalOutput)
 }
 
@@ -375,5 +388,4 @@ const ANSI_CLASS_MAP = {
   37: 'ansi-fg-white',
   90: 'ansi-fg-gray',
 }
-
 
