@@ -6,28 +6,45 @@ const test = require('node:test')
 const root = path.resolve(__dirname, '..')
 const read = file => fs.readFileSync(path.join(root, file), 'utf8')
 
-test('welcome screen is an IDE start surface instead of a marketing hero', () => {
+test('welcome screen is a quiet document-first start surface', () => {
   const shell = read('src/renderer/shell.js')
   const tabs = read('src/renderer/tabs.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(shell, /welcome__start/)
-  assert.match(shell, /welcome__actions/)
+  assert.match(shell, /Open a folder to begin/)
+  assert.match(shell, /Rísta works directly with the Markdown files on your device\./)
+  assert.match(shell, /welcome__start-actions/)
   assert.match(shell, /welcome__workspace-panel/)
-  assert.match(shell, /welcome__status-strip/)
+  assert.match(shell, /Recent workspaces/)
+  assert.doesNotMatch(shell, /welcome__quick-grid/)
+  assert.doesNotMatch(shell, /welcome__status-strip/)
+  assert.doesNotMatch(shell, /Local graph ready/)
+  assert.doesNotMatch(shell, /Review first/)
   assert.doesNotMatch(shell, /welcome__hero-panel/)
   assert.doesNotMatch(shell, /welcome__aurora/)
   assert.doesNotMatch(shell, /welcome__mesh/)
   assert.doesNotMatch(css, /\.welcome__aurora/)
   assert.doesNotMatch(css, /\.welcome__mesh/)
-  // .welcome::after is intentionally used for the aurora gradient (Task 7.3)
-  assert.match(css, /\.welcome::after {/)
+  assert.match(css, /\.welcome__start-actions/)
   assert.doesNotMatch(css, /\.welcome__title-row/)
   assert.match(css, /\.welcome__start/)
-  assert.match(css, /\.welcome__actions/)
+  assert.match(css, /\.welcome__workspace-panel/)
   assert.match(shell, /#welcome-open-btn, #welcome-new-file-btn/)
   assert.match(tabs, /welcome-new-file-btn/)
   assert.match(tabs, /welcome-new-file-btn'[\s\S]*addEventListener\('click', createNewFile\)/)
+})
+
+test('fresh workspaces open one calm live-preview document surface', () => {
+  const settings = read('src/renderer/settings.js')
+  const tabs = read('src/renderer/tabs.js')
+  const index = read('src/renderer/index.js')
+
+  assert.match(settings, /defaultViewMode: 'markdown'/)
+  assert.match(settings, /livePreview: true/)
+  assert.match(settings, /editorFontSize: 15/)
+  assert.match(tabs, /stripMarkdownExtension\(tab\.name\)/)
+  assert.match(index, /state\.paneView\.primary = initialViewMode/)
+  assert.match(index, /state\.paneView\.secondary = initialViewMode/)
 })
 
 test("status bar collapsed to metrics and settings only", () => {
@@ -59,7 +76,7 @@ test('settings panel uses compact tabs and visual preset swatches', () => {
   assert.match(settings, /ui: PROPORTIONAL_FONT_OPTIONS/)
   assert.match(settings, /explorer: PROPORTIONAL_FONT_OPTIONS/)
   assert.match(settings, /preview: PROPORTIONAL_FONT_OPTIONS/)
-  assert.match(settings, /editor: MONO_FONT_OPTIONS/)
+  assert.match(settings, /editor: \[PROPORTIONAL_FONT_OPTIONS\[0\], \.\.\.MONO_FONT_OPTIONS\]/)
   assert.doesNotMatch(settings, /Avenir \/ Segoe/)
   assert.doesNotMatch(settings, /Iowan \/ Palatino/)
   assert.match(css, /\.settings-page\.active/)
@@ -578,17 +595,22 @@ test('Tauri uses native macOS overlay chrome with app-owned branding', () => {
   assert.match(capability, /"workspace-\*"/)
 })
 
-test('Tauri chrome positions Rista branding in the top overlay rail', () => {
+test('Tauri chrome keeps the window title quiet and puts Rista branding in the sidebar', () => {
   const shell = read('src/renderer/shell.js')
   const css = read('src/renderer/styles/main.css')
 
   assert.match(shell, /syncWorkspaceChrome/)
   assert.match(shell, /brandrail__workspace-name/)
   assert.match(shell, /brandrail__workspace-path/)
-  assert.doesNotMatch(shell, /brandrail__wordmark/)
+  assert.match(shell, /sidebar__wordmark/)
+  assert.match(shell, /sidebar-search-btn/)
+  assert.match(shell, /sidebar-search-label/)
+  assert.match(shell, /Search notes/)
   assert.doesNotMatch(shell, /local markdown, carved cleanly/)
   assert.doesNotMatch(css, /\.brandrail__mark/)
   assert.match(css, /\.brandrail__workspace-path/)
+  assert.match(css, /\.sidebar__brand/)
+  assert.match(css, /\.sidebar__search/)
 })
 
 test('terminal drawer has workspace context and clear running states', () => {

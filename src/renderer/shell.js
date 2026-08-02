@@ -40,9 +40,15 @@ export function syncWorkspaceChrome() {
   const nameEl = $('brandrail-workspace-name')
   const pathEl = $('brandrail-workspace-path')
   const railEl = $('brandrail')
+  const searchLabel = $('sidebar-search-label')
+  const searchShortcut = $('sidebar-search-shortcut')
+  const appEl = $('app')
   if (!nameEl || !pathEl || !railEl) return
   const hasFolder = Boolean(state.folderPath)
   const hasSingleFile = Boolean(state.singleFilePath)
+  appEl?.classList.toggle('has-workspace', hasFolder || hasSingleFile)
+  if (searchLabel) searchLabel.textContent = hasFolder || hasSingleFile ? 'Search notes' : 'Open folder…'
+  if (searchShortcut) searchShortcut.textContent = hasFolder || hasSingleFile ? '⌘K' : '⌘O'
   railEl.classList.toggle('has-workspace', hasFolder || hasSingleFile)
   if (hasSingleFile && !hasFolder) {
     nameEl.textContent = folderName(state.singleFilePath)
@@ -63,10 +69,7 @@ export function buildWelcome() {
   const workspaceHtml = pinnedHtml || recentHtml
     ? `
       <div class="welcome__workspace-panel">
-        <div class="welcome__panel-head">
-          <span>Workspaces</span>
-          <span>⌘K quick open</span>
-        </div>
+        <div class="welcome__panel-head">Recent workspaces</div>
         ${pinnedHtml}
         ${recentHtml}
       </div>
@@ -76,34 +79,21 @@ export function buildWelcome() {
     <div class="welcome" id="welcome">
       <div class="welcome__content welcome__start">
         <header class="welcome__masthead">
-          <div>
-            <div class="welcome__eyebrow">Local Markdown workspace</div>
-            <div class="welcome__logo">Rísta</div>
-            <div class="welcome__sub">${hasFolder ? 'Choose a note, open Graph, or start a new Markdown file.' : 'Open a folder to work with plain local files.'}</div>
-          </div>
-          <div class="welcome__actions">
-            ${hasFolder ? `
-              <div class="welcome__btn" id="welcome-new-file-btn" role="button" tabindex="0">New note</div>
-            ` : `
-              <div class="welcome__btn" id="welcome-open-btn" role="button" tabindex="0">
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h4l2-2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>
-                Open folder…
-              </div>
-            `}
-          </div>
+          <h1>${hasFolder ? 'Choose a note to begin' : 'Open a folder to begin'}</h1>
+          <p>${hasFolder ? 'Select a Markdown file from the sidebar, or create a new note.' : 'Rísta works directly with the Markdown files on your device.'}</p>
         </header>
-        <section class="welcome__quick-grid" aria-label="Rísta workspace status">
-          <div class="welcome__quick-card"><span class="welcome__quick-kicker">Source</span><strong>Local files</strong><span>Plain Markdown on disk.</span></div>
-          <div class="welcome__quick-card"><span class="welcome__quick-kicker">Graph</span><strong>Workspace links</strong><span>Backlinks and local graph ready.</span></div>
-          <div class="welcome__quick-card"><span class="welcome__quick-kicker">AI</span><strong>Review first</strong><span>File edits stay explicit.</span></div>
-        </section>
-        ${workspaceHtml}
-        <div class="welcome__status-strip" aria-hidden="true">
-          <span>Markdown-first</span>
-          <span>Local graph ready</span>
-          <span>Autosave armed</span>
-          <span>Works offline</span>
+        <div class="welcome__start-actions">
+          ${hasFolder ? '' : `
+            <div class="welcome__start-action welcome__start-action--primary" id="welcome-open-btn" role="button" tabindex="0">
+              <span>Open folder…</span><span aria-hidden="true">→</span>
+            </div>
+          `}
+          <div class="welcome__start-action" id="welcome-new-file-btn" role="button" tabindex="0">
+            <span>New note</span><kbd>⌘N</kbd>
+          </div>
+          ${hasFolder ? '' : '<div class="welcome__shortcut">Keyboard shortcut <kbd>⌘O</kbd></div>'}
         </div>
+        ${workspaceHtml}
       </div>
     </div>
   `
@@ -847,6 +837,15 @@ export function buildShell() {
 
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
+          <div class="sidebar__brand">
+            <span class="sidebar__wordmark">Rísta</span>
+            <span class="sidebar__brand-chevron" aria-hidden="true">⌄</span>
+          </div>
+          <div class="sidebar__search" id="sidebar-search-btn" role="button" tabindex="0">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"></circle><path d="m10.2 10.2 3.1 3.1"></path></svg>
+            <span id="sidebar-search-label">Open folder…</span>
+            <kbd id="sidebar-search-shortcut">⌘O</kbd>
+          </div>
           <div class="left-widget-stack widget-stack widget-stack--left" id="left-widget-stack"></div>
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
@@ -1117,6 +1116,16 @@ export function buildShell() {
 
   // Wire up controls
   $('brandrail')?.addEventListener('mousedown', handleWindowDragRegionMouseDown)
+  $('sidebar-search-btn')?.addEventListener('click', () => {
+    if (state.folderPath || state.singleFilePath) _callbacks.openProjectSearch?.()
+    else _callbacks.openFolder?.()
+  })
+  $('sidebar-search-btn')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    if (state.folderPath || state.singleFilePath) _callbacks.openProjectSearch?.()
+    else _callbacks.openFolder?.()
+  })
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
   $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)

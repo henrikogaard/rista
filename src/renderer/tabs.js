@@ -670,7 +670,7 @@ export function renderTabs() {
         : tab.name
       t.innerHTML = `
         <div class="tab__dot"></div>
-        <span class="tab__name">${tab.name}${tab.externalConflict ? ' !' : tab.dirty ? ' ·' : ''}</span>
+        <span class="tab__name">${stripMarkdownExtension(tab.name)}${tab.externalConflict ? ' !' : tab.dirty ? ' ·' : ''}</span>
         ${tab.pinned ? '<span class="tab__pin">&#128204;</span>' : '<div class="tab__close">✕</div>'}
       `
       t.classList.toggle('conflict', Boolean(tab.externalConflict))

@@ -54,7 +54,7 @@ export const FONT_OPTIONS = {
   ui: PROPORTIONAL_FONT_OPTIONS,
   explorer: PROPORTIONAL_FONT_OPTIONS,
   preview: PROPORTIONAL_FONT_OPTIONS,
-  editor: MONO_FONT_OPTIONS,
+  editor: [PROPORTIONAL_FONT_OPTIONS[0], ...MONO_FONT_OPTIONS],
 }
 
 export const THEME_PRESETS = {
@@ -161,13 +161,13 @@ export const THEME_PRESETS = {
     {
       value: 'ember',
       label: 'Ember',
-      bg: ['#14100c', '#1b1611', '#231c15', '#2c231a', '#392d21', '#48392a'],
-      text: ['#ece3d6', '#a89881', '#6e5f4c'],
-      accent: '#e0933c',
-      green: '#7fa25c',
-      red: '#c05d4a',
-      amber: '#d98f3e',
-      atmosphere: { ambientIntensity: 44, surfaceOpacity: 84, surfaceBlur: 20 },
+      bg: ['#171512', '#1b1916', '#201d19', '#29241f', '#342d26', '#43382e'],
+      text: ['#e8e0d8', '#a39a91', '#6f6861'],
+      accent: '#d9824f',
+      green: '#789b72',
+      red: '#c56b5b',
+      amber: '#c99558',
+      atmosphere: { ambientIntensity: 0, surfaceOpacity: 100, surfaceBlur: 0 },
     },
   ],
   light: [
@@ -278,12 +278,12 @@ function getPreset(theme, value) {
 }
 
 export const DEFAULT_SETTINGS = {
-  ambientBackground: true,
-  ambientIntensity: 42,
-  surfaceOpacity: 82,
-  surfaceBlur: 18,
+  ambientBackground: false,
+  ambientIntensity: 0,
+  surfaceOpacity: 100,
+  surfaceBlur: 0,
   contrastBoost: 22,
-  sidebarWidth: 220,
+  sidebarWidth: 236,
   splitRatio: 50,
   documentSplitRatio: 50,
   textColor: '',
@@ -298,7 +298,7 @@ export const DEFAULT_SETTINGS = {
   explorerFontSize: 12,
   editorFont: FONT_OPTIONS.editor[0].value,
   editorFontCustom: '',
-  editorFontSize: 13,
+  editorFontSize: 15,
   editorLineHeight: 1.75,
   editorTextColor: '',
   previewFont: FONT_OPTIONS.preview[0].value,
@@ -339,13 +339,13 @@ export const DEFAULT_SETTINGS = {
   featureTerminal: false,
   featurePublish: false,
   zenParagraphDimming: false,
-  defaultViewMode: 'split',
+  defaultViewMode: 'markdown',
   readingSpeed: 200,
   zenColumnWidth: 700,
   showMinimap: false,
   smartTypography: true,
   focusMode: false,
-  livePreview: false,
+  livePreview: true,
   posHighlight: false,
   docxExportEnabled: false,
   dailyNotesFolder: 'daily',
@@ -495,7 +495,7 @@ function sanitize(settings) {
   next.featureDiagramBuilder = Boolean(next.featureDiagramBuilder)
   next.featureTerminal = Boolean(next.featureTerminal)
   next.featurePublish = Boolean(next.featurePublish)
-  next.defaultViewMode = ['markdown', 'split', 'preview'].includes(next.defaultViewMode) ? next.defaultViewMode : 'split'
+  next.defaultViewMode = ['markdown', 'split', 'preview'].includes(next.defaultViewMode) ? next.defaultViewMode : DEFAULT_SETTINGS.defaultViewMode
   next.readingSpeed = clamp(Number(next.readingSpeed) || 200, 100, 500)
   next.zenParagraphDimming = Boolean(next.zenParagraphDimming)
   next.zenColumnWidth = clamp(Number(next.zenColumnWidth) || 700, 500, 900)

@@ -113,6 +113,9 @@ function getInitialFilePath() {
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
+const initialViewMode = getSettings().defaultViewMode
+state.paneView.primary = initialViewMode
+state.paneView.secondary = initialViewMode
 applySelectedAppIcon()
 initRightSidebarWidth()
 initKeybindings()
@@ -153,6 +156,7 @@ registerShellCallbacks({
   toggleRightPanel,
   toggleRightSidebar,
   openFolder,
+  openProjectSearch: openSearchPanel,
   createNewFile,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   openWorkspaceInNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),
@@ -414,4 +418,3 @@ registerCommands([
   { id: 'insert-horizontal-rule', label: 'Insert Horizontal Rule', description: 'Add a thematic break at cursor', shortcut: '', action: () => insertHorizontalRule() },
   { id: 'insert-image', label: 'Insert Image', description: 'Pick and insert an image reference', shortcut: '', action: () => insertImage() },
 ])
-

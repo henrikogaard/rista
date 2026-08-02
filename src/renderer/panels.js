@@ -32,7 +32,7 @@ export function initPanels({ openFile, refreshTree, openAiSession, openAiChatSur
     renderTree: () => { refreshTree() },
   })
   registerRightPanel('files', {
-    title: 'Files',
+    title: 'Notes',
     icon: folderIcon(),
     flex: 3,
     defaultSide: 'left',
