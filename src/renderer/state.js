@@ -101,7 +101,7 @@ export const state = {
     primary: 'right',
     secondary: 'right',
   },
-  toolbarVisible: true,
+  toolbarVisible: false,
   sidebarVisible: true,
   sidebarMode: 'explorer', // 'explorer' | 'agents'
   inspectorOpen: false,

@@ -132,5 +132,7 @@ test('bundled renderer boots to a populated shell (no boot-time ReferenceError)'
   assert.ok(rootEl.innerHTML.length > 1000, `#root should be populated, got ${rootEl.innerHTML.length} chars`)
   assert.ok(rootEl.innerHTML.includes('id="app"'), 'shell should contain the app root')
   assert.ok(rootEl.innerHTML.includes('id="sidebar"'), 'shell should contain the sidebar')
+  assert.ok(rootEl.innerHTML.includes('Open a folder to begin'), 'shell should show the empty-state primary action')
+  assert.ok(rootEl.innerHTML.includes('id="sidebar-search-btn"'), 'shell should expose the sidebar search/open control')
   assert.ok(rootEl.innerHTML.includes('statusbar'), 'shell should contain the statusbar')
 })

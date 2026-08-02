@@ -1,4 +1,4 @@
-import { state, $, escapeHtml, startDragResize } from './state.js'
+import { state, $, escapeHtml, startDragResize, featureEnabled } from './state.js'
 import { showContextMenu } from './context-menu.js'
 
 // ── Sidebar Widget System ────────────────────────────────────────
@@ -30,9 +30,15 @@ const RIGHT_SIDEBAR_SOLO_GROUPS = new Set(['context', 'project-health'])
  * @param {function} [hooks.onRefresh]  - called to refresh existing body
  * @param {number}   [hooks.flex]       - relative flex weight (default 1)
  * @param {string}   [hooks.group]      - layout group: project, context, project-health, assistant
+ * @param {string}   [hooks.feature]    - optional feature flag controlling availability
  */
 export function registerRightPanel(id, hooks) {
   _widgets.set(id, hooks)
+}
+
+function isWidgetAvailable(id) {
+  const feature = _widgets.get(id)?.feature
+  return !feature || featureEnabled(feature)
 }
 
 export function buildRightPanelContainer() {
@@ -111,6 +117,7 @@ function applyFirstLaunchDefaults() {
   const seen = getSeenWidgets()
   let changed = false
   for (const [id, hooks] of _widgets) {
+    if (!isWidgetAvailable(id)) continue
     if (seen.has(id)) continue
     seen.add(id)
     if (hooks.defaultActive) {
@@ -217,7 +224,7 @@ function getActiveWidgetIds() {
     if (!orderMap.has(id)) orderMap.set(id, nextOrder++)
   }
   return Array.from(state.rightWidgets)
-    .filter(id => _widgets.has(id))
+    .filter(id => _widgets.has(id) && isWidgetAvailable(id))
     .sort((a, b) => orderMap.get(a) - orderMap.get(b))
 }
 
@@ -228,6 +235,7 @@ function renderTabs() {
   const idsByGroup = new Map(RIGHT_SIDEBAR_TAB_GROUPS.map(group => [group.id, []]))
   idsByGroup.set('active', [])
   for (const id of _widgets.keys()) {
+    if (!isWidgetAvailable(id)) continue
     if (!shouldShowRightSidebarTab(id)) continue
     const groupId = getRightSidebarTabGroup(id)
     if (!idsByGroup.has(groupId)) idsByGroup.set(groupId, [])
@@ -388,7 +396,7 @@ function setWidgetOrder(orderedIds) {
 
 export function openRightPanel(id) {
   ensureStateShape()
-  if (!_widgets.has(id)) return
+  if (!_widgets.has(id) || !isWidgetAvailable(id)) return
   // The widget's assigned side's stack must exist
   const side = getWidgetSide(id)
   if (!$(STACK_ID[side])) return
@@ -396,6 +404,12 @@ export function openRightPanel(id) {
   enforceRightSidebarSoloMode(id)
   renderSidebar()
   persistWidgetState()
+}
+
+export function refreshAvailablePanels() {
+  ensureStateShape()
+  applyFirstLaunchDefaults()
+  renderSidebar()
 }
 
 export function closeRightPanel(id) {

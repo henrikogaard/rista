@@ -413,6 +413,7 @@ export function initInspectorPanel(openFileFn, closeRightPanelFn) {
   })
   registerRightPanel('inspector', {
     title: 'Inspector',
+    feature: 'featureInspector',
     icon: inspectorWidgetIcon(),
     flex: 2,
     build: buildInspector,

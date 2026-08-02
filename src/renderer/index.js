@@ -11,10 +11,11 @@ import { getStats, setTransclusionResolver } from './markdown.js'
 import { createNoteFromSelection } from './link-index.js'
 import { registerEnsureRichEditorMounted, registerFocusPane, insertHeading, insertList, insertCodeBlock, insertHorizontalRule, insertCallout, insertImage } from './commands.js'
 import { toggleFindReplace } from './find-replace.js'
-import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles } from './command-palette.js'
+import { registerCommandPaletteCallbacks, registerCommands, openCommandPaletteFiles, openCommandPaletteCommands } from './command-palette.js'
 import { toggleZenMode, buildZenExitHint } from './zen-mode.js'
 import { exportToHtml, updateActiveMetrics } from './preview.js'
 import { exportToDocx } from './export-docx.js'
+import { exportAsWebsite } from './publish.js'
 import { openSearchPanel } from './search-panel.js'
 import { registerWikilinkCallback } from './preview.js'
 import { renderAttachmentPreview, registerAttachmentPreviewCallbacks } from './attachment-preview.js'
@@ -113,6 +114,9 @@ function getInitialFilePath() {
 // ── Init theme before any paint ──────────────────────────────────
 initTheme()
 applySettings()
+const initialViewMode = getSettings().defaultViewMode
+state.paneView.primary = initialViewMode
+state.paneView.secondary = initialViewMode
 applySelectedAppIcon()
 initRightSidebarWidth()
 initKeybindings()
@@ -144,6 +148,7 @@ setTransclusionResolver((noteName) => {
 })
 
 registerShellCallbacks({
+  openTools: openCommandPaletteCommands,
   toggleToolbar,
   togglePaneSplitView,
   toggleWorkspaceSplit,
@@ -153,6 +158,7 @@ registerShellCallbacks({
   toggleRightPanel,
   toggleRightSidebar,
   openFolder,
+  openProjectSearch: openSearchPanel,
   createNewFile,
   openRecentProject: (folderPath) => openFolderPath(folderPath),
   openWorkspaceInNewWindow: (folderPath) => window.fjord?.newWindow?.(folderPath),
@@ -269,6 +275,18 @@ initAutoHideChrome()
 registerCommandPaletteCallbacks({ openFile })
 
 registerCommands([
+  { id: 'open-ai-assistant', label: 'Open AI Assistant', description: 'Open the local workspace assistant', shortcut: '', when: () => featureEnabled('featureAgents'), action: () => openAiChatSurface() },
+  { id: 'toggle-agents', label: 'Toggle AI Agents', description: 'Show or hide agent sessions', shortcut: '', when: () => featureEnabled('featureAgents'), action: () => toggleRightPanel('agents') },
+  { id: 'toggle-properties', label: 'Toggle Properties', description: 'Show or hide document properties', shortcut: '', when: () => featureEnabled('featureProperties'), action: () => toggleRightPanel('properties') },
+  { id: 'toggle-graph-panel', label: 'Toggle Graph Panel', description: 'Show or hide the workspace graph panel', shortcut: '', when: () => featureEnabled('featureGraphView'), action: () => toggleRightPanel('graph') },
+  { id: 'toggle-inspector-panel', label: 'Toggle Inspector', description: 'Show or hide document inspection tools', shortcut: '', when: () => featureEnabled('featureInspector'), action: () => toggleRightPanel('inspector') },
+  { id: 'toggle-tags-panel', label: 'Toggle Tags', description: 'Show or hide workspace tags', shortcut: '', when: () => featureEnabled('featureTags'), action: () => toggleRightPanel('tags') },
+  { id: 'toggle-bookmarks-panel', label: 'Toggle Bookmarks', description: 'Show or hide bookmarks', shortcut: '', when: () => featureEnabled('featureBookmarks'), action: () => toggleRightPanel('bookmarks') },
+  { id: 'toggle-calendar-panel', label: 'Toggle Calendar', description: 'Show or hide the daily-note calendar', shortcut: '', when: () => featureEnabled('featureCalendar'), action: () => toggleRightPanel('calendar') },
+  { id: 'toggle-wiki-quality-panel', label: 'Toggle Wiki Quality', description: 'Show or hide workspace quality checks', shortcut: '', when: () => featureEnabled('featureWikiQuality'), action: () => toggleRightPanel('wiki-quality') },
+  { id: 'toggle-related-notes-panel', label: 'Toggle Related Notes', description: 'Show or hide semantically related notes', shortcut: '', when: () => featureEnabled('featureRelatedNotes'), action: () => toggleRightPanel('related-notes') },
+  { id: 'toggle-terminal', label: 'Toggle Terminal', description: 'Show or hide the workspace terminal', shortcut: '⌘J', when: () => featureEnabled('featureTerminal'), action: () => toggleTerminalDrawer() },
+  { id: 'publish-website', label: 'Publish Website', description: 'Export the workspace as a static website', shortcut: '', when: () => featureEnabled('featurePublish'), action: () => exportAsWebsite() },
   { id: 'toggle-sidebar',  label: 'Toggle Sidebar',       description: 'Show or hide the sidebar',       shortcut: '\u2318B',   action: () => toggleSidebar() },
   { id: 'toggle-toolbar',  label: 'Toggle Toolbar',       description: 'Show or hide the toolbar',       shortcut: '\u2318\\',  action: () => toggleToolbar() },
   { id: 'toggle-theme',    label: 'Toggle Theme',         description: 'Switch between dark and light',  shortcut: '',          action: () => toggleAppTheme() },
@@ -344,7 +362,7 @@ registerCommands([
     await openFile({ path: fullPath, name: fileName })
   }},
   { id: 'show-graph', label: 'Show Knowledge Graph', description: 'Visualize note connections', shortcut: '', action: () => openGraphModal(openFile) },
-  { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', action: () => openDiagramBuilder() },
+  { id: 'insert-diagram', label: 'Insert Diagram', description: 'Open the visual diagram builder', shortcut: '', when: () => featureEnabled('featureDiagramBuilder'), action: () => openDiagramBuilder() },
   { id: 'daily-note', label: 'Daily Note', description: 'Open or create today\'s daily note', shortcut: '⇧⌘D', action: () => createDailyNote() },
   { id: 'jump-projects', label: 'Jump to Projects', description: 'Navigate to the Projects folder (PARA)', shortcut: '', action: () => {
     const folder = state.folderPath ? state.folderPath + '/Projects' : null
@@ -414,4 +432,3 @@ registerCommands([
   { id: 'insert-horizontal-rule', label: 'Insert Horizontal Rule', description: 'Add a thematic break at cursor', shortcut: '', action: () => insertHorizontalRule() },
   { id: 'insert-image', label: 'Insert Image', description: 'Pick and insert an image reference', shortcut: '', action: () => insertImage() },
 ])
-
