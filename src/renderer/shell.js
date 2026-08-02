@@ -717,6 +717,17 @@ function handleGlobalControlPointerDown(event) {
   performGlobalControl(control.id)
 }
 
+// AXPress and programmatic activation emit click without a pointer sequence.
+// Keep div-based chrome operable for assistive technology without double-firing
+// ordinary mouse clicks, which are handled on pointerdown above.
+function handleGlobalControlClick(event) {
+  if (event.detail !== 0) return
+  const control = event.target.closest(GLOBAL_CONTROL_SELECTOR)
+  if (!control) return
+  event.preventDefault()
+  performGlobalControl(control.id)
+}
+
 function performGlobalControl(id) {
   switch (id) {
     case 'tools-btn': _callbacks.openTools?.(); break
@@ -1149,6 +1160,7 @@ export function buildShell() {
     else _callbacks.openFolder?.()
   })
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
+  $('app-controls')?.addEventListener('click', handleGlobalControlClick)
   $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)
   $('settings-done-btn').addEventListener('click', closeSettingsPanel)

@@ -51,6 +51,10 @@ async function copyStaticAssets() {
     path.join(root, 'src', 'renderer', 'styles', 'main.css'),
     path.join(outDir, 'styles', 'main.css')
   )
+  await fs.copy(
+    path.join(root, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'),
+    path.join(outDir, 'vendor', 'xterm.css')
+  )
   await fs.copy(path.join(root, 'public', 'index.html'), path.join(outDir, 'index.html'))
 }
 

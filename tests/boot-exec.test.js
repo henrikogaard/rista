@@ -66,7 +66,7 @@ function buildSandbox() {
     Promise, Date, Math, JSON, RegExp, Array, Object, String, Number, Boolean,
     Map, Set, WeakMap, Symbol, TextEncoder, TextDecoder, URL, URLSearchParams,
     fetch: async () => ({ ok: true, json: async () => ({}) }),
-    navigator: { userAgent: 'node' },
+    navigator: { userAgent: 'node', language: 'en-US', platform: 'MacIntel', maxTouchPoints: 0 },
     location: { href: 'http://localhost/', search: '' },
     history: { pushState() {}, replaceState() {} },
     requestAnimationFrame: (cb) => setTimeout(cb, 0),
