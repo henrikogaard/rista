@@ -3,26 +3,40 @@
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
-    env,
-    fs,
-    io::Write,
+    env, fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
+    thread,
     time::SystemTime,
 };
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use tauri::{Emitter, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
 use tauri::{LogicalPosition, TitleBarStyle};
 
 struct AppState {
     watchers: Mutex<HashMap<String, RecommendedWatcher>>,
+    terminals: Mutex<HashMap<String, TerminalSession>>,
+}
+
+struct TerminalSession {
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = self.killer.kill();
+    }
 }
 
 #[derive(Serialize)]
@@ -99,6 +113,20 @@ struct LocalAiTool {
 struct ShellInfo {
     path: String,
     name: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOutput {
+    session_id: String,
+    data: Vec<u8>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TerminalExit {
+    session_id: String,
+    code: u32,
 }
 
 fn path_string(path: &Path) -> String {
@@ -629,6 +657,145 @@ fn get_shell_info() -> ShellInfo {
         .unwrap_or(&path)
         .to_string();
     ShellInfo { path, name }
+}
+
+#[tauri::command]
+fn terminal_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<ShellInfo, String> {
+    let shell = terminal_shell();
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: rows.clamp(2, 500),
+            cols: cols.clamp(2, 500),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|err| err.to_string())?;
+
+    let mut command = CommandBuilder::new(&shell);
+    if !cfg!(windows) {
+        command.arg("-l");
+    }
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    if let Some(cwd) = cwd.filter(|path| Path::new(path).is_dir()) {
+        command.cwd(cwd);
+    }
+
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|err| err.to_string())?;
+    let killer = child.clone_killer();
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|err| err.to_string())?;
+    let writer = pair.master.take_writer().map_err(|err| err.to_string())?;
+    drop(pair.slave);
+
+    {
+        let mut sessions = state.terminals.lock().map_err(|err| err.to_string())?;
+        sessions.insert(
+            session_id.clone(),
+            TerminalSession {
+                master: pair.master,
+                writer,
+                killer,
+            },
+        );
+    }
+
+    let output_app = app.clone();
+    let output_session_id = session_id.clone();
+    thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let _ = output_app.emit(
+                        "terminal-output",
+                        TerminalOutput {
+                            session_id: output_session_id.clone(),
+                            data: buffer[..count].to_vec(),
+                        },
+                    );
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    let exit_app = app.clone();
+    thread::spawn(move || {
+        let code = child.wait().map(|status| status.exit_code()).unwrap_or(1);
+        if let Ok(mut sessions) = exit_app.state::<AppState>().terminals.lock() {
+            sessions.remove(&session_id);
+        }
+        let _ = exit_app.emit("terminal-exit", TerminalExit { session_id, code });
+    });
+
+    let name = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&shell)
+        .to_string();
+    Ok(ShellInfo { path: shell, name })
+}
+
+#[tauri::command]
+fn terminal_write(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    data: Vec<u8>,
+) -> Result<bool, String> {
+    let mut sessions = state.terminals.lock().map_err(|err| err.to_string())?;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "Terminal session is not running".to_string())?;
+    session
+        .writer
+        .write_all(&data)
+        .map_err(|err| err.to_string())?;
+    session.writer.flush().map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn terminal_resize(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<bool, String> {
+    let sessions = state.terminals.lock().map_err(|err| err.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| "Terminal session is not running".to_string())?;
+    session
+        .master
+        .resize(PtySize {
+            rows: rows.clamp(2, 500),
+            cols: cols.clamp(2, 500),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn terminal_close(state: tauri::State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    let mut sessions = state.terminals.lock().map_err(|err| err.to_string())?;
+    Ok(sessions.remove(&session_id).is_some())
 }
 
 #[tauri::command]
@@ -1193,6 +1360,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             watchers: Mutex::new(HashMap::new()),
+            terminals: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             app_meta,
@@ -1217,6 +1385,10 @@ fn main() {
             start_window_drag,
             run_terminal_command,
             get_shell_info,
+            terminal_start,
+            terminal_write,
+            terminal_resize,
+            terminal_close,
             render_d2,
             export_html,
             export_site,

@@ -47,7 +47,7 @@ test('fresh workspaces open one calm live-preview document surface', () => {
   assert.match(index, /state\.paneView\.secondary = initialViewMode/)
 })
 
-test("status bar collapsed to metrics and settings only", () => {
+test("status bar stays metrics-only while the activity rail owns workspace actions", () => {
   const shell = read("src/renderer/shell.js")
   const css = read("src/renderer/styles/main.css")
 
@@ -57,7 +57,9 @@ test("status bar collapsed to metrics and settings only", () => {
   assert.match(shell, /st-readtime/)
   assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
-  assert.doesNotMatch(shell, /aria-label="Toggle terminal"/)
+  assert.match(shell, /<nav class="activity-rail"/)
+  assert.match(shell, /aria-label="Toggle terminal"/)
+  assert.doesNotMatch(shell, /statusbar__controls/)
   assert.doesNotMatch(shell, /aria-label="Toggle right widgets panel"/)
 })
 test('settings panel uses compact tabs and visual preset swatches', () => {
@@ -159,14 +161,54 @@ test('split workspace has an actionable empty secondary pane', () => {
   assert.match(workspace, /state\.secondaryTab = null/)
 })
 
-test('editor modes remain visible when the formatting toolbar is hidden', () => {
+test('editor controls collapse as one shelf and stay recoverable from the pane header', () => {
   const workspace = read('src/renderer/workspace.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(workspace, /classList\.toggle\('formatting-hidden', !state\.toolbarVisible\)/)
+  assert.match(workspace, /classList\.toggle\('collapsed', !state\.toolbarVisible\)/)
+  assert.match(workspace, /data-action="toggle-toolbar"[^>]*aria-label="Toggle editor controls"/)
+  assert.match(workspace, /querySelectorAll\('\[data-action="toggle-toolbar"\]'\)/)
   assert.match(workspace, /getPaneView\(pane\) === 'split'/)
-  assert.match(css, /\.workspace-toolbar\.formatting-hidden > :not\(\.workspace-toolbar__right\)/)
-  assert.match(css, /\.workspace-toolbar\.formatting-hidden \.workspace-toolbar__right/)
+  assert.match(css, /\.workspace-toolbar\.collapsed\s*\{[\s\S]*height: 0/)
+  assert.doesNotMatch(css, /\.workspace-toolbar\.formatting-hidden/)
+})
+
+test('editor shelf prioritizes rich text, markdown, and split while keeping advanced actions discoverable', () => {
+  const workspace = read('src/renderer/workspace.js')
+
+  assert.match(workspace, /data-view="wysiwyg"[^>]*>Rich Text<\/div>[\s\S]*data-view="markdown"[^>]*>Markdown<\/div>[\s\S]*data-view="split"[^>]*>Split<\/div>/)
+  assert.match(workspace, /editor-more-trigger/)
+  assert.match(workspace, /data-action="set-view" data-view="preview"[^>]*>Rendered preview<\/div>/)
+  assert.match(workspace, /data-action="toggle-workspace-split"[^>]*>Open files side by side<\/div>/)
+})
+
+test('the Nordic shell exposes a compact activity rail and a full-width terminal workspace drawer', () => {
+  const shell = read('src/renderer/shell.js')
+  const terminal = read('src/renderer/terminal-drawer.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(shell, /<nav class="activity-rail"/)
+  assert.match(shell, /id="sidebar-toggle"[^>]*aria-label="Toggle library"/)
+  assert.match(shell, /id="tools-btn"[^>]*aria-label="Search tools and commands"/)
+  assert.match(shell, /id="new-note-btn"[^>]*aria-label="Create new note"/)
+  assert.match(shell, /id="daily-note-btn"[^>]*aria-label="Open daily note"/)
+  assert.match(shell, /id="terminal-toggle"[^>]*aria-label="Toggle terminal"/)
+  assert.match(shell, /class="workspace-shell"[\s\S]*class="workspace-shell__main"[\s\S]*class="editor-area"[\s\S]*buildRightPanelContainer\(\)[\s\S]*buildTerminalDrawer\(\)/)
+  assert.match(terminal, /class="terminal-drawer__shortcut"[^>]*>⌘J<\/div>/)
+  assert.match(css, /--activity-rail-width:/)
+  assert.match(css, /\.workspace-shell\s*\{[\s\S]*display: flex[\s\S]*flex-direction: column/)
+  assert.match(css, /\.workspace-shell__main\s*\{[\s\S]*display: flex/)
+})
+
+test('the Nordic workspace uses inset rounded surfaces instead of uninterrupted square seams', () => {
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(css, /--radius-workspace:\s*12px/)
+  assert.match(css, /\.workspace-shell\s*\{[\s\S]*margin:\s*8px 8px 8px 0[\s\S]*border-radius:\s*var\(--radius-workspace\)/)
+  assert.match(css, /\.sidebar\s*\{[\s\S]*margin:\s*8px 0 8px 8px[\s\S]*border-radius:\s*var\(--radius-workspace\)/)
+  assert.match(css, /\.workspace-shell__main\s*\{[\s\S]*gap:\s*var\(--space-8\)/)
+  assert.match(css, /\.editor-area\s*\{[\s\S]*border-radius:\s*var\(--radius-panel\)/)
+  assert.match(css, /\.right-sidebar\s*\{[\s\S]*border-radius:\s*var\(--radius-panel\)/)
 })
 
 test('floating surfaces use calm rounded geometry without carding the editor canvas', () => {
@@ -195,7 +237,7 @@ test('advanced tools stay registered and gain a single discoverable launcher', (
   assert.match(rightPanel, /function isWidgetAvailable/)
   assert.match(rightPanel, /export function refreshAvailablePanels/)
   assert.match(shell, /id="tools-btn"/)
-  assert.match(shell, /aria-label="Open tools and commands"/)
+  assert.match(shell, /aria-label="Search tools and commands"/)
   assert.match(index, /openCommandPaletteCommands/)
   assert.match(index, /label: 'Open AI Assistant'/)
   assert.match(index, /label: 'Toggle Properties'/)
@@ -225,6 +267,18 @@ test('workspace polish keeps split mode quiet, legible, and intentional', () => 
   assert.match(css, /\.settings-group\s*\{[\s\S]*border-top: 1px solid var\(--quiet-border\)/)
   assert.match(css, /\.app\[data-workspace-mode="dual"\] #workspace-secondary:has\(#tabs-secondary\.is-empty\) \.workspace-toolbar/)
   assert.match(css, /\.app\[data-workspace-mode="dual"\] \.workspace-resizer::before\s*\{[\s\S]*height: 48px/)
+})
+
+test('approved rich-text surface keeps controls legible and document accents warm', () => {
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(css, /\.workspace-toolbar \.ic,[\s\S]*opacity: 0\.78/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents h1\s*\{[\s\S]*font-size: 2em/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents\s*\{[\s\S]*max-width: var\(--max-prose-width\)[\s\S]*margin: 0 auto/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-toolbar\s*\{[\s\S]*display: none/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-main\s*\{[\s\S]*height: 100% !important/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents blockquote\s*\{[\s\S]*border-left: 2px solid var\(--accent\)/)
+  assert.match(css, /\.wysiwyg-editor \.toastui-editor-contents ol li::marker\s*\{[\s\S]*color: var\(--accent-hi\)/)
 })
 
 test('global and pane icon semantics stay distinct and labelled', () => {
@@ -357,6 +411,8 @@ test('right sidebar widget tabs expose only honest visible hit targets', () => {
   const css = read('src/renderer/styles/main.css')
 
   assert.match(rightPanel, /class="right-sidebar__tab/)
+  assert.match(rightPanel, /RIGHT_SIDEBAR_TAB_ORDER = \['outline', 'properties'/)
+  assert.match(rightPanel, /ids\.sort\(\(a, b\) => tabOrderIndex\(a\) - tabOrderIndex\(b\)\)/)
   assert.match(css, /\.right-sidebar__tabs\s*\{[\s\S]*cursor: default/)
   assert.match(css, /\.right-sidebar__tab\s*\{[\s\S]*width: 22px/)
   assert.match(css, /\.right-sidebar__tab\s*\{[\s\S]*flex: 0 0 22px/)
@@ -393,7 +449,7 @@ test('global brand rail owns the native window chrome above every column', () =>
   assert.match(shell, /<div class="app" id="app">[\s\S]*<div class="brandrail" id="brandrail" data-tauri-drag-region="deep">[\s\S]*<div class="layout">/)
   assert.doesNotMatch(shell, /sidebar-drag-region/)
   assert.doesNotMatch(rightPanel, /right-sidebar__drag-region/)
-  assert.match(shell, /<div class="editor-area">[\s\S]*<div class="statusbar">[\s\S]*\$\{buildRightPanelContainer\(\)\}/)
+  assert.match(shell, /<div class="workspace-shell">[\s\S]*<div class="workspace-shell__main">[\s\S]*<div class="editor-area">[\s\S]*\$\{buildRightPanelContainer\(\)\}[\s\S]*<div class="statusbar">/)
   assert.match(css, /\.layout\s*\{[\s\S]*min-height: 0/)
   assert.match(css, /\.editor-area\s*\{[\s\S]*min-height: 0/)
   assert.match(css, /\.brandrail\s*\{[\s\S]*height: var\(--brandrail-height\)/)
@@ -466,8 +522,10 @@ test('properties panel exposes focused banner controls backed by frontmatter', (
   const rightPanel = read('src/renderer/right-panel.js')
   const css = read('src/renderer/styles/main.css')
 
-  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'left'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultSide: 'right'/)
+  assert.match(index, /registerRightPanel\('properties'[\s\S]*group: 'context'/)
   assert.match(index, /registerRightPanel\('properties'[\s\S]*defaultActive: true/)
+  assert.match(index, /registerRightPanel\('outline'[\s\S]*group: 'context'/)
   assert.match(rightPanel, /hooks\?\.defaultSide === 'left'/)
   assert.match(properties, /renderBannerSettings/)
   assert.match(properties, /class="banner-settings"/)
@@ -557,27 +615,52 @@ test('renderer installs the Tauri-backed window.fjord compatibility API', () => 
   assert.match(adapter, /onCommand/)
 })
 
-test('terminal exposes shell metadata and command run details', () => {
+test('terminal is backed by a persistent PTY and a real terminal emulator', () => {
   const terminal = read('src/renderer/terminal-drawer.js')
   const adapter = read('src/renderer/tauri-api.js')
+  const shell = read('src/renderer/shell.js')
   const tauriMain = read('src-tauri/src/main.rs')
+  const cargo = read('src-tauri/Cargo.toml')
+  const pkg = read('package.json')
   const css = read('src/renderer/styles/main.css')
 
   assert.match(adapter, /getShellInfo: \(\) => invoke\('get_shell_info'\)/)
+  assert.match(adapter, /startTerminalSession: .*invoke\('terminal_start'/)
+  assert.match(adapter, /writeTerminalSession: .*invoke\('terminal_write'/)
+  assert.match(adapter, /resizeTerminalSession: .*invoke\('terminal_resize'/)
+  assert.match(adapter, /closeTerminalSession: .*invoke\('terminal_close'/)
+  assert.match(adapter, /onTerminalOutput: .*listen\('terminal-output'/)
+  assert.match(adapter, /onTerminalExit: .*listen\('terminal-exit'/)
   assert.match(tauriMain, /fn get_shell_info/)
-  assert.match(tauriMain, /durationMs/)
+  assert.match(tauriMain, /fn terminal_start/)
+  assert.match(tauriMain, /fn terminal_write/)
+  assert.match(tauriMain, /fn terminal_resize/)
+  assert.match(tauriMain, /fn terminal_close/)
+  assert.match(tauriMain, /native_pty_system\(\)/)
+  assert.match(tauriMain, /PtySize/)
+  assert.match(tauriMain, /terminal-output/)
+  assert.match(tauriMain, /terminal-exit/)
   assert.match(tauriMain, /fn terminal_shell/)
-  assert.match(tauriMain, /std::env::var\("ComSpec"\)/)
-  assert.match(tauriMain, /unwrap_or\(-1\)/)
-  assert.match(tauriMain, /let path = terminal_shell\(\)/)
-  assert.match(terminal, /terminal-shell/)
-  assert.match(terminal, /formatDuration/)
-  assert.match(terminal, /terminal-quick-command/)
-  assert.match(terminal, /typeof nextShellInfo\.name === 'string'/)
-  assert.match(terminal, /terminal-line__meta/)
-  assert.match(css, /\.terminal-shell/)
-  assert.match(css, /\.terminal-line__meta/)
-  assert.match(css, /\.terminal-quick-command/)
+  assert.match(cargo, /portable-pty\s*=\s*"0\.9"/)
+  assert.match(pkg, /"@xterm\/xterm"/)
+  assert.match(pkg, /"@xterm\/addon-fit"/)
+  assert.match(terminal, /from '@xterm\/xterm'/)
+  assert.match(terminal, /from '@xterm\/addon-fit'/)
+  assert.match(terminal, /new Terminal\(/)
+  assert.match(terminal, /new FitAddon\(/)
+  assert.match(terminal, /terminal\.onData\(/)
+  assert.match(terminal, /new ResizeObserver\(/)
+  assert.match(terminal, /if \(saved === null\) return DEFAULT_TERMINAL_HEIGHT/)
+  assert.match(terminal, /class="terminal-drawer__viewport"/)
+  assert.match(terminal, /id="terminal-resize-handle"/)
+  assert.doesNotMatch(terminal, /terminal-quick-command/)
+  assert.match(adapter, /view:toggle-terminal', 'Toggle Terminal', 'CmdOrCtrl\+J'/)
+  assert.match(shell, /function handleGlobalControlClick/)
+  assert.match(shell, /event\.detail !== 0/)
+  assert.match(shell, /addEventListener\('click', handleGlobalControlClick\)/)
+  assert.match(css, /\.terminal-drawer__viewport/)
+  assert.match(css, /\.terminal-resize-handle/)
+  assert.match(css, /\.terminal-drawer\.open\s*\{[\s\S]*flex-basis: var\(--terminal-height\)/)
 })
 
 test('visible app identity is rebranded to Rista', () => {
@@ -664,18 +747,23 @@ test('Tauri chrome keeps the window title quiet and puts Rista branding in the s
   assert.match(css, /\.sidebar__search/)
 })
 
-test('terminal drawer has workspace context and clear running states', () => {
+test('terminal drawer exposes polished session controls and resizable workspace height', () => {
   const terminal = read('src/renderer/terminal-drawer.js')
   const css = read('src/renderer/styles/main.css')
 
   assert.match(terminal, /terminal-drawer__cwd/)
   assert.match(terminal, /terminal-drawer__status/)
   assert.match(terminal, /terminal-clear-btn/)
-  assert.match(terminal, /setTerminalBusy/)
-  assert.match(terminal, /Commands run in the current workspace folder/)
-  assert.match(css, /\.terminal-drawer\.is-running \.terminal-drawer__status/)
+  assert.match(terminal, /terminal-restart-btn/)
+  assert.match(terminal, /terminal-copy-btn/)
+  assert.match(terminal, /terminalHeight/)
+  assert.match(terminal, /pointermove/)
+  assert.match(terminal, /localStorage\.setItem\('rista\.terminalHeight'/)
+  assert.match(css, /--terminal-height:/)
+  assert.match(css, /\.terminal-drawer\.is-connected \.terminal-drawer__status-dot/)
   assert.match(css, /\.terminal-drawer__cwd/)
   assert.match(css, /\.terminal-drawer__action/)
+  assert.match(css, /\.terminal-drawer\.open\s*\{[\s\S]*height:\s*var\(--terminal-height\)/)
 })
 
 test('AI chat queues destructive file edits into AI review instead of auto-writing', () => {

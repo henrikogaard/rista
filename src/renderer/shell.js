@@ -5,7 +5,7 @@ import { toggleTheme, getTheme } from './theme.js'
 import { getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, ASSISTANT_DOCK_OPTIONS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, closeIcon, sidebarIcon, editorSplitIcon, rightSidebarIcon, toolsIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, closeIcon, sidebarIcon, toolsIcon, terminalIcon, calendarIcon, markdownFileIcon } from './icons.js'
 import { clearPreviewCache } from './preview.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
@@ -698,7 +698,7 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
-const GLOBAL_CONTROL_SELECTOR = '#tools-btn, #settings-btn, #sidebar-toggle, #toolbar-toggle, #right-sidebar-toggle'
+const GLOBAL_CONTROL_SELECTOR = '#tools-btn, #settings-btn, #sidebar-toggle, #right-sidebar-toggle, #new-note-btn, #daily-note-btn, #terminal-toggle'
 function handleWindowDragRegionMouseDown(event) {
   if (event.button !== 0) return
   if (event.target.closest('input, textarea, select, button, [role="button"], [data-action], a')) return
@@ -717,13 +717,26 @@ function handleGlobalControlPointerDown(event) {
   performGlobalControl(control.id)
 }
 
+// AXPress and programmatic activation emit click without a pointer sequence.
+// Keep div-based chrome operable for assistive technology without double-firing
+// ordinary mouse clicks, which are handled on pointerdown above.
+function handleGlobalControlClick(event) {
+  if (event.detail !== 0) return
+  const control = event.target.closest(GLOBAL_CONTROL_SELECTOR)
+  if (!control) return
+  event.preventDefault()
+  performGlobalControl(control.id)
+}
+
 function performGlobalControl(id) {
   switch (id) {
     case 'tools-btn': _callbacks.openTools?.(); break
     case 'settings-btn': toggleSettingsPanel(); break
     case 'sidebar-toggle': _callbacks.toggleSidebar?.(); syncAppToggleButtons(); break
-    case 'toolbar-toggle': _callbacks.toggleToolbar?.(); syncAppToggleButtons(); break
     case 'right-sidebar-toggle': _callbacks.toggleRightSidebar?.(); syncAppToggleButtons(); break
+    case 'new-note-btn': _callbacks.createNewFile?.(); break
+    case 'daily-note-btn': _callbacks.createDailyNote?.(); break
+    case 'terminal-toggle': _callbacks.toggleTerminal?.(); syncAppToggleButtons(); break
   }
 }
 
@@ -732,7 +745,7 @@ function performGlobalControl(id) {
 // every renderSidebar(); sidebar/toolbar are synced here and by their own toggles.
 function syncAppToggleButtons() {
   $('sidebar-toggle')?.classList.toggle('active', state.sidebarVisible)
-  $('toolbar-toggle')?.classList.toggle('active', state.toolbarVisible)
+  $('terminal-toggle')?.classList.toggle('active', $('terminal-drawer')?.classList.contains('open'))
 }
 
 function handleGlobalControlKeydown(event) {
@@ -843,6 +856,31 @@ export function buildShell() {
       <!-- Layout -->
       <div class="layout">
 
+        <nav class="activity-rail" aria-label="Workspace actions">
+          <div class="activity-rail__mark" aria-hidden="true">R</div>
+          <div class="app-controls" id="app-controls" aria-label="Global controls">
+            <div class="theme-btn activity-rail__button active" id="sidebar-toggle" title="Toggle library (⌘B)" aria-label="Toggle library" role="button" tabindex="0">
+              ${sidebarIcon()}
+            </div>
+            <div class="theme-btn activity-rail__button" id="tools-btn" title="Search tools and commands (⌘K)" aria-label="Search tools and commands" role="button" tabindex="0">
+              ${toolsIcon()}
+            </div>
+            <div class="theme-btn activity-rail__button" id="new-note-btn" title="New note (⌘N)" aria-label="Create new note" role="button" tabindex="0">
+              ${markdownFileIcon()}
+            </div>
+            <div class="theme-btn activity-rail__button" id="daily-note-btn" title="Daily note (⇧⌘D)" aria-label="Open daily note" role="button" tabindex="0">
+              ${calendarIcon()}
+            </div>
+            <div class="theme-btn activity-rail__button" id="terminal-toggle" data-experimental-feature="featureTerminal" title="Terminal (⌘J)" aria-label="Toggle terminal" role="button" tabindex="0">
+              ${terminalIcon()}
+            </div>
+            <div class="activity-rail__spacer"></div>
+            <div class="theme-btn activity-rail__button" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
+              ${gearIcon()}
+            </div>
+          </div>
+        </nav>
+
         <!-- Sidebar -->
         <div class="sidebar" id="sidebar">
           <div class="sidebar__brand">
@@ -858,16 +896,22 @@ export function buildShell() {
         </div>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Resize explorer"></div>
 
-        <!-- Editor area -->
-        <div class="editor-area">
-          <!-- Welcome / editor wrapper -->
-          <div id="editor-wrapper" >
-            ${buildWelcome()}
+        <div class="workspace-shell">
+          <div class="workspace-shell__main">
+            <!-- Editor area -->
+            <div class="editor-area">
+              <!-- Welcome / editor wrapper -->
+              <div id="editor-wrapper">
+                ${buildWelcome()}
+              </div>
+            </div>
+
+            ${buildAssistantRail()}
+            ${buildRightPanelContainer()}
           </div>
 
           ${buildTerminalDrawer()}
 
-          <!-- Statusbar -->
           <div class="statusbar">
             <div class="statusbar__metrics">
               <div class="st st--filename" id="st-filename" title="Current file">---</div>
@@ -875,30 +919,8 @@ export function buildShell() {
               <div class="st st--optional" id="st-readtime">—</div>
               <span class="st st--update" id="st-update" hidden></span>
             </div>
-            <div class="statusbar__controls">
-              <div class="app-controls" id="app-controls" aria-label="Global controls">
-                <div class="theme-btn theme-btn--toggle" id="tools-btn" title="Tools & commands (⌘K)" aria-label="Open tools and commands" role="button" tabindex="0">
-                  ${toolsIcon()}
-                </div>
-                <div class="theme-btn theme-btn--toggle" id="sidebar-toggle" title="Toggle Sidebar (⌘B)" aria-label="Toggle Sidebar" role="button" tabindex="0">
-                  ${sidebarIcon()}
-                </div>
-                <div class="theme-btn theme-btn--toggle" id="toolbar-toggle" title="Toggle Toolbar (⌘\)" aria-label="Toggle Toolbar" role="button" tabindex="0">
-                  ${editorSplitIcon()}
-                </div>
-                <div class="theme-btn theme-btn--toggle" id="right-sidebar-toggle" title="Toggle Outline (⌘⇧R)" aria-label="Toggle Outline" role="button" tabindex="0">
-                  ${rightSidebarIcon()}
-                </div>
-                <div class="theme-btn theme-btn--settings" id="settings-btn" title="Settings (⌘,)" aria-label="Open settings" role="button" tabindex="0">
-                  ${gearIcon()}
-                </div>
-              </div>
-            </div>
           </div>
         </div>
-
-        ${buildAssistantRail()}
-        ${buildRightPanelContainer()}
       </div>
 
       <div class="settings-overlay" id="settings-overlay"></div>
@@ -1138,6 +1160,7 @@ export function buildShell() {
     else _callbacks.openFolder?.()
   })
   $('app-controls')?.addEventListener('pointerdown', handleGlobalControlPointerDown, true)
+  $('app-controls')?.addEventListener('click', handleGlobalControlClick)
   $('app-controls')?.addEventListener('keydown', handleGlobalControlKeydown)
   $('settings-close-btn').addEventListener('click', closeSettingsPanel)
   $('settings-done-btn').addEventListener('click', closeSettingsPanel)
