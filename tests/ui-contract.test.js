@@ -181,6 +181,32 @@ test('floating surfaces use calm rounded geometry without carding the editor can
   assert.match(css, /\.pane,[\s\S]*background: var\(--bg0\)/)
 })
 
+test('advanced tools stay registered and gain a single discoverable launcher', () => {
+  const panels = read('src/renderer/panels.js')
+  const rightPanel = read('src/renderer/right-panel.js')
+  const inspector = read('src/renderer/inspector.js')
+  const aiChat = read('src/renderer/ai-chat.js')
+  const shell = read('src/renderer/shell.js')
+  const index = read('src/renderer/index.js')
+
+  for (const feature of ['featureAgents', 'featureGraphView', 'featureProperties', 'featureInspector', 'featureTags', 'featureBookmarks', 'featureCalendar', 'featureWikiQuality', 'featureRelatedNotes']) {
+    assert.match(panels + rightPanel + inspector + aiChat, new RegExp(`feature: '${feature}'`))
+  }
+  assert.match(rightPanel, /function isWidgetAvailable/)
+  assert.match(rightPanel, /export function refreshAvailablePanels/)
+  assert.match(shell, /id="tools-btn"/)
+  assert.match(shell, /aria-label="Open tools and commands"/)
+  assert.match(index, /openCommandPaletteCommands/)
+  assert.match(index, /label: 'Open AI Assistant'/)
+  assert.match(index, /label: 'Toggle Properties'/)
+  assert.match(index, /label: 'Toggle Graph Panel'/)
+  assert.match(index, /label: 'Toggle Inspector'/)
+  assert.match(index, /label: 'Toggle Terminal'/)
+  assert.match(index, /label: 'Publish Website'/)
+  assert.match(index, /label: 'Insert Diagram'[\s\S]*when: \(\) => featureEnabled\('featureDiagramBuilder'\)/)
+  assert.match(shell, /next\.showExperimental \|\| next\.featureDiagramBuilder\) initDiagrams/)
+})
+
 test('workspace polish keeps split mode quiet, legible, and intentional', () => {
   const workspace = read('src/renderer/workspace.js')
   const settings = read('src/renderer/settings.js')

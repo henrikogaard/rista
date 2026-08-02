@@ -347,6 +347,7 @@ export function initAiChatPanel(openFileFn, closeRightPanelFn) {
   _closeRightPanelFn = closeRightPanelFn
   registerRightPanel('ai-chat', {
     title: 'AI Chat',
+    feature: 'featureAgents',
     icon: aiChatWidgetIcon(),
     group: 'assistant',
     flex: 2,

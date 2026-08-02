@@ -1,11 +1,11 @@
 import { state, $, settingsValue, PANE_KEYS, editorViews, richEditors, syncingRichEditor, fileName } from './state.js'
-import { buildRightPanelContainer } from './right-panel.js'
+import { buildRightPanelContainer, refreshAvailablePanels } from './right-panel.js'
 import { buildTerminalDrawer } from './terminal-drawer.js'
 import { toggleTheme, getTheme } from './theme.js'
 import { getSettings, setSettings, updateSetting, resetSettings, APP_ICON_VARIANTS, ASSISTANT_DOCK_OPTIONS, FONT_OPTIONS, THEME_PRESETS } from './settings.js'
 import { getAllBindings, setBinding, resetBinding, findConflict, formatKeyEvent } from './keybindings.js'
 import { clearDiagramCache, initDiagrams } from './diagrams.js'
-import { sunIcon, moonIcon, gearIcon, closeIcon, sidebarIcon, editorSplitIcon, rightSidebarIcon } from './icons.js'
+import { sunIcon, moonIcon, gearIcon, closeIcon, sidebarIcon, editorSplitIcon, rightSidebarIcon, toolsIcon } from './icons.js'
 import { clearPreviewCache } from './preview.js'
 import { closeCommandDialog, submitCommandDialog } from './commands.js'
 import { updateEditorTheme } from './editor.js'
@@ -392,13 +392,20 @@ function formatSettingValue(value, unit) {
 function handleSettingsInput(event) {
   const input = event.target.closest('[data-setting]')
   if (!input) return
+  const settingKey = input.dataset.setting
   const value = input.type === 'checkbox' ? input.checked : input.value
-  const next = updateSetting(input.dataset.setting, value)
-  if (input.type !== 'checkbox') updateSettingValueLabel(input.dataset.setting, value, input.dataset.unit || '')
-  if (input.dataset.setting.endsWith('Color')) input.value = next[input.dataset.setting] || ''
-  if (['hideFrontmatterInRenderedModes', 'showDocumentBanners'].includes(input.dataset.setting)) refreshRenderedDocuments()
-  if (input.dataset.setting === 'assistantDock') _callbacks.syncAssistantRail?.()
-  if (['typewriterScrolling', 'spellcheck', 'vimMode', 'smartTypography', 'focusMode', 'livePreview', 'posHighlight'].includes(input.dataset.setting)) _callbacks.applyEditorSettings?.()
+  const next = updateSetting(settingKey, value)
+  if (input.type !== 'checkbox') updateSettingValueLabel(settingKey, value, input.dataset.unit || '')
+  if (settingKey.endsWith('Color')) input.value = next[settingKey] || ''
+  if (['hideFrontmatterInRenderedModes', 'showDocumentBanners'].includes(settingKey)) refreshRenderedDocuments()
+  if (settingKey === 'assistantDock') _callbacks.syncAssistantRail?.()
+  if (settingKey === 'showExperimental' || settingKey.startsWith('feature')) {
+    if (next.showExperimental || next.featureDiagramBuilder) initDiagrams(getTheme())
+    refreshAvailablePanels()
+    syncSettingsForm()
+    _callbacks.syncAssistantRail?.()
+  }
+  if (['typewriterScrolling', 'spellcheck', 'vimMode', 'smartTypography', 'focusMode', 'livePreview', 'posHighlight'].includes(settingKey)) _callbacks.applyEditorSettings?.()
 }
 
 function refreshRenderedDocuments() {
@@ -691,7 +698,7 @@ function syncAppMeta() {
     : state.appMeta.name
 }
 
-const GLOBAL_CONTROL_SELECTOR = '#settings-btn, #sidebar-toggle, #toolbar-toggle, #right-sidebar-toggle'
+const GLOBAL_CONTROL_SELECTOR = '#tools-btn, #settings-btn, #sidebar-toggle, #toolbar-toggle, #right-sidebar-toggle'
 function handleWindowDragRegionMouseDown(event) {
   if (event.button !== 0) return
   if (event.target.closest('input, textarea, select, button, [role="button"], [data-action], a')) return
@@ -712,6 +719,7 @@ function handleGlobalControlPointerDown(event) {
 
 function performGlobalControl(id) {
   switch (id) {
+    case 'tools-btn': _callbacks.openTools?.(); break
     case 'settings-btn': toggleSettingsPanel(); break
     case 'sidebar-toggle': _callbacks.toggleSidebar?.(); syncAppToggleButtons(); break
     case 'toolbar-toggle': _callbacks.toggleToolbar?.(); syncAppToggleButtons(); break
@@ -869,6 +877,9 @@ export function buildShell() {
             </div>
             <div class="statusbar__controls">
               <div class="app-controls" id="app-controls" aria-label="Global controls">
+                <div class="theme-btn theme-btn--toggle" id="tools-btn" title="Tools & commands (⌘K)" aria-label="Open tools and commands" role="button" tabindex="0">
+                  ${toolsIcon()}
+                </div>
                 <div class="theme-btn theme-btn--toggle" id="sidebar-toggle" title="Toggle Sidebar (⌘B)" aria-label="Toggle Sidebar" role="button" tabindex="0">
                   ${sidebarIcon()}
                 </div>

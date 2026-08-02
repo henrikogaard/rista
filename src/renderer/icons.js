@@ -17,6 +17,9 @@ export function editorSplitIcon() {
 export function workspaceSplitIcon() {
   return `<svg viewBox="0 0 16 16"><rect x="1.8" y="3" width="5.2" height="10" rx="1.1"/><rect x="9" y="3" width="5.2" height="10" rx="1.1"/><path d="M3.5 5.4h1.8M10.7 5.4h1.8"/></svg>`
 }
+export function toolsIcon() {
+  return `<svg viewBox="0 0 16 16"><rect x="2" y="2" width="4.5" height="4.5" rx="1"/><rect x="9.5" y="2" width="4.5" height="4.5" rx="1"/><rect x="2" y="9.5" width="4.5" height="4.5" rx="1"/><rect x="9.5" y="9.5" width="4.5" height="4.5" rx="1"/></svg>`
+}
 export function closeIcon() {
   return `<svg viewBox="0 0 16 16"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg>`
 }
