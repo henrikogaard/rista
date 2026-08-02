@@ -169,6 +169,18 @@ test('editor modes remain visible when the formatting toolbar is hidden', () => 
   assert.match(css, /\.workspace-toolbar\.formatting-hidden \.workspace-toolbar__right/)
 })
 
+test('floating surfaces use calm rounded geometry without carding the editor canvas', () => {
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(css, /--radius-control: 7px/)
+  assert.match(css, /--radius-popover: 10px/)
+  assert.match(css, /--radius-dialog: 14px/)
+  assert.match(css, /\.settings-panel,[\s\S]*\.graph-modal[\s\S]*border-radius: var\(--radius-dialog\)/)
+  assert.match(css, /\.context-menu,[\s\S]*\.toastui-editor-context-menu[\s\S]*border-radius: var\(--radius-popover\)/)
+  assert.match(css, /\.command-field__input,[\s\S]*\.settings-tab[\s\S]*border-radius: var\(--radius-control\)/)
+  assert.match(css, /\.pane,[\s\S]*background: var\(--bg0\)/)
+})
+
 test('workspace polish keeps split mode quiet, legible, and intentional', () => {
   const workspace = read('src/renderer/workspace.js')
   const settings = read('src/renderer/settings.js')
