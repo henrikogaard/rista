@@ -6645,6 +6645,40 @@ body.is-dragging-widget .widget-stack:empty::before {
   box-shadow: inset 0 -1px 0 var(--surface-edge);
 }
 
+.workspace-toolbar.formatting-hidden > :not(.workspace-toolbar__right) {
+  display: none;
+}
+
+.workspace-toolbar.formatting-hidden .workspace-toolbar__right {
+  width: 100%;
+  margin-left: 0;
+  justify-content: flex-start;
+}
+
+.workspace-toolbar__mode-separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 var(--space-4);
+  background: var(--surface-edge);
+}
+
+.workspace-layout-toggle {
+  gap: var(--space-6);
+  white-space: nowrap;
+}
+
+.workspace-layout-toggle svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+}
+
+.app[data-workspace-mode="dual"] .workspace-layout-toggle span {
+  display: none;
+}
+
 .workspace-toolbar .ic,
 .toolbar .ic {
   width: 26px;

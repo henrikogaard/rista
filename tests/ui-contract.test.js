@@ -150,10 +150,23 @@ test('macOS install copy verifies the bundled app icon', () => {
 test('split workspace has an actionable empty secondary pane', () => {
   const workspace = read('src/renderer/workspace.js')
 
+  assert.match(workspace, /id="workspace-split-toggle"/)
+  assert.match(workspace, /data-action="toggle-workspace-split"/)
+  assert.match(workspace, /Open files side by side/)
   assert.match(workspace, /data-action="open-secondary-file"/)
   assert.match(workspace, /toggleCommandPalette/)
   assert.match(workspace, /state\.tabGroups\.secondary = \[\]/)
   assert.match(workspace, /state\.secondaryTab = null/)
+})
+
+test('editor modes remain visible when the formatting toolbar is hidden', () => {
+  const workspace = read('src/renderer/workspace.js')
+  const css = read('src/renderer/styles/main.css')
+
+  assert.match(workspace, /classList\.toggle\('formatting-hidden', !state\.toolbarVisible\)/)
+  assert.match(workspace, /getPaneView\(pane\) === 'split'/)
+  assert.match(css, /\.workspace-toolbar\.formatting-hidden > :not\(\.workspace-toolbar__right\)/)
+  assert.match(css, /\.workspace-toolbar\.formatting-hidden \.workspace-toolbar__right/)
 })
 
 test('workspace polish keeps split mode quiet, legible, and intentional', () => {
@@ -187,7 +200,7 @@ test('global and pane icon semantics stay distinct and labelled', () => {
   assert.match(icons, /export function workspaceSplitIcon/)
   assert.match(icons, /export function sunIcon/)
   assert.match(icons, /export function moonIcon/)
-  // Statusbar collapsed to metrics + settings. Mode toggles live in Cmd-K only.
+  // Editor modes and the two-document workspace split remain directly accessible.
   assert.match(shell, /id="settings-btn"/)
   assert.match(shell, /aria-label="Open settings"/)
   assert.doesNotMatch(shell, /aria-label="Toggle workspace split layout"/)
@@ -196,7 +209,7 @@ test('global and pane icon semantics stay distinct and labelled', () => {
   assert.match(workspace, /title="Rich text editor"/)
   assert.match(workspace, /title="Rendered preview"/)
   assert.match(workspace, /data-action="set-view" data-view="split"[^>]*aria-label="Pane split preview"/)
-  assert.doesNotMatch(workspace, /data-action="toggle-workspace-split"/)
+  assert.match(workspace, /data-action="toggle-workspace-split"/)
   assert.doesNotMatch(workspace, /id="pane-split-toggle"/)
 })
 

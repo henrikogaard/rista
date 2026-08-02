@@ -13,6 +13,7 @@ import { toggleRightPanel, refreshRightPanel, restoreRightPanel } from './right-
 import { buildSearchPanel, handleSearchInput } from './search-panel.js'
 import { buildGraphModal } from './graph-modal.js'
 import { showAiContextMenu } from './ai-actions.js'
+import { workspaceSplitIcon } from './icons.js'
 
 // ── Callback registration ────────────────────────────────────────
 let _callbacks = {}
@@ -23,7 +24,9 @@ export function syncWorkspaceSplitToggle() {
   const globalToggle = $('workspace-split-toggle')
   if (globalToggle) {
     globalToggle.classList.toggle('active', state.workspaceMode === 'dual')
-    globalToggle.title = state.workspaceMode === 'dual' ? 'Workspace: dual' : 'Workspace: single'
+    const label = state.workspaceMode === 'dual' ? 'Close side-by-side view' : 'Open files side by side'
+    globalToggle.title = label
+    globalToggle.setAttribute('aria-label', label)
     globalToggle.setAttribute('aria-pressed', state.workspaceMode === 'dual' ? 'true' : 'false')
   }
 }
@@ -40,16 +43,17 @@ export function syncToolbarToggle() {
   node.setAttribute('aria-pressed', state.toolbarVisible ? 'true' : 'false')
 }
 
-// Single source of truth for editor-toolbar + pane-row visibility.
-// The `.hidden` class is what the CSS keys off (toolbar → height 0,
-// pane-row → display none); callers must go through here so the two
-// mechanisms can't drift (toggleToolbar vs syncWorkspaceUi used to fight).
+// The view modes are permanent editor navigation. Only formatting controls
+// follow toolbarVisible; split-slot controls stay available in Split mode.
 function applyToolbarVisibility(pane) {
   const tab = getTabForPane(pane)
-  const show = Boolean(state.toolbarVisible && tab && !tab.isAttachment && !tab.isSpatial && !tab.isBinary)
-  document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)?.classList.toggle('hidden', !show)
-  document.querySelector(`.workspace-pane-row[data-pane="${pane}"]`)?.classList.toggle('hidden', !show)
-  return show
+  const showModeBar = Boolean(tab && !tab.isAttachment && !tab.isSpatial && !tab.isBinary)
+  const toolbar = document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)
+  toolbar?.classList.toggle('hidden', !showModeBar)
+  toolbar?.classList.toggle('formatting-hidden', !state.toolbarVisible)
+  const showPaneRow = showModeBar && getPaneView(pane) === 'split'
+  document.querySelector(`.workspace-pane-row[data-pane="${pane}"]`)?.classList.toggle('hidden', !showPaneRow)
+  return showModeBar
 }
 
 // ── Split slot selector HTML ─────────────────────────────────────
@@ -168,6 +172,13 @@ export function renderEditorToolbar(pane) {
           <div class="vb${paneView === 'wysiwyg' ? ' active' : ''}" data-action="set-view" data-view="wysiwyg" title="Rich text editor" aria-label="Rich text editor" role="button" tabindex="0">Rich Text</div>
           <div class="vb${paneView === 'preview' ? ' active' : ''}" data-action="set-view" data-view="preview" title="Rendered preview" aria-label="Rendered preview" role="button" tabindex="0">Preview</div>
         </div>
+        ${pane === 'primary' ? `
+          <div class="workspace-toolbar__mode-separator" aria-hidden="true"></div>
+          <div class="vb workspace-layout-toggle${state.workspaceMode === 'dual' ? ' active' : ''}" id="workspace-split-toggle" data-action="toggle-workspace-split" title="Open files side by side" aria-label="Open files side by side" aria-pressed="${state.workspaceMode === 'dual' ? 'true' : 'false'}" role="button" tabindex="0">
+            ${workspaceSplitIcon()}
+            <span>Side by side</span>
+          </div>
+        ` : ''}
       </div>
     </div>
     <div class="workspace-pane-row" data-pane="${pane}">
@@ -714,6 +725,7 @@ export function handleToolbarClick(event) {
   if (action === 'export-pdf') exportToPdf()
   if (action === 'set-view') setPaneView(pane || state.focusedPane, control.dataset.view)
   if (action === 'set-split-view') setSplitPaneView(pane || state.focusedPane, control.dataset.slot, control.dataset.slotView)
+  if (action === 'toggle-workspace-split') toggleWorkspaceSplit()
   if (action === 'toggle-toolbar') toggleToolbar()
   if (action === 'open-secondary-file') { focusPane('secondary'); toggleCommandPalette() }
   if (action === 'toggle-inspector') toggleInspector()
@@ -801,6 +813,7 @@ export function setPaneView(pane, view) {
     state.splitEditableMode[pane] = view
   }
   state.paneView[pane] = view
+  applyToolbarVisibility(pane)
   const toolbar = document.querySelector(`.workspace-toolbar[data-pane="${pane}"]`)
   ;['markdown', 'split', 'wysiwyg', 'preview'].forEach(viewName => {
     toolbar?.querySelectorAll(`.vb[data-view="${viewName}"]`).forEach(node => {
