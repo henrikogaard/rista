@@ -494,20 +494,25 @@ impl Workspace {
         cx.notify();
     }
 
-    fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+    fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.view_mode = mode;
         self.settings.save();
+        if mode == ViewMode::Preview {
+            // The editor unmounts and its focus handle goes stale — reclaim
+            // focus for the workspace or ⌘ shortcuts stop dispatching.
+            self.focus_handle.focus(window, cx);
+        }
         cx.notify();
     }
 
-    fn on_view_source(&mut self, _: &ViewSource, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_view_mode(ViewMode::Source, cx);
+    fn on_view_source(&mut self, _: &ViewSource, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Source, w, cx);
     }
-    fn on_view_split(&mut self, _: &ViewSplit, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_view_mode(ViewMode::Split, cx);
+    fn on_view_split(&mut self, _: &ViewSplit, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Split, w, cx);
     }
-    fn on_view_preview(&mut self, _: &ViewPreview, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_view_mode(ViewMode::Preview, cx);
+    fn on_view_preview(&mut self, _: &ViewPreview, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Preview, w, cx);
     }
 
     fn on_toggle_theme(&mut self, _: &ToggleTheme, _w: &mut Window, cx: &mut Context<Self>) {
@@ -681,9 +686,9 @@ impl Workspace {
             PaletteCmd::CloseFolder => self.close_vault(cx),
             PaletteCmd::Save => self.on_save(&SaveFile, window, cx),
             PaletteCmd::SaveAs => self.on_save_as(&SaveFileAs, window, cx),
-            PaletteCmd::SourceMode => self.set_view_mode(ViewMode::Source, cx),
-            PaletteCmd::SplitMode => self.set_view_mode(ViewMode::Split, cx),
-            PaletteCmd::PreviewMode => self.set_view_mode(ViewMode::Preview, cx),
+            PaletteCmd::SourceMode => self.set_view_mode(ViewMode::Source, window, cx),
+            PaletteCmd::SplitMode => self.set_view_mode(ViewMode::Split, window, cx),
+            PaletteCmd::PreviewMode => self.set_view_mode(ViewMode::Preview, window, cx),
             PaletteCmd::ToggleSidebar => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             PaletteCmd::ToggleZen => self.on_toggle_zen(&ToggleZen, window, cx),
             PaletteCmd::ProjectSearch => {
@@ -939,11 +944,11 @@ impl Workspace {
                                     .label("Split"),
                                 Tab::new().icon(assets::IconName::Eye).label("Preview"),
                             ])
-                            .on_click(cx.listener(|this, &ix, _window, cx| {
+                            .on_click(cx.listener(|this, &ix, window, cx| {
                                 match ix {
-                                    0 => this.set_view_mode(ViewMode::Source, cx),
-                                    1 => this.set_view_mode(ViewMode::Split, cx),
-                                    _ => this.set_view_mode(ViewMode::Preview, cx),
+                                    0 => this.set_view_mode(ViewMode::Source, window, cx),
+                                    1 => this.set_view_mode(ViewMode::Split, window, cx),
+                                    _ => this.set_view_mode(ViewMode::Preview, window, cx),
                                 }
                                 cx.notify();
                             })),
