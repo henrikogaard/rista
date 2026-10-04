@@ -1362,6 +1362,14 @@ impl Render for Workspace {
             }
         }
 
+        // Focus fallback: shortcuts and menu items only dispatch through a
+        // focused view. When nothing holds focus (welcome screen, preview
+        // mode, just-closed dialog) give it back to the workspace root.
+        if window.focused(cx).is_none() {
+            let handle = self.focus_handle.clone();
+            window.on_next_frame(move |window, cx| handle.focus(window, cx));
+        }
+
         let vault_open = self.vault.read(cx).is_open();
         let sidebar_visible = vault_open && !self.settings.sidebar_collapsed && !self.zen;
         let background = cx.theme().background;
