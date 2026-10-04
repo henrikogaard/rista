@@ -32,6 +32,8 @@ pub struct Document {
     save_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
     image_resolver: ImageResolver,
+    /// Frontmatter banner (`banner:`/`cover:`), refreshed with the preview.
+    pub banner: Option<preview::BannerSpec>,
     /// Cached `(words, chars)` refreshed with the preview.
     pub stats: (usize, usize),
     _subscriptions: Vec<Subscription>,
@@ -65,6 +67,7 @@ impl Document {
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         let preview_text = preview::preprocess(&content, &doc_dir, &*image_resolver);
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
+        let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
         let mut this = Self {
             path,
@@ -77,6 +80,7 @@ impl Document {
             save_task: None,
             preview_task: None,
             image_resolver,
+            banner,
             stats: word_stats(&content),
             _subscriptions: Vec::new(),
         };
@@ -143,6 +147,7 @@ impl Document {
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
         let text = preview::preprocess(&raw, &doc_dir, &*resolver);
+        self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
         self.stats = word_stats(&raw);
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));

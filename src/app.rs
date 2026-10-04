@@ -14,7 +14,7 @@ use gpui_kit::base::Placement;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::input::{Editor, Input, InputState};
+use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
@@ -1169,29 +1169,39 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let state = doc.read(cx).preview.clone();
-        TextView::new(&state)
-            .markdown_extensions(preview::extensions())
-            .selectable(true)
-            .scrollable(true)
-            .on_link_click({
-                let view = view.clone();
-                move |link, _event, window, cx| {
-                    let url = link.to_string();
-                    if let Some(target) = url.strip_prefix("wiki:") {
-                        let target = target.to_string();
-                        view.update(cx, |this, cx| {
-                            this.open_wikilink(&target, window, cx);
-                        });
-                    } else {
-                        cx.open_url(&url);
-                    }
-                }
-            })
-            .w_full()
-            .h_full()
-            .px_6()
-            .py_4()
+        let (state, banner) = {
+            let doc = doc.read(cx);
+            (doc.preview.clone(), doc.banner.clone())
+        };
+        v_flex()
+            .size_full()
+            .overflow_hidden()
+            .when_some(banner, |this, banner| this.child(render_banner(&banner)))
+            .child(
+                TextView::new(&state)
+                    .markdown_extensions(preview::extensions())
+                    .selectable(true)
+                    .scrollable(true)
+                    .on_link_click({
+                        let view = view.clone();
+                        move |link, _event, window, cx| {
+                            let url = link.to_string();
+                            if let Some(target) = url.strip_prefix("wiki:") {
+                                let target = target.to_string();
+                                view.update(cx, |this, cx| {
+                                    this.open_wikilink(&target, window, cx);
+                                });
+                            } else {
+                                cx.open_url(&url);
+                            }
+                        }
+                    })
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .px_6()
+                    .py_4(),
+            )
     }
 
     fn render_editor_area(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1200,10 +1210,7 @@ impl Workspace {
         };
 
         match self.settings.view_mode {
-            ViewMode::Source => div()
-                .size_full()
-                .child(Editor::new(&doc.read(cx).editor).h_full())
-                .into_any_element(),
+            ViewMode::Source => self.editor_container(&doc, cx).into_any_element(),
             ViewMode::Preview => div()
                 .size_full()
                 .child(self.render_preview(&doc, cx))
@@ -1215,7 +1222,7 @@ impl Workspace {
                         .child(
                             resizable_panel()
                                 .size_range(px(280.)..px(4000.))
-                                .child(Editor::new(&doc.read(cx).editor).h_full()),
+                                .child(self.editor_container(&doc, cx)),
                         )
                         .child(
                             resizable_panel()
@@ -1225,6 +1232,150 @@ impl Workspace {
                 )
                 .into_any_element(),
         }
+    }
+
+    /// The editor plus the paste/drop handlers that turn images into
+    /// attachments. `can_drop` + `on_drop` receive OS file drops; the
+    /// capture-phase action listener sees `Paste` before the editor's own
+    /// handler (⌘V arrives as the action, not a raw key event — the menu's
+    /// key equivalent intercepts it on macOS).
+    fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
+        div()
+            .size_full()
+            .capture_action::<input::Paste>(cx.listener(|this, _paste, window, cx| {
+                this.on_editor_paste_action(window, cx);
+            }))
+            .can_drop(|value, _window, _cx| value.is::<ExternalPaths>())
+            .drag_over::<ExternalPaths>(|style, _paths, _window, cx| {
+                style.bg(cx.theme().accent.opacity(0.08))
+            })
+            .on_drop::<ExternalPaths>(cx.listener(|this, paths, window, cx| {
+                this.on_editor_drop(paths, window, cx);
+            }))
+            .child(Editor::new(&doc.read(cx).editor).h_full())
+    }
+
+    /// Paste with images/files on the clipboard → import into the attachments
+    /// folder and insert `![[name]]`. Plain-text paste falls through to the
+    /// editor's own handler (propagation continues).
+    fn on_editor_paste_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        let mut handled = false;
+        for entry in &item.entries {
+            match entry {
+                ClipboardEntry::Image(image) => {
+                    handled |=
+                        self.import_image_bytes(&image.bytes, image.format.extension(), window, cx);
+                }
+                ClipboardEntry::ExternalPaths(paths) => {
+                    handled |= self.import_paths(paths.paths(), window, cx);
+                }
+                ClipboardEntry::String(_) => {}
+            }
+        }
+        if handled {
+            cx.stop_propagation();
+        }
+    }
+
+    fn on_editor_drop(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.import_paths(paths.paths(), window, cx);
+    }
+
+    /// Write clipboard image bytes into the attachments dir and insert
+    /// `![[name]]` — the Obsidian "Pasted image <stamp>" convention.
+    fn import_image_bytes(
+        &mut self,
+        bytes: &[u8],
+        ext: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(dir) = self.attachments_dir(cx) else {
+            return false;
+        };
+        let stamp = chrono::Local::now().format("%Y%m%d%H%M%S");
+        let mut name = format!("Pasted image {stamp}.{ext}");
+        let mut counter = 0u32;
+        while dir.join(&name).exists() {
+            counter += 1;
+            name = format!("Pasted image {stamp}-{counter}.{ext}");
+        }
+        if std::fs::create_dir_all(&dir).is_err() || std::fs::write(dir.join(&name), bytes).is_err()
+        {
+            return false;
+        }
+        self.refresh_image_index(cx);
+        self.insert_embed(&name, window, cx);
+        true
+    }
+
+    /// Copy dropped/copied image files into the attachments dir and insert
+    /// `![[name]]` for each. Files already inside the vault just get linked.
+    fn import_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(dir) = self.attachments_dir(cx) else {
+            return false;
+        };
+        let mut imported = false;
+        for src in paths {
+            if !crate::vault::is_image_file(src) {
+                continue;
+            }
+            let Some(name) = src.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+                continue;
+            };
+            let dest = dir.join(&name);
+            if dest != *src
+                && !dest.exists()
+                && (std::fs::create_dir_all(&dir).is_err() || std::fs::copy(src, &dest).is_err())
+            {
+                continue;
+            }
+            self.insert_embed(&name, window, cx);
+            imported = true;
+        }
+        if imported {
+            self.refresh_image_index(cx);
+        }
+        imported
+    }
+
+    /// Put freshly imported attachments into the vault's live image index
+    /// right away — the watcher catches up ~250ms later, but the preview
+    /// re-syncs on the inserted text before that.
+    fn refresh_image_index(&mut self, cx: &mut Context<Self>) {
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+    }
+
+    fn insert_embed(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let text = format!("![[{name}]]");
+        doc.update(cx, |doc, cx| {
+            doc.editor.update(cx, |editor, cx| {
+                editor.insert(text, window, cx);
+            });
+        });
+    }
+
+    /// The vault's attachment folder (`settings.attachments_dir`, relative to
+    /// the vault root unless absolute).
+    fn attachments_dir(&self, cx: &App) -> Option<PathBuf> {
+        let root = self.vault.read(cx).root.clone()?;
+        Some(root.join(&self.settings.attachments_dir))
     }
 
     fn render_empty_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1449,4 +1600,37 @@ impl Render for Workspace {
                     .into_any_element()
             }))
     }
+}
+
+/// The frontmatter banner rendered above the preview: a 160px cover strip
+/// cropped to `banner_y`, with an optional `banner_icon` overlay.
+fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
+    let source: ImageSource = match &banner.source {
+        preview::BannerSource::File(path) => path.clone().into(),
+        preview::BannerSource::Remote(url) => url.clone().into(),
+    };
+    let y = banner.y.unwrap_or(0.5).clamp(0.0, 1.0);
+    div()
+        .w_full()
+        .h(px(160.))
+        .flex_none()
+        .overflow_hidden()
+        .relative()
+        .child(
+            img(source)
+                .w_full()
+                .h(px(320.))
+                .object_fit(ObjectFit::Cover)
+                .mt(px(-160. * y)),
+        )
+        .when_some(banner.icon.clone(), |this, icon| {
+            this.child(
+                div()
+                    .absolute()
+                    .bottom(px(6.))
+                    .left(px(24.))
+                    .text_3xl()
+                    .child(icon),
+            )
+        })
 }

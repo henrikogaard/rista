@@ -20,6 +20,7 @@ chrono = "0.4"
 smol = "2"
 anyhow = "1"
 base64 = "0.22"
+ureq = "3.4.2"
 
 [profile.release]
 lto = "thin"

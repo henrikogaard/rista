@@ -41,6 +41,9 @@ pub struct Settings {
     pub focus_mode: bool,
     /// The folder that was open last — reopened on launch.
     pub last_vault: Option<std::path::PathBuf>,
+    /// Vault-relative folder pasted/dropped images are copied into
+    /// (Obsidian's "attachment folder path").
+    pub attachments_dir: String,
 }
 
 impl Default for Settings {
@@ -57,6 +60,7 @@ impl Default for Settings {
             sidebar_collapsed: false,
             focus_mode: false,
             last_vault: None,
+            attachments_dir: "attachments".to_string(),
         }
     }
 }

@@ -5,14 +5,19 @@
 //! - `[[Note]]` / `[[Note|alias]]` → `[label](wiki:Note)` — clicks handled by the
 //!   workspace and resolved against the vault index.
 //! - `![[img.png]]` → image embed resolved to a `file://` URI via the vault's
-//!   image index; unresolved embeds become wikilinks instead.
+//!   image index; `![[img|300]]` / `![[img|300x200]]` carry an Obsidian size
+//!   suffix through a `rista:` title marker that [`SizedImagePlugin`] renders
+//!   at the requested dimensions. Unresolved embeds become wikilinks instead.
 //! - `^block-id` markers → stripped (they are anchors, not content).
 //! - `> [!type]` Obsidian callouts → parsed by [`CalloutPlugin`] at render time.
+//! - `banner:`/`cover:`/`banner_y`/`banner_icon` frontmatter → [`BannerSpec`],
+//!   rendered by the workspace above the preview.
 
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::component::text::{
-    MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin,
+    InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
+    MarkdownPlugin,
 };
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon};
 use gpui_kit::prelude::FluentBuilder;
@@ -25,6 +30,7 @@ pub fn extensions() -> MarkdownExtensions {
     MarkdownExtensions::default()
         .frontmatter()
         .plugin(FrontmatterPlugin::new())
+        .plugin(LocalImagePlugin)
         .plugin(CalloutPlugin)
 }
 
@@ -37,9 +43,21 @@ pub fn preprocess(
     let mut out = String::with_capacity(source.len() + 128);
     let mut in_fence = false;
     let mut fence_marker = "";
+    let mut in_frontmatter = false;
 
-    for line in source.split_inclusive('\n') {
+    for (index, line) in source.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_start();
+        // YAML frontmatter is untouched — wikilinks in `banner:` etc. are data.
+        if index == 0 && trimmed.trim_end() == "---" {
+            in_frontmatter = true;
+        }
+        if in_frontmatter {
+            out.push_str(line);
+            if index > 0 && (trimmed.trim_end() == "---" || trimmed.trim_end() == "...") {
+                in_frontmatter = false;
+            }
+            continue;
+        }
         // Fenced code blocks are untouched.
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             let marker = &trimmed[..3];
@@ -140,9 +158,10 @@ fn render_embed(
     doc_dir: &Path,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> String {
-    let (target, alt) = match inner.split_once('|') {
-        Some((t, a)) => (t.trim(), a.trim()),
-        None => (inner.trim(), inner.trim()),
+    let inner = inner.trim();
+    let (target, suffix) = match inner.split_once('|') {
+        Some((t, s)) => (t.trim(), s.trim()),
+        None => (inner, ""),
     };
     let looks_like_note = target
         .rsplit('.')
@@ -151,17 +170,280 @@ fn render_embed(
         .unwrap_or(!target.contains('.'));
     if looks_like_note {
         // Transclusion is out of scope — surface embeds of notes as links.
-        return format!("[{}](wiki:{})", alt, target);
+        let label = if suffix.is_empty() { target } else { suffix };
+        return format!("[{}](wiki:{})", label, target);
     }
-    if let Some(path) = image_resolver(target) {
-        return format!("![{}](file://{})", alt, path.display());
+    // `![[img|300]]` width, `![[img|300x200]]` w×h; anything else is a caption.
+    let size = parse_size_suffix(suffix);
+    let alt = if suffix.is_empty() || size.is_some() {
+        file_stem(target)
+    } else {
+        suffix.to_string()
+    };
+    let resolved = image_resolver(target).or_else(|| {
+        // Try a path relative to the document before giving up.
+        let local = doc_dir.join(target);
+        local.exists().then_some(local)
+    });
+    match resolved {
+        Some(path) => {
+            // The size rides on the title so SizedImagePlugin can pick it up
+            // after the markdown parse.
+            let marker = match size {
+                Some((w, Some(h))) => format!(" \"rista:{w}x{h}\""),
+                Some((w, None)) => format!(" \"rista:{w}\""),
+                None => String::new(),
+            };
+            format!("![{}]({}{})", alt, file_url(&path), marker)
+        }
+        // Unresolved: render as a wikilink pill, like Obsidian's "missing" chip.
+        None => format!("[{}](wiki:{})", alt, target),
     }
-    // Try a path relative to the document before giving up.
-    let local = doc_dir.join(target);
-    if local.exists() {
-        return format!("![{}](file://{})", alt, local.display());
+}
+
+fn file_stem(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// `300` → width only, `300x200` → width × height.
+fn parse_size_suffix(s: &str) -> Option<(f32, Option<f32>)> {
+    if s.is_empty() {
+        return None;
     }
-    format!("![{}](wiki:{})", alt, target)
+    let (w, h) = match s.split_once('x') {
+        Some((w, h)) => (w.trim(), Some(h.trim())),
+        None => (s.trim(), None),
+    };
+    let w: f32 = w.parse().ok()?;
+    let h = match h {
+        Some(h) => Some(h.parse::<f32>().ok()?),
+        None => None,
+    };
+    (w > 0. && h.is_none_or(|h| h > 0.)).then_some((w, h))
+}
+
+/// Percent-encode just enough of a path for a well-formed `file://` URI.
+fn file_url(path: &Path) -> String {
+    let mut out = String::from("file://");
+    for byte in path.to_string_lossy().as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    out.push(value);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// ------------------------------------------------------------------
+// Local images: gpui's default image node only loads http(s) URIs, so every
+// `file://` image is rendered here via `Resource::Path`. A `rista:` title
+// marker (from `![[img|300]]` / `|300x200` embeds) sets explicit dimensions.
+// ------------------------------------------------------------------
+
+struct LocalImage {
+    url: String,
+    /// `(width, height)` from the `rista:` marker, when present.
+    size: Option<(f32, Option<f32>)>,
+}
+
+pub struct LocalImagePlugin;
+
+impl MarkdownPlugin for LocalImagePlugin {
+    fn name(&self) -> &str {
+        "local-image"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Image(image) = node else {
+            return None;
+        };
+        let size = image
+            .title
+            .as_deref()
+            .and_then(|t| t.strip_prefix("rista:"))
+            .and_then(parse_size_suffix);
+        if size.is_none() && !image.url.starts_with("file://") {
+            return None;
+        }
+        Some(MarkdownNode::new(
+            "local-image",
+            LocalImage {
+                url: image.url.clone(),
+                size,
+            },
+        ))
+    }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        _context: &InlineRenderContext,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<InlineElement> {
+        let image = node.data::<LocalImage>()?;
+        let mut element = img(image_source(&image.url));
+        match image.size {
+            Some((width, Some(height))) => {
+                element = element
+                    .w(px(width))
+                    .h(px(height))
+                    .object_fit(ObjectFit::Cover);
+            }
+            Some((width, None)) => element = element.w(px(width)),
+            // Unsized: natural dimensions, capped at the column width.
+            None => element = element.max_w_full(),
+        }
+        Some(InlineElement::new(
+            div()
+                .rounded(cx.theme().radius)
+                .overflow_hidden()
+                .child(element),
+        ))
+    }
+}
+
+fn image_source(url: &str) -> ImageSource {
+    if let Some(path) = url.strip_prefix("file://") {
+        return PathBuf::from(percent_decode(path)).into();
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return url.to_string().into();
+    }
+    PathBuf::from(url).into()
+}
+
+// ------------------------------------------------------------------
+// Banner: `banner:`/`cover:`/`banner_y:`/`banner_icon:` frontmatter keys,
+// the convention shared by Obsidian's banner/cover plugins.
+// ------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct BannerSpec {
+    pub source: BannerSource,
+    /// Vertical focal point, 0.0 top – 1.0 bottom. `banner_y` accepts both the
+    /// 0–1 and 0–100 conventions.
+    pub y: Option<f32>,
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BannerSource {
+    File(PathBuf),
+    Remote(String),
+}
+
+pub fn banner_spec(
+    source: &str,
+    doc_dir: &Path,
+    image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<BannerSpec> {
+    let props = frontmatter_pairs(source);
+    let value = props
+        .iter()
+        .find(|(key, _)| key == "banner" || key == "cover")
+        .map(|(_, value)| value)?;
+    let source = resolve_banner_value(value, doc_dir, image_resolver)?;
+    let y = props
+        .iter()
+        .find(|(key, _)| key == "banner_y")
+        .and_then(|(_, value)| value.parse::<f32>().ok())
+        .map(|v| if v > 1.0 { v / 100.0 } else { v }.clamp(0.0, 1.0));
+    let icon = props
+        .iter()
+        .find(|(key, _)| key == "banner_icon")
+        .map(|(_, value)| value.clone());
+    Some(BannerSpec { source, y, icon })
+}
+
+/// Top-level `key: value` scalars from the YAML frontmatter block.
+fn frontmatter_pairs(source: &str) -> Vec<(String, String)> {
+    let mut lines = source.lines();
+    if lines.next().map(|line| line.trim()) != Some("---") {
+        return Vec::new();
+    }
+    let mut pairs = Vec::new();
+    for line in lines {
+        let trimmed = line.trim_end();
+        if trimmed == "---" || trimmed == "..." {
+            break;
+        }
+        // Nested YAML (lists, maps) is skipped — banners are scalars.
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        pairs.push((key.to_string(), value.to_string()));
+    }
+    pairs
+}
+
+fn resolve_banner_value(
+    value: &str,
+    doc_dir: &Path,
+    image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<BannerSource> {
+    let value = value.trim();
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return Some(BannerSource::Remote(value.to_string()));
+    }
+    // Accept `![[img.png]]`, `[[img.png]]`, or a bare relative path.
+    let name = value
+        .strip_prefix("![[")
+        .and_then(|v| v.strip_suffix("]]"))
+        .or_else(|| value.strip_prefix("[[").and_then(|v| v.strip_suffix("]]")))
+        .unwrap_or(value)
+        .split('|')
+        .next()
+        .unwrap_or(value)
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    image_resolver(name)
+        .or_else(|| {
+            let local = doc_dir.join(name);
+            local.exists().then_some(local)
+        })
+        .map(BannerSource::File)
 }
 
 // ------------------------------------------------------------------

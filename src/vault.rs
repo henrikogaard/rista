@@ -5,7 +5,9 @@ use gpui_kit::component::tree::{TreeItem, TreeState};
 use gpui_kit::*;
 use notify::{RecursiveMode, Watcher};
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"];
 
@@ -23,7 +25,9 @@ pub struct Vault {
     pub notes: Vec<PathBuf>,
     /// Image files indexed by lowercase file name — Obsidian resolves
     /// `![[name.png]]` vault-wide, so basename is the key.
-    pub images: std::collections::HashMap<String, PathBuf>,
+    /// Shared behind one `Rc`: resolvers handed out to documents stay live
+    /// and see files added later (paste/drop, watcher refreshes).
+    pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
     watcher: Option<notify::RecommendedWatcher>,
     pending_events: usize,
 }
@@ -35,7 +39,7 @@ impl Vault {
             root: None,
             tree,
             notes: Vec::new(),
-            images: std::collections::HashMap::new(),
+            images: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watcher: None,
             pending_events: 0,
         }
@@ -70,7 +74,7 @@ impl Vault {
         let (notes, images) = collect_files(&root);
         self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
         self.notes = notes;
-        self.images = images;
+        *self.images.borrow_mut() = images;
         cx.notify();
     }
 
@@ -169,8 +173,8 @@ impl Vault {
 
     /// Resolver for `![[image.png]]` embeds — basename lookup, vault-wide.
     pub fn image_resolver(&self) -> crate::document::ImageResolver {
-        let images = self.images.clone();
-        std::rc::Rc::new(move |name: &str| images.get(&name.to_lowercase()).cloned())
+        let images = Rc::clone(&self.images);
+        std::rc::Rc::new(move |name: &str| images.borrow().get(&name.to_lowercase()).cloned())
     }
 }
 
@@ -219,6 +223,14 @@ fn build_items(dir: &Path, depth: usize) -> Vec<TreeItem> {
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"];
+
+/// Whether the path's extension is one of the vault's image types.
+pub fn is_image_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| IMAGE_EXTS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
 
 fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String, PathBuf>) {
     let mut notes = Vec::new();

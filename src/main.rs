@@ -5,6 +5,7 @@
 mod actions;
 mod app;
 mod document;
+mod http;
 mod preview;
 mod search;
 mod settings;
@@ -20,6 +21,7 @@ use gpui_kit::*;
 fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
+        .with_http_client(http::client())
         .run(move |cx| {
             gpui_kit::init(cx);
             theme::install_themes(cx);
