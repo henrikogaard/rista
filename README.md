@@ -13,131 +13,97 @@
 </p>
 
 <p align="center">
-  <code>Tauri</code> · <code>CodeMirror 6</code> · <code>Toast UI Editor</code> · <code>unified</code> · <code>notify</code>
+  <code>Rust</code> · <code>GPUI</code> · <code>gpui-kit</code> · <code>notify</code>
 </p>
 
 ---
 
 ## Overview
 
-Rísta is a small, fast desktop editor for people who want Markdown files to stay as files.
+Rísta is a small, fast native desktop editor for people who want Markdown files to stay as files.
 There is no cloud sync, no account system, and no telemetry layer between you and your notes.
 
 The interface is compact and dark by default. The name references runes, but the product stays restrained: carved geometry, mineral color, terse language, and low-noise local writing tools.
 
+Rísta is written entirely in Rust on [GPUI](https://gpui.rs) via the
+[`gpui-kit`](https://gpui-kit.com) component set — one codebase for macOS, Linux, and
+Windows, developed macOS-first.
+
 ## Highlights
 
-- Local-first folder workflow for Markdown projects
-- Multi-tab editing with single-pane and dual-pane workspaces
-- Markdown, split preview, preview-only, and WYSIWYG writing modes
-- Auto-save while you write
-- Find and replace with keyboard shortcut support
-- Command dialogs for links, images, and tables
-- Image paste from clipboard directly into the document
-- Light and dark themes
-- Settings panel for typography, layout, and visual atmosphere
-- File watching for live updates when Markdown files change on disk
+- Local-first folder workflow — a folder is a vault, every `.md` a note
+- File tree sidebar with create / rename / delete and context menus
+- Multi-tab editing with source, split, and preview view modes
+- Live Markdown preview with Obsidian extensions (below)
+- Autosave on every pause, plus file watching for external changes
+- Find in note (`⌘F`) and project search (`⌘⇧F`)
+- Command palette (`⌘K`) over notes and commands
+- Dark and light themes, system-aware; settings sheet (`⌘,`)
+- Zen mode (`⌘⇧⏎`) — everything but the words
 
-## Obsidian Compatibility
+## Obsidian compatibility
 
-Rísta keeps Obsidian-style Markdown as plain text on disk while improving preview behavior for common vault syntax:
+- YAML frontmatter renders as a properties block in preview
+- `[[wikilinks]]` and `[[note|aliases]]` resolve against the vault
+- `![[note]]` embeds link the note; `![[image.png]]` embeds render the image
+- `> [!note]` callouts render with titled boxes
+- `^block-ids` are hidden anchors, not trailing syntax
+- Daily note (`⌘⇧D`) creates/opens `YYYY-MM-DD.md` at vault root
 
-- YAML properties round-trip and can be hidden in rendered modes
-- Wikilinks, aliases, note embeds, tags, and local attachments work with existing vault files
-- Obsidian callouts render in preview, including open and closed fold markers
-- Image attachment embeds such as `![[image.png|Alt text]]` render as local images
-- Obsidian block references such as `^block-id` become hidden anchors instead of visible trailing syntax
-
-Unsupported Obsidian-specific syntax remains editable as Markdown and falls back to readable text.
-
-## Getting Started
+## Getting started
 
 ```bash
-npm install
-npm run dev
+cargo run
 ```
 
-Production build:
+Release build:
 
 ```bash
-npm run package
+cargo build --release
 ```
 
-## Scripts
+The app restores the last opened folder on launch. Settings live in
+`~/Library/Application Support/no.ogard.rista/settings.json` on macOS
+(the platform equivalents on Linux/Windows via the `directories` crate).
 
-| Command | Description |
-|---|---|
-| `npm run dev` | Build the renderer and launch Tauri |
-| `npm run watch` | Rebuild renderer assets on file changes |
-| `npm run build` | Create production renderer assets in `dist/app` |
-| `npm run package` | Build the desktop app with Tauri |
-| `npm run version:check` | Validate semantic version formatting |
-| `npm run version:current` | Print the current version |
-| `npm run version:set` | Set an explicit version |
-| `npm run version:patch` | Bump the patch version |
-| `npm run version:minor` | Bump the minor version |
-| `npm run version:major` | Bump the major version |
+## Keyboard shortcuts
 
-## Keyboard Shortcuts
-
-| Action | macOS | Windows/Linux |
+| Action | macOS | Linux / Windows |
 |---|---|---|
-| Save | `Cmd+S` | `Ctrl+S` |
-| Save as | `Cmd+Shift+S` | `Ctrl+Shift+S` |
-| New file | `Cmd+N` | `Ctrl+N` |
-| Toggle sidebar | `Cmd+B` | `Ctrl+B` |
-| Toggle toolbar | `Cmd+\` | `Ctrl+\` |
-| Find and replace | `Cmd+F` | `Ctrl+F` |
-| Open settings | `Cmd+,` | `Ctrl+,` |
+| Save | `⌘S` | `Ctrl+S` |
+| Save as | `⌘⇧S` | `Ctrl+Shift+S` |
+| Toggle sidebar | `⌘B` | `Ctrl+B` |
+| Find in note | `⌘F` | `Ctrl+F` |
+| Project search | `⌘⇧F` | `Ctrl+Shift+F` |
+| Command palette | `⌘K` | `Ctrl+K` |
+| Settings | `⌘,` | `Ctrl+,` |
+| Daily note | `⌘⇧D` | `Ctrl+Shift+D` |
+| New file | `⌘N` | `Ctrl+N` |
+| Open folder | `⌘O` | `Ctrl+O` |
+| Zen mode | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
 
-## Stack
+## Project structure
 
-- Tauri 2 for the desktop shell and native integration
-- Rust commands for filesystem, watcher, terminal, D2, export, and AI transport
-- CodeMirror 6 for the Markdown editing surface
-- Toast UI Editor for WYSIWYG editing
-- unified, remark-gfm, remark-rehype, and rehype-stringify for Markdown rendering
-- esbuild for bundling
-
-## Project Structure
-
-```text
+```
 rista/
-├── public/
-│   ├── icon.svg
-│   └── index.html
 ├── src/
-│   └── renderer/
-│       ├── editor.js
-│       ├── index.js
-│       ├── markdown.js
-│       ├── settings.js
-│       ├── tauri-api.js
-│       ├── theme.js
-│       └── styles/
-│           └── main.css
-├── src-tauri/
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   └── src/
-│       └── main.rs
-├── dist/
-├── package.json
-└── README.md
+│   ├── main.rs            # App bootstrap, keymap, menus, window
+│   ├── app.rs             # Workspace: sidebar, tabs, palette, dialogs, actions
+│   ├── vault.rs           # Vault model: file index, tree items, watcher (notify)
+│   ├── document.rs        # Document: EditorState, autosave, preview sync
+│   ├── preview.rs         # Markdown preview + Obsidian preprocessing
+│   ├── search.rs          # Project search dialog
+│   ├── settings.rs        # Settings model + persistence
+│   ├── settings_panel.rs  # Settings sheet UI
+│   ├── theme.rs           # Rísta Night / Rísta Day theme packs
+│   └── actions.rs         # GPUI action definitions (shortcuts)
+├── design/                # Framework-agnostic design tokens (JSON/CSS/TS)
+├── public/                # App icon + brand assets
+├── Cargo.toml
+└── DESIGN.md              # Design system reference
 ```
 
-## Design Notes
+## Design
 
-- Borderless toolbar controls are intentional and part of the visual identity
-- Theme colors live in CSS variables and are switched via `[data-theme]`
-- The layout is compact by default and optimized for writing density
-- UI chrome stays flat; atmospheric treatments belong to the welcome surface, not the app shell
-- Norse influence stays abstract and professional rather than decorative
-
-## Current Tauri Notes
-
-Rísta exports to PDF via its own Tauri backend (generates HTML from the preview pipeline, writes to a temp file, and opens it in the system browser). HTML, DOCX, and static-site export are also implemented.
-
-## License
-
-MIT
+See [DESIGN.md](./DESIGN.md) for the design system — color, type, spacing, and
+component tokens, exported in framework-agnostic form under `design/`.
