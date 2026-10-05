@@ -55,6 +55,9 @@ pub struct Settings {
     /// Which `.base` view (index into `views:`) each opened `.base`
     /// file was last left on — note path → view index.
     pub base_views: std::collections::HashMap<String, usize>,
+    /// Pinned document tabs — survive close-others/close-right and
+    /// show a pin glyph instead of the × button.
+    pub pinned_tabs: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -112,6 +115,7 @@ impl Default for Settings {
             open_tabs: Vec::new(),
             active_tab: None,
             base_views: std::collections::HashMap::new(),
+            pinned_tabs: Vec::new(),
         }
     }
 }

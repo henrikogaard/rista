@@ -164,6 +164,7 @@ enum PaletteCmd {
     CopyLinkHeading,
     CloseOtherTabs,
     CloseTabsRight,
+    TogglePin,
     ExportHtml,
     Settings,
     ToggleTheme,
@@ -432,6 +433,11 @@ impl PaletteCmd {
                 assets::IconName::X,
                 "Close tabs to the right",
                 &["tab", "after"],
+            ),
+            TogglePin => (
+                assets::IconName::Pin,
+                "Pin/unpin tab",
+                &["keep", "protect", "sticky"],
             ),
             ExportHtml => (
                 assets::IconName::FileText,
@@ -891,8 +897,37 @@ impl Workspace {
         self.settings.save();
     }
 
+    /// Palette "Pin tab" / "Unpin tab" — pinned tabs keep their tab
+    /// across close-others/close-right and can't be closed until
+    /// unpinned (Obsidian parity). Persisted in `pinned_tabs`.
+    fn toggle_pin(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.note_status("No note open", cx);
+            return;
+        };
+        let path = doc.read(cx).path.display().to_string();
+        if let Some(ix) = self.settings.pinned_tabs.iter().position(|p| *p == path) {
+            self.settings.pinned_tabs.remove(ix);
+            self.note_status("Tab unpinned", cx);
+        } else {
+            self.settings.pinned_tabs.push(path);
+            self.note_status("Tab pinned", cx);
+        }
+        self.settings.save();
+        cx.notify();
+    }
+
+    fn is_pinned(&self, path: &std::path::Path) -> bool {
+        let s = path.display().to_string();
+        self.settings.pinned_tabs.iter().any(|p| *p == s)
+    }
+
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.docs.len() {
+            return;
+        }
+        if self.is_pinned(&self.docs[ix].entity.read(cx).path) {
+            self.note_status("Tab is pinned", cx);
             return;
         }
         let dirty = self.docs[ix].entity.read(cx).dirty;
@@ -1756,6 +1791,7 @@ impl Workspace {
             PaletteCmd::CopyLinkHeading,
             PaletteCmd::CloseOtherTabs,
             PaletteCmd::CloseTabsRight,
+            PaletteCmd::TogglePin,
             PaletteCmd::ExportHtml,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
@@ -2058,7 +2094,12 @@ impl Workspace {
             }
             PaletteCmd::CloseOtherTabs => {
                 if let Some(active) = self.active {
-                    let n = self.docs.len().saturating_sub(1);
+                    let n = self
+                        .docs
+                        .iter()
+                        .filter(|d| !self.is_pinned(&d.entity.read(cx).path))
+                        .count()
+                        .saturating_sub(1);
                     for ix in (0..self.docs.len()).rev() {
                         if ix != active {
                             self.close_tab_at(ix, window, cx);
@@ -2076,6 +2117,7 @@ impl Workspace {
                     }
                 }
             }
+            PaletteCmd::TogglePin => self.toggle_pin(cx),
             PaletteCmd::ExportHtml => self.export_html(window, cx),
             PaletteCmd::Settings => self.defer_dialog(
                 |ws, window, cx| ws.on_open_settings(&OpenSettings, window, cx),
@@ -4752,7 +4794,7 @@ impl Workspace {
                     (title, doc.dirty, icon)
                 };
                 let view = cx.entity();
-                Tab::new()
+                let tab = Tab::new()
                     .label(if dirty {
                         format!("{} •", title.clone())
                     } else {
@@ -4760,8 +4802,22 @@ impl Workspace {
                     })
                     // Icon goes in `prefix`: the vendored Tab renders the
                     // `icon` slot INSTEAD of the label, not beside it.
-                    .prefix(Icon::new(icon).size_3p5())
-                    .suffix(
+                    .prefix(Icon::new(icon).size_3p5());
+                let pinned = {
+                    let doc = doc.entity.read(cx);
+                    let s = doc.path.display().to_string();
+                    self.settings.pinned_tabs.iter().any(|p| *p == s)
+                };
+                let tab = if pinned {
+                    // Pinned tabs swap the × for a pin glyph — no way to
+                    // close them without unpinning first.
+                    tab.suffix(
+                        Icon::new(assets::IconName::Pin)
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                } else {
+                    tab.suffix(
                         Button::new(("close-tab", ix))
                             .ghost()
                             .xsmall()
@@ -4770,25 +4826,26 @@ impl Workspace {
                                 this.close_tab_at(ix, window, cx);
                             })),
                     )
-                    .on_drag(DraggedTab(ix), {
-                        let label = title.clone();
-                        move |_, _, _, cx| {
-                            cx.new(|_| TreeDragPreview {
-                                label: label.clone().into(),
-                            })
-                        }
-                    })
-                    .drag_over::<DraggedTab>(|style, _, _, cx| {
-                        style.bg(cx.theme().accent.opacity(0.15))
-                    })
-                    .on_drop::<DraggedTab>({
-                        let view = view.clone();
-                        move |src, window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.move_tab(src.0, ix, window, cx);
-                            });
-                        }
-                    })
+                };
+                tab.on_drag(DraggedTab(ix), {
+                    let label = title.clone();
+                    move |_, _, _, cx| {
+                        cx.new(|_| TreeDragPreview {
+                            label: label.clone().into(),
+                        })
+                    }
+                })
+                .drag_over::<DraggedTab>(|style, _, _, cx| {
+                    style.bg(cx.theme().accent.opacity(0.15))
+                })
+                .on_drop::<DraggedTab>({
+                    let view = view.clone();
+                    move |src, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.move_tab(src.0, ix, window, cx);
+                        });
+                    }
+                })
             })
             .collect();
 
