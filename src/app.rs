@@ -516,52 +516,9 @@ impl Workspace {
         match doc.update(cx, |doc, cx| doc.link_at_cursor(cx)) {
             Some(crate::document::LinkTarget::Url(url)) => cx.open_url(&url),
             Some(crate::document::LinkTarget::Note(name)) => {
-                let (resolved, root) = {
-                    let vault = self.vault.read(cx);
-                    (vault.resolve_wikilink(&name), vault.root.clone())
-                };
-                match resolved {
-                    Some(path) => self.open_document(path, window, cx),
-                    None => {
-                        // Obsidian: following an unresolved link creates
-                        // the note. `a/b/c` anchors at the vault root;
-                        // plain names land beside the source note.
-                        let cleaned = name
-                            .split(['|', '#'])
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .trim_start_matches('/')
-                            .trim_end_matches(".md");
-                        let rel = std::path::Path::new(cleaned);
-                        let safe = !cleaned.is_empty()
-                            && rel
-                                .components()
-                                .all(|c| matches!(c, std::path::Component::Normal(_)));
-                        let base = if cleaned.contains('/') {
-                            root
-                        } else {
-                            doc.read(cx).path.parent().map(|p| p.to_path_buf())
-                        };
-                        match (safe, base) {
-                            (true, Some(dir)) => {
-                                let path = dir.join(rel).with_extension("md");
-                                let ok = path
-                                    .parent()
-                                    .map(|p| std::fs::create_dir_all(p).is_ok())
-                                    .unwrap_or(false)
-                                    && std::fs::write(&path, b"").is_ok();
-                                if ok {
-                                    self.vault.update(cx, |vault, cx| vault.refresh(cx));
-                                    self.open_document(path, window, cx);
-                                } else {
-                                    self.note_status("Couldn't create note", cx);
-                                }
-                            }
-                            _ => self.note_status("Link resolves to no note", cx),
-                        }
-                    }
-                }
+                // Resolution, `#anchor` jump, and create-on-click all
+                // live in open_wikilink now.
+                self.open_wikilink(&name, window, cx);
             }
             None => self.note_status("No link under cursor", cx),
         }
@@ -1960,13 +1917,71 @@ impl Workspace {
     }
 
     /// Public hook used by preview plugins (wikilinks, transclusion
-    /// fallback links). Obsidian's create-on-click: an unresolved
-    /// `[[link]]` becomes a new note.
+    /// fallback links) and ⌥⏎. Obsidian's create-on-click: an
+    /// unresolved `[[link]]` becomes a new note; `[[note#heading]]`
+    /// jumps the caret to the heading (Source view); `[[#heading]]`
+    /// jumps within the open note.
     pub fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
-        match self.vault.read(cx).resolve_wikilink(target) {
-            Some(path) => self.open_document(path, window, cx),
-            None => self.create_note_for_wikilink(target, window, cx),
+        let (note, anchor) = match target.split_once('#') {
+            Some((n, a)) => {
+                let a = a.trim();
+                (n.trim(), (!a.is_empty()).then(|| a.to_string()))
+            }
+            None => (target.trim(), None),
+        };
+        // `|` aliases arrive via ⌥⏎ on the raw `[[inner]]` — the alias
+        // is display text, never part of the target.
+        let note = note.split('|').next().unwrap_or(note).trim();
+        let resolved = if note.is_empty() {
+            // `[[#heading]]` — an anchor inside the open note.
+            self.active_doc().map(|d| d.read(cx).path.clone())
+        } else {
+            self.vault.read(cx).resolve_wikilink(note)
+        };
+        match resolved {
+            Some(path) => {
+                self.open_document(path, window, cx);
+                if let Some(anchor) = anchor {
+                    self.jump_to_anchor(&anchor, window, cx);
+                }
+            }
+            None => {
+                if note.is_empty() {
+                    return;
+                }
+                self.create_note_for_wikilink(note, window, cx);
+            }
         }
+    }
+
+    /// Move the caret to the heading line matching an Obsidian anchor
+    /// (`[[note#heading]]`) — case-insensitive match on the text after
+    /// the `#`s, fences skipped.
+    fn jump_to_anchor(&mut self, anchor: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let raw = doc.read(cx).editor.read(cx).value().to_string();
+        let mut in_fence = false;
+        for (ix, line) in raw.split('\n').enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            let level = trimmed.chars().take_while(|&c| c == '#').count();
+            if !(1..=6).contains(&level) || trimmed.chars().nth(level) != Some(' ') {
+                continue;
+            }
+            if trimmed[level + 1..].trim().eq_ignore_ascii_case(anchor) {
+                doc.update(cx, |doc, cx| doc.jump_to_line(ix + 1, window, cx));
+                return;
+            }
+        }
+        self.note_status(format!("No heading “{}”", anchor), cx);
     }
 
     /// Create an empty note for an unresolved `[[link]]` — alongside the

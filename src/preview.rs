@@ -184,9 +184,22 @@ fn rewrite_line(
                     Some((t, l)) => (t.trim(), l.trim()),
                     None => (inner, inner),
                 };
+                // `#anchor` stays on the target so the click can jump to
+                // the heading; the label shows just the note name — or
+                // the anchor itself for same-note `[[#heading]]` links.
                 let label = label.split('#').next().unwrap_or(label);
-                let target = target.split('#').next().unwrap_or(target);
-                out.push_str(&format!("[{}](wiki:{})", label, target));
+                let label = if label.is_empty() {
+                    inner.trim_start_matches('#')
+                } else {
+                    label
+                };
+                // `#` anchors can carry spaces — a bare URL with a
+                // space isn't a valid link destination, so wrap in <>.
+                if target.contains(' ') {
+                    out.push_str(&format!("[{}](<wiki:{}>)", label, target));
+                } else {
+                    out.push_str(&format!("[{}](wiki:{})", label, target));
+                }
                 i += end + 2;
                 continue;
             }

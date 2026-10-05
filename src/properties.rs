@@ -240,13 +240,16 @@ pub fn frontmatter_aliases(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `#tag` tokens outside fenced code blocks. A tag is `#` not preceded
-/// by a word character, followed by `[\w/-]+` (obsidian-style nesting).
+/// Inline `#tags` outside fenced code, inline `code` and `%%` comments —
+/// same state machine `preview::rewrite_line` uses so the index and the
+/// rendered links agree on what counts as a tag.
 fn inline_tags(text: &str) -> Vec<String> {
     let mut tags = Vec::new();
     let mut in_fence = false;
+    let mut in_comment = false;
     for line in text.lines() {
-        if line.trim_start().starts_with("```") {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
             continue;
         }
@@ -255,33 +258,68 @@ fn inline_tags(text: &str) -> Vec<String> {
         }
         let bytes = line.as_bytes();
         let mut ix = 0;
+        let mut in_code = false;
+        // `ix` always sits on a char boundary — it advances by len_utf8.
         while ix < bytes.len() {
-            if bytes[ix] == b'#'
-                && (ix == 0 || !is_tag_char(bytes[ix - 1]))
-                && ix + 1 < bytes.len()
-                && is_tag_char(bytes[ix + 1])
-            {
-                let start = ix + 1;
-                let mut end = start;
-                while end < bytes.len() && is_tag_char(bytes[end]) {
-                    end += 1;
+            let ch = line[ix..].chars().next().unwrap();
+            if in_comment {
+                if line[ix..].starts_with("%%") {
+                    in_comment = false;
+                    ix += 1;
                 }
-                let tag = &line[start..end];
-                // `#` followed only by digits is a heading anchor/id, not a tag.
-                if !tag.bytes().all(|b| b.is_ascii_digit()) {
+                ix += ch.len_utf8();
+                continue;
+            }
+            if ch == '`' {
+                in_code = !in_code;
+                ix += 1;
+                continue;
+            }
+            if in_code {
+                ix += ch.len_utf8();
+                continue;
+            }
+            if line[ix..].starts_with("%%") {
+                in_comment = true;
+                ix += 2;
+                continue;
+            }
+            // `#anchor`s inside `[[wikilinks]]` and `[l](urls)` are link
+            // targets, not tags.
+            if line[ix..].starts_with("[[") {
+                ix += line[ix + 2..].find("]]").map(|e| 2 + e + 2).unwrap_or(2);
+                continue;
+            }
+            if line[ix..].starts_with("](") {
+                ix += line[ix + 2..].find(')').map(|e| 2 + e + 1).unwrap_or(2);
+                continue;
+            }
+            let bounded = ix == 0
+                || bytes[ix - 1].is_ascii_whitespace()
+                || (bytes[ix - 1].is_ascii_punctuation() && bytes[ix - 1] != b'#');
+            if ch == '#' && bounded {
+                let rest = &line[ix + 1..];
+                let tag_len: usize = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '/')
+                    .map(char::len_utf8)
+                    .sum();
+                let tag = &rest[..tag_len];
+                // `#123`-style digits, `#` runs and trailing `/` aren't tags.
+                let first = tag.chars().next();
+                if !tag.is_empty()
+                    && !tag.ends_with('/')
+                    && first.is_some_and(|c| c.is_alphabetic() || c == '_')
+                {
                     tags.push(tag.to_string());
                 }
-                ix = end;
+                ix += 1 + tag_len;
             } else {
-                ix += 1;
+                ix += ch.len_utf8();
             }
         }
     }
     tags
-}
-
-fn is_tag_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'/' || b == b'-'
 }
 
 // ------------------------------------------------------------------
