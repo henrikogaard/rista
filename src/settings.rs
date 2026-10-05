@@ -46,6 +46,43 @@ pub struct Settings {
     pub attachments_dir: String,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
+    /// Which sidebar panes are expanded — persists across launches.
+    pub panes: SidebarPanes,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Expanded/collapsed state of the optional sidebar sections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarPanes {
+    #[serde(default = "default_true")]
+    pub starred: bool,
+    #[serde(default = "default_true")]
+    pub outline: bool,
+    #[serde(default = "default_true")]
+    pub backlinks: bool,
+    #[serde(default = "default_true")]
+    pub tasks: bool,
+    #[serde(default = "default_true")]
+    pub calendar: bool,
+    #[serde(default = "default_true")]
+    pub tags: bool,
+}
+
+impl Default for SidebarPanes {
+    fn default() -> Self {
+        Self {
+            starred: true,
+            outline: true,
+            backlinks: true,
+            tasks: true,
+            calendar: true,
+            tags: true,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -64,6 +101,7 @@ impl Default for Settings {
             last_vault: None,
             attachments_dir: "attachments".to_string(),
             starred: Vec::new(),
+            panes: SidebarPanes::default(),
         }
     }
 }

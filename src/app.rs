@@ -328,12 +328,12 @@ impl Workspace {
             nav_stack: Vec::new(),
             nav_pos: 0,
             nav_suppress: false,
-            starred_open: true,
-            tags_open: true,
-            tasks_open: true,
-            outline_open: true,
-            backlinks_open: true,
-            cal_open: true,
+            starred_open: settings.panes.starred,
+            tags_open: settings.panes.tags,
+            tasks_open: settings.panes.tasks,
+            outline_open: settings.panes.outline,
+            backlinks_open: settings.panes.backlinks,
+            cal_open: settings.panes.calendar,
             cal_month: {
                 let now = chrono::Local::now();
                 (
@@ -2618,6 +2618,8 @@ impl Workspace {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.starred_open = !this.starred_open;
+                        this.settings.panes.starred = this.starred_open;
+                        this.settings.save();
                         cx.notify();
                     })),
             )
@@ -2703,6 +2705,8 @@ impl Workspace {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.outline_open = !this.outline_open;
+                        this.settings.panes.outline = this.outline_open;
+                        this.settings.save();
                         cx.notify();
                     })),
             )
@@ -2783,6 +2787,8 @@ impl Workspace {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.backlinks_open = !this.backlinks_open;
+                        this.settings.panes.backlinks = this.backlinks_open;
+                        this.settings.save();
                         cx.notify();
                     })),
             )
@@ -3051,6 +3057,8 @@ impl Workspace {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.cal_open = !this.cal_open;
+                        this.settings.panes.calendar = this.cal_open;
+                        this.settings.save();
                         cx.notify();
                     })),
             )
@@ -3116,6 +3124,8 @@ impl Workspace {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tasks_open = !this.tasks_open;
+                        this.settings.panes.tasks = this.tasks_open;
+                        this.settings.save();
                         cx.notify();
                     })),
             )
@@ -3218,6 +3228,8 @@ impl Workspace {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tags_open = !this.tags_open;
+                        this.settings.panes.tags = this.tags_open;
+                        this.settings.save();
                         cx.notify();
                     })),
             )
