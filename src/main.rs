@@ -4,6 +4,7 @@
 
 mod actions;
 mod app;
+mod bases;
 mod document;
 mod history;
 mod http;

@@ -2,6 +2,7 @@
 //! status bar, palette, dialogs. Everything routes through here.
 
 use crate::actions::*;
+use crate::bases;
 use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
 use crate::properties;
@@ -48,6 +49,8 @@ pub struct Workspace {
 
 struct OpenDoc {
     entity: Entity<Document>,
+    /// Present when the file is a `.base` — a live view over the vault.
+    base: Option<Entity<bases::BaseView>>,
     _sub: Subscription,
 }
 
@@ -298,6 +301,7 @@ impl Workspace {
         let resolver: ImageResolver = self.vault.read(cx).image_resolver();
         let vault_root = self.vault.read(cx).root.clone();
         let settings = self.settings.clone();
+        let is_base_file = is_base(&path);
         let doc = cx.new(|cx| Document::open(path, vault_root, &settings, resolver, window, cx));
         let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| {
             if matches!(event, DocumentEvent::Saved | DocumentEvent::Changed) {
@@ -305,8 +309,14 @@ impl Workspace {
                 cx.notify();
             }
         });
+        let base = is_base_file.then(|| {
+            let workspace = cx.entity().downgrade();
+            let vault = self.vault.clone();
+            cx.new(|cx| bases::BaseView::new(doc.clone(), vault, workspace, window, cx))
+        });
         self.docs.push(OpenDoc {
             entity: doc.clone(),
+            base,
             _sub: sub,
         });
         self.active = Some(self.docs.len() - 1);
@@ -1599,8 +1609,17 @@ impl Workspace {
             return self.render_empty_editor(cx).into_any_element();
         };
 
+        // `.base` files render their live view in Preview/Split; Source
+        // stays the raw YAML so the spec stays editable.
+        let base = self
+            .active
+            .and_then(|i| self.docs.get(i))
+            .and_then(|d| d.base.clone());
         match self.settings.view_mode {
             ViewMode::Source => self.editor_container(&doc, cx).into_any_element(),
+            ViewMode::Preview if base.is_some() => {
+                div().size_full().child(base.unwrap()).into_any_element()
+            }
             ViewMode::Preview => div()
                 .size_full()
                 .child(self.render_preview(&doc, cx))
@@ -1617,7 +1636,13 @@ impl Workspace {
                         .child(
                             resizable_panel()
                                 .size_range(px(280.)..px(4000.))
-                                .child(self.render_preview(&doc, cx)),
+                                .child(match base {
+                                    Some(base) => div().size_full().child(base).into_any_element(),
+                                    None => div()
+                                        .size_full()
+                                        .child(self.render_preview(&doc, cx))
+                                        .into_any_element(),
+                                }),
                         ),
                 )
                 .into_any_element(),
@@ -2025,6 +2050,14 @@ fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
                     .child(icon),
             )
         })
+}
+
+/// Whether the file is an Obsidian-style `.base` database spec.
+fn is_base(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("base"))
+        .unwrap_or(false)
 }
 
 /// `templates/**/*.md` under the vault root, sorted for a stable dialog list.

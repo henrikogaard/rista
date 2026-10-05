@@ -142,6 +142,9 @@ fn value_from_text(kind: PropKind, raw: &str) -> Value {
 pub fn vault_tags(notes: &[PathBuf]) -> Vec<(String, usize)> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for path in notes {
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
@@ -287,7 +290,7 @@ impl PropertiesPanel {
                 continue;
             }
             let raw = row.value.read(cx).value();
-            map.insert(Value::String(key.into()), value_from_text(row.kind, &raw));
+            map.insert(Value::String(key), value_from_text(row.kind, &raw));
         }
         let body = if map.is_empty() {
             None

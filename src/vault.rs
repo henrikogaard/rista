@@ -21,7 +21,8 @@ impl EventEmitter<VaultEvent> for Vault {}
 pub struct Vault {
     pub root: Option<PathBuf>,
     pub tree: Entity<TreeState>,
-    /// Flattened list of every `.md` file in the vault, sorted.
+    /// Flattened list of every `.md` and `.base` file in the vault,
+    /// sorted.
     pub notes: Vec<PathBuf>,
     /// Image files indexed by lowercase file name — Obsidian resolves
     /// `![[name.png]]` vault-wide, so basename is the key.
@@ -209,7 +210,7 @@ fn build_items(dir: &Path, depth: usize) -> Vec<TreeItem> {
             .and_then(|e| e.to_str())
             .map(|e| {
                 let e = e.to_lowercase();
-                e == "md" || IMAGE_EXTS.contains(&e.as_str())
+                e == "md" || e == "base" || IMAGE_EXTS.contains(&e.as_str())
             })
             .unwrap_or(false)
         {
@@ -254,7 +255,7 @@ fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase());
             match ext.as_deref() {
-                Some("md") => notes.push(path),
+                Some("md") | Some("base") => notes.push(path),
                 Some(e) if IMAGE_EXTS.contains(&e) => {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         images.entry(name.to_lowercase()).or_insert(path.clone());
