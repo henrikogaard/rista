@@ -909,6 +909,27 @@ impl Document {
         });
     }
 
+    /// Insert an empty 2×2 markdown table at the caret — header row,
+    /// separator, one body row. The caret lands in the first header
+    /// cell so a header name can be typed right away (Obsidian's
+    /// "Insert table").
+    pub fn insert_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let nl = if sel.start > 0 && !text[..sel.start].ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            };
+            let out = format!("{nl}|  |  |\n| --- | --- |\n|  |  |\n\n");
+            editor.set_selected_range(sel.clone(), cx);
+            editor.replace(out.clone(), window, cx);
+            let pos = sel.start + nl.len() + 2;
+            editor.set_selected_range(pos..pos, cx);
+        });
+    }
+
     /// Wrap the selected lines in an Obsidian callout: a `> [!kind]`
     /// marker line followed by every line quoted `> `. When the block
     /// already is a callout, the marker and quoting come back off. The

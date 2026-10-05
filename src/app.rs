@@ -154,10 +154,12 @@ enum PaletteCmd {
     InsertDate,
     InsertTime,
     InsertImage,
+    InsertTable,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
     InsertTemplate,
+    DuplicateNote,
     EditProperties,
     BrowseTags,
     Backlinks,
@@ -374,6 +376,11 @@ impl PaletteCmd {
                 "Insert image…",
                 &["picture", "photo", "attach", "embed"],
             ),
+            InsertTable => (
+                assets::IconName::Table,
+                "Insert table",
+                &["grid", "cells", "columns"],
+            ),
             DeleteLine => (
                 assets::IconName::Delete,
                 "Delete line",
@@ -393,6 +400,11 @@ impl PaletteCmd {
                 assets::IconName::LayoutTemplate,
                 "Insert template…",
                 &["template", "boilerplate", "snippet"],
+            ),
+            DuplicateNote => (
+                assets::IconName::CopyPlus,
+                "Duplicate current note",
+                &["copy", "clone", "file"],
             ),
             EditProperties => (
                 assets::IconName::TableProperties,
@@ -1866,10 +1878,12 @@ impl Workspace {
             PaletteCmd::InsertDate,
             PaletteCmd::InsertTime,
             PaletteCmd::InsertImage,
+            PaletteCmd::InsertTable,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
             PaletteCmd::InsertTemplate,
+            PaletteCmd::DuplicateNote,
             PaletteCmd::EditProperties,
             PaletteCmd::BrowseTags,
             PaletteCmd::Backlinks,
@@ -2145,12 +2159,25 @@ impl Workspace {
                 })
                 .detach();
             }
+            PaletteCmd::InsertTable => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.insert_table(window, cx));
+                }
+            }
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
             PaletteCmd::RestoreDeleted => self.defer_dialog(Self::show_trash, window, cx),
             PaletteCmd::InsertTemplate => self.defer_dialog(Self::show_templates, window, cx),
+            PaletteCmd::DuplicateNote => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    let path = doc.read(cx).path.clone();
+                    self.duplicate_file(path, cx);
+                } else {
+                    self.note_status("No note open", cx);
+                }
+            }
             PaletteCmd::EditProperties => self.defer_dialog(Self::show_properties, window, cx),
             PaletteCmd::BrowseTags => self.defer_dialog(Self::show_tags, window, cx),
             PaletteCmd::Backlinks => self.defer_dialog(Self::show_backlinks, window, cx),
