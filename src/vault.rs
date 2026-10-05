@@ -243,6 +243,55 @@ impl Vault {
         })
     }
 
+    /// Byte ranges of the inner `target` text of every `[label](target)`
+    /// / `![alt](target)` link in `text` pointing at `target`. The target
+    /// resolves relative to `from_dir` (the containing note's dir) first,
+    /// then the vault root; `<>`-wrapped and `%`-escaped forms handled.
+    pub fn md_link_spans_to(
+        &self,
+        text: &str,
+        from_dir: &Path,
+        target: &Path,
+    ) -> Vec<std::ops::Range<usize>> {
+        let mut out = Vec::new();
+        let mut cursor = 0;
+        while let Some(at) = text[cursor..].find("](").map(|i| cursor + i) {
+            let Some(end) = text[at + 2..].find(')').map(|i| at + 2 + i) else {
+                break;
+            };
+            if self.md_link_resolves(&text[at + 2..end], from_dir, target) {
+                out.push((at + 2)..end);
+            }
+            cursor = end + 1;
+        }
+        out
+    }
+
+    /// Does a markdown link's inner `target` text resolve to `path`?
+    fn md_link_resolves(&self, inner: &str, from_dir: &Path, path: &Path) -> bool {
+        let inner = inner.trim();
+        let inner = inner
+            .strip_prefix('<')
+            .and_then(|s| s.strip_suffix('>'))
+            .unwrap_or(inner);
+        if inner.contains("://") || inner.starts_with('#') || inner.starts_with("mailto:") {
+            return false;
+        }
+        let raw = inner
+            .split('#')
+            .next()
+            .unwrap_or(inner)
+            .split('?')
+            .next()
+            .unwrap_or(inner);
+        let decoded = percent_decode(raw);
+        let root = self.root.as_deref().unwrap_or(Path::new(""));
+        let want = normalize_path(path);
+        [from_dir.join(&decoded), root.join(&decoded)]
+            .iter()
+            .any(|p| normalize_path(p) == want)
+    }
+
     /// The daily-note path for today: `YYYY-MM-DD.md` at vault root.
     pub fn daily_note(&self) -> Option<PathBuf> {
         self.root
@@ -279,6 +328,75 @@ pub fn retarget_link(inner: &str, new_name: &str) -> String {
         return inner.to_string();
     }
     format!("{prefix}{new_name}{rest}")
+}
+
+/// The new inner text for a `[label](target)` link whose target was
+/// renamed — swaps the last path segment, keeps `#anchor`/`?query`
+/// suffixes, and preserves the original style: plain, `<>`-wrapped, or
+/// `%`-escaped. A new name containing a space wraps in `<>` unless the
+/// original was percent-escaped.
+pub fn retarget_md_link(inner: &str, new_filename: &str) -> String {
+    let trimmed = inner.trim();
+    let wrapped = trimmed.starts_with('<');
+    let body = trimmed
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    let (path, rest) = match body.find(['#', '?']) {
+        Some(i) => body.split_at(i),
+        None => (body, ""),
+    };
+    let (prefix, base) = match path.rfind('/') {
+        Some(i) => (&path[..i + 1], &path[i + 1..]),
+        None => ("", path),
+    };
+    if base.is_empty() {
+        return inner.to_string();
+    }
+    let escaped = base.contains('%');
+    let seg = if escaped {
+        new_filename.replace(' ', "%20")
+    } else {
+        new_filename.to_string()
+    };
+    let body = format!("{prefix}{seg}{rest}");
+    if wrapped || (!escaped && new_filename.contains(' ')) {
+        format!("<{body}>")
+    } else {
+        body
+    }
+}
+
+fn normalize_path(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn should_skip(entry: &std::fs::DirEntry) -> bool {

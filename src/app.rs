@@ -1254,6 +1254,10 @@ impl Workspace {
         let mut rewrites: Vec<(PathBuf, crate::vault::TextEdits)> = Vec::new();
         if path.is_file() {
             let vault = self.vault.read(cx);
+            let file_name = new_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             for note in &vault.notes {
                 let text = match self.docs.iter().find(|d| d.entity.read(cx).path == *note) {
                     Some(doc) => doc.entity.read(cx).editor.read(cx).value().to_string(),
@@ -1262,7 +1266,7 @@ impl Workspace {
                         Err(_) => continue,
                     },
                 };
-                let edits: Vec<_> = vault
+                let mut edits: Vec<_> = vault
                     .link_spans_to(&text, &path)
                     .into_iter()
                     .map(|range| {
@@ -1272,6 +1276,22 @@ impl Workspace {
                         )
                     })
                     .collect();
+                // Markdown `[label](path)` links too — resolved against
+                // the note's own dir, then the vault root.
+                if let Some(from_dir) = note.parent() {
+                    edits.extend(
+                        vault
+                            .md_link_spans_to(&text, from_dir, &path)
+                            .into_iter()
+                            .map(|range| {
+                                (
+                                    range.clone(),
+                                    crate::vault::retarget_md_link(&text[range], &file_name),
+                                )
+                            }),
+                    );
+                    edits.sort_by_key(|(range, _)| range.start);
+                }
                 if !edits.is_empty() {
                     rewrites.push((note.clone(), edits));
                 }
