@@ -11,8 +11,8 @@
 //!   `isEmpty`/`now()`/`date("YYYY-MM-DD")`.
 //! - `formulas:` — name → expression, referenced as `formula.name`.
 //! - `properties:` — `prop: {displayName: …}` column headers.
-//! - `views:` — `[{type, name, order, sort, limit, filters, group_by}]`;
-//!   `type: table|cards|gallery|kanban|board` all render.
+//! - `views:` — `[{type, name, order, sort, limit, filters, group_by, date}]`;
+//!   `type: table|cards|gallery|kanban|board|calendar` all render.
 //! - Relations — `[[wikilink]]` properties normalize to resolved paths,
 //!   render as link chips, and compare canonically against `link("x")`;
 //!   `file.links`/`file.backlinks` expose the vault's link graph.
@@ -24,6 +24,7 @@ use crate::app::Workspace;
 use crate::document::Document;
 use crate::properties;
 use crate::vault::Vault;
+use chrono::Datelike as _;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -899,6 +900,9 @@ struct ViewSpec {
     kind: String,
     /// Kanban: column the board groups on (`group_by:`/`group:`/`groupBy:`).
     group_by: Option<String>,
+    /// Calendar: property the month grid buckets on
+    /// (`date:`/`dateProperty:`/`date_property:`/`property:`).
+    date_prop: Option<String>,
     columns: Vec<String>,
     sort: Vec<SortKey>,
     limit: Option<usize>,
@@ -981,6 +985,9 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             let group_by = ["group_by", "groupBy", "group"]
                 .iter()
                 .find_map(|k| getv(k).and_then(|g| g.as_str()).map(str::to_string));
+            let date_prop = ["date", "dateProperty", "date_property", "property"]
+                .iter()
+                .find_map(|k| getv(k).and_then(|g| g.as_str()).map(str::to_string));
             let columns = getv("order")
                 .and_then(|o| o.as_sequence())
                 .map(|items| {
@@ -1042,6 +1049,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 name,
                 kind,
                 group_by,
+                date_prop,
                 columns,
                 sort,
                 limit,
@@ -1056,6 +1064,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             name: "Table".into(),
             kind: "table".into(),
             group_by: None,
+            date_prop: None,
             columns: Vec::new(),
             sort: Vec::new(),
             limit: None,
@@ -1083,6 +1092,31 @@ struct Row {
     cells: Vec<Cell>,
     /// `cover:`/`banner:`/`image:` property resolved to a file path or URL.
     cover: Option<String>,
+}
+
+/// Date cell text → day for the calendar grid. ISO `YYYY-MM-DD` (with
+/// optional time), `YYYY/MM/DD`, and `DD.MM.YYYY` all parse.
+fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"] {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
+            return Some(d);
+        }
+    }
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(t) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(t.date());
+        }
+    }
+    None
 }
 
 /// Stem of a resolved path, or the string itself when it isn't one.
@@ -1350,6 +1384,23 @@ fn compute(
             }
         }
     }
+    // Calendar views bucket on a date property that may not be in `order`.
+    if view.kind == "calendar" {
+        let date_col = view
+            .date_prop
+            .clone()
+            .or_else(|| view.group_by.clone())
+            .or_else(|| {
+                columns
+                    .iter()
+                    .find(|c| ["date", "due", "deadline"].contains(&c.as_str()))
+                    .cloned()
+            })
+            .unwrap_or_else(|| "date".into());
+        if !columns.iter().any(|c| c == &date_col) {
+            columns.push(date_col);
+        }
+    }
 
     // Evaluate every column once per row so sorts compare values.
     let mut rows: Vec<(&RowData, Vec<Lit>, Option<String>)> = Vec::new();
@@ -1488,19 +1539,32 @@ fn compute(
         })
         .collect();
 
-    // Kanban grouping resolves to a column index, defaulting to the first
-    // non-file column (a board without a grouping makes no sense).
-    let group_col = view
-        .group_by
-        .clone()
-        .filter(|g| columns.iter().any(|c| c == g))
-        .or_else(|| {
-            columns
-                .iter()
-                .find(|c| !c.starts_with("file.") && !c.starts_with("formula."))
-                .cloned()
-        })
-        .or_else(|| columns.iter().find(|c| *c != "file.name").cloned());
+    // Kanban/calendar grouping resolves to a column index, defaulting to
+    // the first non-file column (a board without a grouping makes no sense).
+    let group_col = if view.kind == "calendar" {
+        view.date_prop
+            .clone()
+            .or_else(|| view.group_by.clone())
+            .or_else(|| {
+                columns
+                    .iter()
+                    .find(|c| ["date", "due", "deadline"].contains(&c.as_str()))
+                    .cloned()
+            })
+            .unwrap_or_else(|| "date".into())
+            .into()
+    } else {
+        view.group_by
+            .clone()
+            .filter(|g| columns.iter().any(|c| c == g))
+            .or_else(|| {
+                columns
+                    .iter()
+                    .find(|c| !c.starts_with("file.") && !c.starts_with("formula."))
+                    .cloned()
+            })
+            .or_else(|| columns.iter().find(|c| *c != "file.name").cloned())
+    };
     let group_ix = group_col.and_then(|g| columns.iter().position(|c| *c == g));
 
     Computed {
@@ -1529,6 +1593,8 @@ pub struct BaseView {
     workspace: WeakEntity<Workspace>,
     vault: Entity<Vault>,
     view_ix: usize,
+    /// Calendar view: months offset from the current month.
+    cal_offset: i32,
     notes_epoch: u64,
     doc_epoch: u64,
     cache_key: Option<(u64, u64, usize)>,
@@ -1586,6 +1652,7 @@ impl BaseView {
             workspace,
             vault,
             view_ix: 0,
+            cal_offset: 0,
             notes_epoch: 0,
             doc_epoch: 0,
             cache_key: None,
@@ -1633,6 +1700,187 @@ impl BaseView {
     }
 }
 
+impl BaseView {
+    /// `type: calendar` — a month grid bucketing rows on the view's date
+    /// property (`date:`/`dateProperty:` in the spec; falls back to a
+    /// `date`/`due`/`deadline` column). Rows without a parseable date
+    /// don't appear on the grid but count in the footer.
+    fn render_calendar(
+        &self,
+        this: &Entity<Self>,
+        computed: &Computed,
+        cx: &App,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let today = chrono::Local::now().date_naive();
+        let month0 = today.with_day(1).unwrap_or(today);
+        let shown = if self.cal_offset >= 0 {
+            month0 + chrono::Months::new(self.cal_offset as u32)
+        } else {
+            month0 - chrono::Months::new((-self.cal_offset) as u32)
+        };
+        let first = shown.with_day(1).unwrap_or(shown);
+        let lead = first.weekday().num_days_from_monday() as i64;
+        let grid_start = first - chrono::Duration::days(lead);
+        let month = first.month();
+
+        // Bucket rows by parsed date.
+        let gix = computed.group_ix.unwrap_or(usize::MAX);
+        let mut by_day: std::collections::HashMap<chrono::NaiveDate, Vec<(String, PathBuf)>> =
+            std::collections::HashMap::new();
+        for row in &computed.rows {
+            let Some(day) = row.cells.get(gix).and_then(|c| parse_date(&c.text)) else {
+                continue;
+            };
+            let title = row
+                .cells
+                .first()
+                .map(|c| c.text.clone())
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| stem_of(&row.path.to_string_lossy()));
+            by_day
+                .entry(day)
+                .or_default()
+                .push((title, row.path.clone()));
+        }
+
+        // Month navigation.
+        let nav = h_flex().w_full().px_3().py_2().justify_between().child(
+            div()
+                .text_sm()
+                .font_semibold()
+                .text_color(theme.foreground)
+                .child(first.format("%B %Y").to_string()),
+        );
+        let nav = nav.child(
+            h_flex().gap_2().children(
+                [("cal-today", "Today"), ("cal-prev", "‹"), ("cal-next", "›")]
+                    .into_iter()
+                    .map(|(id, label)| {
+                        let this = this.clone();
+                        div()
+                            .id((id, 0usize))
+                            .px_2()
+                            .py(px(2.))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .rounded(px(3.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                            .child(label)
+                            .on_click(move |_, _window, cx| {
+                                this.update(cx, |view, cx| {
+                                    match id {
+                                        "cal-today" => view.cal_offset = 0,
+                                        "cal-prev" => view.cal_offset -= 1,
+                                        _ => view.cal_offset += 1,
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                    }),
+            ),
+        );
+
+        let mut grid = v_flex().w_full().border_1().border_color(theme.border);
+        // Weekday header.
+        let mut wk = h_flex().w_full().border_b_1().border_color(theme.border);
+        for (i, name) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            .iter()
+            .enumerate()
+        {
+            let mut cell = div().flex_1().min_w_0().py_1().text_center();
+            if i < 6 {
+                cell = cell.border_r_1().border_color(theme.border);
+            }
+            wk = wk.child(
+                cell.text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(*name),
+            );
+        }
+        grid = grid.child(wk);
+
+        // 6 week rows.
+        for w in 0..6 {
+            let mut row_el = h_flex().w_full();
+            if w < 5 {
+                row_el = row_el.border_b_1().border_color(theme.border);
+            }
+            for c in 0..7 {
+                let day = grid_start + chrono::Duration::days((w * 7 + c) as i64);
+                let in_month = day.month() == month;
+                let is_today = day == today;
+                let items = by_day.get(&day).cloned().unwrap_or_default();
+                let mut cell = div().flex_1().min_w_0().h(px(84.)).p_1().v_flex().gap_0p5();
+                if c < 6 {
+                    cell = cell.border_r_1().border_color(theme.border);
+                }
+                if !in_month {
+                    cell = cell.bg(theme.secondary.opacity(0.4));
+                }
+                if is_today {
+                    cell = cell.border_color(theme.accent);
+                }
+                let num = div()
+                    .w_full()
+                    .text_right()
+                    .text_xs()
+                    .text_color(if is_today {
+                        theme.accent
+                    } else if in_month {
+                        theme.foreground
+                    } else {
+                        theme.muted_foreground
+                    })
+                    .when(is_today, |d| d.font_semibold())
+                    .child(format!("{}", day.day()));
+                cell = cell.child(num);
+                for (k, (title, path)) in items.iter().take(2).enumerate() {
+                    let path = path.clone();
+                    let workspace = self.workspace.clone();
+                    cell = cell.child(
+                        div()
+                            .id(("cal-note", (w * 7 + c) as usize * 16 + k))
+                            .w_full()
+                            .px_1()
+                            .rounded(px(3.))
+                            .bg(theme.accent)
+                            .text_xs()
+                            .truncate()
+                            .text_color(theme.accent_foreground)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                            .child(title.clone())
+                            .on_click(move |_, window, cx| {
+                                let path = path.clone();
+                                let _ = workspace
+                                    .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                            }),
+                    );
+                }
+                if items.len() > 2 {
+                    cell = cell.child(
+                        div()
+                            .w_full()
+                            .px_1()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("+{} more", items.len() - 2)),
+                    );
+                }
+                row_el = row_el.child(cell);
+            }
+            grid = grid.child(row_el);
+        }
+
+        v_flex()
+            .w_full()
+            .child(nav)
+            .child(div().w_full().px_3().pb_2().child(grid))
+    }
+}
+
 impl Render for BaseView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -1672,6 +1920,7 @@ impl Render for BaseView {
 
         let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
         let kanban = matches!(computed.kind.as_str(), "kanban" | "board");
+        let calendar = computed.kind == "calendar";
         let header = h_flex()
             .w_full()
             .px_3()
@@ -1690,7 +1939,9 @@ impl Render for BaseView {
             }));
 
         let mut rows = v_flex().w_full();
-        if kanban {
+        if calendar {
+            rows = rows.child(self.render_calendar(&this, &computed, cx));
+        } else if kanban {
             // Group rows on the resolved column's display value.
             let gix = computed.group_ix.unwrap_or(usize::MAX);
             let mut groups: Vec<(String, Vec<&Row>)> = Vec::new();
@@ -1908,7 +2159,7 @@ impl Render for BaseView {
         v_flex()
             .size_full()
             .child(tabs)
-            .when(!cards && !kanban, |v| v.child(header))
+            .when(!cards && !kanban && !calendar, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
                 div()
                     .w_full()
@@ -1930,7 +2181,21 @@ impl Render for BaseView {
                     .py_1()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(format!("{} notes", computed.rows.len())),
+                    .child(if calendar {
+                        let undated = computed
+                            .rows
+                            .iter()
+                            .filter(|r| {
+                                r.cells
+                                    .get(computed.group_ix.unwrap_or(usize::MAX))
+                                    .and_then(|c| parse_date(&c.text))
+                                    .is_none()
+                            })
+                            .count();
+                        format!("{} notes · {} undated", computed.rows.len(), undated)
+                    } else {
+                        format!("{} notes", computed.rows.len())
+                    }),
             )
     }
 }
