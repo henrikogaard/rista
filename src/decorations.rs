@@ -432,6 +432,46 @@ fn comments(text: &str, base: usize, out: &mut Vec<TextDecoration>, style: Highl
     }
 }
 
+/// `==highlight==` spans get a translucent wash like the preview's
+/// `<mark>` — `===` (setext underline) is not a highlight. Fenced code
+/// stays literal.
+fn highlights(text: &str, base: usize, out: &mut Vec<TextDecoration>, style: HighlightStyle) {
+    let mut open: Option<usize> = None;
+    let mut fenced = false;
+    let mut at = 0usize;
+    for line in text.split_inclusive('\n') {
+        let seg = line.trim_end_matches(['\n', '\r']);
+        if seg.trim_start().starts_with("```") && open.is_none() {
+            fenced = !fenced;
+            at += line.len();
+            continue;
+        }
+        if !fenced {
+            let bytes = seg.as_bytes();
+            let mut i = 0;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'='
+                    && bytes[i + 1] == b'='
+                    && bytes.get(i + 2) != Some(&b'=')
+                    && (i == 0 || bytes[i - 1] != b'=')
+                {
+                    match open {
+                        None => open = Some(at + i),
+                        Some(start) => {
+                            mark(out, base + start..base + at + i + 2, style);
+                            open = None;
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            }
+        }
+        at += line.len();
+    }
+}
+
 /// Root-child holding `cursor` — the one block that stays lit in focus
 /// mode. Falls to the next block when the caret sits on an empty line,
 /// else the last block at EOF.
@@ -509,5 +549,16 @@ pub fn markdown_decorations(
     tags(text, 0, &mut out, accent);
     // Fade-only — composes with whatever styles land inside the span.
     comments(text, 0, &mut out, fade(0.55));
+    // `==highlight==` wash — background-only so text colors inside
+    // the span keep their own styling.
+    highlights(
+        text,
+        0,
+        &mut out,
+        HighlightStyle {
+            background_color: Some(theme.warning.opacity(0.25)),
+            ..Default::default()
+        },
+    );
     out
 }
