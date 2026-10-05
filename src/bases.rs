@@ -2578,7 +2578,7 @@ impl Render for BaseView {
                                         .on_click(move |_, window, cx| {
                                             cx.stop_propagation();
                                             let _ = workspace.update(cx, |ws, cx| {
-                                                ws.show_cell_dialog(
+                                                ws.edit_note_property(
                                                     path.clone(),
                                                     prop.clone(),
                                                     current.clone(),

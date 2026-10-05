@@ -1626,7 +1626,28 @@ impl Workspace {
         let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
             return;
         };
-        self.show_cell_dialog(path, prop, current, window, cx);
+        self.edit_note_property(path, prop, current, window, cx);
+    }
+
+    /// `true`/`false` properties toggle in place like Obsidian's
+    /// Properties checkbox; everything else opens the text dialog.
+    pub fn edit_note_property(
+        &mut self,
+        path: PathBuf,
+        prop: String,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match current.trim() {
+            "true" => {
+                self.set_note_property(path, &prop, serde_yaml::Value::Bool(false), window, cx)
+            }
+            "false" => {
+                self.set_note_property(path, &prop, serde_yaml::Value::Bool(true), window, cx)
+            }
+            _ => self.show_cell_dialog(path, prop, current, window, cx),
+        }
     }
 
     /// Edit one frontmatter property of `path` — opened from a base
