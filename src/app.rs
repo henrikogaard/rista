@@ -61,6 +61,8 @@ pub struct Workspace {
     /// Set while back/forward itself activates a doc — that traversal
     /// must not append a new history entry.
     nav_suppress: bool,
+    /// Whether the sidebar's Starred group is expanded.
+    starred_open: bool,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -114,6 +116,7 @@ enum PaletteCmd {
     GoBack,
     GoForward,
     FollowLink,
+    ToggleStar,
     Settings,
     ToggleTheme,
     Quit,
@@ -242,6 +245,11 @@ impl PaletteCmd {
                 "Open link under cursor",
                 &["link", "wikilink", "follow", "url", "open"],
             ),
+            ToggleStar => (
+                assets::IconName::Star,
+                "Star/unstar current note",
+                &["star", "favorite", "bookmark", "pin"],
+            ),
             Settings => (
                 assets::IconName::Settings,
                 "Settings…",
@@ -282,10 +290,11 @@ impl Workspace {
             status_note: None,
             status_epoch: 0,
             recent: Vec::new(),
-            focus_mode: false,
+            focus_mode: settings.focus_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
             nav_suppress: false,
+            starred_open: true,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -827,6 +836,8 @@ impl Workspace {
         for doc in &self.docs {
             doc.entity.update(cx, |doc, cx| doc.set_focus_mode(on, cx));
         }
+        self.settings.focus_mode = on;
+        self.settings.save();
         self.note_status(
             if on {
                 "Focus mode on"
@@ -835,6 +846,21 @@ impl Workspace {
             },
             cx,
         );
+        cx.notify();
+    }
+
+    /// Star/unstar a note — pinned group at the top of the sidebar,
+    /// persisted in settings (absolute paths).
+    fn toggle_star(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let key = path.to_string_lossy().to_string();
+        if let Some(ix) = self.settings.starred.iter().position(|s| s == &key) {
+            self.settings.starred.remove(ix);
+            self.note_status("Unstarred", cx);
+        } else {
+            self.settings.starred.push(key);
+            self.note_status("Starred", cx);
+        }
+        self.settings.save();
         cx.notify();
     }
 
@@ -919,6 +945,7 @@ impl Workspace {
             PaletteCmd::GoBack,
             PaletteCmd::GoForward,
             PaletteCmd::FollowLink,
+            PaletteCmd::ToggleStar,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -1098,6 +1125,13 @@ impl Workspace {
             PaletteCmd::GoBack => self.nav_back(window, cx),
             PaletteCmd::GoForward => self.nav_forward(window, cx),
             PaletteCmd::FollowLink => self.on_follow_link(&FollowLink, window, cx),
+            PaletteCmd::ToggleStar => {
+                let path = self.active_doc().map(|d| d.read(cx).path.clone());
+                match path {
+                    Some(path) => self.toggle_star(path, cx),
+                    None => self.note_status("No note open", cx),
+                }
+            }
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -1938,6 +1972,98 @@ impl Workspace {
             )
     }
 
+    /// The Starred group pinned at the top of the sidebar — collapsible,
+    /// rows open their note, unstar via the tree's context menu below.
+    fn render_starred(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let root = self.vault.read(cx).root.clone().unwrap_or_default();
+        let rows: Vec<PathBuf> = self
+            .settings
+            .starred
+            .iter()
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+            .collect();
+
+        v_flex()
+            .w_full()
+            .border_b_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("starred-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.starred_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Starred · {}", rows.len())),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.starred_open = !this.starred_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.starred_open, |this| {
+                this.children(rows.iter().enumerate().map(|(ix, path)| {
+                    let name = path
+                        .file_stem()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let dir = path
+                        .parent()
+                        .and_then(|p| p.strip_prefix(&root).ok())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let open_path = path.clone();
+                    div()
+                        .id(("starred-row", ix))
+                        .w_full()
+                        .px_2()
+                        .py_0p5()
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(
+                                    Icon::new(assets::IconName::StarFill)
+                                        .size_4()
+                                        .text_color(theme.info),
+                                )
+                                .child(div().text_sm().truncate().child(name))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(dir),
+                                ),
+                        )
+                        .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_document(open_path.clone(), window, cx);
+                        }))
+                }))
+            })
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let tree_state = self.vault.read(cx).tree.clone();
@@ -2002,6 +2128,9 @@ impl Workspace {
                             ),
                     ),
             )
+            .when(!self.settings.starred.is_empty(), |this| {
+                this.child(self.render_starred(cx))
+            })
             .child(
                 div().flex_1().min_h_0().child(
                     tree(&tree_state, {
@@ -2072,6 +2201,7 @@ impl Workspace {
                     })
                     .context_menu({
                         let view = view.clone();
+                        let starred_list = self.settings.starred.clone();
                         move |_ix, entry, menu, _window, _cx| {
                             let path = PathBuf::from(entry.item().id.as_str());
                             let view = view.clone();
@@ -2082,20 +2212,45 @@ impl Workspace {
                                     .map(|p| p.to_path_buf())
                                     .unwrap_or_else(|| path.clone())
                             };
+                            let menu = menu
+                                .item(
+                                    PopupMenuItem::new("New file here")
+                                        .icon(assets::IconName::FilePlus)
+                                        .on_click({
+                                            let view = view.clone();
+                                            move |_, window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.new_file_in(dir.clone(), window, cx);
+                                                });
+                                            }
+                                        }),
+                                )
+                                .separator();
+                            // Files can be pinned into the Starred group.
+                            let menu = if entry.is_folder() {
+                                menu
+                            } else {
+                                let starred =
+                                    starred_list.contains(&path.to_string_lossy().to_string());
+                                menu.item(
+                                    PopupMenuItem::new(if starred { "Unstar" } else { "Star" })
+                                        .icon(if starred {
+                                            assets::IconName::StarOff
+                                        } else {
+                                            assets::IconName::Star
+                                        })
+                                        .on_click({
+                                            let path = path.clone();
+                                            let view = view.clone();
+                                            move |_, _window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.toggle_star(path.clone(), cx);
+                                                });
+                                            }
+                                        }),
+                                )
+                            };
                             menu.item(
-                                PopupMenuItem::new("New file here")
-                                    .icon(assets::IconName::FilePlus)
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.new_file_in(dir.clone(), window, cx);
-                                            });
-                                        }
-                                    }),
-                            )
-                            .separator()
-                            .item(
                                 PopupMenuItem::new("Rename…")
                                     .icon(assets::IconName::SquarePen)
                                     .on_click({

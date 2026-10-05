@@ -44,6 +44,8 @@ pub struct Settings {
     /// Vault-relative folder pasted/dropped images are copied into
     /// (Obsidian's "attachment folder path").
     pub attachments_dir: String,
+    /// Starred notes — absolute paths, shown pinned at the sidebar top.
+    pub starred: Vec<String>,
 }
 
 impl Default for Settings {
@@ -61,6 +63,7 @@ impl Default for Settings {
             focus_mode: false,
             last_vault: None,
             attachments_dir: "attachments".to_string(),
+            starred: Vec::new(),
         }
     }
 }
