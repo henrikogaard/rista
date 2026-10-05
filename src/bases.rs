@@ -1397,7 +1397,10 @@ fn compute(
     // Grouping may target a property not listed in `order` — Obsidian
     // groups by any property, so it joins the columns silently. For the
     // table view that also surfaces the group prop as a trailing column.
-    if matches!(view.kind.as_str(), "kanban" | "board" | "table" | "list") {
+    if matches!(
+        view.kind.as_str(),
+        "kanban" | "board" | "table" | "list" | "cards" | "gallery"
+    ) {
         if let Some(group) = &view.group_by {
             if !columns.iter().any(|c| c == group) {
                 columns.push(group.clone());
@@ -2356,8 +2359,65 @@ impl Render for BaseView {
             }
             rows = rows.child(board);
         } else if cards {
+            // `group_by` sections: a full-width band between groups,
+            // then that group's cards. Groups order by lit value.
+            let gix = computed.group_ix.unwrap_or(usize::MAX);
+            let mut order: Vec<usize> = (0..computed.rows.len()).collect();
+            let mut group_counts: std::collections::HashMap<&str, usize> = Default::default();
+            if computed.grouped {
+                order.sort_by(|a, b| {
+                    lit_cmp(
+                        &computed.rows[*a].cells[gix].lit,
+                        &computed.rows[*b].cells[gix].lit,
+                    )
+                });
+                for row in &computed.rows {
+                    let key = row
+                        .cells
+                        .get(gix)
+                        .map(|c| c.text.trim())
+                        .unwrap_or_default();
+                    *group_counts.entry(key).or_default() += 1;
+                }
+            }
+            let mut last_group: Option<&str> = None;
             let mut grid = div().flex().flex_wrap().gap_3().p_3();
-            for (ix, row) in computed.rows.iter().enumerate() {
+            for ix in order {
+                let row = &computed.rows[ix];
+                if computed.grouped {
+                    let key = row
+                        .cells
+                        .get(gix)
+                        .map(|c| c.text.trim())
+                        .unwrap_or_default();
+                    if last_group != Some(key) {
+                        last_group = Some(key);
+                        let label = if key.is_empty() {
+                            format!(
+                                "No {}",
+                                computed.headers.get(gix).cloned().unwrap_or_default()
+                            )
+                        } else {
+                            key.to_string()
+                        };
+                        grid = grid.child(
+                            div()
+                                .w_full()
+                                .flex_none()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .pb_1()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme.muted_foreground)
+                                .child(format!(
+                                    "{} · {}",
+                                    label,
+                                    group_counts.get(key).copied().unwrap_or(0)
+                                )),
+                        );
+                    }
+                }
                 let path = row.path.clone();
                 let workspace = self.workspace.clone();
                 let mut card = v_flex()
