@@ -48,6 +48,10 @@ pub struct Settings {
     pub starred: Vec<String>,
     /// Which sidebar panes are expanded — persists across launches.
     pub panes: SidebarPanes,
+    /// Document tabs open when the app closed — restored on launch.
+    pub open_tabs: Vec<String>,
+    /// Active tab's path (one of `open_tabs`) when the app closed.
+    pub active_tab: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -102,6 +106,8 @@ impl Default for Settings {
             attachments_dir: "attachments".to_string(),
             starred: Vec::new(),
             panes: SidebarPanes::default(),
+            open_tabs: Vec::new(),
+            active_tab: None,
         }
     }
 }

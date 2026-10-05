@@ -348,10 +348,27 @@ impl Workspace {
             _subscriptions: vec![vault_sub],
         };
 
-        // Reopen the vault the user last had open.
+        // Reopen the vault the user last had open, then restore the
+        // document tabs from last session (Obsidian parity).
         if let Some(root) = this.settings.last_vault.clone() {
             if root.exists() {
+                // Clone before open_vault_at — its close_all_docs call
+                // persist_tabs()es the (empty) doc list over these.
+                let tabs = this.settings.open_tabs.clone();
+                let active = this.settings.active_tab.clone();
                 this.open_vault_at(root, cx);
+                for p in tabs {
+                    this.open_document_pub(PathBuf::from(&p), window, cx);
+                }
+                if let Some(active) = active {
+                    if let Some(ix) = this
+                        .docs
+                        .iter()
+                        .position(|d| d.entity.read(cx).path.display().to_string() == active)
+                    {
+                        this.active = Some(ix);
+                    }
+                }
             }
         }
         this
@@ -474,6 +491,7 @@ impl Workspace {
             self.recent.retain(|p| *p != path);
             self.recent.insert(0, path);
             self.recent.truncate(12);
+            self.persist_tabs(cx);
             cx.notify();
             return;
         }
@@ -518,6 +536,7 @@ impl Workspace {
             _sub: sub,
         });
         self.active = Some(self.docs.len() - 1);
+        self.persist_tabs(cx);
         cx.notify();
 
         // Focus the editor once the frame settles.
@@ -597,9 +616,25 @@ impl Workspace {
         self.nav_forward(window, cx);
     }
 
-    fn close_all_docs(&mut self, _cx: &mut Context<Self>) {
+    fn close_all_docs(&mut self, cx: &mut Context<Self>) {
         self.docs.clear();
         self.active = None;
+        self.persist_tabs(cx);
+    }
+
+    /// Snapshot open doc paths + the active one into settings — the
+    /// restore-on-launch list.
+    fn persist_tabs(&mut self, cx: &mut Context<Self>) {
+        self.settings.open_tabs = self
+            .docs
+            .iter()
+            .map(|d| d.entity.read(cx).path.display().to_string())
+            .collect();
+        self.settings.active_tab = self
+            .active
+            .and_then(|i| self.docs.get(i))
+            .map(|d| d.entity.read(cx).path.display().to_string());
+        self.settings.save();
     }
 
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -645,6 +680,7 @@ impl Workspace {
         if self.docs.is_empty() {
             self.active = None;
         }
+        self.persist_tabs(cx);
         cx.notify();
     }
 
@@ -953,6 +989,7 @@ impl Workspace {
             Some(i) => (i + 1) % self.docs.len(),
             None => 0,
         });
+        self.persist_tabs(cx);
         cx.notify();
     }
 
@@ -964,6 +1001,7 @@ impl Workspace {
             Some(0) | None => self.docs.len() - 1,
             Some(i) => i - 1,
         });
+        self.persist_tabs(cx);
         cx.notify();
     }
 
@@ -3612,6 +3650,7 @@ impl Workspace {
                     .children(tabs)
                     .on_click(cx.listener(|this, &ix, _window, cx| {
                         this.active = Some(ix);
+                        this.persist_tabs(cx);
                         cx.notify();
                     }))
                     .flex_1(),
