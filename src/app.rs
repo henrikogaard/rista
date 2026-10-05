@@ -16,6 +16,7 @@ use gpui_kit::base::Placement;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
+use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::PopupMenuItem;
@@ -46,6 +47,9 @@ pub struct Workspace {
     /// Property-name input for the strip's "Add property" dialog —
     /// the value field reuses `cell_input`.
     prop_name_input: Entity<InputState>,
+    /// Keeps the date-picker dialog's Change subscription alive
+    /// while it is open.
+    date_sub: Option<Subscription>,
     status_note: Option<SharedString>,
     /// Bumped on every status update so an old expiry timer can't
     /// clear a newer note.
@@ -321,6 +325,7 @@ impl Workspace {
             rename_input,
             cell_input,
             prop_name_input,
+            date_sub: None,
             status_note: None,
             status_epoch: 0,
             recent: Vec::new(),
@@ -1646,8 +1651,51 @@ impl Workspace {
             "false" => {
                 self.set_note_property(path, &prop, serde_yaml::Value::Bool(true), window, cx)
             }
+            _ if is_iso_date(&current).is_some() => {
+                self.show_date_dialog(path, prop, current, window, cx)
+            }
             _ => self.show_cell_dialog(path, prop, current, window, cx),
         }
+    }
+
+    /// Date-valued properties open a calendar popover instead of the
+    /// text dialog — Obsidian's Properties panel does the same. A pick
+    /// writes `YYYY-MM-DD` back and closes.
+    pub fn show_date_dialog(
+        &mut self,
+        path: PathBuf,
+        prop: String,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(date) = is_iso_date(&current) else {
+            return;
+        };
+        let date_state = cx.new(|cx| DatePickerState::new(window, cx));
+        date_state.update(cx, |s, cx| s.set_date(date, window, cx));
+        self.date_sub = Some(cx.subscribe_in(&date_state, window, {
+            let prop = prop.clone();
+            move |this, _state, ev: &DatePickerEvent, window, cx| {
+                if let DatePickerEvent::Change(DateTime::Single(Some(dt))) = ev {
+                    this.set_note_property(
+                        path.clone(),
+                        &prop,
+                        serde_yaml::Value::String(dt.date().format("%Y-%m-%d").to_string()),
+                        window,
+                        cx,
+                    );
+                    window.close_dialog(cx);
+                }
+            }
+        }));
+        let title = format!("Edit {prop}");
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(title.clone())
+                .w(px(360.))
+                .child(div().w_full().child(DatePicker::new(&date_state)))
+        });
     }
 
     /// Edit one frontmatter property of `path` — opened from a base
@@ -4635,6 +4683,18 @@ fn template_files(root: &std::path::Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// `YYYY-MM-DD` / `YYYY/MM/DD` property values get the date picker;
+/// datetimes stay text so a pick can't silently drop a time.
+fn is_iso_date(s: &str) -> Option<chrono::NaiveDate> {
+    let s = s.trim();
+    for fmt in ["%Y-%m-%d", "%Y/%m/%d"] {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
+            return Some(d);
+        }
+    }
+    None
 }
 
 /// Floating label shown while dragging a file-tree row.
