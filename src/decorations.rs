@@ -244,6 +244,35 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
             }
         }
         mdast::Node::Blockquote(_) => {
+            // Callouts `> [!type]` tint the whole quote and accent the
+            // `[!type]` token, matching the preview's colored blocks.
+            let callout = node
+                .children()
+                .and_then(|c| c.first())
+                .and_then(node_range)
+                .filter(|r| text[r.clone()].trim_start().starts_with("[!"));
+            if let (Some(range), Some(head)) = (node_range(node), callout) {
+                mark(
+                    out,
+                    range,
+                    HighlightStyle {
+                        background_color: Some(theme.secondary),
+                        ..Default::default()
+                    },
+                );
+                let seg = &text[head.clone()];
+                if let Some(end) = seg.find(']') {
+                    mark(
+                        out,
+                        head.start..head.start + end + 1,
+                        HighlightStyle {
+                            color: Some(theme.info),
+                            font_weight: Some(FontWeight::SEMIBOLD),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
             mark_spans(out, affixes(node), fade(MARKER_FADE));
         }
         mdast::Node::ThematicBreak(_) | mdast::Node::Break(_) => {
