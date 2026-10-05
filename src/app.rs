@@ -4022,6 +4022,19 @@ impl Workspace {
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Count same-name tabs first: when a title is duplicated, append
+        // the parent folder so two `notes.md` tabs stay distinguishable.
+        let mut title_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for doc in &self.docs {
+            let doc = doc.entity.read(cx);
+            let title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base") {
+                doc.file_name()
+            } else {
+                doc.title()
+            };
+            *title_counts.entry(title).or_default() += 1;
+        }
         let tabs: Vec<Tab> = self
             .docs
             .iter()
@@ -4031,11 +4044,22 @@ impl Workspace {
                     let doc = doc.entity.read(cx);
                     // .base tabs keep their extension so `tasks` and
                     // `tasks.base` don't look like the same document.
-                    let title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base") {
+                    let mut title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base")
+                    {
                         doc.file_name()
                     } else {
                         doc.title()
                     };
+                    if title_counts.get(&title).copied().unwrap_or(0) > 1 {
+                        if let Some(dir) = doc
+                            .path
+                            .parent()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                        {
+                            title = format!("{title} · {dir}");
+                        }
+                    }
                     let ext = doc
                         .path
                         .extension()
