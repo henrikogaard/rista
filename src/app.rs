@@ -1334,6 +1334,21 @@ impl Workspace {
         let _ = window;
     }
 
+    /// Edit `prop` on the active document — the preview's Properties
+    /// strip calls through here so the write lands in the open doc.
+    pub fn edit_active_property(
+        &mut self,
+        prop: String,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
+            return;
+        };
+        self.show_cell_dialog(path, prop, current, window, cx);
+    }
+
     /// Edit one frontmatter property of `path` — opened from a base
     /// table cell. The current display text prefills the input.
     pub fn show_cell_dialog(

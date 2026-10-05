@@ -56,6 +56,7 @@ pub fn extensions(
         .frontmatter()
         .plugin(PropertiesPlugin {
             folds: folds.clone(),
+            ctx: ctx.cloned(),
         })
         .plugin(LocalImagePlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
@@ -583,6 +584,7 @@ impl CalloutFolds {
 /// data behind bases, so they stay visible — just not noisy.
 struct PropertiesPlugin {
     folds: CalloutFolds,
+    ctx: Option<PreviewCtx>,
 }
 
 impl MarkdownPlugin for PropertiesPlugin {
@@ -603,7 +605,9 @@ impl MarkdownPlugin for PropertiesPlugin {
             .and_then(|v| v.as_mapping().cloned())
             .map(|map| {
                 map.iter()
-                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), prop_display(v))))
+                    .filter_map(|(k, v)| {
+                        Some((k.as_str()?.to_string(), prop_edit_text(v), prop_display(v)))
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -617,7 +621,7 @@ impl MarkdownPlugin for PropertiesPlugin {
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (entries, key) = node
-            .data::<(Vec<(String, String)>, usize)>()
+            .data::<(Vec<(String, String, String)>, usize)>()
             .expect("properties node data");
         let theme = cx.theme();
         if entries.is_empty() {
@@ -626,35 +630,57 @@ impl MarkdownPlugin for PropertiesPlugin {
         let folded = self.folds.is_folded(*key, false);
         let folds = self.folds.clone();
         let key = *key;
+        // Rows open the property-edit dialog only on the document's own
+        // strip — transcluded/fragment renders have no write target.
+        let edit_ctx = self
+            .ctx
+            .as_ref()
+            .filter(|ctx| ctx.depth == 0)
+            .map(|ctx| ctx.workspace.clone());
         let mut rows = v_flex().w_full();
         if !folded {
-            for (k, v) in entries {
-                rows = rows.child(
-                    h_flex()
-                        .w_full()
-                        .px_3()
-                        .py_1()
-                        .gap_2()
-                        .border_t_1()
-                        .border_color(theme.border.opacity(0.5))
-                        .child(
-                            div()
-                                .w(px(96.))
-                                .flex_none()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .truncate()
-                                .child(k.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .text_color(theme.foreground)
-                                .truncate()
-                                .child(v.clone()),
-                        ),
-                );
+            for (ix, (k, edit, v)) in entries.iter().enumerate() {
+                let mut row = h_flex()
+                    .id(("property-row", ix))
+                    .w_full()
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .border_t_1()
+                    .border_color(theme.border.opacity(0.5))
+                    .child(
+                        div()
+                            .w(px(96.))
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .truncate()
+                            .child(k.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(theme.foreground)
+                            .truncate()
+                            .child(v.clone()),
+                    );
+                if let Some(workspace) = edit_ctx.clone() {
+                    let k = k.clone();
+                    let edit = edit.clone();
+                    row = row
+                        .cursor_pointer()
+                        .hover(|row| row.bg(theme.accent.opacity(0.4)))
+                        .on_click(move |_, window, cx| {
+                            let Some(workspace) = workspace.upgrade() else {
+                                return;
+                            };
+                            workspace.update(cx, |workspace, cx| {
+                                workspace.edit_active_property(k.clone(), edit.clone(), window, cx);
+                            });
+                        });
+                }
+                rows = rows.child(row);
             }
         }
         v_flex()
@@ -702,6 +728,30 @@ impl MarkdownPlugin for PropertiesPlugin {
             )
             .child(rows)
             .into_any_element()
+    }
+}
+
+/// Edit-box text for a frontmatter property — scalars as-is, lists in
+/// YAML flow form (`[a, b]`) so committing parses back to a sequence.
+fn prop_edit_text(v: &serde_yaml::Value) -> String {
+    match v {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Sequence(items) => {
+            let items = items
+                .iter()
+                .map(|item| match item {
+                    serde_yaml::Value::String(s) if s.contains(',') => {
+                        format!("{:?}", s)
+                    }
+                    other => prop_edit_text(other),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{items}]")
+        }
+        other => serde_yaml::to_string(other)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
     }
 }
 
