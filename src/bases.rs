@@ -1084,6 +1084,8 @@ struct Cell {
     /// Single-relation cells carry the resolved target — rendered as a
     /// chip that opens the note instead of the row.
     link: Option<PathBuf>,
+    /// Raw value — interactive header sorting compares these, not text.
+    lit: Lit,
 }
 
 struct Row {
@@ -1477,6 +1479,7 @@ fn compute(
                                         .take(16)
                                         .collect(),
                                     link: None,
+                                    lit: cell.clone(),
                                 };
                             }
                         }
@@ -1493,6 +1496,7 @@ fn compute(
                         (Lit::Str(s), true) => Cell {
                             text: stem_of(s),
                             link: Some(PathBuf::from(s)),
+                            lit: cell.clone(),
                         },
                         (Lit::List(items), true) => Cell {
                             text: items
@@ -1501,10 +1505,12 @@ fn compute(
                                 .collect::<Vec<_>>()
                                 .join(", "),
                             link: None,
+                            lit: cell.clone(),
                         },
                         _ => Cell {
                             text: cell.display(),
                             link: None,
+                            lit: cell.clone(),
                         },
                     }
                 })
@@ -1595,6 +1601,8 @@ pub struct BaseView {
     view_ix: usize,
     /// Calendar view: months offset from the current month.
     cal_offset: i32,
+    /// Interactive header sort: (column index, descending).
+    sort: Option<(usize, bool)>,
     notes_epoch: u64,
     doc_epoch: u64,
     cache_key: Option<(u64, u64, usize)>,
@@ -1653,6 +1661,7 @@ impl BaseView {
             vault,
             view_ix: 0,
             cal_offset: 0,
+            sort: None,
             notes_epoch: 0,
             doc_epoch: 0,
             cache_key: None,
@@ -1910,6 +1919,7 @@ impl Render for BaseView {
                             move |_, _window, cx| {
                                 this.update(cx, |view, cx| {
                                     view.view_ix = ix;
+                                    view.sort = None;
                                     cx.notify();
                                 });
                             }
@@ -1928,14 +1938,33 @@ impl Render for BaseView {
             .border_b_1()
             .border_color(theme.border)
             .children(computed.headers.iter().enumerate().map(|(ix, h)| {
+                let this = this.clone();
+                let sorted = self.sort.filter(|(c, _)| *c == ix);
                 div()
+                    .id(("base-h", ix))
                     .when(ix == 0, |d| d.flex_1())
                     .when(ix > 0, |d| d.w(px(140.)).flex_none())
                     .text_xs()
                     .font_semibold()
                     .text_color(theme.muted_foreground)
                     .truncate()
-                    .child(h.clone())
+                    .cursor_pointer()
+                    .child(match sorted {
+                        Some((_, true)) => format!("{h} ▼"),
+                        Some(_) => format!("{h} ▲"),
+                        None => h.clone(),
+                    })
+                    .on_click(move |_, _window, cx| {
+                        // none → asc → desc → none
+                        this.update(cx, |view, cx| {
+                            view.sort = match view.sort {
+                                Some((c, false)) if c == ix => Some((ix, true)),
+                                Some((c, true)) if c == ix => None,
+                                _ => Some((ix, false)),
+                            };
+                            cx.notify();
+                        });
+                    })
             }));
 
         let mut rows = v_flex().w_full();
@@ -2090,7 +2119,24 @@ impl Render for BaseView {
             }
             rows = rows.child(grid);
         } else {
-            for (ix, row) in computed.rows.iter().enumerate() {
+            // Interactive header sort orders rows at render time —
+            // `Computed` stays cached; comparisons use the raw `Lit`.
+            let mut order: Vec<usize> = (0..computed.rows.len()).collect();
+            if let Some((cix, desc)) = self.sort {
+                order.sort_by(|a, b| {
+                    let ord = lit_cmp(
+                        &computed.rows[*a].cells[cix].lit,
+                        &computed.rows[*b].cells[cix].lit,
+                    );
+                    if desc {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
+                });
+            }
+            for (ix, &rix) in order.iter().enumerate() {
+                let row = &computed.rows[rix];
                 let path = row.path.clone();
                 let workspace = self.workspace.clone();
                 rows = rows.child(
