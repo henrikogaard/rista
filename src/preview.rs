@@ -743,12 +743,17 @@ impl MarkdownPlugin for PropertiesPlugin {
                                     .on_click({
                                         let workspace = workspace.clone();
                                         let target = target.clone();
-                                        move |_, window, cx| {
+                                        move |ev, window, cx| {
                                             let Some(workspace) = workspace.upgrade() else {
                                                 return;
                                             };
                                             workspace.update(cx, |workspace, cx| {
-                                                workspace.open_wikilink(&target, window, cx);
+                                                if ev.modifiers().platform {
+                                                    workspace
+                                                        .open_wikilink_new_tab(&target, window, cx);
+                                                } else {
+                                                    workspace.open_wikilink(&target, window, cx);
+                                                }
                                             });
                                         }
                                     })
@@ -2053,10 +2058,15 @@ impl MarkdownPlugin for TranscludePlugin {
                     .text_color(theme.accent)
                     .cursor_pointer()
                     .child(embed.target.clone())
-                    .on_click(move |_, window, cx| {
+                    .on_click(move |ev, window, cx| {
                         let target = target.clone();
-                        let _ =
-                            workspace.update(cx, |ws, cx| ws.open_wikilink(&target, window, cx));
+                        let _ = workspace.update(cx, |ws, cx| {
+                            if ev.modifiers().platform {
+                                ws.open_wikilink_new_tab(&target, window, cx)
+                            } else {
+                                ws.open_wikilink(&target, window, cx)
+                            }
+                        });
                     })
                     .into_any_element()
             }
@@ -2148,9 +2158,15 @@ impl MarkdownPlugin for WikiLinkPlugin {
             .cursor_pointer()
             .hover(|d| d.underline())
             .child(link.label.clone())
-            .on_click(move |_, window, cx| {
+            .on_click(move |ev, window, cx| {
                 let target = target.clone();
-                let _ = workspace.update(cx, |ws, cx| ws.open_wikilink(&target, window, cx));
+                let _ = workspace.update(cx, |ws, cx| {
+                    if ev.modifiers().platform {
+                        ws.open_wikilink_new_tab(&target, window, cx)
+                    } else {
+                        ws.open_wikilink(&target, window, cx)
+                    }
+                });
             });
         // Resolved links get Obsidian's page-preview hover: the card
         // anchors where the cursor first crossed the link and clears

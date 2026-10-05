@@ -39,6 +39,24 @@ use std::path::{Path, PathBuf};
 // Literal value space — frontmatter YAML + file metadata + formulas.
 // ------------------------------------------------------------------
 
+/// Row/card click → open the note. ⌘+click (platform modifier) opens
+/// in a new tab, matching Obsidian.
+fn open_path_click(
+    workspace: &WeakEntity<Workspace>,
+    path: PathBuf,
+    ev: &gpui::ClickEvent,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let _ = workspace.update(cx, |ws, cx| {
+        if ev.modifiers().platform {
+            ws.open_document_new_tab(path, window, cx)
+        } else {
+            ws.open_document_pub(path, window, cx)
+        }
+    });
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Lit {
     Null,
@@ -2007,10 +2025,8 @@ impl BaseView {
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.muted.opacity(0.5)))
                             .child(title.clone())
-                            .on_click(move |_, window, cx| {
-                                let path = path.clone();
-                                let _ = workspace
-                                    .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                            .on_click(move |ev, window, cx| {
+                                open_path_click(&workspace, path.clone(), ev, window, cx)
                             }),
                     );
                 }
@@ -2280,10 +2296,8 @@ impl Render for BaseView {
                                 })
                             }
                         })
-                        .on_click(move |_, window, cx| {
-                            let path = path.clone();
-                            let _ = workspace
-                                .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                        .on_click(move |ev, window, cx| {
+                            open_path_click(&workspace, path.clone(), ev, window, cx)
                         })
                         .on_mouse_move({
                             let workspace = self.workspace.clone();
@@ -2429,10 +2443,8 @@ impl Render for BaseView {
                     .overflow_hidden()
                     .cursor_pointer()
                     .hover(|s| s.border_color(theme.accent))
-                    .on_click(move |_, window, cx| {
-                        let path = path.clone();
-                        let _ =
-                            workspace.update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                    .on_click(move |ev, window, cx| {
+                        open_path_click(&workspace, path.clone(), ev, window, cx)
                     })
                     .on_mouse_move({
                         let workspace = self.workspace.clone();
@@ -2566,10 +2578,8 @@ impl Render for BaseView {
                     .rounded(theme.radius)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                    .on_click(move |_, window, cx| {
-                        let path = path.clone();
-                        let _ =
-                            workspace.update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                    .on_click(move |ev, window, cx| {
+                        open_path_click(&workspace, path.clone(), ev, window, cx)
                     })
                     .on_mouse_move({
                         let workspace = self.workspace.clone();
@@ -2762,12 +2772,15 @@ impl Render for BaseView {
                                         .truncate()
                                         .text_color(theme.accent)
                                         .cursor_pointer()
-                                        .on_click(move |_, window, cx| {
+                                        .on_click(move |ev, window, cx| {
                                             cx.stop_propagation();
-                                            let target = target.clone();
-                                            let _ = workspace.update(cx, |ws, cx| {
-                                                ws.open_document_pub(target, window, cx)
-                                            });
+                                            open_path_click(
+                                                &workspace,
+                                                target.clone(),
+                                                ev,
+                                                window,
+                                                cx,
+                                            )
                                         })
                                         .child(cell.text.clone())
                                         .into_any_element()
@@ -2809,10 +2822,8 @@ impl Render for BaseView {
                                 }
                             },
                         )))
-                        .on_click(move |_, window, cx| {
-                            let path = path.clone();
-                            let _ = workspace
-                                .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                        .on_click(move |ev, window, cx| {
+                            open_path_click(&workspace, path.clone(), ev, window, cx)
                         })
                         .on_mouse_move({
                             let workspace = self.workspace.clone();

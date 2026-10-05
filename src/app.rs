@@ -485,20 +485,34 @@ impl Workspace {
     }
 
     fn open_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_document_impl(path, false, window, cx);
+    }
+
+    /// ⌘+click semantics (Obsidian): always open in a new tab, even
+    /// when the note already has one.
+    fn open_document_impl(
+        &mut self,
+        path: PathBuf,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.peek = None;
-        if let Some(ix) = self
-            .docs
-            .iter()
-            .position(|d| d.entity.read(cx).path == path)
-        {
-            self.active = Some(ix);
-            self.record_nav(&path);
-            self.recent.retain(|p| *p != path);
-            self.recent.insert(0, path);
-            self.recent.truncate(12);
-            self.persist_tabs(cx);
-            cx.notify();
-            return;
+        if !new_tab {
+            if let Some(ix) = self
+                .docs
+                .iter()
+                .position(|d| d.entity.read(cx).path == path)
+            {
+                self.active = Some(ix);
+                self.record_nav(&path);
+                self.recent.retain(|p| *p != path);
+                self.recent.insert(0, path);
+                self.recent.truncate(12);
+                self.persist_tabs(cx);
+                cx.notify();
+                return;
+            }
         }
         if !path.is_file() {
             return;
@@ -2147,13 +2161,19 @@ impl Workspace {
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.muted))
                         .child(div().text_sm().text_color(theme.foreground).child(rel))
-                        .on_click(move |_, window, cx| {
+                        .on_click(move |ev, window, cx| {
                             let workspace = workspace.clone();
                             let open = open.clone();
+                            let new_tab = ev.modifiers().platform;
                             window.close_dialog(cx);
                             window.defer(cx, move |window, cx| {
-                                workspace
-                                    .update(cx, |ws, cx| ws.open_document_pub(open, window, cx));
+                                workspace.update(cx, |ws, cx| {
+                                    if new_tab {
+                                        ws.open_document_new_tab(open, window, cx)
+                                    } else {
+                                        ws.open_document_pub(open, window, cx)
+                                    }
+                                });
                             });
                         }),
                 );
@@ -2476,6 +2496,26 @@ impl Workspace {
     /// jumps the caret to the heading (Source view); `[[#heading]]`
     /// jumps within the open note.
     pub fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_wikilink_impl(target, false, window, cx);
+    }
+
+    /// ⌘+click: open the wikilink target in a new tab.
+    pub fn open_wikilink_new_tab(
+        &mut self,
+        target: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_wikilink_impl(target, true, window, cx);
+    }
+
+    fn open_wikilink_impl(
+        &mut self,
+        target: &str,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (note, anchor) = match target.split_once('#') {
             Some((n, a)) => {
                 let a = a.trim();
@@ -2494,7 +2534,7 @@ impl Workspace {
         };
         match resolved {
             Some(path) => {
-                self.open_document(path, window, cx);
+                self.open_document_impl(path, new_tab, window, cx);
                 if let Some(anchor) = anchor {
                     self.jump_to_anchor(&anchor, window, cx);
                 }
@@ -2634,6 +2674,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.open_document(path, window, cx);
+    }
+
+    /// ⌘+click on a row link: always open in a new tab.
+    pub fn open_document_new_tab(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_document_impl(path, true, window, cx);
     }
 
     pub fn iter_docs(&self) -> impl Iterator<Item = &Entity<Document>> {
@@ -3017,9 +3067,15 @@ impl Workspace {
                                         )
                                     }),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_document_pub(open.clone(), window, cx);
-                            }))
+                            .on_click(cx.listener(
+                                move |this, ev: &gpui::ClickEvent, window, cx| {
+                                    if ev.modifiers().platform {
+                                        this.open_document_new_tab(open.clone(), window, cx);
+                                    } else {
+                                        this.open_document_pub(open.clone(), window, cx);
+                                    }
+                                },
+                            ))
                             .on_mouse_move({
                                 let ws = ws_entity.clone();
                                 let path = path.clone();
@@ -3088,9 +3144,15 @@ impl Workspace {
                                             )
                                         }),
                                 )
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_document_pub(open.clone(), window, cx);
-                                }))
+                                .on_click(cx.listener(
+                                    move |this, ev: &gpui::ClickEvent, window, cx| {
+                                        if ev.modifiers().platform {
+                                            this.open_document_new_tab(open.clone(), window, cx);
+                                        } else {
+                                            this.open_document_pub(open.clone(), window, cx);
+                                        }
+                                    },
+                                ))
                                 .on_mouse_move({
                                     let ws = ws_entity.clone();
                                     let path = path.clone();
@@ -3394,15 +3456,21 @@ impl Workspace {
                                         ),
                                 )
                                 .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_document(path.clone(), window, cx);
-                                    if let Some(doc) = this.active_doc() {
-                                        let doc = doc.clone();
-                                        doc.update(cx, |doc, cx| {
-                                            doc.jump_to_line(line, window, cx)
-                                        });
-                                    }
-                                }))
+                                .on_click(cx.listener(
+                                    move |this, ev: &gpui::ClickEvent, window, cx| {
+                                        if ev.modifiers().platform {
+                                            this.open_document_new_tab(path.clone(), window, cx);
+                                        } else {
+                                            this.open_document(path.clone(), window, cx);
+                                        }
+                                        if let Some(doc) = this.active_doc() {
+                                            let doc = doc.clone();
+                                            doc.update(cx, |doc, cx| {
+                                                doc.jump_to_line(line, window, cx)
+                                            });
+                                        }
+                                    },
+                                ))
                         }));
                 this.child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
@@ -3647,9 +3715,17 @@ impl Workspace {
                                     )
                                     .on_click(cx.listener({
                                         let path = path.clone();
-                                        move |this, _, window, cx| {
+                                        move |this, ev: &gpui::ClickEvent, window, cx| {
                                             if is_file {
-                                                this.open_document(path.clone(), window, cx);
+                                                if ev.modifiers().platform {
+                                                    this.open_document_new_tab(
+                                                        path.clone(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                } else {
+                                                    this.open_document(path.clone(), window, cx);
+                                                }
                                             }
                                         }
                                     }))
