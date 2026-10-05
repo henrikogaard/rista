@@ -2732,6 +2732,17 @@ impl Workspace {
                                 view.update(cx, |this, cx| {
                                     this.note_status(format!("No file named “{}”", target), cx);
                                 });
+                            } else if let Some(tag) = url.strip_prefix("tag:") {
+                                // `#tag` in the note — project search for it,
+                                // same as the sidebar tag pane.
+                                let query = format!("#{tag}");
+                                let view = view.clone();
+                                crate::search::open_project_search_for(
+                                    view,
+                                    Some(query.as_str()),
+                                    window,
+                                    cx,
+                                );
                             } else {
                                 cx.open_url(&url);
                             }

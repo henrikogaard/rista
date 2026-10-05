@@ -9,6 +9,8 @@
 //!   suffix through a `rista:` title marker that [`SizedImagePlugin`] renders
 //!   at the requested dimensions. Unresolved embeds become wikilinks instead.
 //! - `^block-id` markers → stripped (they are anchors, not content).
+//! - `%%` comment regions → stripped (hidden markup, spans lines).
+//! - `#tag` → `[#tag](tag:tag)` — clickable, opens project search.
 //! - `> [!type]` Obsidian callouts → parsed by [`CalloutPlugin`] at render time.
 //! - `banner:`/`cover:`/`banner_y`/`banner_icon` frontmatter → [`BannerSpec`],
 //!   rendered by the workspace above the preview.
@@ -87,6 +89,7 @@ pub fn preprocess(
     let mut in_fence = false;
     let mut fence_marker = "";
     let mut in_frontmatter = false;
+    let mut in_comment = false;
 
     for (index, line) in source.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_start();
@@ -118,7 +121,7 @@ pub fn preprocess(
             continue;
         }
 
-        let line = rewrite_line(line, doc_dir, image_resolver);
+        let line = rewrite_line(line, doc_dir, image_resolver, &mut in_comment);
         out.push_str(&line);
     }
     out
@@ -128,6 +131,7 @@ fn rewrite_line(
     line: &str,
     doc_dir: &Path,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+    in_comment: &mut bool,
 ) -> String {
     let mut out = String::with_capacity(line.len() + 32);
     let bytes = line.as_bytes();
@@ -136,6 +140,18 @@ fn rewrite_line(
 
     while i < bytes.len() {
         let ch = line[i..].chars().next().unwrap();
+        // `%%` comment regions — Obsidian's hidden markup. An open
+        // comment swallows everything up to the next `%%`, even across
+        // lines; `%%` inside inline code is literal.
+        if *in_comment {
+            if line[i..].starts_with("%%") {
+                *in_comment = false;
+                i += 2;
+            } else {
+                i += ch.len_utf8();
+            }
+            continue;
+        }
         if ch == '`' {
             let run = line[i..].chars().take_while(|&c| c == '`').count();
             out.push_str(&line[i..i + run]);
@@ -146,6 +162,11 @@ fn rewrite_line(
         if in_code {
             out.push(ch);
             i += ch.len_utf8();
+            continue;
+        }
+        if line[i..].starts_with("%%") {
+            *in_comment = true;
+            i += 2;
             continue;
         }
 
@@ -168,6 +189,31 @@ fn rewrite_line(
                 out.push_str(&format!("[{}](wiki:{})", label, target));
                 i += end + 2;
                 continue;
+            }
+        } else if ch == '#' {
+            // `#tag` → `[#tag](tag:tag)` — clickable, opens project
+            // search for the tag. Tag chars: word chars, `-`, `/`
+            // (nested); the first must be a letter or `_` (`#123` and
+            // `## headings` aren't tags). Needs whitespace or start
+            // before it.
+            let prev_ok = i == 0
+                || bytes[i - 1].is_ascii_whitespace()
+                || (bytes[i - 1].is_ascii_punctuation() && bytes[i - 1] != b'#');
+            let rest = &line[i + 1..];
+            let first = rest.chars().next().unwrap_or(' ');
+            let tag_len: usize = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '/')
+                .map(char::len_utf8)
+                .sum();
+            if prev_ok && tag_len > 0 && (first.is_alphabetic() || first == '_') {
+                let tag = &rest[..tag_len];
+                // A tag ending in `/` (`#a/`) isn't a tag.
+                if !tag.ends_with('/') {
+                    out.push_str(&format!("[#{tag}](tag:{tag})"));
+                    i += 1 + tag_len;
+                    continue;
+                }
             }
         } else if ch == '^' {
             // `^block-id` — word chars at line end (or followed by whitespace).
