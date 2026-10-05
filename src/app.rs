@@ -50,6 +50,9 @@ pub struct Workspace {
     /// Most-recently-opened note paths, front = latest. The palette's
     /// "Recent" group reads this.
     recent: Vec<PathBuf>,
+    /// Focus mode: dim every editor block except the one under the
+    /// caret. Toggled via the palette; applies to all open docs.
+    focus_mode: bool,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -98,6 +101,7 @@ enum PaletteCmd {
     BrowseTags,
     Backlinks,
     Outline,
+    ToggleFocus,
     Settings,
     ToggleTheme,
     Quit,
@@ -201,6 +205,11 @@ impl PaletteCmd {
                 "Document outline…",
                 &["outline", "headings", "sections", "toc", "jump"],
             ),
+            ToggleFocus => (
+                assets::IconName::Frame,
+                "Toggle focus mode",
+                &["focus", "dim", "paragraph", "distraction", "writing"],
+            ),
             Settings => (
                 assets::IconName::Settings,
                 "Settings…",
@@ -241,6 +250,7 @@ impl Workspace {
             status_note: None,
             status_epoch: 0,
             recent: Vec::new(),
+            focus_mode: false,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -382,6 +392,7 @@ impl Workspace {
             let vault = self.vault.clone();
             cx.new(|cx| bases::BaseView::new(doc.clone(), vault, workspace, window, cx))
         });
+        doc.update(cx, |doc, cx| doc.set_focus_mode(self.focus_mode, cx));
         self.docs.push(OpenDoc {
             entity: doc.clone(),
             base,
@@ -648,6 +659,23 @@ impl Workspace {
         cx.notify();
     }
 
+    fn toggle_focus_mode(&mut self, cx: &mut Context<Self>) {
+        self.focus_mode = !self.focus_mode;
+        let on = self.focus_mode;
+        for doc in &self.docs {
+            doc.entity.update(cx, |doc, cx| doc.set_focus_mode(on, cx));
+        }
+        self.note_status(
+            if on {
+                "Focus mode on"
+            } else {
+                "Focus mode off"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
     fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.view_mode = mode;
         self.settings.save();
@@ -724,6 +752,7 @@ impl Workspace {
             PaletteCmd::BrowseTags,
             PaletteCmd::Backlinks,
             PaletteCmd::Outline,
+            PaletteCmd::ToggleFocus,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -898,6 +927,7 @@ impl Workspace {
             PaletteCmd::BrowseTags => self.defer_dialog(Self::show_tags, window, cx),
             PaletteCmd::Backlinks => self.defer_dialog(Self::show_backlinks, window, cx),
             PaletteCmd::Outline => self.defer_dialog(Self::show_outline, window, cx),
+            PaletteCmd::ToggleFocus => self.toggle_focus_mode(cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),

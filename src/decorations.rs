@@ -18,6 +18,8 @@ const MARKER_FADE: f32 = 0.55;
 const BLOCK_FADE: f32 = 0.45;
 /// Text of a completed `- [x]` task.
 const DONE_FADE: f32 = 0.4;
+/// Focus mode: whole blocks away from the cursor.
+const FOCUS_FADE: f32 = 0.6;
 
 fn fade(amount: f32) -> HighlightStyle {
     HighlightStyle {
@@ -263,7 +265,7 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
 /// of the line, mirroring the preview's strike-through. The marker
 /// also lands inside the ListItem's marker-affix fade — an explicit
 /// `fade_out: 0` overrides it (first style on a property wins).
-fn task_markers(text: &str, out: &mut Vec<TextDecoration>, accent: HighlightStyle) {
+fn task_markers(text: &str, base: usize, out: &mut Vec<TextDecoration>, accent: HighlightStyle) {
     let mut at = 0usize;
     for line in text.split_inclusive('\n') {
         let seg = line.trim_end_matches(['\n', '\r']);
@@ -281,7 +283,7 @@ fn task_markers(text: &str, out: &mut Vec<TextDecoration>, accent: HighlightStyl
                 match seg.as_bytes().get(b + 1..b + 3) {
                     Some(b" ]") => mark(
                         out,
-                        at + b..at + b + 3,
+                        base + at + b..base + at + b + 3,
                         HighlightStyle {
                             fade_out: Some(0.),
                             ..accent
@@ -290,13 +292,17 @@ fn task_markers(text: &str, out: &mut Vec<TextDecoration>, accent: HighlightStyl
                     Some(b"x]") | Some(b"X]") => {
                         mark(
                             out,
-                            at + b..at + b + 3,
+                            base + at + b..base + at + b + 3,
                             HighlightStyle {
                                 fade_out: Some(0.),
                                 ..accent
                             },
                         );
-                        mark(out, at + b + 3..at + seg.len(), fade(DONE_FADE));
+                        mark(
+                            out,
+                            base + at + b + 3..base + at + seg.len(),
+                            fade(DONE_FADE),
+                        );
                     }
                     _ => {}
                 }
@@ -306,8 +312,85 @@ fn task_markers(text: &str, out: &mut Vec<TextDecoration>, accent: HighlightStyl
     }
 }
 
-/// All decorations for `text`, styled against the active theme.
-pub fn markdown_decorations(text: &str, theme: &component::Theme) -> Vec<TextDecoration> {
+/// `#tag` word pass — Obsidian colors tags; headings are safe (`# ` has
+/// a space after the marker). Skips fenced code and `[[link#target]]`
+/// targets so no color fights the wikilink accent.
+fn tags(text: &str, base: usize, out: &mut Vec<TextDecoration>, color: HighlightStyle) {
+    let mut at = 0usize;
+    let mut fenced = false;
+    for line in text.split_inclusive('\n') {
+        let seg = line.trim_end_matches(['\n', '\r']);
+        if seg.trim_start().starts_with("```") {
+            fenced = !fenced;
+            at += line.len();
+            continue;
+        }
+        if !fenced {
+            let bytes = seg.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'#'
+                    && (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t')
+                    && bytes.get(i + 1).is_some_and(|c| c.is_ascii_alphanumeric())
+                {
+                    // `[[link#target]]` — the wikilink accent owns it.
+                    let before = &seg[..i];
+                    let in_wiki = match (before.rfind("[["), before.rfind("]]")) {
+                        (Some(o), c) => c.is_none_or(|c| o > c),
+                        _ => false,
+                    };
+                    if !in_wiki {
+                        let end = bytes[i + 1..]
+                            .iter()
+                            .position(|c| {
+                                !(c.is_ascii_alphanumeric()
+                                    || *c == b'_'
+                                    || *c == b'-'
+                                    || *c == b'/')
+                            })
+                            .map(|p| i + 1 + p)
+                            .unwrap_or(bytes.len());
+                        mark(out, base + at + i..base + at + end, color);
+                        i = end;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+        at += line.len();
+    }
+}
+
+/// Root-child holding `cursor` — the one block that stays lit in focus
+/// mode. Falls to the next block when the caret sits on an empty line,
+/// else the last block at EOF.
+fn focus_zone(children: &[mdast::Node], cursor: usize) -> Option<(usize, &mdast::Node)> {
+    children
+        .iter()
+        .enumerate()
+        .find(|(_, c)| {
+            node_range(c)
+                .map(|r| r.start <= cursor && cursor <= r.end)
+                .unwrap_or(false)
+        })
+        .or_else(|| {
+            children
+                .iter()
+                .enumerate()
+                .find(|(_, c)| node_range(c).map(|r| r.start > cursor).unwrap_or(false))
+        })
+        .or_else(|| children.iter().enumerate().next_back())
+}
+
+/// All decorations for `text`, styled against the active theme. When
+/// `cursor` is given (focus mode), only the block under the caret gets
+/// the full treatment — every other top-level block fades wholesale.
+pub fn markdown_decorations(
+    text: &str,
+    theme: &component::Theme,
+    cursor: Option<usize>,
+) -> Vec<TextDecoration> {
     let mut constructs = markdown::Constructs::gfm();
     constructs.frontmatter = true;
     let options = markdown::ParseOptions {
@@ -319,16 +402,40 @@ pub fn markdown_decorations(text: &str, theme: &component::Theme) -> Vec<TextDec
         ..Default::default()
     };
     let mut out = Vec::new();
-    // Task markers first: the line pass owns `[ ]`/`[x]` styling, so the
-    // ListItem affix fade in `walk` carves those brackets out — combining
-    // same-property decorations resolves nondeterministically, so passes
-    // must never emit overlapping fades/colors.
-    task_markers(text, &mut out, accent);
-    // `[[wikilink]]` spans live inside mdast Text nodes — one textual
-    // pass over the raw buffer covers them wherever they appear.
-    wikilinks(text, 0, &mut out, accent);
     if let Ok(root) = markdown::to_mdast(text, &options) {
-        walk(&root, text, &mut out, theme);
+        match cursor {
+            Some(cursor) => {
+                let children = root.children().cloned().unwrap_or_default();
+                let zone = focus_zone(&children, cursor).map(|(ix, _)| ix);
+                for (ix, child) in children.into_iter().enumerate() {
+                    if Some(ix) == zone {
+                        if let Some(range) = node_range(&child) {
+                            // The lit block: full passes inside its span.
+                            let zone_text = &text[range.clone()];
+                            task_markers(zone_text, range.start, &mut out, accent);
+                            wikilinks(zone_text, range.start, &mut out, accent);
+                        }
+                        walk(&child, text, &mut out, theme);
+                    } else if let Some(range) = node_range(&child) {
+                        mark(&mut out, range, fade(FOCUS_FADE));
+                    }
+                }
+            }
+            None => {
+                // Task markers first: the line pass owns `[ ]`/`[x]`
+                // styling, so the ListItem affix fade in `walk` carves
+                // those brackets out — combining same-property
+                // decorations resolves nondeterministically, so passes
+                // must never emit overlapping fades/colors.
+                task_markers(text, 0, &mut out, accent);
+                // `[[wikilink]]` spans live inside mdast Text nodes —
+                // one textual pass covers them wherever they appear.
+                wikilinks(text, 0, &mut out, accent);
+                walk(&root, text, &mut out, theme);
+            }
+        }
     }
+    // Color-only — safe under either mode's fades.
+    tags(text, 0, &mut out, accent);
     out
 }

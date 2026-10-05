@@ -47,6 +47,13 @@ pub struct Document {
     /// Live-preview emphasis layer over the source editor — bold,
     /// italic, dimmed markers. Lazily created on first refresh.
     decorations: Option<TextDecorationCollection>,
+    /// Focus mode: only the block under the caret stays lit —
+    /// decorations recompute on cursor moves while this is on.
+    pub focus_mode: bool,
+    /// Last caret position decorations were computed for. `collection.set`
+    /// itself notifies the editor, so without this guard refresh → notify
+    /// → refresh would spin forever.
+    focus_cursor: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,6 +108,8 @@ impl Document {
             banner,
             stats: word_stats(&content),
             decorations: None,
+            focus_mode: false,
+            focus_cursor: None,
             _subscriptions: Vec::new(),
         };
 
@@ -114,15 +123,22 @@ impl Document {
             // gpui-base never clears `completion.trigger_start_offset`, so a
             // later '/' at an earlier offset would be ignored. While the menu
             // is closed, keep the trigger anchor pinned to the cursor instead.
-            cx.observe(&this.editor, |_this, editor, cx| {
-                editor.update(cx, |editor, cx| {
+            cx.observe(&this.editor, |this, editor, cx| {
+                let cursor = editor.update(cx, |editor, cx| {
                     let menu = editor.completion_menu_state();
                     let cursor = editor.cursor();
                     if menu.open || menu.trigger_start_offset == Some(cursor) {
-                        return;
+                        return cursor;
                     }
                     editor.present_completion_items(cursor, "", vec![], cx);
+                    cursor
                 });
+                // Focus mode follows the caret — arrow keys notify too.
+                // Skipping unchanged positions breaks the set→notify loop.
+                if this.focus_mode && this.focus_cursor != Some(cursor) {
+                    this.focus_cursor = Some(cursor);
+                    this.refresh_decorations(cx);
+                }
             }),
         ];
 
@@ -189,10 +205,18 @@ impl Document {
     /// Rebuild the live-emphasis decoration layer — markdown markers
     /// dim, inline styling applied. Runs on the same debounce as the
     /// preview sync, so it lands once per typing burst.
+    pub fn set_focus_mode(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.focus_mode = on;
+        self.focus_cursor = None;
+        self.refresh_decorations(cx);
+    }
+
     fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
+        let focus = self.focus_mode;
         let items = self.editor.update(cx, |state, cx| {
             let text = state.value().to_string();
-            crate::decorations::markdown_decorations(&text, cx.theme())
+            let cursor = focus.then(|| state.cursor());
+            crate::decorations::markdown_decorations(&text, cx.theme(), cursor)
         });
         match &self.decorations {
             Some(collection) => collection.set(items, cx),
