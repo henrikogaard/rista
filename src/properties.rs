@@ -72,7 +72,7 @@ pub fn properties(text: &str) -> Vec<(String, Value)> {
 pub fn body_with(text: &str, key: &str, value: Value) -> Option<String> {
     let mut map = Mapping::new();
     for (k, v) in properties(text) {
-        map.insert(Value::String(k.into()), v);
+        map.insert(Value::String(k), v);
     }
     if matches!(value, Value::Null) {
         map.remove(Value::String(key.into()));

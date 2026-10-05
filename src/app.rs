@@ -25,11 +25,11 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::tree::tree;
 use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Icon, IndexPath, Sizable, TitleBar, WindowExt,
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct Workspace {
     vault: Entity<Vault>,
@@ -53,6 +53,14 @@ pub struct Workspace {
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
+    /// Back/forward navigation: paths in visit order, `nav_pos` = the
+    /// current entry. Recorded on every `open_document` activation and
+    /// truncated past `nav_pos` like a browser history.
+    nav_stack: Vec<PathBuf>,
+    nav_pos: usize,
+    /// Set while back/forward itself activates a doc — that traversal
+    /// must not append a new history entry.
+    nav_suppress: bool,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -102,6 +110,8 @@ enum PaletteCmd {
     Backlinks,
     Outline,
     ToggleFocus,
+    GoBack,
+    GoForward,
     Settings,
     ToggleTheme,
     Quit,
@@ -210,6 +220,16 @@ impl PaletteCmd {
                 "Toggle focus mode",
                 &["focus", "dim", "paragraph", "distraction", "writing"],
             ),
+            GoBack => (
+                assets::IconName::ChevronLeft,
+                "Navigate back",
+                &["back", "history", "previous", "navigate"],
+            ),
+            GoForward => (
+                assets::IconName::ChevronRight,
+                "Navigate forward",
+                &["forward", "history", "next", "navigate"],
+            ),
             Settings => (
                 assets::IconName::Settings,
                 "Settings…",
@@ -251,6 +271,9 @@ impl Workspace {
             status_epoch: 0,
             recent: Vec::new(),
             focus_mode: false,
+            nav_stack: Vec::new(),
+            nav_pos: 0,
+            nav_suppress: false,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -353,6 +376,7 @@ impl Workspace {
             .position(|d| d.entity.read(cx).path == path)
         {
             self.active = Some(ix);
+            self.record_nav(&path);
             self.recent.retain(|p| *p != path);
             self.recent.insert(0, path);
             self.recent.truncate(12);
@@ -365,6 +389,7 @@ impl Workspace {
         self.recent.retain(|p| *p != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(12);
+        self.record_nav(&path);
         let resolver: ImageResolver = self.vault.read(cx).image_resolver();
         let vault_root = self.vault.read(cx).root.clone();
         let settings = self.settings.clone();
@@ -408,6 +433,56 @@ impl Workspace {
                 doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
             });
         });
+    }
+
+    /// Browser-style history: every activation truncates anything past
+    /// `nav_pos` then pushes — unless back/forward itself is the cause.
+    fn record_nav(&mut self, path: &Path) {
+        if self.nav_suppress {
+            return;
+        }
+        self.nav_stack.truncate(self.nav_pos + 1);
+        if self.nav_stack.last().map(|p| p == path).unwrap_or(false) {
+            self.nav_pos = self.nav_stack.len() - 1;
+            return;
+        }
+        self.nav_stack.push(path.to_path_buf());
+        self.nav_pos = self.nav_stack.len() - 1;
+    }
+
+    fn nav_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.nav_pos == 0 {
+            return;
+        }
+        self.nav_pos -= 1;
+        let path = self.nav_stack[self.nav_pos].clone();
+        self.nav_suppress = true;
+        self.open_document(path, window, cx);
+        self.nav_suppress = false;
+    }
+
+    fn nav_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.nav_pos + 1 >= self.nav_stack.len() {
+            return;
+        }
+        self.nav_pos += 1;
+        let path = self.nav_stack[self.nav_pos].clone();
+        self.nav_suppress = true;
+        self.open_document(path, window, cx);
+        self.nav_suppress = false;
+    }
+
+    fn on_navigate_back(&mut self, _: &NavigateBack, window: &mut Window, cx: &mut Context<Self>) {
+        self.nav_back(window, cx);
+    }
+
+    fn on_navigate_forward(
+        &mut self,
+        _: &NavigateForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nav_forward(window, cx);
     }
 
     fn close_all_docs(&mut self, _cx: &mut Context<Self>) {
@@ -753,6 +828,8 @@ impl Workspace {
             PaletteCmd::Backlinks,
             PaletteCmd::Outline,
             PaletteCmd::ToggleFocus,
+            PaletteCmd::GoBack,
+            PaletteCmd::GoForward,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -928,6 +1005,8 @@ impl Workspace {
             PaletteCmd::Backlinks => self.defer_dialog(Self::show_backlinks, window, cx),
             PaletteCmd::Outline => self.defer_dialog(Self::show_outline, window, cx),
             PaletteCmd::ToggleFocus => self.toggle_focus_mode(cx),
+            PaletteCmd::GoBack => self.nav_back(window, cx),
+            PaletteCmd::GoForward => self.nav_forward(window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -1333,40 +1412,13 @@ impl Workspace {
         let Some(doc_path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
             return;
         };
-        let (notes, vault, root) = {
+        let (links, root) = {
             let vault = self.vault.read(cx);
             (
-                vault.notes.clone(),
-                self.vault.clone(),
+                vault.backlinks_to(&doc_path),
                 vault.root.clone().unwrap_or_default(),
             )
         };
-        let mut links: Vec<PathBuf> = Vec::new();
-        for note in &notes {
-            if *note == doc_path || note.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(note) else {
-                continue;
-            };
-            let mut cursor = 0;
-            let mut linked = false;
-            while let Some(at) = text[cursor..].find("[[") {
-                let start = cursor + at + 2;
-                let Some(end) = text[start..].find("]]") else {
-                    break;
-                };
-                let target = &text[start..start + end];
-                if vault.read(cx).resolve_wikilink(target).as_deref() == Some(doc_path.as_path()) {
-                    linked = true;
-                    break;
-                }
-                cursor = start + end + 2;
-            }
-            if linked {
-                links.push(note.clone());
-            }
-        }
         let workspace = cx.entity();
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
@@ -2023,11 +2075,37 @@ impl Workspace {
             })
             .collect();
 
+        let can_back = self.nav_pos > 0;
+        let can_fwd = self.nav_pos + 1 < self.nav_stack.len();
         h_flex()
             .w_full()
             .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .pl_1p5()
+                    .child(
+                        Button::new("nav-back")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::ChevronLeft)
+                            .disabled(!can_back)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.nav_back(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("nav-fwd")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::ChevronRight)
+                            .disabled(!can_fwd)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.nav_forward(window, cx);
+                            })),
+                    ),
+            )
             .child(
                 TabBar::new("doc-tabs")
                     .underline()
@@ -2071,13 +2149,15 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let (state, banner, folds, embeds) = {
+        let (state, banner, folds, embeds, mentions, mentions_open) = {
             let doc = doc.read(cx);
             (
                 doc.preview.clone(),
                 doc.banner.clone(),
                 doc.callout_folds.clone(),
                 doc.base_embeds.clone(),
+                doc.linked_mentions.clone(),
+                doc.mentions_open,
             )
         };
         let base_ctx = preview::PreviewCtx {
@@ -2086,6 +2166,8 @@ impl Workspace {
             views: embeds,
             depth: 0,
         };
+        let theme = cx.theme();
+        let footer_colors = (theme.border, theme.foreground, theme.muted_foreground);
         v_flex()
             .size_full()
             .overflow_hidden()
@@ -2115,6 +2197,16 @@ impl Workspace {
                     .px_6()
                     .py_4(),
             )
+            .when(!mentions.is_empty(), |this| {
+                this.child(render_linked_mentions(
+                    doc.clone(),
+                    mentions,
+                    mentions_open,
+                    footer_colors,
+                    self.vault.read(cx).root.clone().unwrap_or_default(),
+                    view.clone(),
+                ))
+            })
     }
 
     fn render_editor_area(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2474,6 +2566,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))
+            .on_action(cx.listener(Self::on_navigate_back))
+            .on_action(cx.listener(Self::on_navigate_forward))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_zen))
             .on_action(cx.listener(Self::on_view_source))
@@ -2565,6 +2659,98 @@ fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
                     .left(px(24.))
                     .text_3xl()
                     .child(icon),
+            )
+        })
+}
+
+/// The preview's linked-mentions footer — Obsidian's "Linked mentions"
+/// section pinned under the note: a count header that expands into rows,
+/// each opening the note that links here.
+fn render_linked_mentions(
+    doc: Entity<Document>,
+    mentions: Vec<PathBuf>,
+    open: bool,
+    colors: (gpui::Hsla, gpui::Hsla, gpui::Hsla),
+    root: PathBuf,
+    view: Entity<Workspace>,
+) -> impl IntoElement {
+    let (border, fg, muted) = colors;
+    let count = mentions.len();
+    let chevron = if open {
+        assets::IconName::ChevronDown
+    } else {
+        assets::IconName::ChevronRight
+    };
+    v_flex()
+        .w_full()
+        .flex_none()
+        .border_t_1()
+        .border_color(border)
+        .child(
+            div()
+                .id("mentions-toggle")
+                .w_full()
+                .px_6()
+                .py_1p5()
+                .cursor_pointer()
+                .hover(|s| s.bg(muted.opacity(0.5)))
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(Icon::new(chevron).size_3p5())
+                        .child(format!(
+                            "{count} linked mention{}",
+                            if count == 1 { "" } else { "s" }
+                        )),
+                )
+                .on_click(move |_, _window, cx| {
+                    doc.update(cx, |doc, cx| {
+                        doc.mentions_open = !doc.mentions_open;
+                        cx.notify();
+                    });
+                }),
+        )
+        .when(open, |this| {
+            this.child(
+                v_flex()
+                    .pb_1()
+                    .children(mentions.iter().enumerate().map(|(ix, path)| {
+                        let title = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let rel = path
+                            .parent()
+                            .and_then(|p| p.strip_prefix(&root).ok())
+                            .map(|p| p.to_string_lossy().to_string())
+                            .filter(|s| !s.is_empty());
+                        let open_path = path.clone();
+                        let view = view.clone();
+                        div()
+                            .id(("mention-row", ix))
+                            .w_full()
+                            .px_6()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(muted.opacity(0.5)))
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .child(div().text_sm().text_color(fg).child(title))
+                                    .when_some(rel, |this, rel| {
+                                        this.child(div().text_xs().text_color(muted).child(rel))
+                                    }),
+                            )
+                            .on_click(move |_, window, cx| {
+                                let open_path = open_path.clone();
+                                view.update(cx, |ws, cx| {
+                                    ws.open_document_pub(open_path, window, cx);
+                                });
+                            })
+                    })),
             )
         })
 }

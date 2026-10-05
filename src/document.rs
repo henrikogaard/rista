@@ -54,6 +54,13 @@ pub struct Document {
     /// itself notifies the editor, so without this guard refresh → notify
     /// → refresh would spin forever.
     focus_cursor: Option<usize>,
+    /// Vault for link-graph lookups (linked mentions). Absent for
+    /// documents opened outside a vault.
+    vault: Option<Entity<crate::vault::Vault>>,
+    /// Notes linking here — refreshed on open and vault changes.
+    pub linked_mentions: Vec<PathBuf>,
+    /// Whether the preview's linked-mentions footer is expanded.
+    pub mentions_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -70,6 +77,7 @@ impl Document {
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
 
+        let completions_vault = vault.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("markdown")
@@ -80,8 +88,9 @@ impl Document {
                     hard_tabs: false,
                 })
                 .searchable(true);
-            state.lsp_mut().completion_provider =
-                Some(Rc::new(crate::slash::VaultCompletions::new(vault)));
+            state.lsp_mut().completion_provider = Some(Rc::new(
+                crate::slash::VaultCompletions::new(completions_vault),
+            ));
             state.set_value(content.clone(), window, cx);
             state
         });
@@ -110,10 +119,14 @@ impl Document {
             decorations: None,
             focus_mode: false,
             focus_cursor: None,
+            vault,
+            linked_mentions: Vec::new(),
+            mentions_open: false,
             _subscriptions: Vec::new(),
         };
 
         this.refresh_decorations(cx);
+        this.refresh_linked_mentions(cx);
         this._subscriptions = vec![
             cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -241,6 +254,18 @@ impl Document {
     /// docs — only the preview surface is touched.
     pub fn resync_preview(&mut self, cx: &mut Context<Self>) {
         self.sync_preview(cx);
+        self.refresh_linked_mentions(cx);
+    }
+
+    /// Notes that `[[link]]` here — drives the preview's mentions footer.
+    /// Only runs on open/vault events, not the typing debounce: the scan
+    /// reads every note and inbound links only change elsewhere.
+    fn refresh_linked_mentions(&mut self, cx: &mut Context<Self>) {
+        let Some(vault) = self.vault.clone() else {
+            return;
+        };
+        let path = self.path.clone();
+        self.linked_mentions = vault.read(cx).backlinks_to(&path);
     }
 
     /// Move the caret to the start of a 1-based line (outline jump).

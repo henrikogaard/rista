@@ -82,6 +82,8 @@ fn keymap() -> Vec<KeyBinding> {
         // Navigation
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new("cmd-[", NavigateBack, None),
+        KeyBinding::new("cmd-]", NavigateForward, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("cmd-shift-enter", ToggleZen, None),
         // View modes — 1/2/3 with cmd.
@@ -257,6 +259,21 @@ fn menus() -> Vec<Menu> {
             MenuItem::Action {
                 name: "Preview".into(),
                 action: Box::new(ViewPreview),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::separator(),
+            MenuItem::Action {
+                name: "Navigate Back".into(),
+                action: Box::new(NavigateBack),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: "Navigate Forward".into(),
+                action: Box::new(NavigateForward),
                 os_action: None,
                 checked: false,
                 disabled: false,

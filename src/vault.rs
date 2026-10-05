@@ -184,6 +184,33 @@ impl Vault {
             })
     }
 
+    /// Every note containing a `[[wikilink]]` that resolves to `target`.
+    /// Scans note bodies — O(vault); callers should cache the result.
+    pub fn backlinks_to(&self, target: &Path) -> Vec<PathBuf> {
+        let mut links = Vec::new();
+        for note in &self.notes {
+            if *note == target || note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(note) else {
+                continue;
+            };
+            let mut cursor = 0;
+            while let Some(at) = text[cursor..].find("[[") {
+                let start = cursor + at + 2;
+                let Some(end) = text[start..].find("]]") else {
+                    break;
+                };
+                if self.resolve_wikilink(&text[start..start + end]).as_deref() == Some(target) {
+                    links.push(note.clone());
+                    break;
+                }
+                cursor = start + end + 2;
+            }
+        }
+        links
+    }
+
     /// The daily-note path for today: `YYYY-MM-DD.md` at vault root.
     pub fn daily_note(&self) -> Option<PathBuf> {
         self.root

@@ -20,6 +20,8 @@ actions!(
         // Navigation
         NextTab,
         PrevTab,
+        NavigateBack,
+        NavigateForward,
         ToggleSidebar,
         ToggleZen,
         // View
