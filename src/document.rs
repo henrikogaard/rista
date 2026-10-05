@@ -60,6 +60,7 @@ impl Document {
                     hard_tabs: false,
                 })
                 .searchable(true);
+            state.lsp_mut().completion_provider = Some(Rc::new(crate::slash::SlashCommands));
             state.set_value(content.clone(), window, cx);
             state
         });
@@ -226,6 +227,76 @@ impl Document {
             self.conflict = false;
             cx.notify();
         }
+    }
+
+    /// Move the lines covered by the selection up or down by one line,
+    /// Notion-style (⌥↑/⌥↓). Selection is expanded to whole lines and
+    /// follows the moved block.
+    pub fn move_block(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let sel = editor.selected_range();
+            let line_start = |i: usize| {
+                text[..i.min(text.len())]
+                    .rfind('\n')
+                    .map(|j| j + 1)
+                    .unwrap_or(0)
+            };
+            let line_end = |i: usize| {
+                text[i.min(text.len())..]
+                    .find('\n')
+                    .map(|j| i.min(text.len()) + j + 1)
+                    .unwrap_or(text.len())
+            };
+            fn strip(s: &str) -> &str {
+                s.strip_suffix('\n').unwrap_or(s)
+            }
+
+            let start = line_start(sel.start);
+            // A selection ending exactly on a line start doesn't include that line.
+            let end_anchor = if sel.end > sel.start && text[..sel.end].ends_with('\n') {
+                sel.end - 1
+            } else {
+                sel.end
+            };
+            let end = line_end(end_anchor);
+            let block = &text[start..end];
+
+            let (span, replacement, delta, negate) = if down {
+                if end >= text.len() {
+                    return;
+                }
+                let next_end = line_end(end);
+                let next = &text[end..next_end];
+                (
+                    start..next_end,
+                    format!("{}\n{}", strip(next), block),
+                    next_end - end,
+                    false,
+                )
+            } else {
+                if start == 0 {
+                    return;
+                }
+                let prev_start = line_start(start - 1);
+                let prev = &text[prev_start..start];
+                (
+                    prev_start..end,
+                    format!("{}\n{}", strip(block), prev),
+                    start - prev_start,
+                    true,
+                )
+            };
+
+            editor.set_selected_range(span, cx);
+            editor.replace(replacement, window, cx);
+            let (ns, ne) = if negate {
+                (sel.start - delta, sel.end - delta)
+            } else {
+                (sel.start + delta, sel.end + delta)
+            };
+            editor.set_selected_range(ns..ne, cx);
+        });
     }
 
     /// Apply live-editing settings onto this editor.

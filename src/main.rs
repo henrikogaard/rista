@@ -10,6 +10,7 @@ mod preview;
 mod search;
 mod settings;
 mod settings_panel;
+mod slash;
 mod theme;
 mod vault;
 
@@ -71,6 +72,9 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-s", SaveFile, None),
         KeyBinding::new("cmd-shift-s", SaveFileAs, None),
         KeyBinding::new("cmd-w", CloseTab, None),
+        // Editing
+        KeyBinding::new("alt-up", MoveLineUp, None),
+        KeyBinding::new("alt-down", MoveLineDown, None),
         // Navigation
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),

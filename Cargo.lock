@@ -5625,6 +5625,7 @@ dependencies = [
  "chrono",
  "directories",
  "gpui-kit",
+ "lsp-types",
  "markdown",
  "notify",
  "serde",

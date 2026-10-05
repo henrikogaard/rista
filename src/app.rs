@@ -77,6 +77,8 @@ enum PaletteCmd {
     ToggleSidebar,
     ToggleZen,
     ProjectSearch,
+    MoveLineUp,
+    MoveLineDown,
     Settings,
     ToggleTheme,
     Quit,
@@ -134,6 +136,16 @@ impl PaletteCmd {
                 assets::IconName::Search,
                 "Find in project…",
                 &["grep", "search"],
+            ),
+            MoveLineUp => (
+                assets::IconName::ArrowUp,
+                "Move line up",
+                &["block", "reorder", "option"],
+            ),
+            MoveLineDown => (
+                assets::IconName::ArrowDown,
+                "Move line down",
+                &["block", "reorder", "option"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -455,6 +467,18 @@ impl Workspace {
         .detach();
     }
 
+    fn on_move_line_up(&mut self, _: &MoveLineUp, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.move_block(false, window, cx));
+        }
+    }
+
+    fn on_move_line_down(&mut self, _: &MoveLineDown, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.move_block(true, window, cx));
+        }
+    }
+
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.active {
             self.close_tab_at(ix, window, cx);
@@ -562,6 +586,8 @@ impl Workspace {
             PaletteCmd::ToggleSidebar,
             PaletteCmd::ToggleZen,
             PaletteCmd::ProjectSearch,
+            PaletteCmd::MoveLineUp,
+            PaletteCmd::MoveLineDown,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -694,6 +720,8 @@ impl Workspace {
             PaletteCmd::ProjectSearch => {
                 self.on_open_project_search(&OpenProjectSearch, window, cx)
             }
+            PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
+            PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -1553,6 +1581,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_folder))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))
+            .on_action(cx.listener(Self::on_move_line_up))
+            .on_action(cx.listener(Self::on_move_line_down))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))

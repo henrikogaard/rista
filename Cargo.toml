@@ -21,6 +21,7 @@ smol = "2"
 anyhow = "1"
 base64 = "0.22"
 ureq = "3.4.2"
+lsp-types = { version = "0.97.0", features = ["proposed"] }
 
 [profile.release]
 lto = "thin"
