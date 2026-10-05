@@ -943,6 +943,44 @@ impl Workspace {
         });
     }
 
+    /// Move a file or folder into `dest_dir` (file-tree drag/drop).
+    /// No-ops on same-spot, self/descendant drops, and name clashes.
+    /// Open docs under the moved path get repointed so their next save
+    /// doesn't resurrect a file at the old location.
+    fn move_tree_entry(&mut self, src: PathBuf, dest_dir: PathBuf, cx: &mut Context<Self>) {
+        if src == dest_dir || src.parent() == Some(dest_dir.as_path()) || dest_dir.starts_with(&src)
+        {
+            return;
+        }
+        let Some(name) = src.file_name() else {
+            return;
+        };
+        let dest = dest_dir.join(name);
+        if dest.exists() {
+            self.status_note =
+                Some(format!("“{}” already exists there", name.to_string_lossy()).into());
+            cx.notify();
+            return;
+        }
+        match std::fs::rename(&src, &dest) {
+            Ok(()) => {
+                self.status_note = Some(format!("Moved {}", name.to_string_lossy()).into());
+                for doc in &self.docs {
+                    doc.entity.update(cx, |doc, _cx| {
+                        if let Ok(rel) = doc.path.strip_prefix(&src) {
+                            doc.path = dest.join(rel);
+                        }
+                    });
+                }
+                self.vault.update(cx, |vault, cx| vault.refresh(cx));
+            }
+            Err(err) => {
+                self.status_note = Some(format!("Move failed: {err}").into());
+            }
+        }
+        cx.notify();
+    }
+
     /// Run `f` on the workspace one frame later — used when a palette
     /// command needs to open a dialog after the palette has closed.
     fn defer_dialog(
@@ -1479,6 +1517,23 @@ impl Workspace {
                     .py_1p5()
                     .border_b_1()
                     .border_color(cx.theme().sidebar_border)
+                    // Drop zone for "move to vault root" — the header is
+                    // the only always-visible non-folder target.
+                    .drag_over::<PathBuf>(|style, _, _, cx| {
+                        style.bg(cx.theme().accent.opacity(0.2))
+                    })
+                    .on_drop::<PathBuf>({
+                        let view = view.clone();
+                        move |src, _window, cx| {
+                            let src = src.clone();
+                            view.update(cx, |this, cx| {
+                                let Some(root) = this.vault.read(cx).root.clone() else {
+                                    return;
+                                };
+                                this.move_tree_entry(src, root, cx);
+                            });
+                        }
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -1526,7 +1581,7 @@ impl Workspace {
                                 } else {
                                     assets::IconName::FolderClosed
                                 };
-                                ListItem::new(ix)
+                                let row = ListItem::new(ix)
                                     .w_full()
                                     .rounded(cx.theme().radius)
                                     .py_0p5()
@@ -1547,6 +1602,34 @@ impl Workspace {
                                             }
                                         }
                                     }))
+                                    .on_drag(path.clone(), {
+                                        let label = item.label.clone();
+                                        move |_, _, _, cx| {
+                                            cx.new(|_| TreeDragPreview {
+                                                label: label.clone(),
+                                            })
+                                        }
+                                    });
+                                // Folders accept drops; files only drag.
+                                let row = if entry.is_folder() {
+                                    let dest_dir = path.clone();
+                                    row.drag_over::<PathBuf>(|style, _, _, cx| {
+                                        style.bg(cx.theme().accent.opacity(0.2))
+                                    })
+                                    .on_drop::<PathBuf>({
+                                        let view = render_view.clone();
+                                        move |src, _window, cx| {
+                                            let src = src.clone();
+                                            let dest_dir = dest_dir.clone();
+                                            view.update(cx, |this, cx| {
+                                                this.move_tree_entry(src, dest_dir, cx);
+                                            });
+                                        }
+                                    })
+                                } else {
+                                    row
+                                };
+                                row
                             })
                         }
                     })
@@ -2219,4 +2302,23 @@ fn template_files(root: &std::path::Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// Floating label shown while dragging a file-tree row.
+struct TreeDragPreview {
+    label: SharedString,
+}
+
+impl Render for TreeDragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .child(self.label.clone())
+    }
 }
