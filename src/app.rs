@@ -4239,10 +4239,16 @@ impl Workspace {
                     .selected_index(self.active.unwrap_or(0))
                     .children(tabs)
                     .on_click(cx.listener(|this, &ix, _window, cx| {
-                        this.active = Some(ix);
-                        this.persist_tabs(cx);
-                        this.reveal_active_file(cx);
-                        cx.notify();
+                        // The × suffix button closes a tab but its click
+                        // still lands here — skip reselecting an index
+                        // that no longer exists, which would blank the
+                        // editor until another tab is clicked.
+                        if ix < this.docs.len() {
+                            this.active = Some(ix);
+                            this.persist_tabs(cx);
+                            this.reveal_active_file(cx);
+                            cx.notify();
+                        }
                     }))
                     .flex_1(),
             )
