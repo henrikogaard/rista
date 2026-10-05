@@ -1303,7 +1303,12 @@ impl Workspace {
 
     /// Shared tail of `on_open_daily`: write (templated if missing),
     /// refresh the vault, open. `path` is `YYYY-MM-DD.md`.
-    fn open_daily_at(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_daily_at(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !path.exists() {
             if std::fs::write(&path, self.daily_seed(&path, cx)).is_err() {
                 return;

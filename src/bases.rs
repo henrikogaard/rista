@@ -2197,6 +2197,7 @@ impl BaseView {
             ),
         );
 
+        let root = self.vault.read(cx).root.clone();
         let mut grid = v_flex().w_full().border_1().border_color(theme.border);
         // Weekday header.
         let mut wk = h_flex().w_full().border_b_1().border_color(theme.border);
@@ -2227,7 +2228,14 @@ impl BaseView {
                 let in_month = day.month() == month;
                 let is_today = day == today;
                 let items = by_day.get(&day).cloned().unwrap_or_default();
-                let mut cell = div().flex_1().min_w_0().h(px(84.)).p_1().v_flex().gap_0p5();
+                let mut cell = div()
+                    .id(("cal-day", (w * 7 + c) as usize))
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(84.))
+                    .p_1()
+                    .v_flex()
+                    .gap_0p5();
                 if c < 6 {
                     cell = cell.border_r_1().border_color(theme.border);
                 }
@@ -2282,6 +2290,16 @@ impl BaseView {
                             .child(format!("+{} more", items.len() - 2)),
                     );
                 }
+                // Empty-cell click → create/open that day's note
+                // (`YYYY-MM-DD.md`), like Obsidian's calendar.
+                let workspace = self.workspace.clone();
+                let root = root.clone();
+                cell = cell.cursor_pointer().on_click(move |_, window, cx| {
+                    if let Some(root) = &root {
+                        let path = root.join(format!("{}.md", day.format("%Y-%m-%d")));
+                        let _ = workspace.update(cx, |ws, cx| ws.open_daily_at(path, window, cx));
+                    }
+                });
                 row_el = row_el.child(cell);
             }
             grid = grid.child(row_el);
