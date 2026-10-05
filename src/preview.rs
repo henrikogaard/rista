@@ -61,7 +61,7 @@ pub fn extensions(
         .plugin(LocalImagePlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin)
-        .plugin(FootnoteRefPlugin)
+        .plugin(FootnoteRefPlugin { ctx: ctx.cloned() })
         .plugin(FootnoteDefPlugin {
             folds: folds.clone(),
             ctx: ctx.cloned(),
@@ -776,7 +776,11 @@ impl MarkdownPlugin for PropertiesPlugin {
                                                     .read(cx)
                                                     .resolve_wikilink(&target)
                                                 {
-                                                    ws.peek_at(path, ev.position, cx);
+                                                    ws.peek_at(
+                                                        crate::app::PeekKind::Note(path),
+                                                        ev.position,
+                                                        cx,
+                                                    );
                                                 }
                                             });
                                         }
@@ -796,7 +800,10 @@ impl MarkdownPlugin for PropertiesPlugin {
                                                     .read(cx)
                                                     .resolve_wikilink(&target)
                                                 {
-                                                    ws.hide_peek(&path, cx);
+                                                    ws.hide_peek(
+                                                        &crate::app::PeekKind::Note(path.clone()),
+                                                        cx,
+                                                    );
                                                 }
                                             });
                                         }
@@ -2256,8 +2263,9 @@ impl MarkdownPlugin for WikiLinkPlugin {
                     let workspace = self.ctx.workspace.clone();
                     let path = path.clone();
                     move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                        let _ = workspace
-                            .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                        let _ = workspace.update(cx, |ws, cx| {
+                            ws.peek_at(crate::app::PeekKind::Note(path.clone()), ev.position, cx)
+                        });
                     }
                 })
                 .on_hover({
@@ -2265,7 +2273,9 @@ impl MarkdownPlugin for WikiLinkPlugin {
                     move |hovered: &bool, _window, cx| {
                         if !*hovered {
                             let path = path.clone();
-                            let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                            let _ = workspace.update(cx, |ws, cx| {
+                                ws.hide_peek(&crate::app::PeekKind::Note(path.clone()), cx)
+                            });
                         }
                     }
                 });
@@ -2944,7 +2954,9 @@ impl MarkdownPlugin for TaskListPlugin {
 // `[^label]:` definitions render as a muted labelled block in place.
 // ------------------------------------------------------------------
 
-struct FootnoteRefPlugin;
+struct FootnoteRefPlugin {
+    ctx: Option<PreviewCtx>,
+}
 
 impl MarkdownPlugin for FootnoteRefPlugin {
     fn name(&self) -> &str {
@@ -2955,18 +2967,55 @@ impl MarkdownPlugin for FootnoteRefPlugin {
         let mdast::Node::FootnoteReference(r) = node else {
             return None;
         };
+        // Offset keeps element ids unique when the same label is
+        // referenced twice.
+        let offset = node.position().map(|p| p.start.offset).unwrap_or(0);
         Some(MarkdownNode::new(
             "footnote-ref",
-            r.label.clone().unwrap_or_else(|| r.identifier.clone()),
+            (
+                r.label.clone().unwrap_or_else(|| r.identifier.clone()),
+                offset,
+            ),
         ))
     }
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let label = node.data::<String>().expect("footnote-ref data");
+        let (label, offset) = node
+            .data::<(String, usize)>()
+            .expect("footnote-ref data")
+            .clone();
+        let workspace = self.ctx.as_ref().map(|ctx| ctx.workspace.clone());
         div()
+            .id(format!("fnref-{offset}"))
             .text_xs()
             .text_color(cx.theme().info)
             .child(format!("[{label}]"))
+            .when_some(workspace, |this, workspace| {
+                this.on_mouse_move({
+                    let label = label.clone();
+                    let workspace = workspace.clone();
+                    move |ev, _window, cx| {
+                        if let Some(ws) = workspace.upgrade() {
+                            ws.update(cx, |ws, cx| {
+                                ws.peek_footnote(label.clone(), ev.position, cx);
+                            });
+                        }
+                    }
+                })
+                .on_hover({
+                    let label = label.clone();
+                    move |hovered: &bool, _window, cx| {
+                        if *hovered {
+                            return;
+                        }
+                        if let Some(ws) = workspace.upgrade() {
+                            ws.update(cx, |ws, cx| {
+                                ws.hide_footnote_peek(&label, cx);
+                            });
+                        }
+                    }
+                })
+            })
     }
 }
 

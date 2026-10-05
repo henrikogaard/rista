@@ -82,7 +82,7 @@ pub struct Workspace {
     cal_month: (i32, u32),
     /// Wikilink hover preview — target + anchor point, rendered as a
     /// floating card over the workspace (Obsidian's page preview).
-    peek: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
+    peek: Option<(PeekKind, gpui::Point<gpui::Pixels>)>,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -517,24 +517,61 @@ impl Workspace {
     /// anchored where the hover started, like Obsidian's page preview.
     pub fn peek_at(
         &mut self,
-        path: PathBuf,
+        kind: PeekKind,
         pos: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
         match &mut self.peek {
-            Some((p, at)) if *p == path => *at = pos,
+            Some((k, at)) if *k == kind => *at = pos,
             _ => {
-                self.peek = Some((path, pos));
+                self.peek = Some((kind, pos));
                 cx.notify();
             }
         }
     }
 
-    pub fn hide_peek(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
-        if self.peek.as_ref().is_some_and(|(p, _)| p == path) {
+    pub fn hide_peek(&mut self, kind: &PeekKind, cx: &mut Context<Self>) {
+        if self.peek.as_ref().is_some_and(|(k, _)| k == kind) {
             self.peek = None;
             cx.notify();
         }
+    }
+
+    /// Footnote peek dismissal compares on the label only — callers
+    /// never recompute the body.
+    pub fn hide_footnote_peek(&mut self, label: &str, cx: &mut Context<Self>) {
+        let hit = matches!(
+            &self.peek,
+            Some((PeekKind::Footnote(l, _), _)) if l == label
+        );
+        if hit {
+            self.peek = None;
+            cx.notify();
+        }
+    }
+
+    /// Footnote-ref hover → peek card showing the `[^label]:` body
+    /// read from the active document.
+    pub fn peek_footnote(
+        &mut self,
+        label: String,
+        pos: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let body = self
+            .active_doc()
+            .map(|doc| doc.read(cx).editor.read(cx).value().to_string())
+            .map(|text| {
+                let marker = format!("[^{label}]:");
+                text.lines()
+                    .find_map(|line| {
+                        line.find(&marker)
+                            .map(|i| line[i + marker.len()..].trim().to_string())
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        self.peek_at(PeekKind::Footnote(label, body), pos, cx);
     }
 
     fn open_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -3321,7 +3358,11 @@ impl Workspace {
                                 let path = path.clone();
                                 move |ev: &gpui::MouseMoveEvent, _window, cx| {
                                     let _ = ws.update(cx, |ws, cx| {
-                                        ws.peek_at(path.clone(), ev.position, cx)
+                                        ws.peek_at(
+                                            crate::app::PeekKind::Note(path.clone()),
+                                            ev.position,
+                                            cx,
+                                        )
                                     });
                                 }
                             })
@@ -3330,7 +3371,12 @@ impl Workspace {
                                 let path = path.clone();
                                 move |hovered: &bool, _window, cx| {
                                     if !*hovered {
-                                        let _ = ws.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                        let _ = ws.update(cx, |ws, cx| {
+                                            ws.hide_peek(
+                                                &crate::app::PeekKind::Note(path.clone()),
+                                                cx,
+                                            )
+                                        });
                                     }
                                 }
                             }),
@@ -3398,7 +3444,11 @@ impl Workspace {
                                     let path = path.clone();
                                     move |ev: &gpui::MouseMoveEvent, _window, cx| {
                                         let _ = ws.update(cx, |ws, cx| {
-                                            ws.peek_at(path.clone(), ev.position, cx)
+                                            ws.peek_at(
+                                                crate::app::PeekKind::Note(path.clone()),
+                                                ev.position,
+                                                cx,
+                                            )
                                         });
                                     }
                                 })
@@ -3407,7 +3457,12 @@ impl Workspace {
                                     let path = path.clone();
                                     move |hovered: &bool, _window, cx| {
                                         if !*hovered {
-                                            let _ = ws.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                            let _ = ws.update(cx, |ws, cx| {
+                                                ws.hide_peek(
+                                                    &crate::app::PeekKind::Note(path.clone()),
+                                                    cx,
+                                                )
+                                            });
                                         }
                                     }
                                 }),
@@ -4038,7 +4093,11 @@ impl Workspace {
                                         move |ev: &gpui::MouseMoveEvent, _window, cx| {
                                             if is_file {
                                                 view.update(cx, |ws, cx| {
-                                                    ws.peek_at(path.clone(), ev.position, cx)
+                                                    ws.peek_at(
+                                                        crate::app::PeekKind::Note(path.clone()),
+                                                        ev.position,
+                                                        cx,
+                                                    )
                                                 });
                                             }
                                         }
@@ -4048,7 +4107,12 @@ impl Workspace {
                                         let view = render_view.clone();
                                         move |hovered: &bool, _window, cx| {
                                             if is_file && !*hovered {
-                                                view.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                                view.update(cx, |ws, cx| {
+                                                    ws.hide_peek(
+                                                        &crate::app::PeekKind::Note(path.clone()),
+                                                        cx,
+                                                    )
+                                                });
                                             }
                                         }
                                     });
@@ -4927,8 +4991,8 @@ impl Render for Workspace {
                     )
                     .into_any_element()
             }))
-            .when_some(self.peek.clone(), |this, (path, pos)| {
-                this.child(self.render_peek_card(&path, pos, window, cx))
+            .when_some(self.peek.clone(), |this, (kind, pos)| {
+                this.child(self.render_peek_card(&kind, pos, window, cx))
             })
     }
 }
@@ -4939,37 +5003,49 @@ impl Workspace {
     /// inside the window.
     fn render_peek_card(
         &self,
-        path: &PathBuf,
+        kind: &PeekKind,
         pos: gpui::Point<gpui::Pixels>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let title = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let excerpt: Vec<String> = std::fs::read_to_string(path)
-            .ok()
-            .map(|text| {
-                let body = match crate::properties::frontmatter_span(&text) {
-                    Some(span) => &text[span.end..],
-                    None => text.as_str(),
-                };
-                body.lines()
-                    .map(str::trim)
+        let (title, excerpt): (String, Vec<String>) = match kind {
+            PeekKind::Footnote(label, body) => (
+                format!("[{label}]"),
+                vec![body.clone()]
+                    .into_iter()
                     .filter(|l| !l.is_empty())
-                    .take(4)
-                    .map(|l| {
-                        l.trim_start_matches(|c: char| {
-                            c == '#' || c == '>' || c == '-' || c == '*' || c == ' '
-                        })
-                        .to_string()
+                    .collect(),
+            ),
+            PeekKind::Note(path) => {
+                let title = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let excerpt: Vec<String> = std::fs::read_to_string(path)
+                    .ok()
+                    .map(|text| {
+                        let body = match crate::properties::frontmatter_span(&text) {
+                            Some(span) => &text[span.end..],
+                            None => text.as_str(),
+                        };
+                        body.lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .take(4)
+                            .map(|l| {
+                                l.trim_start_matches(|c: char| {
+                                    c == '#' || c == '>' || c == '-' || c == '*' || c == ' '
+                                })
+                                .to_string()
+                            })
+                            .filter(|l| !l.is_empty())
+                            .collect()
                     })
-                    .filter(|l| !l.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .unwrap_or_default();
+                (title, excerpt)
+            }
+        };
         let viewport = window.bounds().size;
         let w = px(340.);
         let left = (pos.x + px(12.))
@@ -5211,6 +5287,14 @@ struct TreeDragPreview {
 
 /// Drag payload for reordering document tabs — carries the source index.
 struct DraggedTab(usize);
+
+/// What a hover-peek card shows: a note excerpt, or arbitrary text
+/// (footnote definitions carry their resolved body inline).
+#[derive(Clone, PartialEq)]
+pub enum PeekKind {
+    Note(PathBuf),
+    Footnote(String, String),
+}
 
 impl Render for TreeDragPreview {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

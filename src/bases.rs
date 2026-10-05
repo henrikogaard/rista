@@ -2377,8 +2377,13 @@ impl Render for BaseView {
                             let workspace = self.workspace.clone();
                             let path = row.path.clone();
                             move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                                let _ = workspace
-                                    .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                                let _ = workspace.update(cx, |ws, cx| {
+                                    ws.peek_at(
+                                        crate::app::PeekKind::Note(path.clone()),
+                                        ev.position,
+                                        cx,
+                                    )
+                                });
                             }
                         })
                         .on_hover({
@@ -2386,7 +2391,9 @@ impl Render for BaseView {
                             let path = row.path.clone();
                             move |hovered: &bool, _window, cx| {
                                 if !*hovered {
-                                    let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                    let _ = workspace.update(cx, |ws, cx| {
+                                        ws.hide_peek(&crate::app::PeekKind::Note(path.clone()), cx)
+                                    });
                                 }
                             }
                         });
@@ -2524,8 +2531,13 @@ impl Render for BaseView {
                         let workspace = self.workspace.clone();
                         let path = row.path.clone();
                         move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                            let _ = workspace
-                                .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                            let _ = workspace.update(cx, |ws, cx| {
+                                ws.peek_at(
+                                    crate::app::PeekKind::Note(path.clone()),
+                                    ev.position,
+                                    cx,
+                                )
+                            });
                         }
                     })
                     .on_hover({
@@ -2533,7 +2545,9 @@ impl Render for BaseView {
                         let path = row.path.clone();
                         move |hovered: &bool, _window, cx| {
                             if !*hovered {
-                                let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                let _ = workspace.update(cx, |ws, cx| {
+                                    ws.hide_peek(&crate::app::PeekKind::Note(path.clone()), cx)
+                                });
                             }
                         }
                     });
@@ -2659,8 +2673,13 @@ impl Render for BaseView {
                         let workspace = self.workspace.clone();
                         let path = row.path.clone();
                         move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                            let _ = workspace
-                                .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                            let _ = workspace.update(cx, |ws, cx| {
+                                ws.peek_at(
+                                    crate::app::PeekKind::Note(path.clone()),
+                                    ev.position,
+                                    cx,
+                                )
+                            });
                         }
                     })
                     .on_hover({
@@ -2668,7 +2687,9 @@ impl Render for BaseView {
                         let path = row.path.clone();
                         move |hovered: &bool, _window, cx| {
                             if !*hovered {
-                                let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                let _ = workspace.update(cx, |ws, cx| {
+                                    ws.hide_peek(&crate::app::PeekKind::Note(path.clone()), cx)
+                                });
                             }
                         }
                     });
@@ -2903,8 +2924,13 @@ impl Render for BaseView {
                             let workspace = self.workspace.clone();
                             let path = row.path.clone();
                             move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                                let _ = workspace
-                                    .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                                let _ = workspace.update(cx, |ws, cx| {
+                                    ws.peek_at(
+                                        crate::app::PeekKind::Note(path.clone()),
+                                        ev.position,
+                                        cx,
+                                    )
+                                });
                             }
                         })
                         .on_hover({
@@ -2912,7 +2938,9 @@ impl Render for BaseView {
                             let path = row.path.clone();
                             move |hovered: &bool, _window, cx| {
                                 if !*hovered {
-                                    let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                    let _ = workspace.update(cx, |ws, cx| {
+                                        ws.hide_peek(&crate::app::PeekKind::Note(path.clone()), cx)
+                                    });
                                 }
                             }
                         }),
