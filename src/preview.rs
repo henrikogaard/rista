@@ -65,6 +65,10 @@ pub fn extensions(
         Some(ctx) => ext
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
+            .plugin(ColumnBlockPlugin {
+                ctx: ctx.clone(),
+                folds: folds.clone(),
+            })
             .plugin(TranscludePlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
@@ -91,6 +95,7 @@ pub fn preprocess(
     let mut fence_marker = "";
     let mut in_frontmatter = false;
     let mut in_comment = false;
+    let mut in_columns = false;
 
     for (index, line) in source.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_start();
@@ -122,10 +127,52 @@ pub fn preprocess(
             continue;
         }
 
+        // `::: columns` fenced divs (the Obsidian Columns plugin's
+        // syntax) → a `columns` code fence the ColumnBlockPlugin
+        // splits into side-by-side nested markdown. `::: column`
+        // lines are column separators; a bare `:::` closes.
+        if in_columns {
+            if trimmed.trim_end() == ":::" {
+                in_columns = false;
+                out.push_str("```\n");
+            } else if colon_fence(trimmed).is_some_and(|n| n == "column") {
+                out.push_str(":::colsep:::\n");
+            } else {
+                out.push_str(&rewrite_line(
+                    line,
+                    doc_dir,
+                    image_resolver,
+                    &mut in_comment,
+                ));
+            }
+            continue;
+        }
+        if colon_fence(trimmed).is_some_and(|n| n == "columns") {
+            in_columns = true;
+            out.push_str("```columns\n");
+            continue;
+        }
+
         let line = rewrite_line(line, doc_dir, image_resolver, &mut in_comment);
         out.push_str(&line);
     }
+    if in_columns {
+        out.push_str("```\n");
+    }
     out
+}
+
+/// `::: name` fence marker — accepts `::: columns`, `:::columns` and
+/// Pandoc-style `::: {.columns}`. A bare `:::` yields `None`.
+fn colon_fence(line: &str) -> Option<String> {
+    let rest = line.trim_end().strip_prefix(":::")?;
+    let name = rest
+        .trim()
+        .trim_start_matches('{')
+        .trim_start_matches('.')
+        .trim_end_matches('}')
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn rewrite_line(
@@ -1588,6 +1635,69 @@ impl MarkdownPlugin for BaseEmbedPlugin {
             .rounded(cx.theme().radius)
             .overflow_hidden()
             .child(view)
+    }
+}
+
+// ------------------------------------------------------------------
+// `::: columns` fenced layout — `preprocess` rewrites the container
+// into a `columns` code fence whose `:::colsep:::` lines split the
+// columns. Each column renders nested markdown side-by-side.
+// ------------------------------------------------------------------
+
+struct ColumnBlock {
+    body: String,
+}
+
+struct ColumnBlockPlugin {
+    ctx: PreviewCtx,
+    folds: CalloutFolds,
+}
+
+impl MarkdownPlugin for ColumnBlockPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "column-block"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Code(code) = node else {
+            return None;
+        };
+        if code.lang.as_deref() != Some("columns") {
+            return None;
+        }
+        Some(MarkdownNode::new(
+            "column-block",
+            ColumnBlock {
+                body: code.value.clone(),
+            },
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let block = node.data::<ColumnBlock>().expect("column-block node data");
+        let mut row = h_flex().w_full().items_start().gap_4().my_2();
+        for (ix, segment) in block.body.split(":::colsep:::").enumerate() {
+            let nested = self.ctx.clone();
+            let segment = segment.trim_matches('\n').to_string();
+            row = row.child(
+                div().flex_1().min_w_0().child(
+                    gpui_kit::component::text::TextView::markdown(
+                        SharedString::from(format!("column-{ix}")),
+                        segment,
+                    )
+                    .markdown_extensions(extensions(
+                        &self.folds,
+                        Some(&nested),
+                        false,
+                    )),
+                ),
+            );
+        }
+        row.into_any_element()
     }
 }
 
