@@ -283,6 +283,23 @@ impl Document {
         });
     }
 
+    /// Append `line` at end of buffer (a leading newline is inserted
+    /// when the file doesn't end with one). The caret lands after the
+    /// inserted line; autosave persists it.
+    pub fn append_line(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value();
+            let len = text.len();
+            editor.set_selected_range(len..len, cx);
+            let prefix = if len == 0 || text.to_string().ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            editor.replace(format!("{prefix}{line}\n"), window, cx);
+        });
+    }
+
     /// Write the buffer to disk. Returns the io result for callers that care.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();

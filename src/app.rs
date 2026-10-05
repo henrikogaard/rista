@@ -111,6 +111,7 @@ enum PaletteCmd {
     NewFolder,
     OpenFolder,
     DailyNote,
+    AppendDaily,
     CloseFolder,
     Save,
     SaveAs,
@@ -162,6 +163,11 @@ impl PaletteCmd {
                 assets::IconName::BookOpen,
                 "Open daily note",
                 &["today", "journal"],
+            ),
+            AppendDaily => (
+                assets::IconName::SquarePen,
+                "Append to daily note…",
+                &["today", "journal", "log", "quick"],
             ),
             CloseFolder => (
                 assets::IconName::FolderClosed,
@@ -803,39 +809,114 @@ impl Workspace {
         self.open_daily_at(path, window, cx);
     }
 
+    /// Initial content for a missing daily note — Obsidian convention:
+    /// `templates/daily.md` seeds it with `{{date}}`/`{{time}}`/
+    /// `{{title}}`/`{{cursor}}` expanded, else a plain heading.
+    fn daily_seed(&self, path: &Path, cx: &App) -> String {
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.vault
+            .read(cx)
+            .root
+            .as_ref()
+            .and_then(|root| std::fs::read_to_string(root.join("templates").join("daily.md")).ok())
+            .map(|tpl| {
+                let now = crate::history::epoch();
+                tpl.replace("{{date}}", &crate::history::format_date(now))
+                    .replace("{{time}}", &crate::history::format_time(now))
+                    .replace("{{title}}", &title)
+                    .replace("{{cursor}}", "")
+            })
+            .unwrap_or_else(|| format!("# {}\n\n", title))
+    }
+
     /// Shared tail of `on_open_daily`: write (templated if missing),
     /// refresh the vault, open. `path` is `YYYY-MM-DD.md`.
     fn open_daily_at(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if !path.exists() {
-            let title = path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            // Obsidian convention: `templates/daily.md` seeds the daily
-            // note when present; `{{date}}`/`{{time}}`/`{{title}}`/
-            // `{{cursor}}` expand like manual template inserts.
-            let content = self
-                .vault
-                .read(cx)
-                .root
-                .as_ref()
-                .and_then(|root| {
-                    std::fs::read_to_string(root.join("templates").join("daily.md")).ok()
-                })
-                .map(|tpl| {
-                    let now = crate::history::epoch();
-                    tpl.replace("{{date}}", &crate::history::format_date(now))
-                        .replace("{{time}}", &crate::history::format_time(now))
-                        .replace("{{title}}", &title)
-                        .replace("{{cursor}}", "")
-                })
-                .unwrap_or_else(|| format!("# {}\n\n", title));
-            if std::fs::write(&path, content).is_err() {
+            if std::fs::write(&path, self.daily_seed(&path, cx)).is_err() {
                 return;
             }
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
         }
         self.open_document(path, window, cx);
+    }
+
+    /// Palette "Append to daily note…" — prompt for a line, append it
+    /// as `- {text}` without opening the note (Obsidian parity).
+    fn show_append_daily_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.vault.read(cx).daily_note() else {
+            self.note_status("Open a folder first", cx);
+            return;
+        };
+        let input = self.cell_input.clone();
+        input.update(cx, |input, cx| input.set_value("", window, cx));
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Append to daily note")
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .on_ok({
+                    let view = view.clone();
+                    let path = path.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            let text = this.cell_input.read(cx).value().trim().to_string();
+                            if !text.is_empty() {
+                                this.append_daily(&path, &text, window, cx);
+                            }
+                            this.refocus(window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+
+        let input = self.cell_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        });
+    }
+
+    /// `- {text}` appended to the daily note — through the editor when
+    /// it's open (autosave persists), straight to disk otherwise.
+    fn append_daily(
+        &mut self,
+        path: &Path,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !path.exists() && std::fs::write(path, self.daily_seed(path, cx)).is_err() {
+            self.note_status("Could not create daily note", cx);
+            return;
+        }
+        let line = format!("- {text}");
+        if let Some(doc) = self
+            .docs
+            .iter()
+            .find(|d| d.entity.read(cx).path == path)
+            .map(|d| d.entity.clone())
+        {
+            doc.update(cx, |doc, cx| doc.append_line(&line, window, cx));
+        } else {
+            let mut body = std::fs::read_to_string(path).unwrap_or_default();
+            if !body.ends_with('\n') && !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(&line);
+            body.push('\n');
+            if std::fs::write(path, body).is_err() {
+                self.note_status("Could not append", cx);
+                return;
+            }
+            self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        }
+        self.note_status("Appended to daily note", cx);
     }
 
     fn on_close_folder(&mut self, _: &CloseFolder, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1142,6 +1223,7 @@ impl Workspace {
         let commands = [
             PaletteCmd::NewFile,
             PaletteCmd::DailyNote,
+            PaletteCmd::AppendDaily,
             PaletteCmd::OpenFolder,
             PaletteCmd::NewFolder,
             PaletteCmd::Save,
@@ -1322,6 +1404,9 @@ impl Workspace {
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
             PaletteCmd::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             PaletteCmd::DailyNote => self.on_open_daily(&OpenDailyNote, window, cx),
+            PaletteCmd::AppendDaily => {
+                self.defer_dialog(Self::show_append_daily_dialog, window, cx)
+            }
             PaletteCmd::CloseFolder => self.close_vault(cx),
             PaletteCmd::Save => self.on_save(&SaveFile, window, cx),
             PaletteCmd::SaveAs => self.on_save_as(&SaveFileAs, window, cx),
