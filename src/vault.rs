@@ -232,6 +232,26 @@ impl Vault {
         links
     }
 
+    /// First line of `note` containing a `[[link]]` that resolves to
+    /// `target` — the context snippet shown beside a backlink row.
+    pub fn backlink_context(&self, note: &Path, target: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(note).ok()?;
+        for line in text.lines() {
+            let mut cursor = 0;
+            while let Some(at) = line[cursor..].find("[[") {
+                let start = cursor + at + 2;
+                let Some(end) = line[start..].find("]]") else {
+                    break;
+                };
+                if self.resolve_wikilink(&line[start..start + end]).as_deref() == Some(target) {
+                    return Some(line.trim().to_string());
+                }
+                cursor = start + end + 2;
+            }
+        }
+        None
+    }
+
     /// Notes whose body mentions the target's file stem as plain
     /// text outside `[[...]]` — Obsidian's "unlinked mentions".
     /// Whole-phrase, case-insensitive; linked mentions don't count.

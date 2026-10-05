@@ -2788,12 +2788,18 @@ impl Workspace {
             )
             .when(self.backlinks_open, |this| {
                 let unlinked = self.unlinked(cx);
+                let active_path = self.active_doc().map(|d| d.read(cx).path.clone());
                 let mut rows = v_flex().w_full();
                 for (ix, path) in links.iter().enumerate() {
                     let rel = path
                         .strip_prefix(&root)
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    // First line containing the link — Obsidian shows
+                    // the mention's context under each backlink.
+                    let snippet = active_path
+                        .as_ref()
+                        .and_then(|target| self.vault.read(cx).backlink_context(path, target));
                     let open = path.clone();
                     rows = rows.child(
                         div()
@@ -2803,7 +2809,21 @@ impl Workspace {
                             .py_0p5()
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                            .child(div().text_sm().truncate().child(rel))
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .child(div().text_sm().truncate().child(rel))
+                                    .when_some(snippet, |row, line| {
+                                        row.child(
+                                            div()
+                                                .pl_2()
+                                                .text_xs()
+                                                .truncate()
+                                                .text_color(theme.muted_foreground)
+                                                .child(line),
+                                        )
+                                    }),
+                            )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_document_pub(open.clone(), window, cx);
                             })),
