@@ -14,6 +14,7 @@ actions!(
         SaveFile,
         SaveFileAs,
         CloseTab,
+        ReopenTab,
         // Edit
         MoveLineUp,
         MoveLineDown,

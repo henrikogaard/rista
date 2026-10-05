@@ -57,6 +57,8 @@ pub struct Workspace {
     /// Most-recently-opened note paths, front = latest. The palette's
     /// "Recent" group reads this.
     recent: Vec<PathBuf>,
+    /// Paths of tabs closed this session, latest last — ⌘⇧T pops it.
+    closed_tabs: Vec<PathBuf>,
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
@@ -136,6 +138,7 @@ enum PaletteCmd {
     GoForward,
     FollowLink,
     ToggleStar,
+    ReopenTab,
     CopyLink,
     CopyLinkHeading,
     ExportHtml,
@@ -272,6 +275,11 @@ impl PaletteCmd {
                 "Open link under cursor",
                 &["link", "wikilink", "follow", "url", "open"],
             ),
+            ReopenTab => (
+                assets::IconName::Undo,
+                "Reopen closed tab",
+                &["restore", "undo", "tab", "recent"],
+            ),
             ToggleStar => (
                 assets::IconName::Star,
                 "Star/unstar current note",
@@ -335,6 +343,7 @@ impl Workspace {
             status_note: None,
             status_epoch: 0,
             recent: Vec::new(),
+            closed_tabs: Vec::new(),
             focus_mode: settings.focus_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
@@ -715,11 +724,20 @@ impl Workspace {
         cx.notify();
     }
 
+    /// ⌘⇧T / palette — reopen the most recently closed tab.
+    fn on_reopen_tab(&mut self, _: &ReopenTab, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.closed_tabs.pop() {
+            self.open_document(path, window, cx);
+        }
+    }
+
     fn close_tab_now(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.docs.len() {
             return;
         }
+        let path = self.docs[ix].entity.read(cx).path.clone();
         self.docs.remove(ix);
+        self.closed_tabs.push(path);
         if let Some(active) = self.active {
             if active >= self.docs.len() {
                 self.active = self.docs.len().checked_sub(1);
@@ -1290,6 +1308,7 @@ impl Workspace {
             PaletteCmd::GoForward,
             PaletteCmd::FollowLink,
             PaletteCmd::ToggleStar,
+            PaletteCmd::ReopenTab,
             PaletteCmd::CopyLink,
             PaletteCmd::CopyLinkHeading,
             PaletteCmd::ExportHtml,
@@ -1477,6 +1496,7 @@ impl Workspace {
             PaletteCmd::GoBack => self.nav_back(window, cx),
             PaletteCmd::GoForward => self.nav_forward(window, cx),
             PaletteCmd::FollowLink => self.on_follow_link(&FollowLink, window, cx),
+            PaletteCmd::ReopenTab => self.on_reopen_tab(&ReopenTab, window, cx),
             PaletteCmd::ToggleStar => {
                 let path = self.active_doc().map(|d| d.read(cx).path.clone());
                 match path {
@@ -4743,6 +4763,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_move_line_down))
             .on_action(cx.listener(Self::on_toggle_checkbox))
             .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_reopen_tab))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))
             .on_action(cx.listener(Self::on_navigate_back))

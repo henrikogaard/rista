@@ -79,6 +79,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-s", SaveFile, None),
         KeyBinding::new("cmd-shift-s", SaveFileAs, None),
         KeyBinding::new("cmd-w", CloseTab, None),
+        KeyBinding::new("cmd-shift-t", ReopenTab, None),
         // Editing
         KeyBinding::new("alt-up", MoveLineUp, None),
         KeyBinding::new("alt-down", MoveLineDown, None),
