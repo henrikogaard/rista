@@ -606,7 +606,12 @@ impl MarkdownPlugin for PropertiesPlugin {
             .map(|map| {
                 map.iter()
                     .filter_map(|(k, v)| {
-                        Some((k.as_str()?.to_string(), prop_edit_text(v), prop_display(v)))
+                        Some((
+                            k.as_str()?.to_string(),
+                            prop_edit_text(v),
+                            prop_display(v),
+                            prop_links(v),
+                        ))
                     })
                     .collect::<Vec<_>>()
             })
@@ -621,7 +626,7 @@ impl MarkdownPlugin for PropertiesPlugin {
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (entries, key) = node
-            .data::<(Vec<(String, String, String)>, usize)>()
+            .data::<(Vec<(String, String, String, Option<Vec<String>>)>, usize)>()
             .expect("properties node data");
         let theme = cx.theme();
         if entries.is_empty() {
@@ -639,7 +644,72 @@ impl MarkdownPlugin for PropertiesPlugin {
             .map(|ctx| ctx.workspace.clone());
         let mut rows = v_flex().w_full();
         if !folded {
-            for (ix, (k, edit, v)) in entries.iter().enumerate() {
+            for (ix, (k, edit, v, links)) in entries.iter().enumerate() {
+                let mut key_cell = div()
+                    .id(("property-key", ix))
+                    .w(px(96.))
+                    .flex_none()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .truncate()
+                    .child(k.clone());
+                let mut value_cell = div().flex_1().text_xs().truncate();
+                match links {
+                    // All-link values render as accent chips that open
+                    // the note — the key cell keeps the edit click.
+                    Some(targets) => {
+                        let workspace = edit_ctx.clone();
+                        let mut chips = h_flex().flex_1().flex_wrap().gap_1().items_center();
+                        for (jx, target) in targets.iter().enumerate() {
+                            let label = target.rsplit('/').next().unwrap_or(target).to_string();
+                            let mut chip = div()
+                                .id(("property-link", ix * 100 + jx))
+                                .text_color(theme.info)
+                                .child(label);
+                            if let Some(workspace) = workspace.clone() {
+                                let target = target.clone();
+                                chip = chip.cursor_pointer().hover(|c| c.underline()).on_click(
+                                    move |_, window, cx| {
+                                        let Some(workspace) = workspace.upgrade() else {
+                                            return;
+                                        };
+                                        workspace.update(cx, |workspace, cx| {
+                                            workspace.open_wikilink(&target, window, cx);
+                                        });
+                                    },
+                                );
+                            }
+                            chips = chips.child(chip);
+                            if jx + 1 < targets.len() {
+                                chips = chips
+                                    .child(div().text_color(theme.muted_foreground).child(","));
+                            }
+                        }
+                        value_cell = div().flex_1().text_xs().child(chips);
+                        if let Some(workspace) = edit_ctx.clone() {
+                            let k = k.clone();
+                            let edit = edit.clone();
+                            key_cell = key_cell.cursor_pointer().hover(|c| c.underline()).on_click(
+                                move |_, window, cx| {
+                                    let Some(workspace) = workspace.upgrade() else {
+                                        return;
+                                    };
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.edit_active_property(
+                                            k.clone(),
+                                            edit.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            );
+                        }
+                    }
+                    None => {
+                        value_cell = value_cell.text_color(theme.foreground).child(v.clone());
+                    }
+                }
                 let mut row = h_flex()
                     .id(("property-row", ix))
                     .w_full()
@@ -648,37 +718,29 @@ impl MarkdownPlugin for PropertiesPlugin {
                     .gap_2()
                     .border_t_1()
                     .border_color(theme.border.opacity(0.5))
-                    .child(
-                        div()
-                            .w(px(96.))
-                            .flex_none()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(k.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(theme.foreground)
-                            .truncate()
-                            .child(v.clone()),
-                    );
-                if let Some(workspace) = edit_ctx.clone() {
-                    let k = k.clone();
-                    let edit = edit.clone();
-                    row = row
-                        .cursor_pointer()
-                        .hover(|row| row.bg(theme.accent.opacity(0.4)))
-                        .on_click(move |_, window, cx| {
-                            let Some(workspace) = workspace.upgrade() else {
-                                return;
-                            };
-                            workspace.update(cx, |workspace, cx| {
-                                workspace.edit_active_property(k.clone(), edit.clone(), window, cx);
+                    .child(key_cell)
+                    .child(value_cell);
+                if links.is_none() {
+                    if let Some(workspace) = edit_ctx.clone() {
+                        let k = k.clone();
+                        let edit = edit.clone();
+                        row = row
+                            .cursor_pointer()
+                            .hover(|row| row.bg(theme.accent.opacity(0.4)))
+                            .on_click(move |_, window, cx| {
+                                let Some(workspace) = workspace.upgrade() else {
+                                    return;
+                                };
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.edit_active_property(
+                                        k.clone(),
+                                        edit.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                });
                             });
-                        });
+                    }
                 }
                 rows = rows.child(row);
             }
@@ -779,6 +841,27 @@ fn prop_edit_text(v: &serde_yaml::Value) -> String {
         other => serde_yaml::to_string(other)
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
+    }
+}
+
+/// `[[wikilink]]` targets when EVERY scalar in the value is a link —
+/// `related: "[[a]]"` or a list of links renders as clickable chips;
+/// a mixed `["[[a]]", "plain text"]` stays plain text.
+fn prop_links(v: &serde_yaml::Value) -> Option<Vec<String>> {
+    fn target(s: &str) -> Option<String> {
+        s.trim()
+            .strip_prefix("![[")
+            .or_else(|| s.trim().strip_prefix("[["))
+            .and_then(|s| s.strip_suffix("]]"))
+            .map(|t| t.split('|').next().unwrap_or(t).trim().to_string())
+            .filter(|t| !t.is_empty())
+    }
+    match v {
+        serde_yaml::Value::String(s) => target(s).map(|t| vec![t]),
+        serde_yaml::Value::Sequence(items) if !items.is_empty() => {
+            items.iter().map(|i| i.as_str().and_then(target)).collect()
+        }
+        _ => None,
     }
 }
 
