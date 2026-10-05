@@ -144,6 +144,8 @@ enum PaletteCmd {
     Heading4,
     Heading5,
     Heading6,
+    InsertLink,
+    InsertHr,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -328,6 +330,16 @@ impl PaletteCmd {
                 assets::IconName::Heading6,
                 "Heading 6",
                 &["title", "format", "h6"],
+            ),
+            InsertLink => (
+                assets::IconName::Link,
+                "Insert markdown link",
+                &["url", "anchor", "format"],
+            ),
+            InsertHr => (
+                assets::IconName::Minus,
+                "Insert horizontal rule",
+                &["divider", "separator", "hr"],
             ),
             DeleteLine => (
                 assets::IconName::Delete,
@@ -1659,6 +1671,8 @@ impl Workspace {
             PaletteCmd::Heading4,
             PaletteCmd::Heading5,
             PaletteCmd::Heading6,
+            PaletteCmd::InsertLink,
+            PaletteCmd::InsertHr,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -1875,6 +1889,28 @@ impl Workspace {
             PaletteCmd::Heading4 => self.heading_toggle(4, cx, window),
             PaletteCmd::Heading5 => self.heading_toggle(5, cx, window),
             PaletteCmd::Heading6 => self.heading_toggle(6, cx, window),
+            PaletteCmd::InsertLink => {
+                let url = cx.read_from_clipboard().and_then(|item| {
+                    item.entries.iter().find_map(|e| match e {
+                        ClipboardEntry::String(t) => {
+                            let u = t.text.trim();
+                            ((u.starts_with("https://") || u.starts_with("http://"))
+                                && !u.chars().any(char::is_whitespace)
+                                && u.len() < 2048)
+                                .then(|| u.to_string())
+                        }
+                        _ => None,
+                    })
+                });
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.insert_link(url.as_deref(), window, cx));
+                }
+            }
+            PaletteCmd::InsertHr => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.insert_hr(window, cx));
+                }
+            }
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.

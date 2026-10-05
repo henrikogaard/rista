@@ -866,6 +866,49 @@ impl Document {
         })
     }
 
+    /// Palette "Insert markdown link" — wraps the selection as the
+    /// label (`[sel](url)`). `url` comes from the clipboard; when it
+    /// is empty the caret lands inside `()` ready to type the target.
+    pub fn insert_link(&mut self, url: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let label = text[sel.clone()].to_string();
+            let u = url.unwrap_or("");
+            let out = format!("[{label}]({u})");
+            editor.set_selected_range(sel.clone(), cx);
+            editor.replace(out.clone(), window, cx);
+            // Caret inside `()` when no url yet, after `)` when there is.
+            let pos = sel.start
+                + if u.is_empty() {
+                    out.len() - 1
+                } else {
+                    out.len()
+                };
+            editor.set_selected_range(pos..pos, cx);
+        });
+    }
+
+    /// Palette "Insert horizontal rule" — a `---` paragraph at the
+    /// caret, separated by blank lines (it starts its own line when
+    /// the caret is mid-line).
+    pub fn insert_hr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let nl = if sel.start > 0 && !text[..sel.start].ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            };
+            let out = format!("{nl}---\n\n");
+            editor.set_selected_range(sel.clone(), cx);
+            editor.replace(out.clone(), window, cx);
+            let pos = sel.start + out.len() - 1;
+            editor.set_selected_range(pos..pos, cx);
+        });
+    }
+
     /// Duplicate the line(s) covered by the selection (⌘D). The copy
     /// lands right below and the selection follows it.
     pub fn duplicate_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {
