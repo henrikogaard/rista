@@ -14,7 +14,6 @@
 //!   rendered by the workspace above the preview.
 
 use gpui_kit::base::StyledExt;
-use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::component::text::{
     InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
     MarkdownPlugin,
@@ -46,7 +45,9 @@ pub type EmbedViews = std::sync::Arc<
 pub fn extensions(folds: &CalloutFolds, ctx: Option<&PreviewCtx>) -> MarkdownExtensions {
     let ext = MarkdownExtensions::default()
         .frontmatter()
-        .plugin(FrontmatterPlugin::new())
+        .plugin(PropertiesPlugin {
+            folds: folds.clone(),
+        })
         .plugin(LocalImagePlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin);
@@ -501,6 +502,171 @@ impl CalloutFolds {
             let current = map.get(&key).copied().unwrap_or(default);
             map.insert(key, !current);
         }
+    }
+}
+
+/// Frontmatter rendered Obsidian-style: a compact, collapsible
+/// "Properties" strip instead of a raw YAML table. Properties are the
+/// data behind bases, so they stay visible — just not noisy.
+struct PropertiesPlugin {
+    folds: CalloutFolds,
+}
+
+impl MarkdownPlugin for PropertiesPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "properties"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Yaml(yaml) = node else {
+            return None;
+        };
+        let entries = serde_yaml::from_str::<serde_yaml::Value>(&yaml.value)
+            .ok()
+            .and_then(|v| v.as_mapping().cloned())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), prop_display(v))))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let key = node.position().map(|p| p.start.offset).unwrap_or_default();
+        Some(
+            MarkdownNode::new("properties", (entries, key))
+                .text("properties")
+                .markdown(yaml.value.clone()),
+        )
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (entries, key) = node
+            .data::<(Vec<(String, String)>, usize)>()
+            .expect("properties node data");
+        let theme = cx.theme();
+        if entries.is_empty() {
+            return div().into_any_element();
+        }
+        let folded = self.folds.is_folded(*key, false);
+        let folds = self.folds.clone();
+        let key = *key;
+        let mut rows = v_flex().w_full();
+        if !folded {
+            for (k, v) in entries {
+                rows = rows.child(
+                    h_flex()
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .gap_3()
+                        .border_t_1()
+                        .border_color(theme.border.opacity(0.5))
+                        .child(
+                            div()
+                                .w(px(110.))
+                                .flex_none()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .truncate()
+                                .child(k.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_sm()
+                                .text_color(theme.foreground)
+                                .truncate()
+                                .child(v.clone()),
+                        ),
+                );
+            }
+        }
+        v_flex()
+            .w_full()
+            .my_2()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius)
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .id(("properties-header", key))
+                    .w_full()
+                    .px_3()
+                    .py_1p5()
+                    .gap_2()
+                    .items_center()
+                    .cursor_pointer()
+                    .on_click(move |_, window, _cx| {
+                        folds.toggle(key, false);
+                        window.refresh();
+                    })
+                    .child(
+                        Icon::new(if folded {
+                            gpui_kit::component::IconName::ChevronRight
+                        } else {
+                            gpui_kit::component::IconName::ChevronDown
+                        })
+                        .size_4()
+                        .text_color(theme.muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(theme.muted_foreground)
+                            .child("Properties"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("{}", entries.len())),
+                    ),
+            )
+            .child(rows)
+            .into_any_element()
+    }
+}
+
+/// Display value for a frontmatter property — scalars as-is, lists
+/// joined, `[[wikilinks]]`/`![[embeds]]` unwrapped to their targets.
+fn prop_display(v: &serde_yaml::Value) -> String {
+    fn unwrap_link(s: &str) -> String {
+        let inner = s
+            .trim()
+            .strip_prefix("![[")
+            .or_else(|| s.trim().strip_prefix("[["))
+            .and_then(|s| s.strip_suffix("]]"));
+        inner
+            .map(|t| {
+                t.split('|')
+                    .next()
+                    .unwrap_or("")
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_else(|| s.to_string())
+    }
+    match v {
+        serde_yaml::Value::String(s) => unwrap_link(s),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .map(prop_display)
+            .collect::<Vec<_>>()
+            .join(", "),
+        serde_yaml::Value::Null => String::new(),
+        other => serde_yaml::to_string(other)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
     }
 }
 
