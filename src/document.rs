@@ -288,6 +288,50 @@ impl Document {
         });
     }
 
+    /// Flip the task-list marker (`[ ]`/`[x]`) on `line` (1-based) —
+    /// the preview's interactive checkbox writes back into source.
+    /// Line numbers survive `preprocess` rewriting; byte offsets don't.
+    /// The found `[x]` still has to follow a list bullet before we splice.
+    pub fn toggle_task(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let mut start = 0usize;
+            for (n, l) in text.split_inclusive('\n').enumerate() {
+                if n + 1 != line {
+                    start += l.len();
+                    continue;
+                }
+                let seg = &text[start..start + l.len()];
+                let Some(rel) = seg.find('[') else {
+                    return;
+                };
+                let at = start + rel;
+                let next = match (text.as_bytes().get(at + 1), text.as_bytes().get(at + 2)) {
+                    (Some(b' '), Some(b']')) => "x",
+                    (Some(b'x') | Some(b'X'), Some(b']')) => " ",
+                    _ => return,
+                };
+                // `- [ ]` / `* [ ]` / `+ [ ]` / `1. [ ]` — the `[` must
+                // follow a list bullet on its line.
+                let prefix = seg[..rel].trim_end();
+                let bullet = prefix.ends_with('-')
+                    || prefix.ends_with('*')
+                    || prefix.ends_with('+')
+                    || prefix
+                        .rsplit(' ')
+                        .next()
+                        .and_then(|t| t.strip_suffix('.'))
+                        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+                if !bullet {
+                    return;
+                }
+                editor.set_selected_range(at + 1..at + 2, cx);
+                editor.replace(next.to_string(), window, cx);
+                return;
+            }
+        });
+    }
+
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(meta) = std::fs::metadata(&self.path) else {

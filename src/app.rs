@@ -291,6 +291,14 @@ impl Workspace {
             .map(|d| &d.entity)
     }
 
+    /// Preview checkbox click → flip the `- [ ]` marker on `line`
+    /// (1-based) in the active document.
+    pub fn toggle_task_pub(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc() {
+            doc.update(cx, |doc, cx| doc.toggle_task(line, window, cx));
+        }
+    }
+
     fn open_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self
             .docs
@@ -1688,7 +1696,7 @@ impl Workspace {
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
             .child(
                 TextView::new(&state)
-                    .markdown_extensions(preview::extensions(&folds, Some(&base_ctx)))
+                    .markdown_extensions(preview::extensions(&folds, Some(&base_ctx), true))
                     .selectable(true)
                     .scrollable(true)
                     .on_link_click({

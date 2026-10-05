@@ -41,8 +41,15 @@ pub type EmbedViews = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::bases::BaseView>>>,
 >;
 
-/// Markdown extensions Rísta renders with.
-pub fn extensions(folds: &CalloutFolds, ctx: Option<&PreviewCtx>) -> MarkdownExtensions {
+/// Markdown extensions Rísta renders with. `doc_anchored` is true only
+/// when the text being parsed is the document itself — nested fragment
+/// renderers (callout/task/transclude bodies) pass false so plugins that
+/// write back into the source (task checkboxes) stay doc-level only.
+pub fn extensions(
+    folds: &CalloutFolds,
+    ctx: Option<&PreviewCtx>,
+    doc_anchored: bool,
+) -> MarkdownExtensions {
     let ext = MarkdownExtensions::default()
         .frontmatter()
         .plugin(PropertiesPlugin {
@@ -57,6 +64,11 @@ pub fn extensions(folds: &CalloutFolds, ctx: Option<&PreviewCtx>) -> MarkdownExt
             .plugin(TranscludePlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
+            })
+            .plugin(TaskListPlugin {
+                ctx: Some(ctx.clone()),
+                folds: folds.clone(),
+                doc_anchored,
             }),
         None => ext,
     }
@@ -795,7 +807,11 @@ impl MarkdownPlugin for CalloutPlugin {
                                 "callout-body",
                                 callout.body.clone(),
                             )
-                            .markdown_extensions(extensions(&self.folds, self.ctx.as_ref())),
+                            .markdown_extensions(extensions(
+                                &self.folds,
+                                self.ctx.as_ref(),
+                                false,
+                            )),
                         ),
                 )
             })
@@ -1356,7 +1372,7 @@ impl MarkdownPlugin for TranscludePlugin {
                     .pl_3()
                     .child(
                         gpui_kit::component::text::TextView::markdown("transclude", content)
-                            .markdown_extensions(extensions(&self.folds, Some(&nested))),
+                            .markdown_extensions(extensions(&self.folds, Some(&nested), false)),
                     )
                     .into_any_element()
             }
@@ -1861,4 +1877,176 @@ fn tex_to_unicode(src: &str) -> String {
     }
 
     render(src.trim())
+}
+
+// ------------------------------------------------------------------
+// Task lists — `- [ ]`/`- [x]` items render interactive checkboxes
+// that splice the marker back into the document. The whole list is
+// claimed (mixed task/plain items render together, nested lists flow
+// through each item's body TextView).
+// ------------------------------------------------------------------
+
+#[derive(Clone)]
+struct TaskItem {
+    checked: Option<bool>,
+    /// 1-based source line of the `- [ ]` marker — write-back anchor.
+    /// Lines survive `preprocess` untouched, unlike byte offsets.
+    line: usize,
+    /// Item body markdown — list marker and `[ ]` stripped.
+    body: String,
+}
+
+struct TaskList {
+    ordered: bool,
+    items: Vec<TaskItem>,
+}
+
+fn strip_item_marker(src: &str) -> &str {
+    let t = src.trim_start();
+    if t.len() > 2 && matches!(t.as_bytes()[0], b'-' | b'*' | b'+') && t.as_bytes()[1] == b' ' {
+        return &t[2..];
+    }
+    if let Some(dot) = t.find(". ") {
+        if dot < 4 && t[..dot].chars().all(|c| c.is_ascii_digit()) {
+            return &t[dot + 2..];
+        }
+    }
+    src
+}
+
+struct TaskListPlugin {
+    ctx: Option<PreviewCtx>,
+    folds: CalloutFolds,
+    /// True only when parsing the document itself (not a nested fragment).
+    doc_anchored: bool,
+}
+
+impl MarkdownPlugin for TaskListPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "task-list"
+    }
+
+    fn parse(&self, node: &mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::List(list) = node else {
+            return None;
+        };
+        if !list
+            .children
+            .iter()
+            .any(|c| matches!(c, mdast::Node::ListItem(i) if i.checked.is_some()))
+        {
+            return None;
+        }
+        let mut items = Vec::new();
+        for child in &list.children {
+            let mdast::Node::ListItem(item) = child else {
+                continue;
+            };
+            let src = cx.node_source(child)?;
+            let line = child.position().map(|p| p.start.line).unwrap_or(0);
+            let body = if item.checked.is_some() {
+                src.find(']')
+                    .map(|i| src[i + 1..].trim_start_matches(' ').to_string())
+                    .unwrap_or_else(|| src.to_string())
+            } else {
+                strip_item_marker(src).to_string()
+            };
+            items.push(TaskItem {
+                checked: item.checked,
+                line,
+                body,
+            });
+        }
+        Some(
+            MarkdownNode::new(
+                "task-list",
+                TaskList {
+                    ordered: list.ordered,
+                    items,
+                },
+            )
+            .markdown(cx.node_source(node).unwrap_or_default().to_string()),
+        )
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let list = node.data::<TaskList>().expect("task-list node data");
+        let theme = cx.theme();
+        let mut rows = v_flex().w_full().my_1().gap_0p5();
+        let mut ordinal = 0u32;
+        for (ix, item) in list.items.iter().enumerate() {
+            ordinal += 1;
+            let marker_el = match item.checked {
+                Some(checked) => {
+                    let ctx = self.doc_anchored.then(|| self.ctx.clone()).flatten();
+                    let line = item.line;
+                    let mut cb = div()
+                        .id(("task-checkbox", line))
+                        .w(px(15.))
+                        .h(px(15.))
+                        .mt(px(4.))
+                        .flex_none()
+                        .border_1()
+                        .rounded(px(3.));
+                    if checked {
+                        cb = cb.border_color(theme.accent).bg(theme.accent).child(
+                            Icon::new(assets::IconName::Check)
+                                .size_3()
+                                .text_color(theme.background),
+                        );
+                    } else {
+                        cb = cb.border_color(theme.muted_foreground);
+                    }
+                    if let Some(ctx) = ctx {
+                        cb = cb.cursor_pointer().on_click(move |_, window, cx| {
+                            let _ = ctx
+                                .workspace
+                                .update(cx, |ws, cx| ws.toggle_task_pub(line, window, cx));
+                        });
+                    }
+                    cb.into_any_element()
+                }
+                None if list.ordered => div()
+                    .w(px(20.))
+                    .flex_none()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(format!("{ordinal}."))
+                    .into_any_element(),
+                None => div()
+                    .w(px(16.))
+                    .flex_none()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .text_center()
+                    .child("•")
+                    .into_any_element(),
+            };
+            rows = rows.child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_1p5()
+                    .child(marker_el)
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            gpui_kit::component::text::TextView::markdown(
+                                ("task-item", ix),
+                                item.body.clone(),
+                            )
+                            .markdown_extensions(extensions(
+                                &self.folds,
+                                self.ctx.as_ref(),
+                                false,
+                            )),
+                        ),
+                    ),
+            );
+        }
+        rows
+    }
 }
