@@ -1415,9 +1415,11 @@ impl Workspace {
             PaletteCmd::PreviewMode => self.set_view_mode(ViewMode::Preview, window, cx),
             PaletteCmd::ToggleSidebar => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             PaletteCmd::ToggleZen => self.on_toggle_zen(&ToggleZen, window, cx),
-            PaletteCmd::ProjectSearch => {
-                self.on_open_project_search(&OpenProjectSearch, window, cx)
-            }
+            PaletteCmd::ProjectSearch => self.defer_dialog(
+                |ws, window, cx| ws.on_open_project_search(&OpenProjectSearch, window, cx),
+                window,
+                cx,
+            ),
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
             PaletteCmd::ToggleCheckbox => self.on_toggle_checkbox(&ToggleCheckbox, window, cx),
@@ -1498,7 +1500,11 @@ impl Workspace {
                 }
             }
             PaletteCmd::ExportHtml => self.export_html(window, cx),
-            PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
+            PaletteCmd::Settings => self.defer_dialog(
+                |ws, window, cx| ws.on_open_settings(&OpenSettings, window, cx),
+                window,
+                cx,
+            ),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
         }
