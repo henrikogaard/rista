@@ -86,6 +86,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-enter", ToggleCheckbox, None),
         KeyBinding::new("cmd-i", ToggleItalic, None),
         KeyBinding::new("cmd-d", DuplicateBlock, None),
+        KeyBinding::new("cmd-shift-k", DeleteLine, None),
         KeyBinding::new("cmd-/", ToggleComment, None),
         // Navigation
         KeyBinding::new("ctrl-tab", NextTab, None),

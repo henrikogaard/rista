@@ -21,6 +21,7 @@ actions!(
         ToggleCheckbox,
         ToggleItalic,
         DuplicateBlock,
+        DeleteLine,
         ToggleComment,
         // Navigation
         NextTab,

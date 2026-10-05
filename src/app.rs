@@ -131,6 +131,7 @@ enum PaletteCmd {
     ToggleHighlight,
     ToggleStrike,
     ExtractSelection,
+    DeleteLine,
     PageHistory,
     RestoreDeleted,
     InsertTemplate,
@@ -249,6 +250,11 @@ impl PaletteCmd {
                 assets::IconName::Scissors,
                 "Extract selection to new note…",
                 &["cut", "refactor", "composer"],
+            ),
+            DeleteLine => (
+                assets::IconName::Delete,
+                "Delete line",
+                &["remove", "paragraph", "row"],
             ),
             PageHistory => (
                 assets::IconName::FileClock,
@@ -1306,6 +1312,13 @@ impl Workspace {
         self.note_status(format!("Extracted to {name}.md"), cx);
     }
 
+    /// ⌘⇧K — delete the line(s) under the selection.
+    fn on_delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.delete_lines(window, cx));
+        }
+    }
+
     /// ⌘D — duplicate the line(s) under the selection.
     fn on_duplicate_block(
         &mut self,
@@ -1521,6 +1534,7 @@ impl Workspace {
             PaletteCmd::ToggleHighlight,
             PaletteCmd::ToggleStrike,
             PaletteCmd::ExtractSelection,
+            PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
             PaletteCmd::InsertTemplate,
@@ -1715,6 +1729,7 @@ impl Workspace {
             PaletteCmd::ExtractSelection => {
                 self.defer_dialog(Self::show_extract_dialog, window, cx)
             }
+            PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
@@ -5119,6 +5134,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_view_preview))
             .on_action(cx.listener(Self::on_toggle_edit_preview))
             .on_action(cx.listener(Self::on_duplicate_block))
+            .on_action(cx.listener(Self::on_delete_line))
             .on_action(cx.listener(Self::on_toggle_comment))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))

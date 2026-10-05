@@ -1008,6 +1008,40 @@ impl Document {
         });
     }
 
+    /// ⌘⇧K — delete every line the selection touches, trailing
+    /// newline included; the caret lands on the next line (or the
+    /// previous one at EOF).
+    pub fn delete_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            if text.is_empty() {
+                return;
+            }
+            let ls = text[..sel.start.min(text.len())]
+                .rfind('\n')
+                .map(|j| j + 1)
+                .unwrap_or(0);
+            let le = text[sel.end.min(text.len())..]
+                .find('\n')
+                .map(|j| sel.end + j + 1)
+                .unwrap_or(text.len());
+            // First line has no leading \n — also drop it from the
+            // previous line's end so no blank line remains.
+            let (drop_start, drop_end, caret) = if le < text.len() {
+                (ls, le, ls)
+            } else if ls > 0 {
+                (ls - 1, le, ls - 1)
+            } else {
+                (0, le, 0)
+            };
+            editor.set_selected_range(drop_start..drop_end, cx);
+            editor.replace(String::new(), window, cx);
+            let len = editor.value().len();
+            editor.set_selected_range(caret.min(len)..caret.min(len), cx);
+        });
+    }
+
     /// Byte-exact selected text + its range — `None` when the selection
     /// is empty. Used by "extract to new note".
     pub fn selected_text(&self, cx: &App) -> Option<(String, std::ops::Range<usize>)> {
