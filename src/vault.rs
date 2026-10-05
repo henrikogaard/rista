@@ -211,6 +211,38 @@ impl Vault {
         links
     }
 
+    /// Byte ranges of the inner `target` text of every `[[wikilink]]` /
+    /// `![[embed]]` in `text` that resolves to `target` — used by
+    /// link-safe rename to rewrite the span in place.
+    pub fn link_spans_to(&self, text: &str, target: &Path) -> Vec<std::ops::Range<usize>> {
+        let mut out = Vec::new();
+        let mut cursor = 0;
+        while let Some(at) = text[cursor..].find("[[").map(|i| cursor + i) {
+            let Some(end) = text[at + 2..].find("]]").map(|i| at + 2 + i) else {
+                break;
+            };
+            if self.resolve_link_target(&text[at + 2..end]).as_deref() == Some(target) {
+                out.push((at + 2)..end);
+            }
+            cursor = end + 2;
+        }
+        out
+    }
+
+    /// `resolve_wikilink` plus embedded-file targets (`![[image.png]]`),
+    /// which resolve by basename against the image index.
+    fn resolve_link_target(&self, target: &str) -> Option<PathBuf> {
+        self.resolve_wikilink(target).or_else(|| {
+            let name = target
+                .split(['#', '|'])
+                .next()
+                .unwrap_or(target)
+                .trim()
+                .to_lowercase();
+            self.images.borrow().get(&name).cloned()
+        })
+    }
+
     /// The daily-note path for today: `YYYY-MM-DD.md` at vault root.
     pub fn daily_note(&self) -> Option<PathBuf> {
         self.root
@@ -223,6 +255,30 @@ impl Vault {
         let images = Rc::clone(&self.images);
         std::rc::Rc::new(move |name: &str| images.borrow().get(&name.to_lowercase()).cloned())
     }
+}
+
+/// Sorted, non-overlapping `(byte range, replacement)` edits into a
+/// note's text — produced by `link_spans_to` + `retarget_link`.
+pub type TextEdits = Vec<(std::ops::Range<usize>, String)>;
+
+/// The new inner text for a `[[...]]`/`![[...]]` whose target was renamed
+/// to `new_name` — swaps the last path segment only, keeping any
+/// `#anchor` and `|alias` suffix and the target's directory prefix.
+/// `new_name` is a stem for notes, a filename for other files.
+pub fn retarget_link(inner: &str, new_name: &str) -> String {
+    let (pre, rest) = match inner.find(['#', '|']) {
+        Some(i) => inner.split_at(i),
+        None => (inner, ""),
+    };
+    let pre = pre.trim();
+    let (prefix, base) = match pre.rfind('/') {
+        Some(i) => (&pre[..i + 1], &pre[i + 1..]),
+        None => ("", pre),
+    };
+    if base.trim_end_matches(".md").is_empty() {
+        return inner.to_string();
+    }
+    format!("{prefix}{new_name}{rest}")
 }
 
 fn should_skip(entry: &std::fs::DirEntry) -> bool {

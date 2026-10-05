@@ -1234,6 +1234,46 @@ impl Workspace {
         if new_path == path || new_path.exists() {
             return;
         }
+        // Collect inbound `[[link]]`/`![[embed]]` targets resolving to the
+        // file *before* it moves — resolution uses the pre-rename index.
+        // Notes retarget by stem, other files (images) by full filename.
+        let link_name = if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            new_path
+                .file_stem()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            new_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
+        let mut rewrites: Vec<(PathBuf, crate::vault::TextEdits)> = Vec::new();
+        if path.is_file() {
+            let vault = self.vault.read(cx);
+            for note in &vault.notes {
+                let text = match self.docs.iter().find(|d| d.entity.read(cx).path == *note) {
+                    Some(doc) => doc.entity.read(cx).editor.read(cx).value().to_string(),
+                    None => match std::fs::read_to_string(note) {
+                        Ok(text) => text,
+                        Err(_) => continue,
+                    },
+                };
+                let edits: Vec<_> = vault
+                    .link_spans_to(&text, &path)
+                    .into_iter()
+                    .map(|range| {
+                        (
+                            range.clone(),
+                            crate::vault::retarget_link(&text[range], &link_name),
+                        )
+                    })
+                    .collect();
+                if !edits.is_empty() {
+                    rewrites.push((note.clone(), edits));
+                }
+            }
+        }
         if std::fs::rename(&path, &new_path).is_ok() {
             // Keep open tabs honest.
             for doc in &self.docs {
@@ -1243,6 +1283,50 @@ impl Workspace {
                     }
                 });
             }
+            let mut updated = 0;
+            for (note, edits) in rewrites {
+                updated += edits.len();
+                // The renamed file itself lives at `new_path` now.
+                let target = if note == path { &new_path } else { &note };
+                if let Some(doc) = self.docs.iter().find(|d| d.entity.read(cx).path == *target) {
+                    doc.entity
+                        .update(cx, |doc, cx| doc.apply_text_edits(edits, window, cx));
+                } else if let Ok(mut text) = std::fs::read_to_string(target) {
+                    for (range, rep) in edits.into_iter().rev() {
+                        text.replace_range(range, &rep);
+                    }
+                    let _ = std::fs::write(target, text);
+                }
+            }
+            // Starred + recent entries point at the old path too.
+            let old_s = path.to_string_lossy().to_string();
+            let new_s = new_path.to_string_lossy().to_string();
+            let mut touched = false;
+            for s in &mut self.settings.starred {
+                if *s == old_s {
+                    *s = new_s.clone();
+                    touched = true;
+                }
+            }
+            if touched {
+                self.settings.save();
+            }
+            for p in &mut self.recent {
+                if *p == path {
+                    *p = new_path.clone();
+                }
+            }
+            self.note_status(
+                if updated > 0 {
+                    format!(
+                        "Renamed — {updated} link{} updated",
+                        if updated == 1 { "" } else { "s" }
+                    )
+                } else {
+                    "Renamed".to_string()
+                },
+                cx,
+            );
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
         }
         let _ = window;

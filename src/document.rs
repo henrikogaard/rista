@@ -633,6 +633,24 @@ impl Document {
         });
     }
 
+    /// Splice a set of byte-range replacements into the source text —
+    /// link-safe rename retargets wikilinks this way. Ranges must be
+    /// sorted by start and non-overlapping; applied right-to-left so
+    /// earlier offsets stay valid.
+    pub fn apply_text_edits(
+        &mut self,
+        edits: crate::vault::TextEdits,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            for (range, text) in edits.into_iter().rev() {
+                editor.set_selected_range(range, cx);
+                editor.replace(text, window, cx);
+            }
+        });
+    }
+
     /// Apply live-editing settings onto this editor.
     pub fn apply_settings(
         &mut self,
