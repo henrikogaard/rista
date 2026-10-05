@@ -613,6 +613,16 @@ fn row_data(
         "ctime".into(),
         Lit::Num(meta.as_ref().map(|m| epoch_of(m.created())).unwrap_or(0.0)),
     );
+    // `file.day` — date parsed from a `YYYY-MM-DD` stem (daily notes),
+    // like Obsidian. Absent when the name isn't date-shaped.
+    if let Some(day) = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .and_then(|s| parse_date(&s))
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+    {
+        file_meta.insert("day".into(), Lit::Num(day.and_utc().timestamp() as f64));
+    }
     let text = std::fs::read_to_string(path).unwrap_or_default();
     // `file.tags` — Obsidian's `#name`-shaped tag list (frontmatter +
     // inline `#tag`s, code-span and fence safe).
@@ -1488,8 +1498,10 @@ fn eval_filter_node(node: &Value, env: &mut Env) -> Result<bool, String> {
 
 /// Columns whose Num cells are unix epochs shown as `YYYY-MM-DD HH:MM`.
 fn is_date_column(name: &str) -> bool {
-    matches!(name, "file.mtime" | "file.ctime" | "file.date" | "date")
-        || name.strip_prefix("note.").is_some_and(|p| p == "date")
+    matches!(
+        name,
+        "file.mtime" | "file.ctime" | "file.date" | "file.day" | "date"
+    ) || name.strip_prefix("note.").is_some_and(|p| p == "date")
 }
 
 fn compute(
