@@ -474,6 +474,44 @@ impl Workspace {
         }
     }
 
+    /// Sidebar Tasks-pane checkbox → mark the task done (`- [x]`).
+    /// Goes through the editor when the note is open (undoable,
+    /// autosaves); flips the marker on disk for closed notes.
+    fn complete_task(
+        &mut self,
+        path: PathBuf,
+        line: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self
+            .docs
+            .iter()
+            .find(|d| d.entity.read(cx).path == path)
+            .map(|d| d.entity.clone())
+        {
+            doc.update(cx, |doc, cx| doc.toggle_task(line, window, cx));
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let out: String = text
+            .split_inclusive('\n')
+            .enumerate()
+            .map(|(i, l)| {
+                if i + 1 == line {
+                    l.replacen("[ ]", "[x]", 1)
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        if std::fs::write(&path, out).is_ok() {
+            self.note_status("Task completed", cx);
+        }
+    }
+
     /// Preview wikilink hover → anchor the peek card at `pos`. Repeat
     /// moves over the same link update silently — the card stays
     /// anchored where the hover started, like Obsidian's page preview.
@@ -3628,9 +3666,26 @@ impl Workspace {
                                         .gap_1p5()
                                         .items_center()
                                         .child(
-                                            Icon::new(assets::IconName::Square)
-                                                .size_3()
-                                                .text_color(theme.muted_foreground),
+                                            div()
+                                                .id(("task-check", ix))
+                                                .cursor_pointer()
+                                                .child(
+                                                    Icon::new(assets::IconName::Square)
+                                                        .size_3()
+                                                        .text_color(theme.muted_foreground),
+                                                )
+                                                .on_click(cx.listener({
+                                                    let path = path.clone();
+                                                    move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.complete_task(
+                                                            path.clone(),
+                                                            line,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                })),
                                         )
                                         .child(
                                             div()
