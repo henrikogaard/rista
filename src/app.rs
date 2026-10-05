@@ -692,6 +692,29 @@ impl Workspace {
         self.close_tab_now(ix, cx);
     }
 
+    /// Drag a tab onto another tab to reorder the strip. `self.active`
+    /// tracks by path so the active doc keeps its highlight wherever it
+    /// lands; nav history is path-based and unaffected.
+    fn move_tab(&mut self, from: usize, to: usize, _window: &mut Window, cx: &mut Context<Self>) {
+        if from >= self.docs.len() || to >= self.docs.len() || from == to {
+            return;
+        }
+        let active_path = self
+            .active
+            .and_then(|i| self.docs.get(i))
+            .map(|d| d.entity.read(cx).path.clone());
+        let entry = self.docs.remove(from);
+        self.docs.insert(to, entry);
+        if let Some(path) = active_path {
+            self.active = self
+                .docs
+                .iter()
+                .position(|d| d.entity.read(cx).path == path);
+        }
+        self.persist_tabs(cx);
+        cx.notify();
+    }
+
     fn close_tab_now(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.docs.len() {
             return;
@@ -4093,11 +4116,12 @@ impl Workspace {
                     };
                     (title, doc.dirty, icon)
                 };
+                let view = cx.entity();
                 Tab::new()
                     .label(if dirty {
-                        format!("{} •", title)
+                        format!("{} •", title.clone())
                     } else {
-                        title
+                        title.clone()
                     })
                     // Icon goes in `prefix`: the vendored Tab renders the
                     // `icon` slot INSTEAD of the label, not beside it.
@@ -4111,6 +4135,25 @@ impl Workspace {
                                 this.close_tab_at(ix, window, cx);
                             })),
                     )
+                    .on_drag(DraggedTab(ix), {
+                        let label = title.clone();
+                        move |_, _, _, cx| {
+                            cx.new(|_| TreeDragPreview {
+                                label: label.clone().into(),
+                            })
+                        }
+                    })
+                    .drag_over::<DraggedTab>(|style, _, _, cx| {
+                        style.bg(cx.theme().accent.opacity(0.15))
+                    })
+                    .on_drop::<DraggedTab>({
+                        let view = view.clone();
+                        move |src, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.move_tab(src.0, ix, window, cx);
+                            });
+                        }
+                    })
             })
             .collect();
 
@@ -5051,6 +5094,9 @@ fn is_iso_date(s: &str) -> Option<chrono::NaiveDate> {
 struct TreeDragPreview {
     label: SharedString,
 }
+
+/// Drag payload for reordering document tabs — carries the source index.
+struct DraggedTab(usize);
 
 impl Render for TreeDragPreview {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
