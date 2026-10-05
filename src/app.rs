@@ -2925,7 +2925,9 @@ impl Workspace {
 
     /// Notes that link to the active document — Obsidian's linked-
     /// mentions pane, pinned in the sidebar. Click opens the note.
+    /// Hover rows get the same peek card as the tree and .base rows.
     fn render_backlinks_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ws_entity = cx.entity().downgrade();
         let theme = cx.theme();
         let links = self.backlinks(cx);
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
@@ -3017,7 +3019,25 @@ impl Workspace {
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_document_pub(open.clone(), window, cx);
-                            })),
+                            }))
+                            .on_mouse_move({
+                                let ws = ws_entity.clone();
+                                let path = path.clone();
+                                move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                    let _ = ws.update(cx, |ws, cx| {
+                                        ws.peek_at(path.clone(), ev.position, cx)
+                                    });
+                                }
+                            })
+                            .on_hover({
+                                let ws = ws_entity.clone();
+                                let path = path.clone();
+                                move |hovered: &bool, _window, cx| {
+                                    if !*hovered {
+                                        let _ = ws.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                    }
+                                }
+                            }),
                     );
                 }
                 if !unlinked.is_empty() {
@@ -3070,7 +3090,25 @@ impl Workspace {
                                 )
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_document_pub(open.clone(), window, cx);
-                                })),
+                                }))
+                                .on_mouse_move({
+                                    let ws = ws_entity.clone();
+                                    let path = path.clone();
+                                    move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                        let _ = ws.update(cx, |ws, cx| {
+                                            ws.peek_at(path.clone(), ev.position, cx)
+                                        });
+                                    }
+                                })
+                                .on_hover({
+                                    let ws = ws_entity.clone();
+                                    let path = path.clone();
+                                    move |hovered: &bool, _window, cx| {
+                                        if !*hovered {
+                                            let _ = ws.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                        }
+                                    }
+                                }),
                         );
                         rows = rows.child(
                             div()
