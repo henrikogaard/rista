@@ -714,6 +714,9 @@ struct Env<'a> {
     /// the filtered row set.
     rows: &'a [RowData],
     formulas: &'a BTreeMap<String, Expr>,
+    /// The `values` list a named summary formula aggregates over —
+    /// only bound inside `summaries:` evaluation.
+    values: Option<Vec<Lit>>,
     resolve: &'a dyn Fn(&str) -> Option<PathBuf>,
     depth: usize,
 }
@@ -756,6 +759,94 @@ fn aggregate(agg: &str, vals: Vec<Lit>) -> Result<Lit, String> {
     }
 }
 
+/// Built-in `.base` summary names (Obsidian's set) over a column's
+/// values across the filtered row set. Returns `None` for names that
+/// aren't built-ins — the caller then tries `summaries:` formulas.
+fn summarize_builtin(name: &str, vals: &[Lit]) -> Option<Lit> {
+    fn nums(vals: &[Lit]) -> Vec<f64> {
+        vals.iter()
+            .filter_map(|v| match v {
+                Lit::Num(n) => Some(*n),
+                _ => None,
+            })
+            .collect()
+    }
+    fn is_empty(v: &Lit) -> bool {
+        match v {
+            Lit::Null => true,
+            Lit::Str(s) => s.is_empty(),
+            Lit::List(items) => items.is_empty(),
+            _ => false,
+        }
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "sum" => Some(Lit::Num(nums(vals).iter().sum())),
+        "average" | "avg" | "mean" => {
+            let ns = nums(vals);
+            Some(Lit::Num(if ns.is_empty() {
+                0.0
+            } else {
+                ns.iter().sum::<f64>() / ns.len() as f64
+            }))
+        }
+        "min" | "earliest" => vals
+            .iter()
+            .filter(|v| !matches!(v, Lit::Null))
+            .min_by(|a, b| lit_cmp(a, b))
+            .cloned(),
+        "max" | "latest" => vals
+            .iter()
+            .filter(|v| !matches!(v, Lit::Null))
+            .max_by(|a, b| lit_cmp(a, b))
+            .cloned(),
+        "median" => {
+            let mut ns = nums(vals);
+            ns.sort_by(f64::total_cmp);
+            match ns.len() {
+                0 => Some(Lit::Null),
+                n if n % 2 == 1 => Some(Lit::Num(ns[n / 2])),
+                n => Some(Lit::Num((ns[n / 2 - 1] + ns[n / 2]) / 2.0)),
+            }
+        }
+        "range" => {
+            let ns = nums(vals);
+            match (
+                ns.iter().copied().reduce(f64::min),
+                ns.iter().copied().reduce(f64::max),
+            ) {
+                (Some(min), Some(max)) => Some(Lit::Num(max - min)),
+                _ => Some(Lit::Null),
+            }
+        }
+        "checked" => Some(Lit::Num(
+            vals.iter().filter(|v| matches!(v, Lit::Bool(true))).count() as f64,
+        )),
+        "unchecked" => Some(Lit::Num(
+            vals.iter()
+                .filter(|v| matches!(v, Lit::Bool(false)))
+                .count() as f64,
+        )),
+        "empty" => Some(Lit::Num(vals.iter().filter(|v| is_empty(v)).count() as f64)),
+        "filled" => Some(Lit::Num(vals.iter().filter(|v| !is_empty(v)).count() as f64)),
+        "unique" => {
+            let mut sorted = vals.to_vec();
+            sorted.sort_by(lit_cmp);
+            sorted.dedup_by(|a, b| lit_cmp(a, b) == std::cmp::Ordering::Equal);
+            Some(Lit::Num(sorted.len() as f64))
+        }
+        "count" => Some(Lit::Num(vals.len() as f64)),
+        _ => None,
+    }
+}
+
+/// Row-less env target for `values`-only summary formulas.
+static SUMMARY_ROW: RowData = RowData {
+    path: PathBuf::new(),
+    props: BTreeMap::new(),
+    link_props: std::collections::BTreeSet::new(),
+    file_meta: BTreeMap::new(),
+};
+
 fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
     if env.depth > 32 {
         return Err("formula recursion".into());
@@ -763,14 +854,17 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
     match expr {
         Expr::Lit(l) => Ok(l.clone()),
         Expr::Ref(ns, name) => match ns.as_deref() {
-            None => Ok(env
-                .row
-                .props
-                .get(name)
-                .cloned()
-                // Bare `file.*`/`note.*`-less refs to file metadata work too.
-                .or_else(|| env.row.file_meta.get(name).cloned())
-                .unwrap_or(Lit::Null)),
+            None => Ok(if name == "values" {
+                env.values.clone().map(Lit::List).unwrap_or(Lit::Null)
+            } else {
+                env.row
+                    .props
+                    .get(name)
+                    .cloned()
+                    // Bare `file.*`/`note.*`-less refs to file metadata work too.
+                    .or_else(|| env.row.file_meta.get(name).cloned())
+                    .unwrap_or(Lit::Null)
+            }),
             Some("file") => Ok(env.row.file_meta.get(name).cloned().unwrap_or(Lit::Null)),
             Some("note") => Ok(env.row.props.get(name).cloned().unwrap_or(Lit::Null)),
             Some("formula") => {
@@ -1060,6 +1154,27 @@ fn apply_method(value: &Lit, name: &str, args: &[Lit]) -> Result<Lit, String> {
             Lit::List(items) => aggregate(name, items.clone()),
             _ => Err(format!("{name} needs a list")),
         },
+        // `values.mean().round(3)` — Obsidian summary formulas round
+        // to decimal places, not just integers.
+        "round" | "floor" | "ceil" | "abs" => match value {
+            Lit::Num(n) => {
+                let places = args
+                    .first()
+                    .and_then(|a| match a {
+                        Lit::Num(p) => Some(*p as i32),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let f = 10f64.powi(places);
+                Ok(Lit::Num(match name {
+                    "round" => (n * f).round() / f,
+                    "floor" => (n * f).floor() / f,
+                    "ceil" => (n * f).ceil() / f,
+                    _ => n.abs(),
+                }))
+            }
+            _ => Err(format!("{name} needs a number")),
+        },
         _ => Err(format!("unknown method '{name}'")),
     }
 }
@@ -1143,11 +1258,16 @@ struct ViewSpec {
     sort: Vec<SortKey>,
     limit: Option<usize>,
     filters: Option<Value>,
+    /// `summaries:` — `(column prop, summary name)` in YAML order.
+    summaries: Vec<(String, String)>,
 }
 
 struct BaseSpec {
     filters: Option<Value>,
     formulas: BTreeMap<String, Expr>,
+    /// Top-level `summaries:` — named custom formulas evaluated over
+    /// `values` (the column's values across the filtered row set).
+    summaries: BTreeMap<String, Expr>,
     properties: BTreeMap<String, String>,
     views: Vec<ViewSpec>,
     error: Option<String>,
@@ -1158,6 +1278,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
     let mut spec = BaseSpec {
         filters: None,
         formulas: BTreeMap::new(),
+        summaries: BTreeMap::new(),
         properties: BTreeMap::new(),
         views: Vec::new(),
         error: None,
@@ -1188,6 +1309,22 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 }
                 Err(e) => {
                     spec.error = Some(format!("formula '{name}': {e}"));
+                }
+            }
+        }
+    }
+
+    if let Some(Value::Mapping(s)) = get("summaries") {
+        for (k, v) in s {
+            let (Some(name), Some(src)) = (k.as_str(), v.as_str()) else {
+                continue;
+            };
+            match parse_expr(src) {
+                Ok(expr) => {
+                    spec.summaries.insert(name.to_string(), expr);
+                }
+                Err(e) => {
+                    spec.error = Some(format!("summary '{name}': {e}"));
                 }
             }
         }
@@ -1281,6 +1418,16 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 _ => {}
             }
             let limit = getv("limit").and_then(|l| l.as_u64()).map(|n| n as usize);
+            let summaries = getv("summaries")
+                .and_then(|s| s.as_mapping())
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), v.as_str()?.to_string()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             spec.views.push(ViewSpec {
                 name,
                 kind,
@@ -1290,6 +1437,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 sort,
                 limit,
                 filters: getv("filters").cloned(),
+                summaries,
             });
         }
     }
@@ -1305,6 +1453,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             sort: Vec::new(),
             limit: None,
             filters: None,
+            summaries: Vec::new(),
         });
     }
     spec
@@ -1448,6 +1597,9 @@ struct Computed {
     /// Frontmatter pairs a new note needs to satisfy the base + view
     /// filters — `prop == literal` under conjunctions only.
     prefill: Vec<(String, String)>,
+    /// `summaries:` results — `(column ix, summary name, display)`
+    /// rendered as a footer row under table views.
+    summaries: Vec<(usize, String, String)>,
     error: Option<String>,
 }
 
@@ -1650,6 +1802,7 @@ fn compute(
             row,
             rows: &all_rows,
             formulas: &spec.formulas,
+            values: None,
             resolve: &resolve,
             depth: 0,
         };
@@ -1727,6 +1880,7 @@ fn compute(
             row,
             rows: &all_rows,
             formulas: &spec.formulas,
+            values: None,
             resolve: &resolve,
             depth: 0,
         };
@@ -1769,6 +1923,48 @@ fn compute(
             }
             std::cmp::Ordering::Equal
         });
+    }
+
+    // `summaries:` aggregate over the filtered row set (before
+    // `limit`) — `(column ix, name, display text)` aligned with
+    // `headers`. Column props not in `order:` have no cell to land
+    // under, so they're skipped.
+    let mut summaries: Vec<(usize, String, String)> = Vec::new();
+    for (prop, name) in &view.summaries {
+        let (Ok(expr), Some(col_ix)) = (parse_expr(prop), columns.iter().position(|c| c == prop))
+        else {
+            continue;
+        };
+        let vals: Vec<Lit> = rows
+            .iter()
+            .map(|(row, _, _)| {
+                let mut env = Env {
+                    row,
+                    rows: &all_rows,
+                    formulas: &spec.formulas,
+                    values: None,
+                    resolve: &resolve,
+                    depth: 0,
+                };
+                eval(&expr, &mut env).unwrap_or(Lit::Null)
+            })
+            .collect();
+        let lit = summarize_builtin(name, &vals).or_else(|| {
+            spec.summaries.get(name).and_then(|expr| {
+                let mut env = Env {
+                    row: &SUMMARY_ROW,
+                    rows: &all_rows,
+                    formulas: &spec.formulas,
+                    values: Some(vals.clone()),
+                    resolve: &resolve,
+                    depth: 0,
+                };
+                eval(expr, &mut env).ok()
+            })
+        });
+        if let Some(lit) = lit {
+            summaries.push((col_ix, name.clone(), lit.display()));
+        }
     }
 
     if let Some(limit) = view.limit {
@@ -1904,6 +2100,7 @@ fn compute(
             .map(|g| g.strip_prefix("note.").unwrap_or(g).to_string())
             .filter(|g| !g.is_empty() && !g.starts_with("formula.") && !g.starts_with("file.")),
         prefill: prefill_pairs(spec, view),
+        summaries,
         error,
     }
 }
@@ -3302,6 +3499,32 @@ impl Render for BaseView {
                 );
             }
         }
+        // `summaries:` footer row — aggregate cells under their
+        // column, same grid as the header.
+        if !computed.summaries.is_empty() && !cards && !kanban && !calendar && !list {
+            rows = rows.child(
+                h_flex()
+                    .w_full()
+                    .px_3()
+                    .py_1p5()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .children(computed.headers.iter().enumerate().map(|(ix, _)| {
+                        let cell = computed.summaries.iter().find(|(c, _, _)| *c == ix);
+                        div()
+                            .when(ix == 0, |d| d.flex_1())
+                            .when(ix > 0, |d| d.w(px(140.)).flex_none())
+                            .text_xs()
+                            .truncate()
+                            .text_color(theme.muted_foreground)
+                            .child(
+                                cell.map(|(_, name, val)| format!("{name}: {val}"))
+                                    .unwrap_or_default(),
+                            )
+                    })),
+            );
+        }
+
         if visible.is_empty() && computed.error.is_none() {
             rows = rows.child(
                 div()
@@ -3399,6 +3622,7 @@ mod tests {
             row: &rows[0],
             rows: &rows,
             formulas: &formulas,
+            values: None,
             resolve: &no_resolve,
             depth: 0,
         };
@@ -3484,6 +3708,7 @@ mod tests {
             row: &rows[0],
             rows: &rows,
             formulas: &formulas,
+            values: None,
             resolve: &resolve,
             depth: 0,
         };
@@ -3511,6 +3736,7 @@ mod tests {
             row: &rows[0],
             rows: &rows,
             formulas: &formulas,
+            values: None,
             resolve: &no_resolve,
             depth: 0,
         };
