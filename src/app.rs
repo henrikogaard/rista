@@ -498,10 +498,51 @@ impl Workspace {
         match doc.update(cx, |doc, cx| doc.link_at_cursor(cx)) {
             Some(crate::document::LinkTarget::Url(url)) => cx.open_url(&url),
             Some(crate::document::LinkTarget::Note(name)) => {
-                let resolved = self.vault.read(cx).resolve_wikilink(&name);
+                let (resolved, root) = {
+                    let vault = self.vault.read(cx);
+                    (vault.resolve_wikilink(&name), vault.root.clone())
+                };
                 match resolved {
                     Some(path) => self.open_document(path, window, cx),
-                    None => self.note_status("Link resolves to no note", cx),
+                    None => {
+                        // Obsidian: following an unresolved link creates
+                        // the note. `a/b/c` anchors at the vault root;
+                        // plain names land beside the source note.
+                        let cleaned = name
+                            .split(['|', '#'])
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .trim_start_matches('/')
+                            .trim_end_matches(".md");
+                        let rel = std::path::Path::new(cleaned);
+                        let safe = !cleaned.is_empty()
+                            && rel
+                                .components()
+                                .all(|c| matches!(c, std::path::Component::Normal(_)));
+                        let base = if cleaned.contains('/') {
+                            root
+                        } else {
+                            doc.read(cx).path.parent().map(|p| p.to_path_buf())
+                        };
+                        match (safe, base) {
+                            (true, Some(dir)) => {
+                                let path = dir.join(rel).with_extension("md");
+                                let ok = path
+                                    .parent()
+                                    .map(|p| std::fs::create_dir_all(p).is_ok())
+                                    .unwrap_or(false)
+                                    && std::fs::write(&path, b"").is_ok();
+                                if ok {
+                                    self.vault.update(cx, |vault, cx| vault.refresh(cx));
+                                    self.open_document(path, window, cx);
+                                } else {
+                                    self.note_status("Couldn't create note", cx);
+                                }
+                            }
+                            _ => self.note_status("Link resolves to no note", cx),
+                        }
+                    }
                 }
             }
             None => self.note_status("No link under cursor", cx),
