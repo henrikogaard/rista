@@ -5454,7 +5454,7 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let (state, banner, folds, embeds, mentions, mentions_open) = {
+        let (state, banner, folds, embeds, mentions, mentions_open, has_frontmatter) = {
             let doc = doc.read(cx);
             (
                 doc.preview.clone(),
@@ -5463,6 +5463,8 @@ impl Workspace {
                 doc.base_embeds.clone(),
                 doc.linked_mentions.clone(),
                 doc.mentions_open,
+                crate::properties::frontmatter_span(&doc.editor.read(cx).value().to_string())
+                    .is_some(),
             )
         };
         let base_ctx = preview::PreviewCtx {
@@ -5477,6 +5479,31 @@ impl Workspace {
             .size_full()
             .overflow_hidden()
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
+            // Notes without frontmatter get the same "+ Add property"
+            // affordance Obsidian shows — the write path creates the
+            // `---` block on first use.
+            .when(!has_frontmatter, |this| {
+                this.child(
+                    div()
+                        .id("properties-empty")
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .my_2()
+                        .cursor_pointer()
+                        .rounded(theme.radius)
+                        .hover(|row| row.bg(theme.accent.opacity(0.4)))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("+ Add property"),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_add_property_dialog(window, cx);
+                        })),
+                )
+            })
             .child(
                 TextView::new(&state)
                     .markdown_extensions(preview::extensions(&folds, Some(&base_ctx), true))
