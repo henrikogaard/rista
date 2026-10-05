@@ -422,6 +422,28 @@ pub fn retarget_link(inner: &str, new_name: &str) -> String {
     format!("{prefix}{new_name}{rest}")
 }
 
+/// Like `retarget_link` but for a file that MOVED directories:
+/// `new_rel` is the target's vault-root-relative path (no `.md`).
+/// Dir-prefixed `[[notes/a]]` gets the new folder (`[[docs/b]]`);
+/// a bare `[[a]]` stays bare (`[[b]]`) since it resolves vault-wide.
+pub fn retarget_link_full(inner: &str, new_rel: &str) -> String {
+    let (pre, rest) = match inner.find(['#', '|']) {
+        Some(i) => inner.split_at(i),
+        None => (inner, ""),
+    };
+    let pre = pre.trim();
+    let has_dir = pre.contains('/');
+    if pre.trim_end_matches(".md").ends_with('/') || pre.is_empty() {
+        return inner.to_string();
+    }
+    let target = if has_dir {
+        new_rel.to_string()
+    } else {
+        new_rel.rsplit('/').next().unwrap_or(new_rel).to_string()
+    };
+    format!("{target}{rest}")
+}
+
 /// The new inner text for a `[label](target)` link whose target was
 /// renamed — swaps the last path segment, keeps `#anchor`/`?query`
 /// suffixes, and preserves the original style: plain, `<>`-wrapped, or
@@ -453,6 +475,37 @@ pub fn retarget_md_link(inner: &str, new_filename: &str) -> String {
     };
     let body = format!("{prefix}{seg}{rest}");
     if wrapped || (!escaped && new_filename.contains(' ')) {
+        format!("<{body}>")
+    } else {
+        body
+    }
+}
+
+/// Like `retarget_md_link` but for a file that MOVED directories:
+/// replaces the whole path body with `new_rel` (vault-root-relative,
+/// extension included) so `[x](notes/a.md)` → `[x](docs/b.md)`.
+pub fn retarget_md_link_full(inner: &str, new_rel: &str) -> String {
+    let trimmed = inner.trim();
+    let wrapped = trimmed.starts_with('<');
+    let body = trimmed
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    let rest = match body.find(['#', '?']) {
+        Some(i) => &body[i..],
+        None => "",
+    };
+    if body.is_empty() {
+        return inner.to_string();
+    }
+    let escaped = new_rel.contains('%') || body.contains('%');
+    let seg = if escaped {
+        new_rel.replace(' ', "%20")
+    } else {
+        new_rel.to_string()
+    };
+    let body = format!("{seg}{rest}");
+    if wrapped || (!escaped && new_rel.contains(' ')) {
         format!("<{body}>")
     } else {
         body

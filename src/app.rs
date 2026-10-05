@@ -2187,7 +2187,7 @@ impl Workspace {
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
-                .title("Rename")
+                .title("Rename / move")
                 .w(px(400.))
                 .child(div().w_full().child(Input::new(&input).appearance(true)))
                 .on_ok({
@@ -2215,15 +2215,38 @@ impl Workspace {
     fn commit_rename(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.rename_input.read(cx).value().to_string();
         let name = name.trim();
-        if name.is_empty() {
+        let bad_name = name.is_empty()
+            || name.starts_with('/')
+            || name.ends_with('/')
+            || name.contains("..")
+            || name
+                .chars()
+                .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'));
+        if bad_name {
+            self.note_status("Invalid name", cx);
             return;
         }
-        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
-            return;
+        // A `/` in the name moves the file: it resolves against the
+        // vault root (Obsidian's rename-as-move), creating folders
+        // on the way. A bare name stays in the same directory.
+        let new_path = if name.contains('/') {
+            let Some(root) = self.vault.read(cx).root.clone() else {
+                return;
+            };
+            root.join(name)
+        } else {
+            let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
+                return;
+            };
+            dir.join(name)
         };
-        let new_path = dir.join(name);
         if new_path == path || new_path.exists() {
             return;
+        }
+        if name.contains('/') {
+            if let Some(parent) = new_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
         }
         // Collect inbound `[[link]]`/`![[embed]]` targets resolving to the
         // file *before* it moves — resolution uses the pre-rename index.
@@ -2246,6 +2269,15 @@ impl Workspace {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+            // When the file changed directories, dir-prefixed and
+            // relative links need the new root-relative path, not a
+            // basename swap.
+            let moved = new_path.parent() != path.parent();
+            let link_rel = new_path
+                .strip_prefix(vault.root.as_deref().unwrap_or(std::path::Path::new("")))
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let wiki_rel = link_rel.trim_end_matches(".md").to_string();
             for note in &vault.notes {
                 let text = match self.docs.iter().find(|d| d.entity.read(cx).path == *note) {
                     Some(doc) => doc.entity.read(cx).editor.read(cx).value().to_string(),
@@ -2260,7 +2292,11 @@ impl Workspace {
                     .map(|range| {
                         (
                             range.clone(),
-                            crate::vault::retarget_link(&text[range], &link_name),
+                            if moved {
+                                crate::vault::retarget_link_full(&text[range], &wiki_rel)
+                            } else {
+                                crate::vault::retarget_link(&text[range], &link_name)
+                            },
                         )
                     })
                     .collect();
@@ -2274,7 +2310,11 @@ impl Workspace {
                             .map(|range| {
                                 (
                                     range.clone(),
-                                    crate::vault::retarget_md_link(&text[range], &file_name),
+                                    if moved {
+                                        crate::vault::retarget_md_link_full(&text[range], &link_rel)
+                                    } else {
+                                        crate::vault::retarget_md_link(&text[range], &file_name)
+                                    },
                                 )
                             }),
                     );
@@ -2313,7 +2353,12 @@ impl Workspace {
             let old_s = path.to_string_lossy().to_string();
             let new_s = new_path.to_string_lossy().to_string();
             let mut touched = false;
-            for s in &mut self.settings.starred {
+            for s in self
+                .settings
+                .starred
+                .iter_mut()
+                .chain(self.settings.pinned_tabs.iter_mut())
+            {
                 if *s == old_s {
                     *s = new_s.clone();
                     touched = true;
@@ -2325,6 +2370,18 @@ impl Workspace {
             for p in &mut self.recent {
                 if *p == path {
                     *p = new_path.clone();
+                }
+            }
+            // A move can leave the source folder(s) empty — remove them,
+            // climbing toward the vault root (never past it).
+            if moved {
+                let root = self.vault.read(cx).root.clone();
+                let mut dir = path.parent();
+                while let Some(d) = dir {
+                    if Some(d) == root.as_deref() || std::fs::remove_dir(d).is_err() {
+                        break;
+                    }
+                    dir = d.parent();
                 }
             }
             self.note_status(
