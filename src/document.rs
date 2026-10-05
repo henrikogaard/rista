@@ -23,6 +23,8 @@ impl EventEmitter<DocumentEvent> for Document {}
 pub struct Document {
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
+    /// Collapsible-callout fold state, keyed by callout source offset.
+    pub callout_folds: preview::CalloutFolds,
     pub preview: Entity<TextViewState>,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
@@ -73,6 +75,7 @@ impl Document {
         let mut this = Self {
             path,
             editor,
+            callout_folds: preview::CalloutFolds::default(),
             preview,
             dirty: false,
             conflict: false,

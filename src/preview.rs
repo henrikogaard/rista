@@ -26,12 +26,13 @@ use markdown::mdast;
 use std::path::{Path, PathBuf};
 
 /// Markdown extensions Rísta renders with.
-pub fn extensions() -> MarkdownExtensions {
+pub fn extensions(folds: &CalloutFolds) -> MarkdownExtensions {
     MarkdownExtensions::default()
         .frontmatter()
         .plugin(FrontmatterPlugin::new())
         .plugin(LocalImagePlugin)
-        .plugin(CalloutPlugin)
+        .plugin(CalloutPlugin::new(folds.clone()))
+        .plugin(LinkCardPlugin)
 }
 
 /// Rewrite Obsidian syntax into CommonMark for the preview pipeline.
@@ -450,17 +451,53 @@ fn resolve_banner_value(
 // Callouts: `> [!note]` / `> [!warning]-` Obsidian-style admonitions.
 // ------------------------------------------------------------------
 
+/// Fold state for collapsible callouts, keyed by source offset so it
+/// survives preview re-syncs. Shared between the document, the plugin
+/// instance and the rendered chevron's click handler.
+#[derive(Clone, Default)]
+pub struct CalloutFolds(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, bool>>>);
+
+impl CalloutFolds {
+    fn is_folded(&self, key: usize, default: bool) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&key).copied())
+            .unwrap_or(default)
+    }
+
+    fn toggle(&self, key: usize, default: bool) {
+        if let Ok(mut map) = self.0.lock() {
+            let current = map.get(&key).copied().unwrap_or(default);
+            map.insert(key, !current);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Callout {
     kind: String,
     title: String,
     /// Inner markdown, `>` markers already stripped.
     body: String,
+    /// Source offset — fold-state key.
+    key: usize,
+    /// `+`/`-` marker present (`> [!note]-`): the callout is collapsible.
+    /// Value is the default fold when the user hasn't toggled it.
+    foldable: Option<bool>,
 }
 
 /// Parses `> [!type]` blockquotes into a custom node; other blockquotes pass
 /// through to the default renderer.
-pub struct CalloutPlugin;
+pub struct CalloutPlugin {
+    folds: CalloutFolds,
+}
+
+impl CalloutPlugin {
+    pub fn new(folds: CalloutFolds) -> Self {
+        Self { folds }
+    }
+}
 
 impl MarkdownPlugin for CalloutPlugin {
     fn is_block(&self) -> bool {
@@ -476,7 +513,11 @@ impl MarkdownPlugin for CalloutPlugin {
             return None;
         }
         let source = cx.node_source(node)?;
-        let callout = parse_callout(source)?;
+        let mut callout = parse_callout(source)?;
+        callout.key = node
+            .position()
+            .map(|position| position.start.offset)
+            .unwrap_or_default();
         let text = if callout.title.is_empty() {
             callout.kind.clone()
         } else {
@@ -493,33 +534,58 @@ impl MarkdownPlugin for CalloutPlugin {
         let callout = node.data::<Callout>().expect("callout node data");
         let theme = cx.theme();
         let accent = callout_accent(&callout.kind, cx);
+        let folded = callout
+            .foldable
+            .is_some_and(|default| self.folds.is_folded(callout.key, default));
+
+        let folds = self.folds.clone();
+        let key = callout.key;
+        let default_fold = callout.foldable.unwrap_or_default();
+        let mut header = h_flex()
+            .id(("callout-header", key))
+            .w_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .items_center();
+        if callout.foldable.is_some() {
+            header = header
+                .cursor_pointer()
+                .on_click(move |_, window, _cx| {
+                    folds.toggle(key, default_fold);
+                    window.refresh();
+                })
+                .child(
+                    Icon::new(if folded {
+                        gpui_kit::component::IconName::ChevronRight
+                    } else {
+                        gpui_kit::component::IconName::ChevronDown
+                    })
+                    .size_4()
+                    .text_color(accent),
+                );
+        }
+        let header = header
+            .child(
+                Icon::new(callout_icon(&callout.kind))
+                    .size_4()
+                    .text_color(accent),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(accent)
+                    .child(callout.title.clone()),
+            );
 
         v_flex()
             .w_full()
             .rounded(theme.radius)
             .bg(theme.accent)
             .overflow_hidden()
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Icon::new(callout_icon(&callout.kind))
-                            .size_4()
-                            .text_color(accent),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_semibold()
-                            .text_color(accent)
-                            .child(callout.title.clone()),
-                    ),
-            )
-            .when(!callout.body.trim().is_empty(), |this| {
+            .child(header)
+            .when(!folded && !callout.body.trim().is_empty(), |this| {
                 this.child(
                     div()
                         .w_full()
@@ -532,7 +598,7 @@ impl MarkdownPlugin for CalloutPlugin {
                                 "callout-body",
                                 callout.body.clone(),
                             )
-                            .markdown_extensions(extensions()),
+                            .markdown_extensions(extensions(&self.folds)),
                         ),
                 )
             })
@@ -560,12 +626,22 @@ fn parse_callout(source: &str) -> Option<Callout> {
     let end = rest.find(']')?;
     let mut kind = rest[..end].to_lowercase();
     let mut tail = rest[end + 1..].trim_start();
-    // Fold markers `+`/`-` are honored syntactically but callouts render open.
-    if let Some(stripped) = tail.strip_prefix('+').or_else(|| tail.strip_prefix('-')) {
+    // Obsidian fold markers: `[!type]-` starts folded, `[!type]+` starts
+    // expanded; without a marker the callout is not collapsible.
+    let mut foldable = None;
+    if let Some(stripped) = tail.strip_prefix('-') {
+        foldable = Some(true);
+        tail = stripped.trim_start();
+    } else if let Some(stripped) = tail.strip_prefix('+') {
+        foldable = Some(false);
         tail = stripped.trim_start();
     }
-    // An optional `-` on the kind token itself (`[!note]-`).
-    if let Some(stripped) = kind.strip_suffix('-').or_else(|| kind.strip_suffix('+')) {
+    // Marker on the kind token itself (`[!note-]`).
+    if let Some(stripped) = kind.strip_suffix('-') {
+        foldable = Some(true);
+        kind = stripped.to_string();
+    } else if let Some(stripped) = kind.strip_suffix('+') {
+        foldable = Some(false);
         kind = stripped.to_string();
     }
     if kind.is_empty() || !kind.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -577,7 +653,13 @@ fn parse_callout(source: &str) -> Option<Callout> {
         tail.to_string()
     };
     let body = lines.collect::<Vec<_>>().join("\n");
-    Some(Callout { kind, title, body })
+    Some(Callout {
+        kind,
+        title,
+        body,
+        key: 0,
+        foldable,
+    })
 }
 
 fn titleize(kind: &str) -> String {
@@ -616,4 +698,329 @@ fn callout_accent(kind: &str, cx: &App) -> gpui_kit::Hsla {
         "tip" | "hint" | "important" => colors.success,
         _ => colors.info,
     }
+}
+
+// ── Link preview cards ──────────────────────────────────────────────
+//
+// A paragraph that is exactly one bare `https://…` link renders as a
+// bookmark card (Notion-style) once its OpenGraph metadata has loaded.
+
+/// Fetch state for a card, keyed by URL — global since the same link
+/// shows the same card in every note.
+enum CardFetch {
+    Pending,
+    Done(Option<LinkCard>),
+}
+
+#[derive(Clone, Debug)]
+struct LinkCard {
+    title: String,
+    description: String,
+    image: Option<String>,
+    site: String,
+}
+
+static LINK_CARDS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, CardFetch>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[derive(Debug, Clone)]
+struct BareLink {
+    url: String,
+}
+
+struct LinkCardPlugin;
+
+impl MarkdownPlugin for LinkCardPlugin {
+    fn name(&self) -> &str {
+        "link-card"
+    }
+
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Paragraph(paragraph) = node else {
+            return None;
+        };
+        let url = match paragraph.children.as_slice() {
+            // A bare URL GFM-autolinked into a Link — visible text must be
+            // the URL itself so `[title](url)` stays an inline link.
+            [mdast::Node::Link(link)] => match link.children.as_slice() {
+                [mdast::Node::Text(text)] if text.value.trim() == link.url.trim() => {
+                    link.url.trim()
+                }
+                _ => return None,
+            },
+            // Autolink off: the paragraph is one plain-text URL.
+            [mdast::Node::Text(text)] => {
+                let value = text.value.trim();
+                if value.chars().any(char::is_whitespace) {
+                    return None;
+                }
+                value
+            }
+            _ => return None,
+        };
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return None;
+        }
+        Some(
+            MarkdownNode::new(
+                "link-card",
+                BareLink {
+                    url: url.to_string(),
+                },
+            )
+            .text(url.to_string()),
+        )
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let link = node.data::<BareLink>().expect("link card data");
+        let url = link.url.clone();
+
+        enum Show {
+            Loading,
+            Card(Box<LinkCard>),
+            Fallback,
+        }
+        let show = match LINK_CARDS.lock().ok().as_deref() {
+            Some(map) => match map.get(&url) {
+                Some(CardFetch::Pending) => Show::Loading,
+                Some(CardFetch::Done(Some(card))) => Show::Card(Box::new(card.clone())),
+                Some(CardFetch::Done(None)) => Show::Fallback,
+                None => Show::Loading,
+            },
+            None => Show::Fallback,
+        };
+        if matches!(show, Show::Loading) {
+            let unseen = LINK_CARDS
+                .lock()
+                .ok()
+                .is_some_and(|m| !m.contains_key(&url));
+            if unseen {
+                if let Ok(mut map) = LINK_CARDS.lock() {
+                    map.insert(url.clone(), CardFetch::Pending);
+                }
+                queue_card_fetch(&url, cx);
+            }
+        }
+        let theme = cx.theme();
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&url, &mut hasher);
+        let key = std::hash::Hasher::finish(&hasher) as usize;
+        let open = url.clone();
+
+        match show {
+            Show::Loading | Show::Fallback => h_flex()
+                .id(("linkcard-pending", key))
+                .w_full()
+                .px_3()
+                .py_2()
+                .gap_2()
+                .items_center()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .on_click(move |_, _window, cx| cx.open_url(&open))
+                .child(
+                    Icon::new(gpui_kit::component::IconName::Globe)
+                        .size_4()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(url),
+                )
+                .into_any_element(),
+            Show::Card(card) => {
+                let title = if card.title.is_empty() {
+                    url.clone()
+                } else {
+                    card.title.clone()
+                };
+                let mut card_body = h_flex()
+                    .id(("linkcard", key))
+                    .w_full()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.border)
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .on_click(move |_, _window, cx| cx.open_url(&open))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .px_3()
+                            .py_2()
+                            .gap_1()
+                            .child(div().text_sm().font_semibold().child(title))
+                            .when(!card.description.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(card.description.clone()),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(card.site.clone()),
+                            ),
+                    );
+                if let Some(image) = card.image.clone() {
+                    card_body = card_body.child(
+                        gpui::img(image)
+                            .w(px(112.))
+                            .h_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    );
+                }
+                card_body.into_any_element()
+            }
+        }
+    }
+}
+
+fn queue_card_fetch(url: &str, cx: &mut App) {
+    let url = url.to_string();
+    cx.spawn(async move |cx| {
+        let data = cx
+            .background_executor()
+            .spawn({
+                let url = url.clone();
+                async move { fetch_link_card(&url) }
+            })
+            .await;
+        if let Ok(mut map) = LINK_CARDS.lock() {
+            map.insert(url, CardFetch::Done(data));
+        }
+        cx.update(|cx| cx.refresh_windows());
+    })
+    .detach();
+}
+
+/// Fetch `url` and scrape OpenGraph + `<title>` metadata. Blocking —
+/// must run on the background executor.
+fn fetch_link_card(url: &str) -> Option<LinkCard> {
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let mut response = agent.get(url).call().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let bytes = response.body_mut().read_to_vec().ok()?;
+    let html = String::from_utf8_lossy(&bytes[..bytes.len().min(512 * 1024)]);
+    let head = &html[..html.find("</head>").unwrap_or(html.len())];
+
+    let mut title = None;
+    let mut description = None;
+    let mut image = None;
+    let mut site = None;
+    for tag in head.match_indices("<meta") {
+        let rest = &head[tag.0..];
+        let end = rest.find('>').map(|e| e + 1).unwrap_or(rest.len());
+        let tag = &rest[..end];
+        let Some(content) = tag_attr(tag, "content") else {
+            continue;
+        };
+        match tag_attr(tag, "property")
+            .or_else(|| tag_attr(tag, "name"))
+            .as_deref()
+        {
+            Some("og:title") => {
+                title.get_or_insert(decode_entities(&content));
+            }
+            Some("og:description") | Some("description") | Some("twitter:description") => {
+                description.get_or_insert(decode_entities(&content));
+            }
+            Some("og:image") | Some("twitter:image") => {
+                image.get_or_insert(absolute_url(url, &content));
+            }
+            Some("og:site_name") => {
+                site.get_or_insert(decode_entities(&content));
+            }
+            _ => {}
+        }
+    }
+    if title.is_none() {
+        if let Some(start) = head.find("<title") {
+            if let Some(open_end) = head[start..].find('>').map(|e| start + e + 1) {
+                if let Some(close) = head[open_end..].find("</title>") {
+                    title = Some(decode_entities(head[open_end..open_end + close].trim()));
+                }
+            }
+        }
+    }
+    let site = site.unwrap_or_else(|| host_of(url));
+    let mut description = description.unwrap_or_default();
+    if description.len() > 200 {
+        description.truncate(197);
+        description.push('…');
+    }
+    Some(LinkCard {
+        title: title.unwrap_or_else(|| host_of(url)),
+        description,
+        image,
+        site,
+    })
+}
+
+fn tag_attr(tag: &str, name: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let needle = format!("{name}={quote}");
+        if let Some(start) = tag.find(&needle) {
+            let rest = &tag[start + needle.len()..];
+            if let Some(end) = rest.find(quote) {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
+fn host_of(url: &str) -> String {
+    url.split('/')
+        .nth(2)
+        .unwrap_or(url)
+        .trim_start_matches("www.")
+        .to_string()
+}
+
+/// Resolve a possibly-relative og:image against the page URL.
+fn absolute_url(base: &str, href: &str) -> String {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        href.to_string()
+    } else if let Some(rest) = href.strip_prefix("//") {
+        format!("https:{rest}")
+    } else if href.starts_with('/') {
+        let host = base.split('/').take(3).collect::<Vec<_>>().join("/");
+        format!("{host}{href}")
+    } else {
+        let base_dir = base.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(base);
+        format!("{base_dir}/{href}")
+    }
+}
+
+fn decode_entities(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&amp;", "&")
+        .trim()
+        .to_string()
 }
