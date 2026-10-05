@@ -1008,6 +1008,99 @@ impl Document {
         });
     }
 
+    /// Toggle `> ` on every line the selection touches — Obsidian's
+    /// "Blockquote" command. Strips it only when every non-empty
+    /// line is already quoted.
+    pub fn toggle_line_prefix(
+        &mut self,
+        prefix: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let ls = text[..sel.start.min(text.len())]
+                .rfind('\n')
+                .map(|j| j + 1)
+                .unwrap_or(0);
+            let le = text[sel.end.min(text.len())..]
+                .find('\n')
+                .map(|j| sel.end + j)
+                .unwrap_or(text.len());
+            let block = &text[ls..le];
+            let all_quoted = block
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .all(|l| l.trim_start().starts_with(prefix));
+            let mut out = String::with_capacity(block.len() + 8);
+            for (i, line) in block.split('\n').enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                }
+                if all_quoted {
+                    let at = line.find(prefix).unwrap_or(line.len());
+                    out.push_str(&line[..at]);
+                    out.push_str(&line[at + prefix.len()..]);
+                } else if line.trim().is_empty() {
+                    out.push_str(line);
+                } else {
+                    out.push_str(prefix);
+                    out.push_str(line);
+                }
+            }
+            editor.set_selected_range(ls..le, cx);
+            editor.replace(out, window, cx);
+            editor.set_selected_range(ls..ls, cx);
+        });
+    }
+
+    /// Toggle a ``` fence around the selected lines — the palette's
+    /// "Code block" command. Unwraps when the selection already sits
+    /// between a ``` pair; otherwise wraps whole lines.
+    pub fn toggle_fence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let ls = text[..sel.start.min(text.len())]
+                .rfind('\n')
+                .map(|j| j + 1)
+                .unwrap_or(0);
+            let le = text[sel.end.min(text.len())..]
+                .find('\n')
+                .map(|j| sel.end + j)
+                .unwrap_or(text.len());
+            let block = &text[ls..le];
+            // Wrapped already? `…```\n<block>\n```…`
+            let pre = &text[..ls];
+            let post = &text[le..];
+            if let Some(fence_start) = pre.rfind("```") {
+                let fence_line_start = pre[..fence_start].rfind('\n').map(|j| j + 1).unwrap_or(0);
+                let off = post.len() - post.trim_start_matches('\n').len();
+                let closes = post[off..].starts_with("```");
+                let only_fence = pre[fence_line_start..].trim_end_matches('\n') == "```" && closes;
+                if only_fence {
+                    // Drop "```" + its newline (keep the '\n' ending
+                    // the block), then the "```\n" opener line.
+                    let close_end = post[off..]
+                        .find('\n')
+                        .map(|j| le + off + j + 1)
+                        .unwrap_or(text.len());
+                    editor.set_selected_range(le + off..close_end, cx);
+                    editor.replace(String::new(), window, cx);
+                    editor.set_selected_range(fence_line_start..ls, cx);
+                    editor.replace(String::new(), window, cx);
+                    editor.set_selected_range(fence_line_start..fence_line_start, cx);
+                    return;
+                }
+            }
+            let wrapped = format!("```\n{block}\n```");
+            editor.set_selected_range(ls..le, cx);
+            editor.replace(wrapped, window, cx);
+            editor.set_selected_range(ls + 4..ls + 4, cx);
+        });
+    }
+
     /// ⌘⇧K — delete every line the selection touches, trailing
     /// newline included; the caret lands on the next line (or the
     /// previous one at EOF).

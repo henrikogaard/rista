@@ -132,6 +132,9 @@ enum PaletteCmd {
     ToggleStrike,
     ExtractSelection,
     NewBase,
+    ToggleCode,
+    ToggleQuote,
+    CodeBlock,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -256,6 +259,21 @@ impl PaletteCmd {
                 assets::IconName::Scissors,
                 "Extract selection to new note…",
                 &["cut", "refactor", "composer"],
+            ),
+            ToggleCode => (
+                assets::IconName::Code,
+                "Code",
+                &["inline", "backtick", "format", "wrap"],
+            ),
+            ToggleQuote => (
+                assets::IconName::Quote,
+                "Blockquote",
+                &["quote", "cite", "format"],
+            ),
+            CodeBlock => (
+                assets::IconName::SquareCode,
+                "Code block",
+                &["fence", "pre", "format", "wrap"],
             ),
             DeleteLine => (
                 assets::IconName::Delete,
@@ -1561,6 +1579,9 @@ impl Workspace {
             PaletteCmd::ToggleHighlight,
             PaletteCmd::ToggleStrike,
             PaletteCmd::ExtractSelection,
+            PaletteCmd::ToggleCode,
+            PaletteCmd::ToggleQuote,
+            PaletteCmd::CodeBlock,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -1756,6 +1777,17 @@ impl Workspace {
             PaletteCmd::ToggleStrike => self.wrap("~~", window, cx),
             PaletteCmd::ExtractSelection => {
                 self.defer_dialog(Self::show_extract_dialog, window, cx)
+            }
+            PaletteCmd::ToggleCode => self.wrap("`", window, cx),
+            PaletteCmd::ToggleQuote => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.toggle_line_prefix("> ", window, cx));
+                }
+            }
+            PaletteCmd::CodeBlock => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.toggle_fence(window, cx));
+                }
             }
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
