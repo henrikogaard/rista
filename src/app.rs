@@ -119,6 +119,7 @@ enum PaletteCmd {
     GoForward,
     FollowLink,
     ToggleStar,
+    CopyLink,
     Settings,
     ToggleTheme,
     Quit,
@@ -251,6 +252,11 @@ impl PaletteCmd {
                 assets::IconName::Star,
                 "Star/unstar current note",
                 &["star", "favorite", "bookmark", "pin"],
+            ),
+            CopyLink => (
+                assets::IconName::Link,
+                "Copy wikilink to note",
+                &["copy", "link", "wikilink", "reference", "clipboard"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -949,6 +955,7 @@ impl Workspace {
             PaletteCmd::GoForward,
             PaletteCmd::FollowLink,
             PaletteCmd::ToggleStar,
+            PaletteCmd::CopyLink,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -1132,6 +1139,21 @@ impl Workspace {
                 let path = self.active_doc().map(|d| d.read(cx).path.clone());
                 match path {
                     Some(path) => self.toggle_star(path, cx),
+                    None => self.note_status("No note open", cx),
+                }
+            }
+            PaletteCmd::CopyLink => {
+                let link = self.active_doc().and_then(|d| {
+                    d.read(cx)
+                        .path
+                        .file_stem()
+                        .map(|s| format!("[[{}]]", s.to_string_lossy()))
+                });
+                match link {
+                    Some(link) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                        self.note_status(format!("Copied {link}"), cx);
+                    }
                     None => self.note_status("No note open", cx),
                 }
             }
@@ -2325,11 +2347,14 @@ impl Workspace {
                 div().flex_1().min_h_0().child(
                     tree(&tree_state, {
                         let render_view = view.clone();
+                        let starred_rows = self.settings.starred.clone();
                         move |ix, entry, selected, _window, cx| {
                             render_view.update(cx, |_, cx| {
                                 let item = entry.item();
                                 let path = PathBuf::from(item.id.as_str());
                                 let is_file = !entry.is_folder();
+                                let is_starred =
+                                    is_file && starred_rows.iter().any(|s| s == item.id.as_str());
                                 let icon: assets::IconName = if is_file {
                                     assets::IconName::FileText
                                 } else if entry.is_expanded() {
@@ -2346,9 +2371,19 @@ impl Workspace {
                                     .selected(selected)
                                     .child(
                                         h_flex()
+                                            .w_full()
                                             .gap_2()
                                             .child(Icon::new(icon).size_4())
-                                            .child(div().truncate().child(item.label.clone())),
+                                            .child(
+                                                div().flex_1().truncate().child(item.label.clone()),
+                                            )
+                                            .when(is_starred, |h| {
+                                                h.child(
+                                                    Icon::new(assets::IconName::StarFill)
+                                                        .size_3()
+                                                        .text_color(cx.theme().info),
+                                                )
+                                            }),
                                     )
                                     .on_click(cx.listener({
                                         let path = path.clone();
@@ -2451,6 +2486,14 @@ impl Workspace {
                                                 this.show_rename_dialog(path.clone(), window, cx);
                                             });
                                         }
+                                    }),
+                            )
+                            .item(
+                                PopupMenuItem::new("Reveal in Finder")
+                                    .icon(assets::IconName::FolderOpen)
+                                    .on_click({
+                                        let path = path.clone();
+                                        move |_, _window, _cx| reveal_in_file_manager(&path)
                                     }),
                             )
                             .item(
@@ -3194,6 +3237,31 @@ fn render_linked_mentions(
                     })),
             )
         })
+}
+
+/// Open `path`'s containing folder in the OS file manager, with the
+/// entry selected where the platform supports it.
+fn reveal_in_file_manager(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.to_string_lossy()))
+            .spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(dir) = path.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        }
+    }
+    let _ = path;
 }
 
 /// Whether the file is an Obsidian-style `.base` database spec.
