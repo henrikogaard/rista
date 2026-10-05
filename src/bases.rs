@@ -811,12 +811,11 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
                 }
             }
             let value = eval(target, env)?;
-            let arg = match args.len() {
-                0 => None,
-                1 => Some(eval(&args[0], env)?),
-                _ => return Err(format!("{name} takes one argument")),
-            };
-            apply_method(&value, name, arg.as_ref())
+            let arg_values = args
+                .iter()
+                .map(|a| eval(a, env))
+                .collect::<Result<Vec<_>, _>>()?;
+            apply_method(&value, name, &arg_values)
         }
         Expr::Call(name, args) => {
             match name.as_str() {
@@ -874,7 +873,8 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
     }
 }
 
-fn apply_method(value: &Lit, name: &str, arg: Option<&Lit>) -> Result<Lit, String> {
+fn apply_method(value: &Lit, name: &str, args: &[Lit]) -> Result<Lit, String> {
+    let arg = args.first();
     match name {
         "contains" => match (value, arg) {
             (Lit::Str(s), Some(needle)) => Ok(Lit::Bool(s.contains(&needle.display()))),
@@ -894,6 +894,81 @@ fn apply_method(value: &Lit, name: &str, arg: Option<&Lit>) -> Result<Lit, Strin
         "isEmpty" => Ok(Lit::Bool(!value.truthy())),
         "lower" => Ok(Lit::Str(value.display().to_lowercase())),
         "upper" => Ok(Lit::Str(value.display().to_uppercase())),
+        "trim" => Ok(Lit::Str(value.display().trim().to_string())),
+        "title" => Ok(Lit::Str(
+            value
+                .display()
+                .split_whitespace()
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        )),
+        "replace" => match args {
+            [from, to] => Ok(Lit::Str(
+                value.display().replace(&from.display(), &to.display()),
+            )),
+            _ => Err("replace(from, to) wants 2 args".into()),
+        },
+        "split" => {
+            let sep = arg.map(Lit::display).unwrap_or_else(|| " ".into());
+            Ok(Lit::List(
+                value
+                    .display()
+                    .split(&sep)
+                    .map(|s| Lit::Str(s.to_string()))
+                    .collect(),
+            ))
+        }
+        "slice" => {
+            let (start, len) = match args {
+                [Lit::Num(s)] => (*s as usize, None),
+                [Lit::Num(s), Lit::Num(l)] => (*s as usize, Some(*l as usize)),
+                _ => return Err("slice(start[, length]) wants number args".into()),
+            };
+            match value {
+                Lit::List(items) => Ok(Lit::List(
+                    items
+                        .iter()
+                        .skip(start)
+                        .take(len.unwrap_or(usize::MAX))
+                        .cloned()
+                        .collect(),
+                )),
+                _ => Err("slice needs a list".into()),
+            }
+        }
+        "reverse" => match value {
+            Lit::List(items) => Ok(Lit::List(items.iter().rev().cloned().collect())),
+            _ => Err("reverse needs a list".into()),
+        },
+        "sort" => match value {
+            Lit::List(items) => {
+                let mut sorted = items.clone();
+                sorted.sort_by(lit_cmp);
+                Ok(Lit::List(sorted))
+            }
+            _ => Err("sort needs a list".into()),
+        },
+        "last" => match value {
+            Lit::List(items) => Ok(items.last().cloned().unwrap_or(Lit::Null)),
+            _ => Err("last needs a list".into()),
+        },
+        "indexOf" => match (value, arg) {
+            (Lit::List(items), Some(needle)) => Ok(Lit::Num(
+                items
+                    .iter()
+                    .position(|i| lit_eq(i, needle))
+                    .map(|i| i as f64)
+                    .unwrap_or(-1.0),
+            )),
+            _ => Err("indexOf needs a list + item".into()),
+        },
         "unique" => match value {
             Lit::List(items) => {
                 let mut seen = std::collections::BTreeSet::new();
@@ -930,13 +1005,15 @@ fn apply_method(value: &Lit, name: &str, arg: Option<&Lit>) -> Result<Lit, Strin
 
 fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
     match name {
-        "contains" | "startsWith" | "endsWith" | "isEmpty" | "lower" | "upper" => {
-            let (value, arg) = match args {
-                [v] => (v, None),
-                [v, a] => (v, Some(a)),
-                _ => return Err(format!("{name} wants 1–2 args")),
-            };
-            apply_method(value, name, arg)
+        // Method-style functions also work in `fn(value, …)` form —
+        // `contains(x, "a")`, `replace(s, "a", "b")`, `slice(l, 1, 2)`.
+        "contains" | "startsWith" | "endsWith" | "isEmpty" | "lower" | "upper" | "trim"
+        | "title" | "replace" | "split" | "slice" | "reverse" | "sort" | "last" | "indexOf"
+        | "unique" | "join" => {
+            if args.is_empty() {
+                return Err(format!("{name} wants at least 1 arg"));
+            }
+            apply_method(&args[0], name, &args[1..])
         }
         "sum" | "avg" | "mean" | "min" | "max" | "count" | "len" | "first" => match args {
             [Lit::List(items)] => aggregate(name, items.clone()),
@@ -3168,6 +3245,24 @@ mod tests {
         assert_eq!(evals(r#"path.startsWith("notes/")"#, &p), Lit::Bool(true));
         assert_eq!(evals(r#"tags.contains("b")"#, &p), Lit::Bool(true));
         assert_eq!(evals("n / 4 + 1", &p), Lit::Num(3.5));
+        assert_eq!(
+            evals(r#"path.trim().title()"#, &p),
+            Lit::Str("Notes/daily/2026.md".into())
+        );
+        assert_eq!(
+            evals(r#"path.split("/").slice(1, 2).join(",")"#, &p),
+            Lit::Str("daily,2026.md".into())
+        );
+        assert_eq!(evals(r#"tags.reverse().last()"#, &p), Lit::Str("a".into()));
+        assert_eq!(evals(r#"tags.indexOf("b")"#, &p), Lit::Num(1.0));
+        assert_eq!(
+            evals(r#"replace(path, "notes", "vault")"#, &p),
+            Lit::Str("vault/daily/2026.md".into())
+        );
+        assert_eq!(
+            evals(r#"path.split("/").sort().join(",")"#, &p),
+            Lit::Str("2026.md,daily,notes".into())
+        );
     }
 
     #[test]
