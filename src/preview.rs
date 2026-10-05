@@ -1541,6 +1541,91 @@ impl MarkdownPlugin for BaseEmbedPlugin {
 /// Deeper nesting than this renders as a link — cyclic embeds terminate.
 const TRANSCLUDE_MAX_DEPTH: usize = 2;
 
+/// Section slice for `![[note#heading]]` / `![[note#^block]]` embeds:
+/// heading anchors return the heading through the line before the next
+/// heading of equal-or-higher level; `^block` anchors return the block
+/// paragraph with the `^id` marker stripped. Fenced code can't spoof
+/// either kind. `None` when the anchor isn't in the text.
+fn slice_section(text: &str, anchor: &str) -> Option<String> {
+    let anchor = anchor.trim();
+    if anchor.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    fn heading_at<'a>(l: &'a str, in_fence: bool) -> Option<(usize, &'a str)> {
+        if in_fence {
+            return None;
+        }
+        let t = l.trim_start();
+        let level = t.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&level) && t.chars().nth(level) == Some(' ') {
+            Some((level, t[level + 1..].trim()))
+        } else {
+            None
+        }
+    }
+
+    // `^block-id` — the contiguous block containing the marker line.
+    if let Some(id) = anchor.strip_prefix('^') {
+        let marker = format!("^{id}");
+        let at = lines.iter().position(|l| {
+            let t = l.trim_end();
+            t == marker || t.ends_with(&format!(" {marker}"))
+        })?;
+        let mut s = at;
+        while s > 0 && !lines[s - 1].trim().is_empty() {
+            s -= 1;
+        }
+        let mut e = at;
+        while e + 1 < lines.len() && !lines[e + 1].trim().is_empty() {
+            e += 1;
+        }
+        let mut block = lines[s..=e].to_vec();
+        let last = block.len() - 1;
+        block[last] = block[last]
+            .trim_end()
+            .strip_suffix(&marker)
+            .map(|s| s.trim_end())
+            .unwrap_or(block[last]);
+        return Some(block.join("\n"));
+    }
+
+    // `#heading` — from the heading through the line before the next
+    // heading at the same or shallower level.
+    let mut in_fence = false;
+    let mut start: Option<(usize, usize)> = None;
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim_start();
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if let Some((level, title)) = heading_at(l, in_fence) {
+            if title.eq_ignore_ascii_case(anchor) {
+                start = Some((i, level));
+                break;
+            }
+        }
+    }
+    let (i, level) = start?;
+    let mut end = lines.len();
+    in_fence = false;
+    for (j, l) in lines.iter().enumerate().skip(i + 1) {
+        let t = l.trim_start();
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if let Some((l2, _)) = heading_at(l, in_fence) {
+            if l2 <= level {
+                end = j;
+                break;
+            }
+        }
+    }
+    Some(lines[i..end].join("\n"))
+}
+
 struct Transclude {
     target: String,
 }
@@ -1573,12 +1658,20 @@ impl MarkdownPlugin for TranscludePlugin {
         let embed = node.data::<Transclude>().expect("transclude node data");
         let theme = cx.theme();
         let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
+        let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
         let content = resolved
             .as_ref()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .map(|text| match crate::properties::frontmatter_span(&text) {
                 Some(span) => text[span.end..].to_string(),
                 None => text,
+            })
+            .and_then(|text| match anchor.as_deref() {
+                // `![[note#heading]]` / `![[note#^block]]` embed only
+                // that section or block; a missing anchor renders the
+                // link fallback rather than the whole note.
+                Some(a) => slice_section(&text, a),
+                None => Some(text),
             });
 
         match (self.ctx.depth < TRANSCLUDE_MAX_DEPTH, content) {
