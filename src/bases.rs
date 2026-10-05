@@ -1146,6 +1146,9 @@ struct Computed {
     kind: String,
     /// Kanban grouping column index into `headers`/`cells`, when resolved.
     group_ix: Option<usize>,
+    /// The view has an explicit `group_by:` that resolved to a column —
+    /// kanban/calendar always group, tables only when the user asked.
+    grouped: bool,
     /// Kanban: frontmatter key the board groups on — card drops write to
     /// it, so `formula.`/`file.` columns are excluded.
     group_prop: Option<String>,
@@ -1595,6 +1598,7 @@ fn compute(
         view_kinds: spec.views.iter().map(|v| v.kind.clone()).collect(),
         kind: view.kind.clone(),
         group_ix,
+        grouped: view.group_by.is_some() && group_ix.is_some(),
         group_prop: view
             .group_by
             .as_ref()
@@ -2514,7 +2518,33 @@ impl Render for BaseView {
             // Interactive header sort orders rows at render time —
             // `Computed` stays cached; comparisons use the raw `Lit`.
             let mut order: Vec<usize> = (0..computed.rows.len()).collect();
-            if let Some((cix, desc)) = self.sort {
+            let gix = computed.group_ix.unwrap_or(usize::MAX);
+            // Grouped views sort by the group column first so same-value
+            // rows land in consecutive runs; the header sort then applies
+            // within each group.
+            if computed.grouped {
+                order.sort_by(|a, b| {
+                    lit_cmp(
+                        &computed.rows[*a].cells[gix].lit,
+                        &computed.rows[*b].cells[gix].lit,
+                    )
+                    .then_with(|| {
+                        self.sort
+                            .map(|(cix, desc)| {
+                                let ord = lit_cmp(
+                                    &computed.rows[*a].cells[cix].lit,
+                                    &computed.rows[*b].cells[cix].lit,
+                                );
+                                if desc {
+                                    ord.reverse()
+                                } else {
+                                    ord
+                                }
+                            })
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                });
+            } else if let Some((cix, desc)) = self.sort {
                 order.sort_by(|a, b| {
                     let ord = lit_cmp(
                         &computed.rows[*a].cells[cix].lit,
@@ -2527,10 +2557,70 @@ impl Render for BaseView {
                     }
                 });
             }
+            // Per-group row counts for "value · n" headers.
+            let mut group_counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            if computed.grouped {
+                for row in &computed.rows {
+                    *group_counts
+                        .entry(row.cells[gix].text.as_str())
+                        .or_default() += 1;
+                }
+            }
+            let mut last_group: Option<&str> = None;
             for (ix, &rix) in order.iter().enumerate() {
                 let row = &computed.rows[rix];
                 let path = row.path.clone();
                 let workspace = self.workspace.clone();
+                if computed.grouped && last_group != Some(row.cells[gix].text.as_str()) {
+                    last_group = Some(row.cells[gix].text.as_str());
+                    let label = if row.cells[gix].text.trim().is_empty() {
+                        format!(
+                            "No {}",
+                            computed
+                                .headers
+                                .get(gix)
+                                .cloned()
+                                .unwrap_or_else(|| "value".into())
+                        )
+                    } else {
+                        row.cells[gix].text.clone()
+                    };
+                    let count = group_counts
+                        .get(row.cells[gix].text.as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    rows = rows.child(
+                        div()
+                            .id(("base-group", ix))
+                            .w_full()
+                            .px_3()
+                            .py_1()
+                            .border_b_1()
+                            .border_color(theme.border.opacity(0.5))
+                            .bg(theme.muted.opacity(0.3))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(theme.muted_foreground)
+                                            .truncate()
+                                            .child(label),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(format!("{count}")),
+                                    ),
+                            ),
+                    );
+                }
                 rows = rows.child(
                     div()
                         .id(("base-row", ix))
