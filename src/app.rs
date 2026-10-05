@@ -3844,6 +3844,30 @@ impl Workspace {
                                                 } else {
                                                     this.open_document(path.clone(), window, cx);
                                                 }
+                                            } else {
+                                                // Folder Notes convention:
+                                                // <dir>/<name>.md opens on
+                                                // folder click when it exists.
+                                                let name = path
+                                                    .file_name()
+                                                    .map(|n| n.to_string_lossy().to_string());
+                                                if let Some(name) = name {
+                                                    let note = path.join(format!("{name}.md"));
+                                                    let indexed = this
+                                                        .vault_entity()
+                                                        .read(cx)
+                                                        .notes
+                                                        .contains(&note);
+                                                    if indexed {
+                                                        if ev.modifiers().platform {
+                                                            this.open_document_new_tab(
+                                                                note, window, cx,
+                                                            );
+                                                        } else {
+                                                            this.open_document(note, window, cx);
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }))
