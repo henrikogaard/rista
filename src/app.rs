@@ -1040,7 +1040,7 @@ impl Workspace {
     }
 
     /// Scroll the file tree to `path`, expanding ancestors.
-    fn reveal_file(&self, path: &std::path::Path, cx: &mut Context<Self>) {
+    pub(crate) fn reveal_file(&self, path: &std::path::Path, cx: &mut Context<Self>) {
         let tree = self.vault.read(cx).tree.clone();
         tree.update(cx, |tree, cx| {
             let id: SharedString = path.to_string_lossy().to_string().into();

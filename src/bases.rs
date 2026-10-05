@@ -30,6 +30,7 @@ use gpui_kit::assets;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -40,6 +41,56 @@ use std::path::{Path, PathBuf};
 // ------------------------------------------------------------------
 // Literal value space — frontmatter YAML + file metadata + formulas.
 // ------------------------------------------------------------------
+
+/// Right-click menu on any row/card — Obsidian's base row menu:
+/// open, open in a new tab, reveal in the tree, copy a wikilink.
+fn row_context_menu(menu: PopupMenu, path: PathBuf, workspace: WeakEntity<Workspace>) -> PopupMenu {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    menu.item(
+        PopupMenuItem::new("Open")
+            .icon(assets::IconName::File)
+            .on_click({
+                let ws = workspace.clone();
+                let path = path.clone();
+                move |_, window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.open_document_pub(path.clone(), window, cx));
+                }
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Open in new tab")
+            .icon(assets::IconName::Plus)
+            .on_click({
+                let ws = workspace.clone();
+                let path = path.clone();
+                move |_, window, cx| {
+                    let _ = ws.update(cx, |ws, cx| {
+                        ws.open_document_new_tab(path.clone(), window, cx)
+                    });
+                }
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Reveal in tree")
+            .icon(assets::IconName::FolderOpen)
+            .on_click({
+                let ws = workspace.clone();
+                move |_, _window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.reveal_file(&path, cx));
+                }
+            }),
+    )
+    .item(
+        PopupMenuItem::new("Copy wikilink")
+            .icon(assets::IconName::Link)
+            .on_click(move |_, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(format!("[[{stem}]]")));
+            }),
+    )
+}
 
 /// Row/card click → open the note. ⌘+click (platform modifier) opens
 /// in a new tab, matching Obsidian.
@@ -2617,6 +2668,13 @@ impl Render for BaseView {
                                     });
                                 }
                             }
+                        })
+                        .context_menu({
+                            let ws = self.workspace.clone();
+                            let path = row.path.clone();
+                            move |menu, _window, _cx| {
+                                row_context_menu(menu, path.clone(), ws.clone())
+                            }
                         });
                     if let Some(cover) = &row.cover {
                         let source: gpui_kit::ImageSource = cover
@@ -2768,6 +2826,11 @@ impl Render for BaseView {
                                 });
                             }
                         }
+                    })
+                    .context_menu({
+                        let ws = self.workspace.clone();
+                        let path = row.path.clone();
+                        move |menu, _window, _cx| row_context_menu(menu, path.clone(), ws.clone())
                     });
                 if let Some(cover) = &row.cover {
                     let source: gpui_kit::ImageSource = cover
@@ -2907,6 +2970,11 @@ impl Render for BaseView {
                                 });
                             }
                         }
+                    })
+                    .context_menu({
+                        let ws = self.workspace.clone();
+                        let path = row.path.clone();
+                        move |menu, _window, _cx| row_context_menu(menu, path.clone(), ws.clone())
                     });
                 if let Some(cover) = &row.cover {
                     let source: gpui_kit::ImageSource = cover
@@ -3152,6 +3220,13 @@ impl Render for BaseView {
                                         ws.hide_peek(&crate::app::PeekKind::Note(path.clone()), cx)
                                     });
                                 }
+                            }
+                        })
+                        .context_menu({
+                            let ws = self.workspace.clone();
+                            let path = row.path.clone();
+                            move |menu, _window, _cx| {
+                                row_context_menu(menu, path.clone(), ws.clone())
                             }
                         }),
                 );
