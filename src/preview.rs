@@ -820,7 +820,45 @@ impl MarkdownPlugin for PropertiesPlugin {
                         }
                     }
                     None => {
-                        value_cell = value_cell.text_color(theme.foreground).child(v.clone());
+                        if k == "tags" {
+                            // Tag values render as `#x` chips — a click
+                            // opens project search, like inline tags.
+                            let mut chips = h_flex().flex_1().flex_wrap().gap_1().items_center();
+                            for (jx, tag) in v
+                                .split(',')
+                                .map(|t| t.trim().trim_start_matches('#'))
+                                .filter(|t| !t.is_empty())
+                                .enumerate()
+                            {
+                                let mut chip = div()
+                                    .id(("property-tag", ix * 100 + jx))
+                                    .text_color(theme.info)
+                                    .child(format!("#{tag}"));
+                                if let Some(workspace) = edit_ctx.clone() {
+                                    let tag = tag.to_string();
+                                    chip = chip.cursor_pointer().hover(|c| c.underline()).on_click(
+                                        move |_, window, cx| {
+                                            // Don't bubble into the row's
+                                            // property-edit click.
+                                            cx.stop_propagation();
+                                            let Some(ws) = workspace.upgrade() else {
+                                                return;
+                                            };
+                                            crate::search::open_project_search_for(
+                                                ws.clone(),
+                                                Some(&format!("#{tag}")),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    );
+                                }
+                                chips = chips.child(chip);
+                            }
+                            value_cell = div().flex_1().text_xs().child(chips);
+                        } else {
+                            value_cell = value_cell.text_color(theme.foreground).child(v.clone());
+                        }
                     }
                 }
                 let mut row = h_flex()
