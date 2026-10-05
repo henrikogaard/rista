@@ -83,6 +83,7 @@ impl Document {
                 .language("markdown")
                 .line_number(settings.show_line_numbers)
                 .soft_wrap(settings.soft_wrap)
+                .folding(true)
                 .tab_size(TabSize {
                     tab_size: settings.tab_size,
                     hard_tabs: false,
