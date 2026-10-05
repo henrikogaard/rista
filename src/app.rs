@@ -130,6 +130,7 @@ enum PaletteCmd {
     ToggleItalic,
     ToggleHighlight,
     ToggleStrike,
+    ExtractSelection,
     PageHistory,
     RestoreDeleted,
     InsertTemplate,
@@ -243,6 +244,11 @@ impl PaletteCmd {
                 assets::IconName::Strikethrough,
                 "Strikethrough",
                 &["strike", "format", "wrap"],
+            ),
+            ExtractSelection => (
+                assets::IconName::Scissors,
+                "Extract selection to new note…",
+                &["cut", "refactor", "composer"],
             ),
             PageHistory => (
                 assets::IconName::FileClock,
@@ -1203,6 +1209,103 @@ impl Workspace {
         }
     }
 
+    /// "Extract selection to new note" — the name dialog.
+    fn show_extract_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let Some((body, range)) = doc.read(cx).selected_text(cx) else {
+            self.note_status("Select some text first", cx);
+            return;
+        };
+        let input = self.rename_input.clone();
+        input.update(cx, |input, cx| input.set_value("", window, cx));
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Extract to new note")
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .on_ok({
+                    let view = view.clone();
+                    let doc = doc.clone();
+                    let range = range.clone();
+                    let body = body.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.commit_extract(
+                                doc.clone(),
+                                range.clone(),
+                                body.clone(),
+                                window,
+                                cx,
+                            );
+                            this.refocus(window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+
+        let input = self.rename_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        });
+    }
+
+    /// Writes `<name>.md` with the selection's body and replaces the
+    /// selection with `[[name]]` — Obsidian's Note Composer extract.
+    fn commit_extract(
+        &mut self,
+        doc: Entity<Document>,
+        range: std::ops::Range<usize>,
+        body: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self.rename_input.read(cx).value().to_string();
+        let name = name.trim().trim_end_matches(".md").replace('\\', "/");
+        let name = name.trim();
+        let bad_name = name.is_empty()
+            || name.starts_with('/')
+            || name.contains("..")
+            || name
+                .chars()
+                .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'));
+        if bad_name {
+            self.note_status("Invalid note name", cx);
+            return;
+        }
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let dir = if name.contains('/') {
+            root.clone()
+        } else {
+            doc.read(cx)
+                .path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .filter(|p| p.starts_with(&root))
+                .unwrap_or_else(|| root.clone())
+        };
+        let path = dir.join(format!("{name}.md"));
+        if path.exists() {
+            self.note_status(format!("\u{201c}{name}\u{201d} already exists"), cx);
+            return;
+        }
+        if std::fs::write(&path, body).is_err() {
+            self.note_status("Couldn't write the note", cx);
+            return;
+        }
+        doc.update(cx, |doc, cx| {
+            doc.replace_range(range, format!("[[{name}]]"), window, cx);
+        });
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        self.note_status(format!("Extracted to {name}.md"), cx);
+    }
+
     /// ⌘D — duplicate the line(s) under the selection.
     fn on_duplicate_block(
         &mut self,
@@ -1417,6 +1520,7 @@ impl Workspace {
             PaletteCmd::ToggleItalic,
             PaletteCmd::ToggleHighlight,
             PaletteCmd::ToggleStrike,
+            PaletteCmd::ExtractSelection,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
             PaletteCmd::InsertTemplate,
@@ -1608,6 +1712,9 @@ impl Workspace {
             PaletteCmd::ToggleItalic => self.wrap("*", window, cx),
             PaletteCmd::ToggleHighlight => self.wrap("==", window, cx),
             PaletteCmd::ToggleStrike => self.wrap("~~", window, cx),
+            PaletteCmd::ExtractSelection => {
+                self.defer_dialog(Self::show_extract_dialog, window, cx)
+            }
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
@@ -4621,7 +4728,7 @@ impl Workspace {
             .on_drop::<ExternalPaths>(cx.listener(|this, paths, window, cx| {
                 this.on_editor_drop(paths, window, cx);
             }))
-            .on_drop::<PathBuf>(cx.listener(|this, path, window, cx| {
+            .on_drop::<PathBuf>(cx.listener(|this, path: &PathBuf, window, cx| {
                 this.insert_tree_link(path, window, cx);
             }))
             .child(Editor::new(&doc.read(cx).editor).h_full())
@@ -4629,7 +4736,12 @@ impl Workspace {
 
     /// Dropping a file from the tree into the editor inserts a vault link:
     /// `![[name.png]]` for images, `[[stem]]` for notes and `.base` files.
-    fn insert_tree_link(&mut self, src: &PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn insert_tree_link(
+        &mut self,
+        src: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };

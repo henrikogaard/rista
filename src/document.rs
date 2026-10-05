@@ -1008,6 +1008,34 @@ impl Document {
         });
     }
 
+    /// Byte-exact selected text + its range — `None` when the selection
+    /// is empty. Used by "extract to new note".
+    pub fn selected_text(&self, cx: &App) -> Option<(String, std::ops::Range<usize>)> {
+        let editor = self.editor.read(cx);
+        let sel = editor.selected_range();
+        let text = editor.value().to_string();
+        if sel.is_empty() || sel.end > text.len() {
+            return None;
+        }
+        Some((text[sel.clone()].to_string(), sel))
+    }
+
+    /// Replace a byte range with new text, leaving the caret at its end.
+    pub fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let end = range.start + text.len();
+            editor.set_selected_range(range, cx);
+            editor.replace(text, window, cx);
+            editor.set_selected_range(end..end, cx);
+        });
+    }
+
     /// Splice a set of byte-range replacements into the source text —
     /// link-safe rename retargets wikilinks this way. Ranges must be
     /// sorted by start and non-overlapping; applied right-to-left so
