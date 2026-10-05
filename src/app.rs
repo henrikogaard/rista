@@ -2031,6 +2031,47 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// Convert the first plain-text mention of the active note's
+    /// title inside `note` into a `[[wikilink]]` — Obsidian's "Link"
+    /// action on unlinked mentions. Splices through the editor when
+    /// the note is open, writes the file otherwise.
+    fn link_up_mention(&mut self, note: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stem) = self
+            .active_doc()
+            .and_then(|d| d.read(cx).path.file_stem().and_then(|s| s.to_str()))
+            .map(|s| s.to_string())
+        else {
+            return;
+        };
+        let needle = stem.to_lowercase();
+        if let Some(doc) = self
+            .docs
+            .iter()
+            .find(|d| d.entity.read(cx).path == note)
+            .map(|d| d.entity.clone())
+        {
+            doc.update(cx, |doc, cx| {
+                let text = doc.editor.read(cx).value().to_string();
+                if let Some(start) = crate::vault::plain_mention_offset(&text, &needle) {
+                    doc.editor.update(cx, |editor, cx| {
+                        editor.set_selected_range(start..start + stem.len(), cx);
+                        editor.replace(format!("[[{stem}]]"), window, cx);
+                    });
+                }
+            });
+        } else if let Ok(text) = std::fs::read_to_string(&note) {
+            if let Some(start) = crate::vault::plain_mention_offset(&text, &needle) {
+                let mut text = text;
+                text.replace_range(start..start + stem.len(), &format!("[[{stem}]]"));
+                if std::fs::write(&note, text).is_err() {
+                    self.note_status("Couldn't update the mention", cx);
+                    return;
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// Heading navigator for the active note — picks a heading, jumps
     /// the editor caret to its line (fences skipped so `#` inside code
     /// blocks doesn't list).
@@ -2783,6 +2824,7 @@ impl Workspace {
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
                         let open = path.clone();
+                        let link_note = path.clone();
                         rows = rows.child(
                             div()
                                 .id(("unlinked-side", ix))
@@ -2794,6 +2836,25 @@ impl Workspace {
                                 .child(div().text_sm().truncate().child(rel))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_document_pub(open.clone(), window, cx);
+                                })),
+                        );
+                        rows = rows.child(
+                            div()
+                                .id(("unlinked-link", ix))
+                                .w_full()
+                                .pl(px(24.))
+                                .pr_2()
+                                .pb_0p5()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.accent)
+                                        .child("→ Link this mention"),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.link_up_mention(link_note.clone(), window, cx);
                                 })),
                         );
                     }

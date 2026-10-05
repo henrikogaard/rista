@@ -243,8 +243,6 @@ impl Vault {
         if needle.is_empty() {
             return Vec::new();
         }
-        let boundary =
-            |c: Option<char>| c.map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false);
         let mut out = Vec::new();
         for note in &self.notes {
             if *note == target || note.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -253,31 +251,7 @@ impl Vault {
             let Ok(text) = std::fs::read_to_string(note) else {
                 continue;
             };
-            // Blank out `[[...]]` spans so existing links don't count.
-            let mut scrubbed = String::with_capacity(text.len());
-            let mut rest = text.as_str();
-            while let Some(at) = rest.find("[[") {
-                scrubbed.push_str(&rest[..at]);
-                match rest[at + 2..].find("]]") {
-                    Some(e) => rest = &rest[at + 2 + e + 2..],
-                    None => break,
-                }
-            }
-            scrubbed.push_str(rest);
-            let hay = scrubbed.to_lowercase();
-            let mut cur = 0;
-            let mut found = false;
-            while let Some(at) = hay[cur..].find(&needle) {
-                let start = cur + at;
-                let before = hay[..start].chars().next_back();
-                let after = hay[start + needle.len()..].chars().next();
-                if !boundary(before) && !boundary(after) {
-                    found = true;
-                    break;
-                }
-                cur = start + needle.len();
-            }
-            if found {
+            if plain_mention_offset(&text, &needle).is_some() {
                 out.push(note.clone());
             }
         }
@@ -542,6 +516,47 @@ pub fn is_image_file(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| IMAGE_EXTS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+/// Byte offset of the first whole-phrase, case-insensitive
+/// occurrence of `needle` outside `[[...]]` spans — shared by
+/// unlinked mentions and the link-up action. `needle` must already
+/// be lowercase.
+pub(crate) fn plain_mention_offset(text: &str, needle: &str) -> Option<usize> {
+    // Everything is scanned in lowercase space so positions are
+    // comparable; the returned offset is verified against `text`.
+    let hay = text.to_lowercase();
+    let mut spans = Vec::new();
+    let mut cur = 0;
+    while let Some(at) = hay[cur..].find("[[") {
+        let start = cur + at;
+        match hay[start + 2..].find("]]") {
+            Some(e) => {
+                spans.push(start..(start + 2 + e + 2));
+                cur = start + 2 + e + 2;
+            }
+            None => break,
+        }
+    }
+    let boundary = |c: Option<char>| c.map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false);
+    let mut cur = 0;
+    while let Some(at) = hay[cur..].find(needle) {
+        let start = cur + at;
+        let end = start + needle.len();
+        let in_link = spans.iter().any(|r| start >= r.start && start < r.end);
+        let before = hay[..start].chars().next_back();
+        let after = hay[end..].chars().next();
+        if !in_link && !boundary(before) && !boundary(after) {
+            // Lowercasing can shift byte offsets for exotic Unicode;
+            // verify the slice is really the needle before splicing.
+            return text
+                .get(start..end)
+                .filter(|s| s.to_lowercase() == needle)
+                .map(|_| start);
+        }
+        cur = end;
+    }
+    None
 }
 
 fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String, PathBuf>) {
