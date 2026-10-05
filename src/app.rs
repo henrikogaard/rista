@@ -3526,6 +3526,29 @@ impl Workspace {
                                                 label: label.clone(),
                                             })
                                         }
+                                    })
+                                    // Peek card on hover — same machinery
+                                    // as .base rows and property chips.
+                                    .on_mouse_move({
+                                        let path = path.clone();
+                                        let view = render_view.clone();
+                                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                            if is_file {
+                                                let _ = view.update(cx, |ws, cx| {
+                                                    ws.peek_at(path.clone(), ev.position, cx)
+                                                });
+                                            }
+                                        }
+                                    })
+                                    .on_hover({
+                                        let path = path.clone();
+                                        let view = render_view.clone();
+                                        move |hovered: &bool, _window, cx| {
+                                            if is_file && !*hovered {
+                                                let _ = view
+                                                    .update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                            }
+                                        }
                                     });
                                 // Folders accept drops; files only drag.
                                 let row = if entry.is_folder() {
