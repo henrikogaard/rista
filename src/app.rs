@@ -5120,6 +5120,22 @@ impl Workspace {
                                     }),
                             )
                             .item(
+                                PopupMenuItem::new("Copy wikilink")
+                                    .icon(assets::IconName::Copy)
+                                    .on_click({
+                                        let path = path.clone();
+                                        move |_, _window, cx| {
+                                            let stem = path
+                                                .file_stem()
+                                                .map(|s| s.to_string_lossy().to_string())
+                                                .unwrap_or_default();
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                format!("[[{stem}]]"),
+                                            ));
+                                        }
+                                    }),
+                            )
+                            .item(
                                 PopupMenuItem::new("Reveal in Finder")
                                     .icon(assets::IconName::FolderOpen)
                                     .on_click({
