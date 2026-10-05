@@ -249,6 +249,19 @@ fn rewrite_line(
                 i += 1 + id_len;
                 continue;
             }
+        } else if line[i..].starts_with("==") {
+            // `==highlight==` — Obsidian's mark syntax; renders through
+            // the inline-HTML path as <mark>. The content must be
+            // non-empty and not start with `=` (keeps `===` and `====`
+            // runs literal).
+            if let Some(end) = line[i + 2..].find("==") {
+                let inner = &line[i + 2..i + 2 + end];
+                if !inner.trim().is_empty() && !inner.starts_with('=') {
+                    out.push_str(&format!("<mark>{inner}</mark>"));
+                    i += 2 + end + 2;
+                    continue;
+                }
+            }
         }
         out.push(ch);
         i += ch.len_utf8();
