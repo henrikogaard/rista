@@ -23,6 +23,7 @@ actions!(
         PrevTab,
         NavigateBack,
         NavigateForward,
+        FollowLink,
         ToggleSidebar,
         ToggleZen,
         // View

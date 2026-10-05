@@ -113,6 +113,7 @@ enum PaletteCmd {
     ToggleFocus,
     GoBack,
     GoForward,
+    FollowLink,
     Settings,
     ToggleTheme,
     Quit,
@@ -235,6 +236,11 @@ impl PaletteCmd {
                 assets::IconName::ChevronRight,
                 "Navigate forward",
                 &["forward", "history", "next", "navigate"],
+            ),
+            FollowLink => (
+                assets::IconName::ExternalLink,
+                "Open link under cursor",
+                &["link", "wikilink", "follow", "url", "open"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -480,6 +486,26 @@ impl Workspace {
 
     fn on_navigate_back(&mut self, _: &NavigateBack, window: &mut Window, cx: &mut Context<Self>) {
         self.nav_back(window, cx);
+    }
+
+    /// ⌥⏎ — open the `[[wikilink]]`, `[..](..)`, or bare URL the caret
+    /// sits on. Note links route through the vault resolver (records
+    /// nav history); URLs go to the system browser.
+    fn on_follow_link(&mut self, _: &FollowLink, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        match doc.update(cx, |doc, cx| doc.link_at_cursor(cx)) {
+            Some(crate::document::LinkTarget::Url(url)) => cx.open_url(&url),
+            Some(crate::document::LinkTarget::Note(name)) => {
+                let resolved = self.vault.read(cx).resolve_wikilink(&name);
+                match resolved {
+                    Some(path) => self.open_document(path, window, cx),
+                    None => self.note_status("Link resolves to no note", cx),
+                }
+            }
+            None => self.note_status("No link under cursor", cx),
+        }
     }
 
     fn on_navigate_forward(
@@ -851,6 +877,7 @@ impl Workspace {
             PaletteCmd::ToggleFocus,
             PaletteCmd::GoBack,
             PaletteCmd::GoForward,
+            PaletteCmd::FollowLink,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -1029,6 +1056,7 @@ impl Workspace {
             PaletteCmd::ToggleFocus => self.toggle_focus_mode(cx),
             PaletteCmd::GoBack => self.nav_back(window, cx),
             PaletteCmd::GoForward => self.nav_forward(window, cx),
+            PaletteCmd::FollowLink => self.on_follow_link(&FollowLink, window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -2591,6 +2619,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_prev_tab))
             .on_action(cx.listener(Self::on_navigate_back))
             .on_action(cx.listener(Self::on_navigate_forward))
+            .on_action(cx.listener(Self::on_follow_link))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_zen))
             .on_action(cx.listener(Self::on_view_source))

@@ -449,6 +449,84 @@ impl Document {
         self.toggle_task(line, window, cx)
     }
 
+    /// The link covering the caret — `[[wikilink]]`, `![[embed]]`,
+    /// `[label](url)`, or a bare URL token — if there is one. Links are
+    /// scanned on the caret's line only; markdown links never span lines.
+    pub fn link_at_cursor(&mut self, cx: &mut Context<Self>) -> Option<LinkTarget> {
+        self.editor.update(cx, |editor, _cx| {
+            let text = editor.value().to_string();
+            let cursor = editor.cursor().min(text.len());
+            let line_start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = text[cursor..]
+                .find('\n')
+                .map(|i| cursor + i)
+                .unwrap_or(text.len());
+            let line = &text[line_start..line_end];
+            let rel = cursor - line_start;
+
+            // `[[target]]` and `![[embed]]`
+            let mut at = 0;
+            while let Some(open) = line[at..].find("[[") {
+                let open = at + open;
+                let Some(close) = line[open + 2..].find("]]") else {
+                    break;
+                };
+                let close = open + 2 + close;
+                // The bang in `![[` counts as inside the span.
+                let head = if open > 0 && line.as_bytes()[open - 1] == b'!' {
+                    open - 1
+                } else {
+                    open
+                };
+                if head <= rel && rel <= close + 2 {
+                    return Some(LinkTarget::Note(line[open + 2..close].to_string()));
+                }
+                at = close + 2;
+            }
+
+            // `[label](target)` — vault-relative `.md` paths count as
+            // note links, `http(s)` as URLs.
+            let mut at = 0;
+            while let Some(mid) = line[at..].find("](") {
+                let mid = at + mid;
+                let Some(close) = line[mid + 2..].find(')') else {
+                    break;
+                };
+                let close = mid + 2 + close;
+                let Some(open) = line[..mid].rfind('[') else {
+                    break;
+                };
+                if open <= rel && rel <= close {
+                    let target = line[mid + 2..close].trim_start_matches('<');
+                    let target = target.trim_end_matches('>').trim_start_matches("./");
+                    return Some(
+                        if target.starts_with("http://") || target.starts_with("https://") {
+                            LinkTarget::Url(target.to_string())
+                        } else {
+                            LinkTarget::Note(target.to_string())
+                        },
+                    );
+                }
+                at = close + 1;
+            }
+
+            // Bare URL token under the caret.
+            let start = line[..rel]
+                .rfind(|c: char| c.is_whitespace() || c == '<')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let end = line[rel..]
+                .find(|c: char| c.is_whitespace() || c == '>')
+                .map(|i| rel + i)
+                .unwrap_or(line.len());
+            let tok = &line[start..end];
+            if tok.starts_with("http://") || tok.starts_with("https://") {
+                return Some(LinkTarget::Url(tok.to_string()));
+            }
+            None
+        })
+    }
+
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(meta) = std::fs::metadata(&self.path) else {
@@ -568,6 +646,15 @@ impl Document {
         });
         cx.notify();
     }
+}
+
+/// What `link_at_cursor` resolved — a vault note or an external URL.
+pub enum LinkTarget {
+    /// `[[target]]` / `![[target]]` / `[label](path.md)` — still the
+    /// raw link text; `Vault::resolve_wikilink` maps it to a path.
+    Note(String),
+    /// `http(s)` destination — opened in the system browser.
+    Url(String),
 }
 
 pub fn word_stats(text: &str) -> (usize, usize) {

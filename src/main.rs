@@ -85,6 +85,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         KeyBinding::new("cmd-[", NavigateBack, None),
         KeyBinding::new("cmd-]", NavigateForward, None),
+        KeyBinding::new("alt-enter", FollowLink, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("cmd-shift-enter", ToggleZen, None),
         // View modes — 1/2/3 with cmd.
