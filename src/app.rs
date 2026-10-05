@@ -10,7 +10,7 @@ use crate::search;
 use crate::settings::{Appearance, Settings, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
-use crate::vault::{Vault, VaultEvent};
+use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
 use gpui_kit::assets;
 use gpui_kit::base::Placement;
 use gpui_kit::base::StyledExt;
@@ -3399,12 +3399,25 @@ impl Workspace {
                                         .active_doc()
                                         .map(|d| d.read(cx).path == path)
                                         .unwrap_or(false);
-                                let icon: assets::IconName = if is_file {
-                                    assets::IconName::FileText
-                                } else if entry.is_expanded() {
-                                    assets::IconName::FolderOpen
+                                let icon: assets::IconName = if !is_file {
+                                    if entry.is_expanded() {
+                                        assets::IconName::FolderOpen
+                                    } else {
+                                        assets::IconName::FolderClosed
+                                    }
                                 } else {
-                                    assets::IconName::FolderClosed
+                                    match path
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .map(|e| e.to_lowercase())
+                                        .as_deref()
+                                    {
+                                        Some("base") => assets::IconName::Database,
+                                        Some(e) if IMAGE_EXTS.contains(&e) => {
+                                            assets::IconName::FileImage
+                                        }
+                                        _ => assets::IconName::FileText,
+                                    }
                                 };
                                 let row = ListItem::new(ix)
                                     .w_full()

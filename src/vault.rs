@@ -539,7 +539,7 @@ fn mark_expanded(
         .collect()
 }
 
-const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"];
+pub(crate) const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"];
 
 /// Whether the path's extension is one of the vault's image types.
 pub fn is_image_file(path: &Path) -> bool {
