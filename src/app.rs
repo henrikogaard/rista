@@ -147,6 +147,8 @@ enum PaletteCmd {
     InsertLink,
     InsertHr,
     InsertCallout,
+    InsertDate,
+    InsertTime,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -163,6 +165,7 @@ enum PaletteCmd {
     ReopenTab,
     CopyLink,
     CopyLinkHeading,
+    RevealFile,
     CloseOtherTabs,
     CloseTabsRight,
     TogglePin,
@@ -351,6 +354,16 @@ impl PaletteCmd {
                 "Toggle callout",
                 &["admonition", "note", "warning", "tip", "aside"],
             ),
+            InsertDate => (
+                assets::IconName::CalendarDays,
+                "Insert current date",
+                &["today", "now", "stamp"],
+            ),
+            InsertTime => (
+                assets::IconName::Clock,
+                "Insert current time",
+                &["now", "hour", "stamp"],
+            ),
             DeleteLine => (
                 assets::IconName::Delete,
                 "Delete line",
@@ -430,6 +443,11 @@ impl PaletteCmd {
                 assets::IconName::Link,
                 "Copy wikilink to heading",
                 &["copy", "link", "anchor", "section", "heading", "clipboard"],
+            ),
+            RevealFile => (
+                assets::IconName::Crosshair,
+                "Reveal active file in tree",
+                &["locate", "show", "finder", "sidebar"],
             ),
             CloseOtherTabs => (
                 assets::IconName::X,
@@ -1028,6 +1046,18 @@ impl Workspace {
         tree.update(cx, |tree, cx| {
             let id: SharedString = path.to_string_lossy().to_string().into();
             tree.reveal_item(&id, ScrollStrategy::Nearest, cx);
+        });
+    }
+
+    /// Insert `text` at the active editor's caret (palette insert cmds).
+    fn insert_at_caret(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let text = text.to_string();
+        doc.update(cx, |doc, cx| {
+            doc.editor
+                .update(cx, |e, cx| e.insert(text.clone(), window, cx));
         });
     }
 
@@ -1786,6 +1816,8 @@ impl Workspace {
             PaletteCmd::InsertLink,
             PaletteCmd::InsertHr,
             PaletteCmd::InsertCallout,
+            PaletteCmd::InsertDate,
+            PaletteCmd::InsertTime,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -1802,6 +1834,7 @@ impl Workspace {
             PaletteCmd::ReopenTab,
             PaletteCmd::CopyLink,
             PaletteCmd::CopyLinkHeading,
+            PaletteCmd::RevealFile,
             PaletteCmd::CloseOtherTabs,
             PaletteCmd::CloseTabsRight,
             PaletteCmd::TogglePin,
@@ -2033,6 +2066,16 @@ impl Workspace {
                     doc.update(cx, |doc, cx| doc.toggle_callout("note", window, cx));
                 }
             }
+            PaletteCmd::InsertDate => self.insert_at_caret(
+                &chrono::Local::now().format("%Y-%m-%d").to_string(),
+                window,
+                cx,
+            ),
+            PaletteCmd::InsertTime => self.insert_at_caret(
+                &chrono::Local::now().format("%H:%M").to_string(),
+                window,
+                cx,
+            ),
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
@@ -2136,6 +2179,7 @@ impl Workspace {
                     }
                 }
             }
+            PaletteCmd::RevealFile => self.reveal_active_file(cx),
             PaletteCmd::TogglePin => self.toggle_pin(cx),
             PaletteCmd::ToggleReadable => {
                 self.settings.readable_width = !self.settings.readable_width;
@@ -4933,6 +4977,15 @@ impl Workspace {
                     move |src, window, cx| {
                         view.update(cx, |this, cx| {
                             this.move_tab(src.0, ix, window, cx);
+                        });
+                    }
+                })
+                // Middle-click closes the tab (browser/Obsidian parity).
+                .on_mouse_down(gpui::MouseButton::Middle, {
+                    let view = view.clone();
+                    move |_ev, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.close_tab_at(ix, window, cx);
                         });
                     }
                 })
