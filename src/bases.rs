@@ -11,8 +11,14 @@
 //!   `isEmpty`/`now()`/`date("YYYY-MM-DD")`.
 //! - `formulas:` — name → expression, referenced as `formula.name`.
 //! - `properties:` — `prop: {displayName: …}` column headers.
-//! - `views:` — `[{type, name, order, sort, limit, filters}]`;
-//!   `type: table` renders now, other kinds fall back to table.
+//! - `views:` — `[{type, name, order, sort, limit, filters, group_by}]`;
+//!   `type: table|cards|gallery|kanban|board` all render.
+//! - Relations — `[[wikilink]]` properties normalize to resolved paths,
+//!   render as link chips, and compare canonically against `link("x")`;
+//!   `file.links`/`file.backlinks` expose the vault's link graph.
+//! - Rollups — `rollup(prop, "field", "sum|avg|min|max|count|first|list")`
+//!   aggregates across a relation; lists also take `.sum()/.avg()/.min()/
+//!   .max()/.count()/.unique()/.join(sep)` and `sum(list)` friends.
 
 use crate::app::Workspace;
 use crate::document::Document;
@@ -449,10 +455,93 @@ fn parse_expr(src: &str) -> Result<Expr, String> {
 struct RowData {
     path: PathBuf,
     props: BTreeMap<String, Lit>,
+    /// Properties whose raw values were `[[wikilinks]]` — normalized to
+    /// resolved paths for evaluation, rendered as links for display.
+    link_props: std::collections::BTreeSet<String>,
     file_meta: BTreeMap<String, Lit>,
 }
 
-fn row_data(root: &Path, path: &Path) -> RowData {
+/// `[[target]]` occurrences in a note body (embeds included), stripped
+/// of `!`, `|alias` and `#anchor` — the outgoing side of the link graph.
+fn link_targets(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("[[") {
+        rest = &rest[open + 2..];
+        let Some(close) = rest.find("]]") else {
+            break;
+        };
+        let inner = &rest[..close];
+        rest = &rest[close + 2..];
+        let target = inner
+            .split('|')
+            .next()
+            .unwrap_or("")
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim();
+        if !target.is_empty() {
+            out.push(target.to_string());
+        }
+    }
+    out
+}
+
+fn prop_had_links(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.contains("[["),
+        Value::Sequence(items) => items.iter().any(prop_had_links),
+        _ => false,
+    }
+}
+
+/// `[[x]]`/`![[x]]` strings become the resolved absolute path so
+/// `contains`, `==` and `link("x")` all compare canonical values;
+/// unresolved targets keep their raw text.
+fn normalize_links(lit: Lit, resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Lit {
+    fn norm(s: &str, resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Lit {
+        let inner = s
+            .trim()
+            .strip_prefix("![[")
+            .or_else(|| s.trim().strip_prefix("[["))
+            .and_then(|s| s.strip_suffix("]]"))
+            .map(|t| {
+                t.split('|')
+                    .next()
+                    .unwrap_or("")
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+            });
+        match inner {
+            Some(target) if !target.is_empty() => resolve(target)
+                .map(|p| Lit::Str(p.to_string_lossy().replace('\\', "/")))
+                .unwrap_or_else(|| Lit::Str(s.to_string())),
+            _ => Lit::Str(s.to_string()),
+        }
+    }
+    match lit {
+        Lit::Str(s) => norm(&s, resolve),
+        Lit::List(items) => Lit::List(
+            items
+                .into_iter()
+                .map(|i| match i {
+                    Lit::Str(s) => norm(&s, resolve),
+                    other => other,
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn row_data(
+    root: &Path,
+    path: &Path,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> (RowData, Vec<String>) {
     let rel = path
         .strip_prefix(root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -501,25 +590,75 @@ fn row_data(root: &Path, path: &Path) -> RowData {
         "ctime".into(),
         Lit::Num(meta.as_ref().map(|m| epoch_of(m.created())).unwrap_or(0.0)),
     );
-    let props = std::fs::read_to_string(path)
-        .map(|text| {
-            properties::properties(&text)
-                .into_iter()
-                .map(|(k, v)| (k, lit_of(&v)))
-                .collect()
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let targets = link_targets(&text);
+    let mut link_props = std::collections::BTreeSet::new();
+    let props = properties::properties(&text)
+        .into_iter()
+        .map(|(k, v)| {
+            if prop_had_links(&v) {
+                link_props.insert(k.clone());
+            }
+            (k, normalize_links(lit_of(&v), resolve))
         })
-        .unwrap_or_default();
-    RowData {
-        path: path.to_path_buf(),
-        props,
-        file_meta,
-    }
+        .collect();
+    (
+        RowData {
+            path: path.to_path_buf(),
+            props,
+            link_props,
+            file_meta,
+        },
+        targets,
+    )
 }
 
 struct Env<'a> {
     row: &'a RowData,
+    /// Every note in the vault — rollup + link resolution reach past
+    /// the filtered row set.
+    rows: &'a [RowData],
     formulas: &'a BTreeMap<String, Expr>,
+    resolve: &'a dyn Fn(&str) -> Option<PathBuf>,
     depth: usize,
+}
+
+fn aggregate(agg: &str, vals: Vec<Lit>) -> Result<Lit, String> {
+    fn nums(vals: &[Lit]) -> Vec<f64> {
+        vals.iter()
+            .filter_map(|v| match v {
+                Lit::Num(n) => Some(*n),
+                _ => None,
+            })
+            .collect()
+    }
+    match agg {
+        "list" => Ok(Lit::List(vals)),
+        "count" | "len" => Ok(Lit::Num(vals.len() as f64)),
+        "first" => Ok(vals.into_iter().next().unwrap_or(Lit::Null)),
+        "sum" => Ok(Lit::Num(nums(&vals).iter().sum())),
+        "avg" | "mean" => {
+            let ns = nums(&vals);
+            Ok(Lit::Num(if ns.is_empty() {
+                0.0
+            } else {
+                ns.iter().sum::<f64>() / ns.len() as f64
+            }))
+        }
+        "min" => Ok(nums(&vals)
+            .iter()
+            .copied()
+            .reduce(f64::min)
+            .map(Lit::Num)
+            .unwrap_or(Lit::Null)),
+        "max" => Ok(nums(&vals)
+            .iter()
+            .copied()
+            .reduce(f64::max)
+            .map(Lit::Num)
+            .unwrap_or(Lit::Null)),
+        _ => Err(format!("unknown aggregate '{agg}'")),
+    }
 }
 
 fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
@@ -605,6 +744,52 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
             apply_method(&value, name, arg.as_ref())
         }
         Expr::Call(name, args) => {
+            match name.as_str() {
+                // `link("x")` — canonical relation target for filters like
+                // `related.contains(link("daily-note"))`.
+                "link" => {
+                    return match args.first().map(|a| eval(a, env)) {
+                        Some(Ok(Lit::Str(s))) => Ok((env.resolve)(&s)
+                            .map(|p| Lit::Str(p.to_string_lossy().replace('\\', "/")))
+                            .unwrap_or(Lit::Null)),
+                        _ => Ok(Lit::Null),
+                    }
+                }
+                // `rollup(related, "hours", "sum")` — aggregate a field
+                // across a link property.
+                "rollup" => {
+                    if args.len() != 3 {
+                        return Err("rollup(prop, field, agg) wants 3 args".into());
+                    }
+                    let targets = eval(&args[0], env)?;
+                    let field = eval(&args[1], env)?.display();
+                    let agg = eval(&args[2], env)?.display();
+                    let mut paths = Vec::new();
+                    match targets {
+                        Lit::Str(s) => paths.push(s),
+                        Lit::List(items) => {
+                            paths.extend(items.into_iter().filter_map(|i| match i {
+                                Lit::Str(s) => Some(s),
+                                _ => None,
+                            }))
+                        }
+                        _ => {}
+                    }
+                    let mut vals = Vec::new();
+                    for p in paths {
+                        let target = (env.resolve)(&p).unwrap_or_else(|| PathBuf::from(&p));
+                        if let Some(row) = env.rows.iter().find(|r| r.path == target) {
+                            if let Some(v) =
+                                row.props.get(&field).or_else(|| row.file_meta.get(&field))
+                            {
+                                vals.push(v.clone());
+                            }
+                        }
+                    }
+                    return aggregate(&agg, vals);
+                }
+                _ => {}
+            }
             let vals = args
                 .iter()
                 .map(|a| eval(a, env))
@@ -634,6 +819,36 @@ fn apply_method(value: &Lit, name: &str, arg: Option<&Lit>) -> Result<Lit, Strin
         "isEmpty" => Ok(Lit::Bool(!value.truthy())),
         "lower" => Ok(Lit::Str(value.display().to_lowercase())),
         "upper" => Ok(Lit::Str(value.display().to_uppercase())),
+        "unique" => match value {
+            Lit::List(items) => {
+                let mut seen = std::collections::BTreeSet::new();
+                Ok(Lit::List(
+                    items
+                        .iter()
+                        .filter(|i| seen.insert(i.display()))
+                        .cloned()
+                        .collect(),
+                ))
+            }
+            _ => Ok(value.clone()),
+        },
+        "join" => match value {
+            Lit::List(items) => {
+                let sep = arg.map(Lit::display).unwrap_or_else(|| ", ".into());
+                Ok(Lit::Str(
+                    items
+                        .iter()
+                        .map(Lit::display)
+                        .collect::<Vec<_>>()
+                        .join(&sep),
+                ))
+            }
+            _ => Ok(value.clone()),
+        },
+        "sum" | "avg" | "mean" | "min" | "max" | "count" | "len" | "first" => match value {
+            Lit::List(items) => aggregate(name, items.clone()),
+            _ => Err(format!("{name} needs a list")),
+        },
         _ => Err(format!("unknown method '{name}'")),
     }
 }
@@ -648,6 +863,10 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
             };
             apply_method(value, name, arg)
         }
+        "sum" | "avg" | "mean" | "min" | "max" | "count" | "len" | "first" => match args {
+            [Lit::List(items)] => aggregate(name, items.clone()),
+            vals => aggregate(name, vals.to_vec()),
+        },
         "now" => Ok(Lit::Num(chrono::Local::now().timestamp() as f64)),
         "date" => match args {
             [Lit::Str(s)] => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
@@ -850,12 +1069,29 @@ fn parse_spec(yaml: &str) -> BaseSpec {
 // Evaluation pipeline — shared between views and tests.
 // ------------------------------------------------------------------
 
+struct Cell {
+    /// Display string.
+    text: String,
+    /// Single-relation cells carry the resolved target — rendered as a
+    /// chip that opens the note instead of the row.
+    link: Option<PathBuf>,
+}
+
 struct Row {
     path: PathBuf,
-    /// Display strings aligned with `Computed::headers`.
-    cells: Vec<String>,
+    /// Display cells aligned with `Computed::headers`.
+    cells: Vec<Cell>,
     /// `cover:`/`banner:`/`image:` property resolved to a file path or URL.
     cover: Option<String>,
+}
+
+/// Stem of a resolved path, or the string itself when it isn't one.
+fn stem_of(s: &str) -> String {
+    let p = Path::new(s);
+    match (p.file_stem(), p.extension()) {
+        (Some(stem), Some(_)) => stem.to_string_lossy().to_string(),
+        _ => s.to_string(),
+    }
 }
 
 struct Computed {
@@ -985,16 +1221,88 @@ fn compute(
     root: &Path,
     images: &std::collections::HashMap<String, PathBuf>,
 ) -> Computed {
+    // Link index: vault-relative path, file name, and bare stem all
+    // resolve — `[[a]]` finds notes/a.md, `[[notes/a.md]]` hits directly.
+    let mut index: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    for note in notes {
+        let rel = note
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        index.insert(rel.to_lowercase(), note.clone());
+        if let Some(name) = note.file_name().map(|n| n.to_string_lossy().to_lowercase()) {
+            index
+                .entry(name.to_string())
+                .or_insert_with(|| note.clone());
+        }
+        if let Some(stem) = note.file_stem().map(|s| s.to_string_lossy().to_lowercase()) {
+            index
+                .entry(stem.to_string())
+                .or_insert_with(|| note.clone());
+        }
+    }
+    let resolve = |target: &str| -> Option<PathBuf> {
+        let t = target.trim().replace('\\', "/").to_lowercase();
+        index
+            .get(&t)
+            .or_else(|| index.get(&format!("{t}.md")))
+            .or_else(|| index.get(&format!("{t}.base")))
+            .cloned()
+    };
+
+    let rel_of = |p: &Path| -> String {
+        p.strip_prefix(root)
+            .map(|s| s.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| p.to_string_lossy().to_string())
+    };
+
+    // First pass: every note's row + resolved outgoing links.
+    let mut all_rows: Vec<RowData> = Vec::new();
+    let mut resolved_targets: Vec<Vec<PathBuf>> = Vec::new();
+    for note in notes {
+        let (row, targets) = row_data(root, note, &resolve);
+        resolved_targets.push(targets.iter().filter_map(|t| resolve(t)).collect());
+        all_rows.push(row);
+    }
+    // Link graph: file.links (outgoing, deduped) + file.backlinks (inbound).
+    let mut backlinks: std::collections::HashMap<PathBuf, Vec<String>> =
+        std::collections::HashMap::new();
+    for (i, targets) in resolved_targets.iter().enumerate() {
+        for p in targets {
+            backlinks
+                .entry(p.clone())
+                .or_default()
+                .push(rel_of(&all_rows[i].path));
+        }
+    }
+    for (i, row) in all_rows.iter_mut().enumerate() {
+        let mut links: Vec<String> = resolved_targets[i].iter().map(|p| rel_of(p)).collect();
+        links.sort();
+        links.dedup();
+        row.file_meta.insert(
+            "links".into(),
+            Lit::List(links.into_iter().map(Lit::Str).collect()),
+        );
+        let mut backs = backlinks.get(&row.path).cloned().unwrap_or_default();
+        backs.sort();
+        backs.dedup();
+        row.file_meta.insert(
+            "backlinks".into(),
+            Lit::List(backs.into_iter().map(Lit::Str).collect()),
+        );
+    }
+
     // Default columns: file.name plus every property seen in the vault.
     let mut columns = view.columns.clone();
-    let mut rows_data = Vec::new();
     let mut error = spec.error.clone();
 
-    for note in notes {
-        let row = row_data(root, note);
+    let mut rows_ix = Vec::new();
+    for (i, row) in all_rows.iter().enumerate() {
         let mut env = Env {
-            row: &row,
+            row,
+            rows: &all_rows,
             formulas: &spec.formulas,
+            resolve: &resolve,
             depth: 0,
         };
         let pass = {
@@ -1017,14 +1325,14 @@ fn compute(
             }
         };
         if pass {
-            rows_data.push(row);
+            rows_ix.push(i);
         }
     }
 
     if columns.is_empty() {
         columns.push("file.name".into());
         let mut seen = std::collections::BTreeSet::new();
-        for row in &rows_data {
+        for row in rows_ix.iter().map(|i| &all_rows[*i]) {
             for key in row.props.keys() {
                 seen.insert(key.clone());
             }
@@ -1044,11 +1352,13 @@ fn compute(
     }
 
     // Evaluate every column once per row so sorts compare values.
-    let mut rows: Vec<(PathBuf, Vec<Lit>, Option<String>)> = Vec::new();
-    for row in &rows_data {
+    let mut rows: Vec<(&RowData, Vec<Lit>, Option<String>)> = Vec::new();
+    for row in rows_ix.iter().map(|i| &all_rows[*i]) {
         let mut env = Env {
             row,
+            rows: &all_rows,
             formulas: &spec.formulas,
+            resolve: &resolve,
             depth: 0,
         };
         let cells: Vec<Lit> = columns
@@ -1066,7 +1376,7 @@ fn compute(
             )
             .collect();
         let cover = cover_of(row, root, images);
-        rows.push((row.path.clone(), cells, cover));
+        rows.push((row, cells, cover));
     }
 
     if !view.sort.is_empty() {
@@ -1096,22 +1406,56 @@ fn compute(
         rows.truncate(limit);
     }
 
-    // Display pass — timestamps render as local datetimes, everything
-    // else via Lit::display.
+    // Display pass — timestamps render as local datetimes, link
+    // columns as name chips, everything else via Lit::display.
     let rows: Vec<Row> = rows
         .into_iter()
-        .map(|(path, cells, cover)| {
+        .map(|(data, cells, cover)| {
+            let path = data.path.clone();
             let cells = cells
                 .iter()
                 .enumerate()
-                .map(|(ix, cell)| match (is_date_column(&columns[ix]), cell) {
-                    (true, Lit::Num(epoch)) if *epoch > 0.0 => {
-                        crate::history::format_epoch(*epoch as u64)
-                            .chars()
-                            .take(16)
-                            .collect()
+                .map(|(ix, cell)| {
+                    let col = &columns[ix];
+                    if is_date_column(col) {
+                        if let Lit::Num(epoch) = cell {
+                            if *epoch > 0.0 {
+                                return Cell {
+                                    text: crate::history::format_epoch(*epoch as u64)
+                                        .chars()
+                                        .take(16)
+                                        .collect(),
+                                    link: None,
+                                };
+                            }
+                        }
                     }
-                    _ => cell.display(),
+                    let link_col = {
+                        let prop = col.strip_prefix("note.").unwrap_or(col);
+                        data.link_props.contains(prop)
+                            || matches!(
+                                col.as_str(),
+                                "file.links" | "file.backlinks" | "links" | "backlinks"
+                            )
+                    };
+                    match (cell, link_col) {
+                        (Lit::Str(s), true) => Cell {
+                            text: stem_of(s),
+                            link: Some(PathBuf::from(s)),
+                        },
+                        (Lit::List(items), true) => Cell {
+                            text: items
+                                .iter()
+                                .map(|i| stem_of(&i.display()))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            link: None,
+                        },
+                        _ => Cell {
+                            text: cell.display(),
+                            link: None,
+                        },
+                    }
                 })
                 .collect();
             Row { path, cells, cover }
@@ -1131,6 +1475,8 @@ fn compute(
                     "file.ext" => "Type".into(),
                     "file.folder" => "Folder".into(),
                     "file.size" => "Size".into(),
+                    "file.links" => "Links".into(),
+                    "file.backlinks" => "Backlinks".into(),
                     "file.mtime" => "Modified".into(),
                     "file.ctime" => "Created".into(),
                     other => other
@@ -1352,7 +1698,7 @@ impl Render for BaseView {
                 let value = row
                     .cells
                     .get(gix)
-                    .map(|v| v.trim().to_string())
+                    .map(|v| v.text.trim().to_string())
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| "No value".into());
                 match groups.iter_mut().find(|(name, _)| *name == value) {
@@ -1421,7 +1767,12 @@ impl Render for BaseView {
                             .text_sm()
                             .text_color(theme.foreground)
                             .truncate()
-                            .child(row.cells.first().cloned().unwrap_or_default()),
+                            .child(
+                                row.cells
+                                    .first()
+                                    .map(|c| c.text.clone())
+                                    .unwrap_or_default(),
+                            ),
                     );
                     col = col.child(card);
                 }
@@ -1468,9 +1819,9 @@ impl Render for BaseView {
                                 .font_semibold()
                                 .text_color(theme.foreground)
                                 .truncate()
-                                .child(cell.clone()),
+                                .child(cell.text.clone()),
                         );
-                    } else if cix <= 3 && !cell.trim().is_empty() {
+                    } else if cix <= 3 && !cell.text.trim().is_empty() {
                         body = body.child(
                             div()
                                 .text_xs()
@@ -1479,7 +1830,7 @@ impl Render for BaseView {
                                 .child(format!(
                                     "{}: {}",
                                     computed.headers.get(cix).cloned().unwrap_or_default(),
-                                    cell
+                                    cell.text
                                 )),
                         );
                     }
@@ -1503,13 +1854,36 @@ impl Render for BaseView {
                         .hover(|s| s.bg(theme.muted.opacity(0.5)))
                         .child(h_flex().w_full().children(row.cells.iter().enumerate().map(
                             |(cix, cell)| {
-                                div()
-                                    .when(cix == 0, |d| d.flex_1())
-                                    .when(cix > 0, |d| d.w(px(140.)).flex_none())
-                                    .text_sm()
-                                    .text_color(theme.foreground)
-                                    .truncate()
-                                    .child(cell.clone())
+                                if let Some(target) = &cell.link {
+                                    let target = target.clone();
+                                    let workspace = self.workspace.clone();
+                                    div()
+                                        .id(("base-cell-link", ix * 4096 + cix))
+                                        .when(cix == 0, |d| d.flex_1())
+                                        .when(cix > 0, |d| d.w(px(140.)).flex_none())
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(theme.accent)
+                                        .cursor_pointer()
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            let target = target.clone();
+                                            let _ = workspace.update(cx, |ws, cx| {
+                                                ws.open_document_pub(target, window, cx)
+                                            });
+                                        })
+                                        .child(cell.text.clone())
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .when(cix == 0, |d| d.flex_1())
+                                        .when(cix > 0, |d| d.w(px(140.)).flex_none())
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(theme.foreground)
+                                        .child(cell.text.clone())
+                                        .into_any_element()
+                                }
                             },
                         )))
                         .on_click(move |_, window, cx| {
@@ -1568,26 +1942,30 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    fn env_with(pairs: &[(&str, Lit)]) -> (RowData, BTreeMap<String, super::Expr>) {
+    fn env_with(pairs: &[(&str, Lit)]) -> (Vec<RowData>, BTreeMap<String, super::Expr>) {
         let mut props = BTreeMap::new();
         for (k, v) in pairs {
             props.insert(k.to_string(), v.clone());
         }
         (
-            RowData {
+            vec![RowData {
                 path: PathBuf::from("notes/x.md"),
                 props,
+                link_props: Default::default(),
                 file_meta: BTreeMap::new(),
-            },
+            }],
             BTreeMap::new(),
         )
     }
 
     fn evals(src: &str, pairs: &[(&str, Lit)]) -> Lit {
-        let (row, formulas) = env_with(pairs);
+        let (rows, formulas) = env_with(pairs);
+        let no_resolve = |_: &str| None;
         let mut env = Env {
-            row: &row,
+            row: &rows[0],
+            rows: &rows,
             formulas: &formulas,
+            resolve: &no_resolve,
             depth: 0,
         };
         eval(&parse_expr(src).unwrap(), &mut env).unwrap()
@@ -1621,11 +1999,62 @@ mod tests {
     }
 
     #[test]
-    fn filter_tree() {
-        let (row, formulas) = env_with(&[("status", Lit::Str("draft".into()))]);
+    fn rollup_and_link() {
+        // Two notes: x links to y; y carries the aggregated field.
+        let resolve = |t: &str| {
+            (t == "notes/y.md" || t == "y" || t == "y.md").then(|| PathBuf::from("notes/y.md"))
+        };
+        let mut y_props = BTreeMap::new();
+        y_props.insert("hours".to_string(), Lit::Num(3.0));
+        let mut x_props = BTreeMap::new();
+        x_props.insert("related".to_string(), Lit::Str("notes/y.md".into()));
+        let rows = vec![
+            RowData {
+                path: PathBuf::from("notes/x.md"),
+                props: x_props,
+                link_props: Default::default(),
+                file_meta: BTreeMap::new(),
+            },
+            RowData {
+                path: PathBuf::from("notes/y.md"),
+                props: y_props,
+                link_props: Default::default(),
+                file_meta: BTreeMap::new(),
+            },
+        ];
+        let formulas = BTreeMap::new();
         let mut env = Env {
-            row: &row,
+            row: &rows[0],
+            rows: &rows,
             formulas: &formulas,
+            resolve: &resolve,
+            depth: 0,
+        };
+        let run = |src: &str, env: &mut Env| eval(&parse_expr(src).unwrap(), env).unwrap();
+        assert_eq!(run(r#"link("y")"#, &mut env), Lit::Str("notes/y.md".into()));
+        assert_eq!(
+            run(r#"related.contains(link("y"))"#, &mut env),
+            Lit::Bool(true)
+        );
+        assert_eq!(
+            run(r#"rollup(related, "hours", "sum")"#, &mut env),
+            Lit::Num(3.0)
+        );
+        assert_eq!(
+            run(r#"rollup(related, "missing", "count")"#, &mut env),
+            Lit::Num(0.0)
+        );
+    }
+
+    #[test]
+    fn filter_tree() {
+        let (rows, formulas) = env_with(&[("status", Lit::Str("draft".into()))]);
+        let no_resolve = |_: &str| None;
+        let mut env = Env {
+            row: &rows[0],
+            rows: &rows,
+            formulas: &formulas,
+            resolve: &no_resolve,
             depth: 0,
         };
         let spec: Value = serde_yaml::from_str(

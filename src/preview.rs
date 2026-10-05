@@ -1549,7 +1549,11 @@ fn tex_to_unicode(src: &str) -> String {
                     .map(|p| p + 1)
                     .unwrap_or(rest.len() + 1);
                 let name = &rest[..(name_end - 1).min(rest.len())];
-                let name = if name.is_empty() { &rest[..1.min(rest.len())] } else { name };
+                let name = if name.is_empty() {
+                    &rest[..1.min(rest.len())]
+                } else {
+                    name
+                };
                 i += name.len() + 1;
                 match name {
                     "frac" | "dfrac" | "tfrac" | "cfrac" => {
