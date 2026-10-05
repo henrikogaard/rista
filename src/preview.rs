@@ -1996,7 +1996,7 @@ impl MarkdownPlugin for TaskListPlugin {
                         cb = cb.border_color(theme.accent).bg(theme.accent).child(
                             Icon::new(assets::IconName::Check)
                                 .size_3()
-                                .text_color(theme.background),
+                                .text_color(theme.accent_foreground),
                         );
                     } else {
                         cb = cb.border_color(theme.muted_foreground);
@@ -2026,6 +2026,20 @@ impl MarkdownPlugin for TaskListPlugin {
                     .child("•")
                     .into_any_element(),
             };
+            // Checked items strike their first line — `~~` is inline-level
+            // so it can't wrap block content; the first line is the visible
+            // item text anyway.
+            let body = match item.checked {
+                Some(true) => {
+                    let (first, rest) = item
+                        .body
+                        .split_once('\n')
+                        .map(|(a, b)| (a.to_string(), format!("\n{b}")))
+                        .unwrap_or((item.body.clone(), String::new()));
+                    format!("~~{first}~~{rest}")
+                }
+                _ => item.body.clone(),
+            };
             rows = rows.child(
                 h_flex()
                     .w_full()
@@ -2034,15 +2048,12 @@ impl MarkdownPlugin for TaskListPlugin {
                     .child(marker_el)
                     .child(
                         div().flex_1().min_w_0().child(
-                            gpui_kit::component::text::TextView::markdown(
-                                ("task-item", ix),
-                                item.body.clone(),
-                            )
-                            .markdown_extensions(extensions(
-                                &self.folds,
-                                self.ctx.as_ref(),
-                                false,
-                            )),
+                            gpui_kit::component::text::TextView::markdown(("task-item", ix), body)
+                                .markdown_extensions(extensions(
+                                    &self.folds,
+                                    self.ctx.as_ref(),
+                                    false,
+                                )),
                         ),
                     ),
             );
