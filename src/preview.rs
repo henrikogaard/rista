@@ -61,7 +61,7 @@ pub fn extensions(
         .plugin(LocalImagePlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin);
-    match ctx {
+    let ext = match ctx {
         Some(ctx) => ext
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
@@ -79,9 +79,18 @@ pub fn extensions(
                 doc_anchored,
             }),
         None => ext,
-    }
-    .plugin(MathPlugin)
-    .plugin(MathBlockPlugin)
+    };
+    // Cell-click editing writes back into the source document, so it
+    // only intercepts tables at the top level — nested fragments keep
+    // the built-in table rendering.
+    let ext = match (doc_anchored, ctx) {
+        (true, Some(ctx)) => ext.plugin(TablePlugin {
+            ctx: ctx.clone(),
+            folds: folds.clone(),
+        }),
+        _ => ext,
+    };
+    ext.plugin(MathPlugin).plugin(MathBlockPlugin)
 }
 
 /// Rewrite Obsidian syntax into CommonMark for the preview pipeline.
@@ -1698,6 +1707,145 @@ impl MarkdownPlugin for ColumnBlockPlugin {
             );
         }
         row.into_any_element()
+    }
+}
+
+// ------------------------------------------------------------------
+// Editable tables — doc-level tables render with per-cell click
+// targets; a click opens the cell dialog and splices the row's pipe
+// segment back into source via `Document::set_table_cell`. Nested
+// fragments (columns, callouts, transclusions) keep the built-in
+// table: writes must land in the document being previewed, so the
+// plugin registers only when `doc_anchored`.
+// ------------------------------------------------------------------
+
+struct EditableCell {
+    /// Transformed source of the cell's content — nested-rendered.
+    display: String,
+    /// 1-based source line of the cell's row.
+    line: usize,
+    /// Cell index within its row.
+    col: usize,
+}
+
+struct EditableTable {
+    /// `rows[0]` is the header row; the rest are body rows.
+    rows: Vec<Vec<EditableCell>>,
+}
+
+struct TablePlugin {
+    ctx: PreviewCtx,
+    folds: CalloutFolds,
+}
+
+impl MarkdownPlugin for TablePlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "editable-table"
+    }
+
+    fn parse(&self, node: &mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Table(table) = node else {
+            return None;
+        };
+        let rows = table
+            .children
+            .iter()
+            .map(|row| {
+                let mdast::Node::TableRow(row) = row else {
+                    return Vec::new();
+                };
+                row.children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(col, cell)| {
+                        let line = cell.position()?.start.line;
+                        // mdast-gfm's cell span reaches back to the
+                        // preceding `|`, and the last cell in a row
+                        // swallows the row's trailing pipe too.
+                        let raw = cx
+                            .node_source(cell)
+                            .unwrap_or_default()
+                            .trim()
+                            .trim_start_matches('|');
+                        let display = raw
+                            .strip_suffix('|')
+                            .filter(|_| !raw.ends_with("\\|"))
+                            .unwrap_or(raw)
+                            .trim()
+                            .to_string();
+                        Some(EditableCell { display, line, col })
+                    })
+                    .collect()
+            })
+            .collect();
+        Some(MarkdownNode::new("editable-table", EditableTable { rows }))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let table = node.data::<EditableTable>().expect("editable-table data");
+        let theme = cx.theme();
+        let last = table.rows.len().saturating_sub(1);
+        let mut tbl = v_flex()
+            .w_full()
+            .my_2()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius)
+            .overflow_hidden();
+        for (rix, row) in table.rows.iter().enumerate() {
+            let mut r = h_flex().w_full();
+            if rix == 0 {
+                r = r.bg(theme.table_head);
+            }
+            if rix < last {
+                r = r.border_b_1().border_color(theme.border);
+            }
+            for (cix, cell) in row.iter().enumerate() {
+                let line = cell.line;
+                let col = cell.col;
+                let workspace = self.ctx.workspace.clone();
+                // Header cells render their raw text bolded through the
+                // nested markdown; `**` only when there is content.
+                let display = if rix == 0 && !cell.display.is_empty() {
+                    format!("**{}**", cell.display)
+                } else {
+                    cell.display.clone()
+                };
+                r = r.child(
+                    div()
+                        .id(("table-cell", rix * 4096 + cix))
+                        .flex_1()
+                        .min_w_0()
+                        .px_2()
+                        .py_1()
+                        .text_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                        .on_click(move |_, window, cx| {
+                            let _ = workspace.update(cx, |ws, cx| {
+                                ws.show_table_cell_dialog(line, col, window, cx)
+                            });
+                        })
+                        .child(
+                            gpui_kit::component::text::TextView::markdown(
+                                SharedString::from(format!("table-cell-{rix}-{cix}")),
+                                display,
+                            )
+                            .markdown_extensions(extensions(
+                                &self.folds,
+                                Some(&self.ctx),
+                                false,
+                            )),
+                        ),
+                );
+            }
+            tbl = tbl.child(r);
+        }
+        tbl.into_any_element()
     }
 }
 

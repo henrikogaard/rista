@@ -449,6 +449,57 @@ impl Document {
         self.toggle_task(line, window, cx)
     }
 
+    /// The raw text of the `col`-th pipe cell on `line` (1-based) —
+    /// the preview's editable-table dialog prefills from this.
+    pub fn table_cell_text(
+        &self,
+        line: usize,
+        col: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        self.editor.update(cx, |editor, _cx| {
+            let text = editor.value().to_string();
+            let line_text = text.split('\n').nth(line.saturating_sub(1))?;
+            pipe_segments(line_text)
+                .get(col)
+                .map(|seg| line_text[seg.clone()].trim().to_string())
+        })
+    }
+
+    /// Replace the `col`-th pipe cell on `line` (1-based) — the preview's
+    /// table editor writes back into source. The pipes stay put; the
+    /// cell's content becomes ` {text} `. Returns false when the line
+    /// has no such cell.
+    pub fn set_table_cell(
+        &mut self,
+        line: usize,
+        col: usize,
+        new_text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let mut start = 0usize;
+            for (n, l) in text.split_inclusive('\n').enumerate() {
+                if n + 1 != line {
+                    start += l.len();
+                    continue;
+                }
+                let line_end = l.strip_suffix('\n').map(|_| l.len() - 1).unwrap_or(l.len());
+                let Some(seg) = pipe_segments(&l[..line_end]).get(col).cloned() else {
+                    return false;
+                };
+                // An unescaped `|` would break the row's cells apart.
+                let escaped = new_text.trim().replace('|', "\\|");
+                editor.set_selected_range(start + seg.start..start + seg.end, cx);
+                editor.replace(format!(" {escaped} "), window, cx);
+                return true;
+            }
+            false
+        })
+    }
+
     /// The link covering the caret — `[[wikilink]]`, `![[embed]]`,
     /// `[label](url)`, or a bare URL token — if there is one. Links are
     /// scanned on the caret's line only; markdown links never span lines.
@@ -867,4 +918,33 @@ pub enum LinkTarget {
 
 pub fn word_stats(text: &str) -> (usize, usize) {
     (text.split_whitespace().count(), text.chars().count())
+}
+
+/// Byte ranges between the pipes of a table-row line — `| a | b |`
+/// yields the ` a ` and ` b ` segments. `\|` doesn't split; rows
+/// without leading/trailing pipes still yield their edge segments.
+fn pipe_segments(line: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = line.as_bytes();
+    let mut pipes = vec![];
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
+            pipes.push(i);
+        }
+    }
+    let mut segs = vec![];
+    if pipes.is_empty() {
+        return segs;
+    }
+    let first = pipes[0];
+    if !line[..first].trim().is_empty() {
+        segs.push(0..first);
+    }
+    for w in pipes.windows(2) {
+        segs.push(w[0] + 1..w[1]);
+    }
+    let last = *pipes.last().unwrap_or(&0);
+    if !line[last + 1..].trim().is_empty() {
+        segs.push(last + 1..line.len());
+    }
+    segs
 }

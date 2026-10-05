@@ -1710,6 +1710,54 @@ impl Workspace {
         self.set_note_property(path, &prop, value, window, cx);
     }
 
+    /// Edit cell `col` of the markdown table row on `line` (1-based) —
+    /// the preview's table cells call through here. The write lands in
+    /// the open doc's editor, so undo and autosave cover it.
+    pub fn show_table_cell_dialog(
+        &mut self,
+        line: usize,
+        col: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let Some(current) = doc.update(cx, |doc, cx| doc.table_cell_text(line, col, cx)) else {
+            return;
+        };
+        let input = self.cell_input.clone();
+        input.update(cx, |input, cx| input.set_value(current, window, cx));
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Edit cell")
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .on_ok({
+                    let view = view.clone();
+                    let doc = doc.clone();
+                    move |_, window, cx| {
+                        let text = view.read(cx).cell_input.read(cx).value().to_string();
+                        doc.update(cx, |doc, cx| {
+                            doc.set_table_cell(line, col, &text, window, cx)
+                        });
+                        view.update(cx, |this, cx| this.refocus(window, cx));
+                        true
+                    }
+                })
+        });
+
+        let input = self.cell_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+        });
+    }
+
     /// The Properties strip's "+ Add property" footer — name + value
     /// on the active document. Same YAML-typed commit as cell edits.
     pub fn show_add_property_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
