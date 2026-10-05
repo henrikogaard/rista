@@ -5513,7 +5513,7 @@ impl Workspace {
                 doc.base_embeds.clone(),
                 doc.linked_mentions.clone(),
                 doc.mentions_open,
-                crate::properties::frontmatter_span(&doc.editor.read(cx).value().to_string())
+                crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref())
                     .is_some(),
             )
         };
