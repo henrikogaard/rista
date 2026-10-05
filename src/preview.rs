@@ -340,12 +340,12 @@ fn render_embed(
         Some((t, s)) => (t.trim(), s.trim()),
         None => (inner, ""),
     };
-    // `.md`, or no extension at all — Obsidian wiki targets are
-    // extensionless note names.
+    // `.md`/`.base`, or no extension at all — Obsidian wiki targets
+    // are extensionless note names.
     let looks_like_note = target
         .rsplit('.')
         .next()
-        .map(|ext| ext.eq_ignore_ascii_case("md"))
+        .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("base"))
         .unwrap_or_default()
         || !target.contains('.');
     if looks_like_note {
@@ -2098,10 +2098,51 @@ impl MarkdownPlugin for TranscludePlugin {
         ))
     }
 
-    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let embed = node.data::<Transclude>().expect("transclude node data");
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
         let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
+        // `![[db.base]]` embeds the live base view (Obsidian parity) —
+        // keyed by spec text so the view survives re-renders.
+        if let Some(path) = resolved.as_ref().filter(|p| crate::app::is_base(p)) {
+            if let Ok(spec) = std::fs::read_to_string(path) {
+                let key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    spec.hash(&mut hasher);
+                    hasher.finish()
+                };
+                let view = {
+                    let mut views = self.ctx.views.lock().expect("embed views");
+                    match views.get(&key) {
+                        Some(view) => view.clone(),
+                        None => {
+                            let view = cx.new(|cx| {
+                                crate::bases::BaseView::for_inline(
+                                    spec.clone(),
+                                    self.ctx.vault.clone(),
+                                    self.ctx.workspace.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                            views.insert(key, view.clone());
+                            view
+                        }
+                    }
+                };
+                return div()
+                    .w_full()
+                    .h(px(320.))
+                    .my_2()
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius)
+                    .overflow_hidden()
+                    .child(view)
+                    .into_any_element();
+            }
+        }
         let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
         let content = resolved
             .as_ref()

@@ -5240,7 +5240,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
 }
 
 /// Whether the file is an Obsidian-style `.base` database spec.
-fn is_base(path: &std::path::Path) -> bool {
+pub(crate) fn is_base(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("base"))
