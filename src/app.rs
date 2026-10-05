@@ -3769,7 +3769,10 @@ impl Workspace {
             )
             .child(self.render_starred(cx))
             .child(
-                div().flex_1().min_h_0().child(
+                // flex_1 fills leftover space; min_h keeps ~3 rows visible
+                // when the panes below crowd the window (it collapsed to a
+                // blank clip — rows rendered into a zero-height region).
+                div().flex_1().min_h(px(72.)).child(
                     tree(&tree_state, {
                         let render_view = view.clone();
                         let starred_rows = self.settings.starred.clone();
