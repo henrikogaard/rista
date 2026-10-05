@@ -691,7 +691,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                                             let Some(ws) = workspace.upgrade() else {
                                                 return;
                                             };
-                                            let _ = ws.update(cx, |ws, cx| {
+                                            ws.update(cx, |ws, cx| {
                                                 if let Some(path) = ws
                                                     .vault_entity()
                                                     .read(cx)
@@ -711,7 +711,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                                             let Some(ws) = workspace.upgrade() else {
                                                 return;
                                             };
-                                            let _ = ws.update(cx, |ws, cx| {
+                                            ws.update(cx, |ws, cx| {
                                                 if let Some(path) = ws
                                                     .vault_entity()
                                                     .read(cx)
@@ -1596,7 +1596,7 @@ fn slice_section(text: &str, anchor: &str) -> Option<String> {
         return None;
     }
     let lines: Vec<&str> = text.split('\n').collect();
-    fn heading_at<'a>(l: &'a str, in_fence: bool) -> Option<(usize, &'a str)> {
+    fn heading_at(l: &str, in_fence: bool) -> Option<(usize, &str)> {
         if in_fence {
             return None;
         }

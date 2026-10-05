@@ -185,6 +185,62 @@ fn wiki_items(
     };
 
     let vault = vault.read(cx);
+
+    // `[[note#…` — heading anchors. The note part resolves the same way
+    // the link itself does; an empty part (`[[#`) completes headings in
+    // the note being edited, matching Obsidian.
+    if let Some(hash) = query.find('#') {
+        let note_part = &query[..hash];
+        let head_q = query[hash + 1..].to_lowercase();
+        let src = if note_part.is_empty() {
+            Some(text.to_string())
+        } else {
+            vault
+                .resolve_wikilink(note_part)
+                .and_then(|note| std::fs::read_to_string(note).ok())
+        };
+        let mut items: Vec<CompletionItem> = Vec::new();
+        if let Some(src) = src {
+            let mut in_fence = false;
+            for (ix, line) in src.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("```") || t.starts_with("~~~") {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence || !t.starts_with('#') {
+                    continue;
+                }
+                let marks = t.chars().take_while(|c| *c == '#').count();
+                if marks > 6 {
+                    continue;
+                }
+                let heading = t[marks..].trim_start();
+                if heading.is_empty()
+                    || (!head_q.is_empty() && !heading.to_lowercase().contains(&head_q))
+                {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: heading.to_string(),
+                    detail: Some(if note_part.is_empty() {
+                        "heading · this note".to_string()
+                    } else {
+                        format!("heading · {note_part}")
+                    }),
+                    kind: Some(CompletionItemKind::REFERENCE),
+                    sort_text: Some(format!("{:04}", ix)),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: format!("{note_part}#{heading}]]"),
+                    })),
+                    ..Default::default()
+                });
+            }
+        }
+        return Some(CompletionResponse::Array(items));
+    }
+
     let root = vault.root.clone().unwrap_or_default();
 
     // Stems that appear more than once need their directory in the

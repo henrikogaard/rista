@@ -2938,12 +2938,12 @@ impl Workspace {
         for day in 1..=days_in_month {
             week = week.child(day_cell(day));
             slot += 1;
-            if slot % 7 == 0 {
+            if slot.is_multiple_of(7) {
                 weeks.push(week);
                 week = h_flex().gap_0p5();
             }
         }
-        if slot % 7 != 0 {
+        if !slot.is_multiple_of(7) {
             weeks.push(week);
         }
 
