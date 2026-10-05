@@ -561,12 +561,12 @@ impl MarkdownPlugin for PropertiesPlugin {
                         .w_full()
                         .px_3()
                         .py_1()
-                        .gap_3()
+                        .gap_2()
                         .border_t_1()
                         .border_color(theme.border.opacity(0.5))
                         .child(
                             div()
-                                .w(px(110.))
+                                .w(px(96.))
                                 .flex_none()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
@@ -576,7 +576,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                         .child(
                             div()
                                 .flex_1()
-                                .text_sm()
+                                .text_xs()
                                 .text_color(theme.foreground)
                                 .truncate()
                                 .child(v.clone()),
