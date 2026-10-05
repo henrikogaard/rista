@@ -6,8 +6,9 @@
 //! - `filters:` — `and`/`or`/`not` trees of expressions:
 //!   `prop == "x"` `!=` `>` `>=` `<` `<=`, arithmetic `+ - * / %`,
 //!   `prop.contains("x")`, `startsWith`, `endsWith`, `isEmpty`,
-//!   `file.name/path/ext/folder/mtime/ctime/size`, `note.prop`,
-//!   `formula.x`, functions `contains(a,b)`/`startsWith`/`endsWith`/
+//!   `file.name/path/ext/folder/mtime/ctime/size/tags`, `note.prop`,
+//!   `file.hasTag("x")`/`file.inFolder("dir")`, `formula.x`,
+//!   functions `contains(a,b)`/`startsWith`/`endsWith`/
 //!   `isEmpty`/`now()`/`date("YYYY-MM-DD")`.
 //! - `formulas:` — name → expression, referenced as `formula.name`.
 //! - `properties:` — `prop: {displayName: …}` column headers.
@@ -612,6 +613,17 @@ fn row_data(
         Lit::Num(meta.as_ref().map(|m| epoch_of(m.created())).unwrap_or(0.0)),
     );
     let text = std::fs::read_to_string(path).unwrap_or_default();
+    // `file.tags` — Obsidian's `#name`-shaped tag list (frontmatter +
+    // inline `#tag`s, code-span and fence safe).
+    file_meta.insert(
+        "tags".into(),
+        Lit::List(
+            properties::note_tags(&text)
+                .into_iter()
+                .map(|t| Lit::Str(format!("#{t}")))
+                .collect(),
+        ),
+    );
     let targets = link_targets(&text);
     let mut link_props = std::collections::BTreeSet::new();
     let props = properties::properties(&text)
@@ -756,6 +768,47 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
             }
         }
         Expr::Method(target, name, args) => {
+            // `file.hasTag("x")` / `file.inFolder("dir")` — Obsidian
+            // file-object methods, evaluated against file_meta before
+            // the generic method dispatch.
+            if matches!(target.as_ref(), Expr::Ref(None, n) if n == "file") {
+                match name.as_str() {
+                    "hasTag" => {
+                        let arg = args
+                            .first()
+                            .map(|a| eval(a, env))
+                            .transpose()?
+                            .map(|v| v.display().trim_start_matches('#').to_string())
+                            .unwrap_or_default();
+                        let tags = match env.row.file_meta.get("tags") {
+                            Some(Lit::List(items)) => items.clone(),
+                            _ => Vec::new(),
+                        };
+                        return Ok(Lit::Bool(
+                            tags.iter()
+                                .any(|t| t.display().trim_start_matches('#') == arg),
+                        ));
+                    }
+                    "inFolder" => {
+                        let arg = args
+                            .first()
+                            .map(|a| eval(a, env))
+                            .transpose()?
+                            .map(|v| v.display().trim_matches('/').to_string())
+                            .unwrap_or_default();
+                        let folder = env
+                            .row
+                            .file_meta
+                            .get("folder")
+                            .map(|f| f.display())
+                            .unwrap_or_default();
+                        return Ok(Lit::Bool(
+                            folder == arg || folder.starts_with(&format!("{arg}/")),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
             let value = eval(target, env)?;
             let arg = match args.len() {
                 0 => None,

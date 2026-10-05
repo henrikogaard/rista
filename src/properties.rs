@@ -202,6 +202,19 @@ pub fn vault_tags(notes: &[PathBuf]) -> Vec<(String, usize)> {
     counts.into_iter().collect()
 }
 
+/// All of one note's tags — `tags:` frontmatter plus inline `#tag`s,
+/// deduplicated, bare names (no `#`). Bases expose this as `file.tags`.
+pub fn note_tags(text: &str) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    for tag in frontmatter_tags(text) {
+        found.insert(tag);
+    }
+    for tag in inline_tags(text) {
+        found.insert(tag);
+    }
+    found.into_iter().collect()
+}
+
 /// `tags:` entries from frontmatter — sequence, `[a, b]`, or
 /// comma-separated scalar all count.
 fn frontmatter_tags(text: &str) -> Vec<String> {
