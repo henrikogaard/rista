@@ -221,6 +221,25 @@ fn frontmatter_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// `aliases:` entries from frontmatter — sequence or comma-separated
+/// scalar, same shapes `vault_tags` accepts.
+pub fn frontmatter_aliases(text: &str) -> Vec<String> {
+    properties(text)
+        .into_iter()
+        .find(|(key, _)| key == "aliases" || key == "alias")
+        .map(|(_, value)| match value {
+            Value::Sequence(items) => items.iter().map(scalar_text).collect::<Vec<_>>(),
+            other => scalar_text(&other)
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 /// `#tag` tokens outside fenced code blocks. A tag is `#` not preceded
 /// by a word character, followed by `[\w/-]+` (obsidian-style nesting).
 fn inline_tags(text: &str) -> Vec<String> {

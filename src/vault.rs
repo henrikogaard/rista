@@ -32,6 +32,9 @@ pub struct Vault {
     /// `(tag, note_count)` pairs, rebuilt with the index — completions read
     /// this snapshot instead of re-parsing every note per keystroke.
     pub tags: Vec<(String, usize)>,
+    /// Lowercase `aliases:` frontmatter values → the note declaring them,
+    /// so `[[Alias]]` resolves like Obsidian. Rebuilt with the index.
+    pub aliases: std::collections::HashMap<String, PathBuf>,
     watcher: Option<notify::RecommendedWatcher>,
     pending_events: usize,
     /// Folder ids the user expanded — reapplied to rebuilt trees so
@@ -59,6 +62,7 @@ impl Vault {
             watcher: None,
             pending_events: 0,
             tags: Vec::new(),
+            aliases: std::collections::HashMap::new(),
             expanded: Default::default(),
             _tree_sub: tree_sub,
         }
@@ -92,6 +96,16 @@ impl Vault {
         let items = mark_expanded(build_items(&root, 0), &self.expanded);
         let (notes, images) = collect_files(&root);
         self.tags = crate::properties::vault_tags(&notes);
+        self.aliases.clear();
+        for note in &notes {
+            if note.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Ok(text) = std::fs::read_to_string(note) {
+                    for alias in crate::properties::frontmatter_aliases(&text) {
+                        self.aliases.insert(alias.to_lowercase(), note.clone());
+                    }
+                }
+            }
+        }
         self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
         self.notes = notes;
         *self.images.borrow_mut() = images;
@@ -182,6 +196,8 @@ impl Vault {
                     })
                     .cloned()
             })
+            // A literal note name wins; frontmatter aliases resolve last.
+            .or_else(|| self.aliases.get(&needle).cloned())
     }
 
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
