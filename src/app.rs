@@ -3703,7 +3703,16 @@ impl Workspace {
                                                 .flex_1()
                                                 .text_sm()
                                                 .truncate()
-                                                .child(task.text.clone()),
+                                                .text_color(if task.text.is_empty() {
+                                                    theme.muted_foreground
+                                                } else {
+                                                    theme.foreground
+                                                })
+                                                .child(if task.text.is_empty() {
+                                                    "(empty task)".to_string()
+                                                } else {
+                                                    task.text.clone()
+                                                }),
                                         )
                                         .child(
                                             div()
