@@ -59,6 +59,8 @@ pub fn extensions(folds: &CalloutFolds, ctx: Option<&PreviewCtx>) -> MarkdownExt
             }),
         None => ext,
     }
+    .plugin(MathPlugin)
+    .plugin(MathBlockPlugin)
 }
 
 /// Rewrite Obsidian syntax into CommonMark for the preview pipeline.
@@ -1211,4 +1213,482 @@ impl MarkdownPlugin for TranscludePlugin {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------
+// Math — `$$...$$` blocks and `$...$` inline, typeset as Unicode.
+// Not a full TeX engine: covers the everyday set (greek, scripts,
+// fractions, roots, operators, common symbols) and falls back to the
+// raw source for anything unrecognized.
+// ------------------------------------------------------------------
+
+struct Math {
+    source: String,
+}
+
+struct MathPlugin;
+
+impl MarkdownPlugin for MathPlugin {
+    fn name(&self) -> &str {
+        "math"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        match node {
+            mdast::Node::InlineMath(math) => Some(
+                MarkdownNode::new(
+                    "math",
+                    Math {
+                        source: math.value.clone(),
+                    },
+                )
+                .text(tex_to_unicode(&math.value)),
+            ),
+            _ => None,
+        }
+    }
+}
+
+/// Block math — `$$...$$` rendered as a centered display line.
+struct MathBlockPlugin;
+
+impl MarkdownPlugin for MathBlockPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "math-block"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Math(math) = node else {
+            return None;
+        };
+        Some(MarkdownNode::new(
+            "math-block",
+            Math {
+                source: math.value.clone(),
+            },
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let math = node.data::<Math>().expect("math node data");
+        let theme = cx.theme();
+        div()
+            .w_full()
+            .py_2()
+            .px_4()
+            .my_1()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .text_base()
+                    .italic()
+                    .text_color(theme.foreground)
+                    .child(tex_to_unicode(&math.source)),
+            )
+    }
+}
+
+/// Render a TeX-ish expression to Unicode. Anything we don't recognize is
+/// passed through raw — the result degrades gracefully rather than hiding.
+fn tex_to_unicode(src: &str) -> String {
+    const MACROS: &[(&str, &str)] = &[
+        ("alpha", "α"),
+        ("beta", "β"),
+        ("gamma", "γ"),
+        ("delta", "δ"),
+        ("epsilon", "ε"),
+        ("zeta", "ζ"),
+        ("eta", "η"),
+        ("theta", "θ"),
+        ("iota", "ι"),
+        ("kappa", "κ"),
+        ("lambda", "λ"),
+        ("mu", "μ"),
+        ("nu", "ν"),
+        ("xi", "ξ"),
+        ("pi", "π"),
+        ("rho", "ρ"),
+        ("sigma", "σ"),
+        ("tau", "τ"),
+        ("phi", "φ"),
+        ("chi", "χ"),
+        ("psi", "ψ"),
+        ("omega", "ω"),
+        ("Gamma", "Γ"),
+        ("Delta", "Δ"),
+        ("Theta", "Θ"),
+        ("Lambda", "Λ"),
+        ("Xi", "Ξ"),
+        ("Pi", "Π"),
+        ("Sigma", "Σ"),
+        ("Phi", "Φ"),
+        ("Psi", "Ψ"),
+        ("Omega", "Ω"),
+        ("infty", "∞"),
+        ("partial", "∂"),
+        ("nabla", "∇"),
+        ("pm", "±"),
+        ("mp", "∓"),
+        ("times", "×"),
+        ("div", "÷"),
+        ("cdot", "·"),
+        ("ast", "∗"),
+        ("circ", "∘"),
+        ("bullet", "•"),
+        ("le", "≤"),
+        ("leq", "≤"),
+        ("ge", "≥"),
+        ("geq", "≥"),
+        ("ne", "≠"),
+        ("neq", "≠"),
+        ("approx", "≈"),
+        ("equiv", "≡"),
+        ("sim", "∼"),
+        ("simeq", "≃"),
+        ("propto", "∝"),
+        ("ll", "≪"),
+        ("gg", "≫"),
+        ("in", "∈"),
+        ("notin", "∉"),
+        ("ni", "∋"),
+        ("subset", "⊂"),
+        ("supset", "⊃"),
+        ("subseteq", "⊆"),
+        ("supseteq", "⊇"),
+        ("cup", "∪"),
+        ("cap", "∩"),
+        ("setminus", "∖"),
+        ("emptyset", "∅"),
+        ("forall", "∀"),
+        ("exists", "∃"),
+        ("nexists", "∄"),
+        ("land", "∧"),
+        ("wedge", "∧"),
+        ("lor", "∨"),
+        ("vee", "∨"),
+        ("lnot", "¬"),
+        ("neg", "¬"),
+        ("oplus", "⊕"),
+        ("otimes", "⊗"),
+        ("perp", "⊥"),
+        ("parallel", "∥"),
+        ("angle", "∠"),
+        ("to", "→"),
+        ("rightarrow", "→"),
+        ("gets", "←"),
+        ("leftarrow", "←"),
+        ("Rightarrow", "⇒"),
+        ("Leftarrow", "⇐"),
+        ("Leftrightarrow", "⇔"),
+        ("mapsto", "↦"),
+        ("implies", "⟹"),
+        ("iff", "⟺"),
+        ("uparrow", "↑"),
+        ("downarrow", "↓"),
+        ("sum", "∑"),
+        ("prod", "∏"),
+        ("int", "∫"),
+        ("iint", "∬"),
+        ("oint", "∮"),
+        ("lim", "lim"),
+        ("log", "log"),
+        ("ln", "ln"),
+        ("exp", "exp"),
+        ("sin", "sin"),
+        ("cos", "cos"),
+        ("tan", "tan"),
+        ("min", "min"),
+        ("max", "max"),
+        ("sup", "sup"),
+        ("inf", "inf"),
+        ("det", "det"),
+        ("arg", "arg"),
+        ("deg", "deg"),
+        ("dim", "dim"),
+        ("ker", "ker"),
+        ("gcd", "gcd"),
+        ("Pr", "Pr"),
+        ("ell", "ℓ"),
+        ("hbar", "ℏ"),
+        ("hslash", "ℏ"),
+        ("Re", "ℜ"),
+        ("Im", "ℑ"),
+        ("aleph", "ℵ"),
+        ("wp", "℘"),
+        ("prime", "′"),
+        ("degree", "°"),
+        ("angle", "∠"),
+        ("ldots", "…"),
+        ("cdots", "⋯"),
+        ("dots", "…"),
+        ("vdots", "⋮"),
+        ("ddots", "⋱"),
+        ("quad", "  "),
+        ("qquad", "    "),
+        (",", " "),
+        (";", " "),
+        ("!", ""),
+        (" ", " "),
+        ("left", ""),
+        ("right", ""),
+        ("big", ""),
+        ("Big", ""),
+        ("displaystyle", ""),
+        ("limits", ""),
+        ("mathop", ""),
+    ];
+    const SUPERS: &[(&str, &str)] = &[
+        ("0", "⁰"),
+        ("1", "¹"),
+        ("2", "²"),
+        ("3", "³"),
+        ("4", "⁴"),
+        ("5", "⁵"),
+        ("6", "⁶"),
+        ("7", "⁷"),
+        ("8", "⁸"),
+        ("9", "⁹"),
+        ("+", "⁺"),
+        ("-", "⁻"),
+        ("=", "⁼"),
+        ("(", "⁽"),
+        (")", "⁾"),
+        ("n", "ⁿ"),
+        ("i", "ⁱ"),
+        ("x", "ˣ"),
+        ("T", "ᵀ"),
+    ];
+    const SUBS: &[(&str, &str)] = &[
+        ("0", "₀"),
+        ("1", "₁"),
+        ("2", "₂"),
+        ("3", "₃"),
+        ("4", "₄"),
+        ("5", "₅"),
+        ("6", "₆"),
+        ("7", "₇"),
+        ("8", "₈"),
+        ("9", "₉"),
+        ("+", "₊"),
+        ("-", "₋"),
+        ("=", "₌"),
+        ("(", "₍"),
+        (")", "₎"),
+        ("a", "ₐ"),
+        ("e", "ₑ"),
+        ("o", "ₒ"),
+        ("x", "ₓ"),
+        ("i", "ᵢ"),
+        ("r", "ᵣ"),
+        ("u", "ᵤ"),
+        ("v", "ᵥ"),
+        ("n", "ₙ"),
+        ("k", "ₖ"),
+        ("j", "ⱼ"),
+        ("t", "ₜ"),
+        ("p", "ₚ"),
+        ("s", "ₛ"),
+    ];
+
+    fn group(src: &str, i: &mut usize) -> String {
+        // `{...}` or the next single token.
+        let rest = &src[*i..];
+        if rest.starts_with('{') {
+            *i += 1;
+            let mut depth = 1;
+            let start = *i;
+            while *i < src.len() {
+                match src[*i..].chars().next() {
+                    Some('{') => depth += 1,
+                    Some('}') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let inner = &src[start..*i];
+                            *i += 1;
+                            return inner.to_string();
+                        }
+                    }
+                    _ => {}
+                }
+                *i += src[*i..].chars().next().map(char::len_utf8).unwrap_or(1);
+            }
+            return src[start..].to_string();
+        }
+        let ch_len = rest.chars().next().map(char::len_utf8).unwrap_or(0);
+        *i += ch_len;
+        rest[..ch_len].to_string()
+    }
+
+    fn script(inner: &str, table: &[(&str, &str)]) -> String {
+        let mut out = String::with_capacity(inner.len());
+        for c in inner.chars() {
+            let mut buf = [0; 4];
+            let key = c.encode_utf8(&mut buf) as &str;
+            match table.iter().find(|(k, _)| k == &key) {
+                Some((_, v)) => out.push_str(v),
+                None => out.push(c),
+            }
+        }
+        out
+    }
+
+    fn render(src: &str) -> String {
+        let mut out = String::with_capacity(src.len() * 2);
+        let mut i = 0;
+        while i < src.len() {
+            let rest = &src[i..];
+            if let Some(rest) = rest.strip_prefix('\\') {
+                // Longest macro name wins; \frac/\sqrt take arguments.
+                let name_end = rest
+                    .find(|c: char| !c.is_ascii_alphabetic() && c != '*')
+                    .map(|p| p + 1)
+                    .unwrap_or(rest.len() + 1);
+                let name = &rest[..(name_end - 1).min(rest.len())];
+                let name = if name.is_empty() { &rest[..1.min(rest.len())] } else { name };
+                i += name.len() + 1;
+                match name {
+                    "frac" | "dfrac" | "tfrac" | "cfrac" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let num = group(src, &mut i);
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let den = group(src, &mut i);
+                        out.push_str(&render(&num));
+                        out.push('⁄');
+                        out.push_str(&render(&den));
+                    }
+                    "sqrt" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        // Optional root index [n] — only simple digits map.
+                        if src[i..].starts_with('[') {
+                            if let Some(close) = src[i..].find(']') {
+                                let idx = &src[i + 1..i + close];
+                                out.push_str(&script(idx, SUPERS));
+                                i += close + 1;
+                            }
+                        }
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let inner = group(src, &mut i);
+                        out.push('√');
+                        out.push('(');
+                        out.push_str(&render(&inner));
+                        out.push(')');
+                    }
+                    "text" | "mathrm" | "mathbf" | "mathit" | "mathsf" | "operatorname"
+                    | "boldsymbol" | "emph" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let inner = group(src, &mut i);
+                        out.push_str(&inner);
+                    }
+                    "mathbb" | "mathcal" | "mathfrak" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let inner = group(src, &mut i);
+                        const DOUBLE: &[(&str, &str)] = &[
+                            ("R", "ℝ"),
+                            ("N", "ℕ"),
+                            ("Z", "ℤ"),
+                            ("Q", "ℚ"),
+                            ("C", "ℂ"),
+                            ("H", "ℍ"),
+                            ("P", "ℙ"),
+                            ("D", "𝔻"),
+                        ];
+                        let mapped: String = inner
+                            .chars()
+                            .map(|c| {
+                                DOUBLE
+                                    .iter()
+                                    .find(|(k, _)| k == &c.to_string().as_str())
+                                    .map(|(_, v)| v.to_string())
+                                    .unwrap_or_else(|| c.to_string())
+                            })
+                            .collect();
+                        out.push_str(&mapped);
+                    }
+                    "hat" | "bar" | "vec" | "dot" | "ddot" | "tilde" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let inner = render(&group(src, &mut i));
+                        let mark = match name {
+                            "hat" => '̂',
+                            "bar" => '̄',
+                            "vec" => '⃗',
+                            "dot" => '̇',
+                            "ddot" => '̈',
+                            _ => '̃',
+                        };
+                        out.push_str(&inner);
+                        out.push(mark);
+                    }
+                    "overline" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let inner = render(&group(src, &mut i));
+                        out.push_str(&inner);
+                        out.push('‾');
+                    }
+                    "underline" => {
+                        while src[i..].starts_with(' ') {
+                            i += 1;
+                        }
+                        let inner = render(&group(src, &mut i));
+                        out.push_str(&inner);
+                        out.push('̲');
+                    }
+                    _ => {
+                        match MACROS.iter().find(|(k, _)| *k == name) {
+                            Some((_, v)) => out.push_str(v),
+                            None => {
+                                // Unknown macro — drop the backslash, keep the name.
+                                out.push_str(name);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            match rest.chars().next() {
+                Some('^') => {
+                    i += 1;
+                    let inner = group(src, &mut i);
+                    out.push_str(&script(&inner, SUPERS));
+                }
+                Some('_') => {
+                    i += 1;
+                    let inner = group(src, &mut i);
+                    out.push_str(&script(&inner, SUBS));
+                }
+                Some('{') => {
+                    let inner = group(src, &mut i);
+                    out.push_str(&render(&inner));
+                }
+                Some(c) => {
+                    i += c.len_utf8();
+                    out.push(c);
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    render(src.trim())
 }
