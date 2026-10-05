@@ -92,6 +92,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-1", ViewSource, None),
         KeyBinding::new("cmd-2", ViewSplit, None),
         KeyBinding::new("cmd-3", ViewPreview, None),
+        KeyBinding::new("cmd-e", ToggleEditPreview, None),
         // App
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
         KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
@@ -261,6 +262,13 @@ fn menus() -> Vec<Menu> {
             MenuItem::Action {
                 name: "Preview".into(),
                 action: Box::new(ViewPreview),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: "Toggle Edit/Preview".into(),
+                action: Box::new(ToggleEditPreview),
                 os_action: None,
                 checked: false,
                 disabled: false,

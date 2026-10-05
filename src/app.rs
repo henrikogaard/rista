@@ -129,6 +129,7 @@ enum PaletteCmd {
     ToggleStar,
     CopyLink,
     CopyLinkHeading,
+    ExportHtml,
     Settings,
     ToggleTheme,
     Quit,
@@ -271,6 +272,11 @@ impl PaletteCmd {
                 assets::IconName::Link,
                 "Copy wikilink to heading",
                 &["copy", "link", "anchor", "section", "heading", "clipboard"],
+            ),
+            ExportHtml => (
+                assets::IconName::FileText,
+                "Export note as HTML…",
+                &["export", "html", "share", "publish", "save"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -795,6 +801,53 @@ impl Workspace {
         .detach();
     }
 
+    /// Palette → "Export note as HTML…" — a save panel for `<stem>.html`
+    /// next to the note; the body is `markdown::to_html` wrapped in a
+    /// minimal readable stylesheet.
+    fn export_html(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.note_status("Open a note first", cx);
+            return;
+        };
+        let (text, title, dir) = {
+            let doc = doc.read(cx);
+            (
+                doc.editor.read(cx).value().to_string(),
+                doc.title(),
+                doc.path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default(),
+            )
+        };
+        let name = format!("{title}.html");
+        let body = markdown::to_html(&text);
+        let html = format!(
+            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
+             <title>{title}</title>\n\
+             <style>body{{max-width:44rem;margin:2rem auto;padding:0 1rem;\
+             font-family:-apple-system,sans-serif;line-height:1.6}}\
+             img{{max-width:100%}}pre{{padding:1em;overflow:auto;background:#f5f5f5}}\
+             blockquote{{border-left:3px solid #ddd;margin:0;padding-left:1em;color:#555}}</style>\n\
+             </head>\n<body>\n{body}</body>\n</html>\n"
+        );
+        let receiver = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn_in(window, async move |view, window| {
+            if let Ok(Ok(Some(path))) = receiver.await {
+                let _ = window.update(|_window, cx| {
+                    view.update(cx, |this, cx| {
+                        if std::fs::write(&path, &html).is_ok() {
+                            this.note_status(format!("Exported {}", path.display()), cx);
+                        } else {
+                            this.note_status("Export failed", cx);
+                        }
+                    })
+                });
+            }
+        })
+        .detach();
+    }
+
     fn on_move_line_up(&mut self, _: &MoveLineUp, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
             doc.update(cx, |doc, cx| doc.move_block(false, window, cx));
@@ -915,6 +968,22 @@ impl Workspace {
         self.set_view_mode(ViewMode::Preview, w, cx);
     }
 
+    /// ⌘E — Obsidian's edit/read toggle: Preview ⇄ Source (Split
+    /// counts as editing → jumps to Preview).
+    fn on_toggle_edit_preview(
+        &mut self,
+        _: &ToggleEditPreview,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mode = if self.settings.view_mode == ViewMode::Preview {
+            ViewMode::Source
+        } else {
+            ViewMode::Preview
+        };
+        self.set_view_mode(mode, w, cx);
+    }
+
     fn on_toggle_theme(&mut self, _: &ToggleTheme, _w: &mut Window, cx: &mut Context<Self>) {
         self.settings.appearance = match self.settings.appearance {
             Appearance::Dark => Appearance::Light,
@@ -978,6 +1047,7 @@ impl Workspace {
             PaletteCmd::ToggleStar,
             PaletteCmd::CopyLink,
             PaletteCmd::CopyLinkHeading,
+            PaletteCmd::ExportHtml,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -1220,6 +1290,7 @@ impl Workspace {
                     None => self.note_status("No note open", cx),
                 }
             }
+            PaletteCmd::ExportHtml => self.export_html(window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -3264,7 +3335,25 @@ impl Workspace {
                 ClipboardEntry::ExternalPaths(paths) => {
                     handled |= self.import_paths(paths.paths(), window, cx);
                 }
-                ClipboardEntry::String(_) => {}
+                ClipboardEntry::String(text) => {
+                    // Pasting a URL over a selection wraps it in a
+                    // markdown link — Obsidian/smart-editor behavior.
+                    let url = text.text.trim();
+                    let is_url = (url.starts_with("https://") || url.starts_with("http://"))
+                        && !url.chars().any(char::is_whitespace)
+                        && url.len() < 2048;
+                    if is_url {
+                        handled |= self
+                            .active_doc()
+                            .cloned()
+                            .map(|doc| {
+                                doc.update(cx, |doc, cx| {
+                                    doc.wrap_selection_in_link(url, window, cx)
+                                })
+                            })
+                            .unwrap_or(false);
+                    }
+                }
             }
         }
         if handled {
@@ -3548,6 +3637,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_view_source))
             .on_action(cx.listener(Self::on_view_split))
             .on_action(cx.listener(Self::on_view_preview))
+            .on_action(cx.listener(Self::on_toggle_edit_preview))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))

@@ -30,6 +30,7 @@ actions!(
         ViewSource,
         ViewSplit,
         ViewPreview,
+        ToggleEditPreview,
         // App
         OpenCommandPalette,
         OpenProjectSearch,

@@ -633,6 +633,28 @@ impl Document {
         });
     }
 
+    /// Pasting a URL over a selection wraps the selection in
+    /// `[selection](url)` — returns false when nothing is selected so
+    /// the caller lets the normal paste through.
+    pub fn wrap_selection_in_link(
+        &mut self,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            if sel.is_empty() {
+                return false;
+            }
+            let text = editor.value().to_string();
+            let label = text[sel.clone()].to_string();
+            editor.set_selected_range(sel.clone(), cx);
+            editor.replace(format!("[{label}]({url})"), window, cx);
+            true
+        })
+    }
+
     /// Splice a set of byte-range replacements into the source text —
     /// link-safe rename retargets wikilinks this way. Ranges must be
     /// sorted by start and non-overlapping; applied right-to-left so
