@@ -1101,6 +1101,115 @@ impl Document {
         });
     }
 
+    /// Strip the list marker a line starts with (`- `, `* `, `+ `,
+    /// `- [x] ` task boxes, `1. `/`1) ` ordered). Returns the rest,
+    /// or `None` when the line has no marker.
+    fn unlist(line: &str) -> Option<&str> {
+        let t = line.trim_start();
+        for m in ["- [ ] ", "- [x] ", "- [X] ", "- ", "* ", "+ "] {
+            if let Some(rest) = t.strip_prefix(m) {
+                return Some(rest);
+            }
+        }
+        let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            let after = &t[digits..];
+            for sep in [". ", ") "] {
+                if let Some(rest) = after.strip_prefix(sep) {
+                    return Some(rest);
+                }
+            }
+        }
+        None
+    }
+
+    /// Toggle a list marker on every line the selection touches —
+    /// Obsidian's "Toggle bulleted/numbered list/checklist".
+    /// `style`: `- `, `- [ ] ` or `1. `; existing markers are
+    /// stripped first so list styles convert rather than nest.
+    pub fn toggle_list(&mut self, style: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let ls = text[..sel.start.min(text.len())]
+                .rfind('\n')
+                .map(|j| j + 1)
+                .unwrap_or(0);
+            let le = text[sel.end.min(text.len())..]
+                .find('\n')
+                .map(|j| sel.end + j)
+                .unwrap_or(text.len());
+            let block = &text[ls..le];
+            let numbered = style == "1. ";
+            let all_marked = block.lines().filter(|l| !l.trim().is_empty()).all(|l| {
+                let t = l.trim_start();
+                if numbered {
+                    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+                    digits > 0 && (t[digits..].starts_with(". ") || t[digits..].starts_with(") "))
+                } else if style == "- [ ] " {
+                    t.starts_with("- [ ] ") || t.starts_with("- [x] ") || t.starts_with("- [X] ")
+                } else {
+                    t.starts_with(style)
+                }
+            });
+            let mut out = String::with_capacity(block.len() + 16);
+            let mut n = 0u64;
+            for (i, line) in block.split('\n').enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                }
+                if line.trim().is_empty() {
+                    out.push_str(line);
+                    continue;
+                }
+                if all_marked {
+                    // Remove exactly this style's marker.
+                    let t = line.trim_start();
+                    let marker_len = if numbered {
+                        let digits =
+                            t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+                        if digits > 0
+                            && (t[digits..].starts_with(". ") || t[digits..].starts_with(") "))
+                        {
+                            digits + 2
+                        } else {
+                            0
+                        }
+                    } else if style == "- [ ] " {
+                        ["- [ ] ", "- [x] ", "- [X] "]
+                            .iter()
+                            .find(|m| t.starts_with(**m))
+                            .map(|m| m.len())
+                            .unwrap_or(0)
+                    } else if t.starts_with(style) {
+                        style.len()
+                    } else {
+                        0
+                    };
+                    let at = line.find(t).unwrap_or(0);
+                    out.push_str(&line[..at]);
+                    out.push_str(&line[at + marker_len..]);
+                } else {
+                    // Convert: strip any existing marker, then add.
+                    let indent_len = line.len() - line.trim_start().len();
+                    let body = Self::unlist(&line[indent_len..])
+                        .unwrap_or(line[indent_len..].trim_start());
+                    out.push_str(&line[..indent_len]);
+                    if numbered {
+                        n += 1;
+                        out.push_str(&format!("{n}. "));
+                    } else {
+                        out.push_str(style);
+                    }
+                    out.push_str(body);
+                }
+            }
+            editor.set_selected_range(ls..le, cx);
+            editor.replace(out, window, cx);
+            editor.set_selected_range(ls..ls, cx);
+        });
+    }
+
     /// ⌘⇧K — delete every line the selection touches, trailing
     /// newline included; the caret lands on the next line (or the
     /// previous one at EOF).

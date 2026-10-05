@@ -135,6 +135,9 @@ enum PaletteCmd {
     ToggleCode,
     ToggleQuote,
     CodeBlock,
+    ListBullet,
+    ListNumbered,
+    ListTask,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -274,6 +277,21 @@ impl PaletteCmd {
                 assets::IconName::SquareCode,
                 "Code block",
                 &["fence", "pre", "format", "wrap"],
+            ),
+            ListBullet => (
+                assets::IconName::List,
+                "Toggle bulleted list",
+                &["unordered", "dash", "format"],
+            ),
+            ListNumbered => (
+                assets::IconName::ListOrdered,
+                "Toggle numbered list",
+                &["ordered", "1 2 3", "format"],
+            ),
+            ListTask => (
+                assets::IconName::ListTodo,
+                "Toggle task list",
+                &["checklist", "todo", "format"],
             ),
             DeleteLine => (
                 assets::IconName::Delete,
@@ -1356,6 +1374,13 @@ impl Workspace {
         self.note_status(format!("Extracted to {name}.md"), cx);
     }
 
+    /// Palette list toggles — bulleted/numbered/checklist.
+    fn list_toggle(&mut self, style: &'static str, cx: &mut Context<Self>, window: &mut Window) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.toggle_list(style, window, cx));
+        }
+    }
+
     /// ⌘⇧K — delete the line(s) under the selection.
     fn on_delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
@@ -1582,6 +1607,9 @@ impl Workspace {
             PaletteCmd::ToggleCode,
             PaletteCmd::ToggleQuote,
             PaletteCmd::CodeBlock,
+            PaletteCmd::ListBullet,
+            PaletteCmd::ListNumbered,
+            PaletteCmd::ListTask,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -1789,6 +1817,9 @@ impl Workspace {
                     doc.update(cx, |doc, cx| doc.toggle_fence(window, cx));
                 }
             }
+            PaletteCmd::ListBullet => self.list_toggle("- ", cx, window),
+            PaletteCmd::ListNumbered => self.list_toggle("1. ", cx, window),
+            PaletteCmd::ListTask => self.list_toggle("- [ ] ", cx, window),
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
