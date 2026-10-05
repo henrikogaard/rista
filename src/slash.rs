@@ -109,11 +109,11 @@ pub struct SlashCommands;
 impl CompletionProvider for SlashCommands {
     fn is_completion_trigger(&self, _offset: usize, new_text: &str, _cx: &mut App) -> bool {
         // `completions` decides for real — be permissive here so the query
-        // keeps updating as the user types `/word`.
+        // keeps updating as the user types `/word`. `/` is allowed so a
+        // batched insert like `/h` still triggers.
         new_text
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ')
-            || new_text == "/"
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' || c == '/')
     }
 
     fn completions(

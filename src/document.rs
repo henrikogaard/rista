@@ -86,14 +86,26 @@ impl Document {
             _subscriptions: Vec::new(),
         };
 
-        this._subscriptions =
-            vec![
-                cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        this.on_edited(window, cx);
+        this._subscriptions = vec![
+            cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.on_edited(window, cx);
+                }
+            }),
+            // gpui-base never clears `completion.trigger_start_offset`, so a
+            // later '/' at an earlier offset would be ignored. While the menu
+            // is closed, keep the trigger anchor pinned to the cursor instead.
+            cx.observe(&this.editor, |_this, editor, cx| {
+                editor.update(cx, |editor, cx| {
+                    let menu = editor.completion_menu_state();
+                    let cursor = editor.cursor();
+                    if menu.open || menu.trigger_start_offset == Some(cursor) {
+                        return;
                     }
-                }),
-            ];
+                    editor.present_completion_items(cursor, "", vec![], cx);
+                });
+            }),
+        ];
 
         this
     }
