@@ -58,6 +58,9 @@ pub struct Settings {
     /// Pinned document tabs — survive close-others/close-right and
     /// show a pin glyph instead of the × button.
     pub pinned_tabs: Vec<String>,
+    /// Readable line length — cap the editor at a centered column
+    /// (Obsidian's editor setting).
+    pub readable_width: bool,
 }
 
 fn default_true() -> bool {
@@ -116,6 +119,7 @@ impl Default for Settings {
             active_tab: None,
             base_views: std::collections::HashMap::new(),
             pinned_tabs: Vec::new(),
+            readable_width: false,
         }
     }
 }

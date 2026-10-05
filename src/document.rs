@@ -909,6 +909,84 @@ impl Document {
         });
     }
 
+    /// Wrap the selected lines in an Obsidian callout: a `> [!kind]`
+    /// marker line followed by every line quoted `> `. When the block
+    /// already is a callout, the marker and quoting come back off. The
+    /// `kind` word stays selected so typing replaces it (`note` →
+    /// `warning`, `tip`, …).
+    pub fn toggle_callout(&mut self, kind: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let mut ls = text[..sel.start].rfind('\n').map(|j| j + 1).unwrap_or(0);
+            let mut le = text[sel.end..]
+                .find('\n')
+                .map(|j| sel.end + j)
+                .unwrap_or(text.len());
+            // A caret anywhere inside a quote/callout still targets the
+            // whole run — climb `>` lines both ways before looking.
+            // (Only when the caret's own line is quoted, so a plain
+            // line under a callout isn't absorbed.)
+            while ls > 0 && text[ls..le].trim_start().starts_with('>') {
+                let pe = ls - 1;
+                let ps = text[..pe].rfind('\n').map(|j| j + 1).unwrap_or(0);
+                if text[ps..pe].trim_start().starts_with('>') {
+                    ls = ps;
+                } else {
+                    break;
+                }
+            }
+            while le < text.len() {
+                let ne = text[le + 1..]
+                    .find('\n')
+                    .map(|j| le + 1 + j)
+                    .unwrap_or(text.len());
+                if text[le + 1..ne].trim_start().starts_with('>') {
+                    le = ne;
+                } else {
+                    break;
+                }
+            }
+            let block = &text[ls..le];
+            let lines: Vec<&str> = block.split('\n').collect();
+            let is_callout = lines
+                .first()
+                .map(|l| l.trim_start().starts_with("> [!") || l.trim_start().starts_with(">!["))
+                .unwrap_or(false);
+            let (out, caret) = if is_callout {
+                let rest: Vec<&str> = lines
+                    .iter()
+                    .skip(1)
+                    .map(|line| {
+                        let t = line.trim_start();
+                        t.strip_prefix("> ")
+                            .or_else(|| t.strip_prefix('>'))
+                            .unwrap_or(t)
+                    })
+                    .collect();
+                (rest.join("\n"), ls..ls)
+            } else {
+                let mut o = String::with_capacity(block.len() + 32);
+                o.push_str("> [!");
+                o.push_str(kind);
+                o.push(']');
+                for line in &lines {
+                    o.push('\n');
+                    if line.trim().is_empty() {
+                        o.push('>');
+                    } else {
+                        o.push_str("> ");
+                        o.push_str(line);
+                    }
+                }
+                (o, ls + 4..ls + 4 + kind.len())
+            };
+            editor.set_selected_range(ls..le, cx);
+            editor.replace(out, window, cx);
+            editor.set_selected_range(caret, cx);
+        });
+    }
+
     /// Duplicate the line(s) covered by the selection (⌘D). The copy
     /// lands right below and the selection follows it.
     pub fn duplicate_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {

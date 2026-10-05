@@ -146,6 +146,7 @@ enum PaletteCmd {
     Heading6,
     InsertLink,
     InsertHr,
+    InsertCallout,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -165,6 +166,7 @@ enum PaletteCmd {
     CloseOtherTabs,
     CloseTabsRight,
     TogglePin,
+    ToggleReadable,
     ExportHtml,
     Settings,
     ToggleTheme,
@@ -344,6 +346,11 @@ impl PaletteCmd {
                 "Insert horizontal rule",
                 &["divider", "separator", "hr"],
             ),
+            InsertCallout => (
+                assets::IconName::MessageSquareQuote,
+                "Toggle callout",
+                &["admonition", "note", "warning", "tip", "aside"],
+            ),
             DeleteLine => (
                 assets::IconName::Delete,
                 "Delete line",
@@ -438,6 +445,11 @@ impl PaletteCmd {
                 assets::IconName::Pin,
                 "Pin/unpin tab",
                 &["keep", "protect", "sticky"],
+            ),
+            ToggleReadable => (
+                assets::IconName::TextWrap,
+                "Toggle readable line length",
+                &["width", "column", "center", "narrow", "wrap"],
             ),
             ExportHtml => (
                 assets::IconName::FileText,
@@ -1773,6 +1785,7 @@ impl Workspace {
             PaletteCmd::Heading6,
             PaletteCmd::InsertLink,
             PaletteCmd::InsertHr,
+            PaletteCmd::InsertCallout,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -1792,6 +1805,7 @@ impl Workspace {
             PaletteCmd::CloseOtherTabs,
             PaletteCmd::CloseTabsRight,
             PaletteCmd::TogglePin,
+            PaletteCmd::ToggleReadable,
             PaletteCmd::ExportHtml,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
@@ -2014,6 +2028,11 @@ impl Workspace {
                     doc.update(cx, |doc, cx| doc.insert_hr(window, cx));
                 }
             }
+            PaletteCmd::InsertCallout => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.toggle_callout("note", window, cx));
+                }
+            }
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
@@ -2118,6 +2137,20 @@ impl Workspace {
                 }
             }
             PaletteCmd::TogglePin => self.toggle_pin(cx),
+            PaletteCmd::ToggleReadable => {
+                self.settings.readable_width = !self.settings.readable_width;
+                let on = self.settings.readable_width;
+                self.settings.save();
+                self.note_status(
+                    if on {
+                        "Readable line length on"
+                    } else {
+                        "Readable line length off"
+                    },
+                    cx,
+                );
+                cx.notify();
+            }
             PaletteCmd::ExportHtml => self.export_html(window, cx),
             PaletteCmd::Settings => self.defer_dialog(
                 |ws, window, cx| ws.on_open_settings(&OpenSettings, window, cx),
@@ -5185,7 +5218,21 @@ impl Workspace {
             .on_drop::<PathBuf>(cx.listener(|this, path: &PathBuf, window, cx| {
                 this.insert_tree_link(path, window, cx);
             }))
-            .child(Editor::new(&doc.read(cx).editor).h_full())
+            .child({
+                let editor = Editor::new(&doc.read(cx).editor).h_full();
+                if self.settings.readable_width {
+                    // Readable line length: cap the text column and
+                    // center it (Obsidian's editor setting).
+                    div()
+                        .size_full()
+                        .flex()
+                        .justify_center()
+                        .child(div().h_full().w(px(760.)).max_w_full().child(editor))
+                        .into_any_element()
+                } else {
+                    editor.into_any_element()
+                }
+            })
     }
 
     /// Dropping a file from the tree into the editor inserts a vault link:
