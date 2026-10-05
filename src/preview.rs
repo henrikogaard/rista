@@ -60,7 +60,12 @@ pub fn extensions(
         })
         .plugin(LocalImagePlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
-        .plugin(LinkCardPlugin);
+        .plugin(LinkCardPlugin)
+        .plugin(FootnoteRefPlugin)
+        .plugin(FootnoteDefPlugin {
+            folds: folds.clone(),
+            ctx: ctx.cloned(),
+        });
     let ext = match ctx {
         Some(ctx) => ext
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
@@ -2931,5 +2936,103 @@ impl MarkdownPlugin for TaskListPlugin {
             );
         }
         rows
+    }
+}
+
+// ------------------------------------------------------------------
+// Footnotes — `[^label]` refs render as a small accent marker, and
+// `[^label]:` definitions render as a muted labelled block in place.
+// ------------------------------------------------------------------
+
+struct FootnoteRefPlugin;
+
+impl MarkdownPlugin for FootnoteRefPlugin {
+    fn name(&self) -> &str {
+        "footnote-ref"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::FootnoteReference(r) = node else {
+            return None;
+        };
+        Some(MarkdownNode::new(
+            "footnote-ref",
+            r.label.clone().unwrap_or_else(|| r.identifier.clone()),
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let label = node.data::<String>().expect("footnote-ref data");
+        div()
+            .text_xs()
+            .text_color(cx.theme().info)
+            .child(format!("[{label}]"))
+    }
+}
+
+struct FootnoteDefPlugin {
+    ctx: Option<PreviewCtx>,
+    folds: CalloutFolds,
+}
+
+impl MarkdownPlugin for FootnoteDefPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "footnote-def"
+    }
+
+    fn parse(&self, node: &mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::FootnoteDefinition(d) = node else {
+            return None;
+        };
+        let label = d.label.clone().unwrap_or_else(|| d.identifier.clone());
+        // Body = the definition's source minus its `[^label]:` marker —
+        // only the first line carries it; continuations stay verbatim.
+        let src = cx.node_source(node).unwrap_or_default();
+        let body = src
+            .find(']')
+            .map(|i| {
+                src[i + 1..]
+                    .trim_start_matches(':')
+                    .trim_start()
+                    .to_string()
+            })
+            .unwrap_or_else(|| src.to_string());
+        Some(MarkdownNode::new("footnote-def", (label, body)))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (label, body) = node.data::<(String, String)>().expect("footnote-def data");
+        let theme = cx.theme();
+        let nested = self.ctx.clone();
+        h_flex()
+            .w_full()
+            .items_start()
+            .my_0p5()
+            .child(
+                div()
+                    .w(px(30.))
+                    .flex_none()
+                    .pt(px(2.))
+                    .text_xs()
+                    .text_color(theme.info)
+                    .child(format!("[{label}]")),
+            )
+            .child(
+                div().flex_1().min_w_0().text_xs().child(
+                    gpui_kit::component::text::TextView::markdown(
+                        SharedString::from(format!("footnote-{label}")),
+                        body.clone(),
+                    )
+                    .markdown_extensions(extensions(
+                        &self.folds,
+                        nested.as_ref(),
+                        false,
+                    )),
+                ),
+            )
     }
 }
