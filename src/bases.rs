@@ -942,6 +942,14 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
             vals => aggregate(name, vals.to_vec()),
         },
         "now" => Ok(Lit::Num(chrono::Local::now().timestamp() as f64)),
+        "if" => match args {
+            [cond, then, otherwise] => Ok(if cond.truthy() {
+                then.clone()
+            } else {
+                otherwise.clone()
+            }),
+            _ => Err("if wants 3 args".into()),
+        },
         "date" => match args {
             [Lit::Str(s)] => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
                 .map(|d| {
