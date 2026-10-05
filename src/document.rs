@@ -3,8 +3,9 @@
 use crate::history;
 use crate::preview;
 use crate::settings::Settings;
-use gpui_kit::component::input::{EditorState, InputEvent, TabSize};
+use gpui_kit::component::input::{EditorState, InputEvent, TabSize, TextDecorationCollection};
 use gpui_kit::component::text::TextViewState;
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -43,6 +44,9 @@ pub struct Document {
     pub banner: Option<preview::BannerSpec>,
     /// Cached `(words, chars)` refreshed with the preview.
     pub stats: (usize, usize),
+    /// Live-preview emphasis layer over the source editor — bold,
+    /// italic, dimmed markers. Lazily created on first refresh.
+    decorations: Option<TextDecorationCollection>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -96,9 +100,11 @@ impl Document {
             image_resolver,
             banner,
             stats: word_stats(&content),
+            decorations: None,
             _subscriptions: Vec::new(),
         };
 
+        this.refresh_decorations(cx);
         this._subscriptions = vec![
             cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -177,6 +183,26 @@ impl Document {
         self.stats = word_stats(&raw);
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));
+        self.refresh_decorations(cx);
+    }
+
+    /// Rebuild the live-emphasis decoration layer — markdown markers
+    /// dim, inline styling applied. Runs on the same debounce as the
+    /// preview sync, so it lands once per typing burst.
+    fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
+        let items = self.editor.update(cx, |state, cx| {
+            let text = state.value().to_string();
+            crate::decorations::markdown_decorations(&text, cx.theme())
+        });
+        match &self.decorations {
+            Some(collection) => collection.set(items, cx),
+            None => {
+                let collection = self.editor.update(cx, |state, cx| {
+                    state.create_decorations_collection(items, cx)
+                });
+                self.decorations = Some(collection);
+            }
+        }
     }
 
     fn doc_dir(&self) -> PathBuf {
