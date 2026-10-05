@@ -2058,11 +2058,15 @@ impl BaseView {
     /// `saved_view_ix` — the view index persisted for this file (from
     /// `Settings::base_views`); the caller reads it because this runs
     /// inside the workspace's update borrow.
+    /// `saved_sorts` — `(view_name, column_header, descending)` rows
+    /// snapshotted from settings by the caller: Workspace can't be
+    /// read while its update borrow is held.
     pub fn new(
         doc: Entity<Document>,
         vault: Entity<Vault>,
         workspace: WeakEntity<Workspace>,
         saved_view_ix: usize,
+        saved_sorts: Vec<(String, String, bool)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -2077,6 +2081,17 @@ impl BaseView {
         });
         let mut view = Self::init(SpecSrc::Doc(doc), vault, workspace, window, cx);
         view.view_ix = saved_view_ix;
+        // Restore a header sort saved for this file + view.
+        if !saved_sorts.is_empty() {
+            let computed = view.computed(cx);
+            if let Some(view_name) = computed.view_names.get(view.view_ix) {
+                if let Some((_, col, desc)) = saved_sorts.iter().find(|(v, _, _)| v == view_name) {
+                    if let Some(ix) = computed.headers.iter().position(|h| h == col) {
+                        view.sort = Some((ix, *desc));
+                    }
+                }
+            }
+        }
         view._subscriptions.push(doc_sub);
         view
     }
@@ -2124,6 +2139,18 @@ impl BaseView {
             cached: None,
             _subscriptions: vec![vault_sub, search_sub],
         }
+    }
+
+    /// Name of the spec's view at `view_ix`, when the source parses.
+    fn spec_view_name(&self, cx: &App) -> Option<String> {
+        let yaml = match &self.spec_src {
+            SpecSrc::Doc(doc) => doc.read(cx).editor.read(cx).value().to_string(),
+            SpecSrc::Inline(spec) => spec.clone(),
+        };
+        parse_spec(&yaml)
+            .views
+            .get(self.view_ix)
+            .map(|v| v.name.clone())
     }
 
     /// ⌘F on a rendered `.base` view focuses its row filter box
@@ -2540,16 +2567,33 @@ impl Render for BaseView {
                         Some(_) => format!("{h} ▲"),
                         None => h.clone(),
                     })
-                    .on_click(move |_, _window, cx| {
-                        // none → asc → desc → none
-                        this.update(cx, |view, cx| {
-                            view.sort = match view.sort {
-                                Some((c, false)) if c == ix => Some((ix, true)),
-                                Some((c, true)) if c == ix => None,
-                                _ => Some((ix, false)),
-                            };
-                            cx.notify();
-                        });
+                    .on_click({
+                        let h_name = h.clone();
+                        move |_, _window, cx| {
+                            // none → asc → desc → none
+                            let h_name = h_name.clone();
+                            this.update(cx, |view, cx| {
+                                view.sort = match view.sort {
+                                    Some((c, false)) if c == ix => Some((ix, true)),
+                                    Some((c, true)) if c == ix => None,
+                                    _ => Some((ix, false)),
+                                };
+                                // Persist per file + view — the saved column
+                                // is the header name, robust to view reorders.
+                                if let SpecSrc::Doc(doc) = &view.spec_src {
+                                    let path = doc.read(cx).path.to_string_lossy().to_string();
+                                    if let (Some(ws), Some(vn)) =
+                                        (view.workspace.upgrade(), view.spec_view_name(cx))
+                                    {
+                                        let saved = view.sort.map(|(_, d)| (h_name.clone(), d));
+                                        ws.update(cx, |ws, _cx| {
+                                            ws.remember_base_sort(path, vn, saved)
+                                        });
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }
                     })
             }));
 

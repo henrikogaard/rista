@@ -883,7 +883,29 @@ impl Workspace {
             // borrow, so it can't read Workspace itself.
             let key = doc.read(cx).path.to_string_lossy().to_string();
             let saved_ix = self.settings.base_views.get(&key).copied().unwrap_or(0);
-            cx.new(|cx| bases::BaseView::new(doc.clone(), vault, workspace, saved_ix, window, cx))
+            // Header sorts saved per view name — BaseView::new can't
+            // read Workspace from inside this borrow, so the settings
+            // are snapshotted here.
+            let saved_sorts: Vec<(String, String, bool)> = self
+                .settings
+                .base_sorts
+                .iter()
+                .filter_map(|(k, (col, desc))| {
+                    k.rsplit_once("::")
+                        .and_then(|(p, v)| (p == key).then(|| (v.to_string(), col.clone(), *desc)))
+                })
+                .collect();
+            cx.new(|cx| {
+                bases::BaseView::new(
+                    doc.clone(),
+                    vault,
+                    workspace,
+                    saved_ix,
+                    saved_sorts,
+                    window,
+                    cx,
+                )
+            })
         });
         doc.update(cx, |doc, cx| doc.set_focus_mode(self.focus_mode, cx));
         self.docs.push(OpenDoc {
@@ -3825,6 +3847,18 @@ impl Workspace {
     /// file so a `.base` reopens on the view it was left on.
     pub fn remember_base_view(&mut self, path: String, view_ix: usize) {
         self.settings.base_views.insert(path, view_ix);
+        self.settings.save();
+    }
+
+    /// Interactive header sort per `.base` view — saved under
+    /// `{path}::{view_name}` so a column name survives view reorders.
+    pub fn remember_base_sort(&mut self, path: String, view: String, col: Option<(String, bool)>) {
+        let key = format!("{path}::{view}");
+        if let Some(col) = col {
+            self.settings.base_sorts.insert(key, col);
+        } else {
+            self.settings.base_sorts.remove(&key);
+        }
         self.settings.save();
     }
 

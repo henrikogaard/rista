@@ -55,6 +55,9 @@ pub struct Settings {
     /// Which `.base` view (index into `views:`) each opened `.base`
     /// file was last left on — note path → view index.
     pub base_views: std::collections::HashMap<String, usize>,
+    /// Interactive header sort per `.base` view —
+    /// `{path}::{view_name}` → (column header, descending).
+    pub base_sorts: std::collections::HashMap<String, (String, bool)>,
     /// Pinned document tabs — survive close-others/close-right and
     /// show a pin glyph instead of the × button.
     pub pinned_tabs: Vec<String>,
@@ -118,6 +121,7 @@ impl Default for Settings {
             open_tabs: Vec::new(),
             active_tab: None,
             base_views: std::collections::HashMap::new(),
+            base_sorts: std::collections::HashMap::new(),
             pinned_tabs: Vec::new(),
             readable_width: false,
         }
