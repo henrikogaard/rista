@@ -950,6 +950,15 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
             }),
             _ => Err("if wants 3 args".into()),
         },
+        "round" | "floor" | "ceil" | "abs" => match args {
+            [Lit::Num(n)] => Ok(Lit::Num(match name {
+                "round" => n.round(),
+                "floor" => n.floor(),
+                "ceil" => n.ceil(),
+                _ => n.abs(),
+            })),
+            _ => Err(format!("{name} wants a number")),
+        },
         "date" => match args {
             [Lit::Str(s)] => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
                 .map(|d| {
