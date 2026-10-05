@@ -673,6 +673,34 @@ impl Workspace {
     // Documents
     // ------------------------------------------------------------------
 
+    /// ⌘F when a `.base` view is rendered (Preview/Split) filters its
+    /// rows — otherwise the action is re-dispatched to the note editor
+    /// so its find bar opens even when the workspace held focus. In
+    /// Source the YAML editor's own binding handles it first.
+    fn on_find(&mut self, _: &input::Search, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.view_mode != ViewMode::Source {
+            if let Some(base) = self
+                .active
+                .and_then(|i| self.docs.get(i))
+                .and_then(|d| d.base.clone())
+            {
+                base.update(cx, |base, cx| base.focus_search(window, cx));
+                return;
+            }
+        }
+        // In Preview the editor is unmounted — forwarding would bounce
+        // the action straight back here, so stop instead.
+        if self.settings.view_mode == ViewMode::Preview {
+            return;
+        }
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| {
+                doc.editor.update(cx, |editor, cx| editor.focus(window, cx))
+            });
+            window.dispatch_action(input::Search.boxed_clone(), cx);
+        }
+    }
+
     fn active_doc(&self) -> Option<&Entity<Document>> {
         self.active
             .and_then(|i| self.docs.get(i))
@@ -6055,6 +6083,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_toggle_theme))

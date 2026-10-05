@@ -108,6 +108,9 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
         // Obsidian muscle memory — same palette as ⌘K.
         KeyBinding::new("cmd-p", OpenCommandPalette, None),
+        // ⌘F reaches the editor when focused; the workspace handler
+        // filters .base rows or refocuses the editor otherwise.
+        KeyBinding::new("cmd-f", input::Search, None),
         KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-q", Quit, None),

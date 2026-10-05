@@ -2126,6 +2126,13 @@ impl BaseView {
         }
     }
 
+    /// ⌘F on a rendered `.base` view focuses its row filter box
+    /// (Obsidian: Cmd+F filters the base).
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |search, cx| search.focus(window, cx));
+    }
+
     /// `![[db.base#View]]` — switch the embed to the named view
     /// (case-insensitive). Unknown names keep the first view.
     pub fn select_view_by_name(&mut self, name: &str, cx: &mut Context<Self>) {
