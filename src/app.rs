@@ -155,6 +155,7 @@ enum PaletteCmd {
     InsertTime,
     InsertImage,
     InsertTable,
+    InsertFootnote,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -380,6 +381,11 @@ impl PaletteCmd {
                 assets::IconName::Table,
                 "Insert table",
                 &["grid", "cells", "columns"],
+            ),
+            InsertFootnote => (
+                assets::IconName::Superscript,
+                "Insert footnote",
+                &["reference", "annotation", "note"],
             ),
             DeleteLine => (
                 assets::IconName::Delete,
@@ -1879,6 +1885,7 @@ impl Workspace {
             PaletteCmd::InsertTime,
             PaletteCmd::InsertImage,
             PaletteCmd::InsertTable,
+            PaletteCmd::InsertFootnote,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -2162,6 +2169,11 @@ impl Workspace {
             PaletteCmd::InsertTable => {
                 if let Some(doc) = self.active_doc().cloned() {
                     doc.update(cx, |doc, cx| doc.insert_table(window, cx));
+                }
+            }
+            PaletteCmd::InsertFootnote => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| doc.insert_footnote(window, cx));
                 }
             }
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
@@ -4935,6 +4947,14 @@ impl Workspace {
                                     }),
                             )
                             .item(
+                                PopupMenuItem::new("Open in default app")
+                                    .icon(assets::IconName::ExternalLink)
+                                    .on_click({
+                                        let path = path.clone();
+                                        move |_, _window, _cx| open_in_default_app(&path)
+                                    }),
+                            )
+                            .item(
                                 PopupMenuItem::new("Delete…")
                                     .icon(assets::IconName::Delete)
                                     .on_click({
@@ -6114,6 +6134,24 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         if let Some(dir) = path.parent() {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
+    }
+    let _ = path;
+}
+
+/// Open `path` in the OS default application — Obsidian's "Open in
+/// default app" file context item.
+fn open_in_default_app(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(path).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(path).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
     }
     let _ = path;
 }

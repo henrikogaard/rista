@@ -930,6 +930,31 @@ impl Document {
         });
     }
 
+    /// Insert a footnote reference `[^n]` at the selection and append
+    /// its `[^n]: ` definition at the end of the document, leaving the
+    /// caret after the definition marker so the text can be typed
+    /// right away — Obsidian's "Insert footnote".
+    pub fn insert_footnote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let mut n = 1usize;
+            while text.contains(&format!("[^{n}]")) {
+                n += 1;
+            }
+            editor.replace(format!("[^{n}]"), window, cx);
+            let text = editor.value().to_string();
+            let tail = if text.ends_with('\n') {
+                format!("\n[^{n}]: ")
+            } else {
+                format!("\n\n[^{n}]: ")
+            };
+            let end = text.len();
+            editor.set_selected_range(end..end, cx);
+            editor.replace(tail.clone(), window, cx);
+            editor.set_selected_range(end + tail.len()..end + tail.len(), cx);
+        });
+    }
+
     /// Wrap the selected lines in an Obsidian callout: a `> [!kind]`
     /// marker line followed by every line quoted `> `. When the block
     /// already is a callout, the marker and quoting come back off. The
