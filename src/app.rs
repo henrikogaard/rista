@@ -2263,16 +2263,16 @@ impl Workspace {
                 .unwrap_or_default()
         };
         let mut rewrites: Vec<(PathBuf, crate::vault::TextEdits)> = Vec::new();
+        // When the file changed directories, dir-prefixed and
+        // relative links need the new root-relative path, not a
+        // basename swap.
+        let moved = new_path.parent() != path.parent();
         if path.is_file() {
             let vault = self.vault.read(cx);
             let file_name = new_path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            // When the file changed directories, dir-prefixed and
-            // relative links need the new root-relative path, not a
-            // basename swap.
-            let moved = new_path.parent() != path.parent();
             let link_rel = new_path
                 .strip_prefix(vault.root.as_deref().unwrap_or(std::path::Path::new("")))
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
