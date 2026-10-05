@@ -2724,6 +2724,16 @@ impl Workspace {
                         }))
                 }))
             })
+            .when(self.starred_open && rows.is_empty(), |this| {
+                this.child(
+                    div().w_full().px_2().pb_1().child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("No starred notes — star one from its context menu"),
+                    ),
+                )
+            })
     }
 
     /// Sidebar outline of the active note's headings — click jumps the
@@ -2805,6 +2815,16 @@ impl Workspace {
                     ),
                 )
             })
+            .when(self.outline_open && headings.is_empty(), |this| {
+                this.child(
+                    div().w_full().px_2().pb_1().child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("No headings in this note"),
+                    ),
+                )
+            })
     }
 
     /// Notes that link to the active document — Obsidian's linked-
@@ -2855,6 +2875,16 @@ impl Workspace {
                 let unlinked = self.unlinked(cx);
                 let active_path = self.active_doc().map(|d| d.read(cx).path.clone());
                 let mut rows = v_flex().w_full();
+                if links.is_empty() && unlinked.is_empty() {
+                    return this.child(
+                        div().w_full().px_2().pb_1().child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("No mentions of this note yet"),
+                        ),
+                    );
+                }
                 for (ix, path) in links.iter().enumerate() {
                     let rel = path
                         .strip_prefix(&root)
@@ -3246,6 +3276,16 @@ impl Workspace {
                     ),
                 )
             })
+            .when(self.tasks_open && tasks.is_empty(), |this| {
+                this.child(
+                    div().w_full().px_2().pb_1().child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("No open tasks"),
+                    ),
+                )
+            })
     }
 
     /// Vault-wide tag index pinned at the bottom of the sidebar —
@@ -3331,6 +3371,16 @@ impl Workspace {
                     ),
                 )
             })
+            .when(self.tags_open && tags.is_empty(), |this| {
+                this.child(
+                    div().w_full().px_2().pb_1().child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("No tags in this vault"),
+                    ),
+                )
+            })
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3397,9 +3447,7 @@ impl Workspace {
                             ),
                     ),
             )
-            .when(!self.settings.starred.is_empty(), |this| {
-                this.child(self.render_starred(cx))
-            })
+            .child(self.render_starred(cx))
             .child(
                 div().flex_1().min_h_0().child(
                     tree(&tree_state, {
@@ -3592,20 +3640,11 @@ impl Workspace {
                     .text_sm(),
                 ),
             )
-            .when(!self.doc_headings(cx).is_empty(), |this| {
-                this.child(self.render_outline(cx))
-            })
-            .when(
-                !self.backlinks(cx).is_empty() || !self.unlinked(cx).is_empty(),
-                |this| this.child(self.render_backlinks_pane(cx)),
-            )
-            .when(!self.vault.read(cx).tasks.is_empty(), |this| {
-                this.child(self.render_tasks(cx))
-            })
+            .child(self.render_outline(cx))
+            .child(self.render_backlinks_pane(cx))
+            .child(self.render_tasks(cx))
             .child(self.render_calendar_pane(cx))
-            .when(!self.vault.read(cx).tags.is_empty(), |this| {
-                this.child(self.render_tags(cx))
-            })
+            .child(self.render_tags(cx))
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
