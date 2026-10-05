@@ -1221,6 +1221,65 @@ fn stem_of(s: &str) -> String {
     }
 }
 
+/// One whitespace-separated search term against a base row. `prop=v`,
+/// `prop!=v`, `prop~v` (contains) and bare `prop=` (empty cell) match a
+/// named column by header or expression tail; any other term
+/// contains-matches the file stem + every displayed cell.
+fn search_term_match(row: &Row, computed: &Computed, term: &str) -> bool {
+    let (prop, cmp, val) = if let Some((p, v)) = term.split_once("!=") {
+        (p, "!=", v)
+    } else if let Some((p, v)) = term.split_once('=') {
+        (p, "=", v)
+    } else if let Some((p, v)) = term.split_once('~') {
+        (p, "~", v)
+    } else {
+        ("", "?", term)
+    };
+    if cmp == "?" || prop.is_empty() {
+        return row
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase().contains(term))
+            .unwrap_or(false)
+            || row
+                .cells
+                .iter()
+                .any(|c| c.text.to_lowercase().contains(term));
+    }
+    let ix = computed
+        .headers
+        .iter()
+        .position(|h| h.eq_ignore_ascii_case(prop))
+        .or_else(|| {
+            computed
+                .columns
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(prop) || c.rsplit('.').next() == Some(prop))
+        });
+    let Some(ix) = ix else {
+        return false;
+    };
+    let cell = &row.cells[ix];
+    let eq = |val: &str| {
+        cell.text.trim().eq_ignore_ascii_case(val)
+            || serde_yaml::from_str::<serde_yaml::Value>(val)
+                .map(|v| lit_cmp(&cell.lit, &lit_of(&v)) == std::cmp::Ordering::Equal)
+                .unwrap_or(false)
+    };
+    match cmp {
+        "=" => {
+            if val.is_empty() {
+                cell.text.trim().is_empty()
+            } else {
+                eq(val)
+            }
+        }
+        "!=" => !eq(val),
+        "~" => cell.text.to_lowercase().contains(val),
+        _ => false,
+    }
+}
+
 struct Computed {
     headers: Vec<String>,
     /// Column expressions (`note.status`, `formula.x`, `file.name`) —
@@ -1898,7 +1957,7 @@ impl BaseView {
             this.notes_epoch += 1;
             cx.notify();
         });
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search or prop=value"));
         let search_sub = cx.subscribe(&search, |_this, _search, event, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -2145,22 +2204,20 @@ impl Render for BaseView {
         let computed = self.computed(cx);
         let this = cx.entity();
 
-        // Search box filter — name + every displayed cell, applied to
+        // Search box filter — whitespace-separated terms ANDed across
         // whatever the current view renders (table/cards/kanban/list/
-        // calendar all iterate `visible`).
+        // calendar all iterate `visible`). `prop=value`, `prop!=value`,
+        // `prop~text` and bare `prop=` (empty cell) match a named
+        // column; any other term contains-matches the file stem + every
+        // cell, like Obsidian's quick filter.
         let query = self.search.read(cx).value().trim().to_lowercase();
         let visible: Vec<&Row> = computed
             .rows
             .iter()
             .filter(|r| {
-                query.is_empty()
-                    || r.path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_lowercase().contains(&query))
-                        .unwrap_or(false)
-                    || r.cells
-                        .iter()
-                        .any(|c| c.text.to_lowercase().contains(&query))
+                query
+                    .split_whitespace()
+                    .all(|term| search_term_match(r, &computed, term))
             })
             .collect();
 
