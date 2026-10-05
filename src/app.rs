@@ -125,6 +125,7 @@ enum PaletteCmd {
     FollowLink,
     ToggleStar,
     CopyLink,
+    CopyLinkHeading,
     Settings,
     ToggleTheme,
     Quit,
@@ -262,6 +263,11 @@ impl PaletteCmd {
                 assets::IconName::Link,
                 "Copy wikilink to note",
                 &["copy", "link", "wikilink", "reference", "clipboard"],
+            ),
+            CopyLinkHeading => (
+                assets::IconName::Link,
+                "Copy wikilink to heading",
+                &["copy", "link", "anchor", "section", "heading", "clipboard"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -695,7 +701,26 @@ impl Workspace {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            if std::fs::write(&path, format!("# {}\n\n", title)).is_err() {
+            // Obsidian convention: `templates/daily.md` seeds the daily
+            // note when present; `{{date}}`/`{{time}}`/`{{title}}`/
+            // `{{cursor}}` expand like manual template inserts.
+            let content = self
+                .vault
+                .read(cx)
+                .root
+                .as_ref()
+                .and_then(|root| {
+                    std::fs::read_to_string(root.join("templates").join("daily.md")).ok()
+                })
+                .map(|tpl| {
+                    let now = crate::history::epoch();
+                    tpl.replace("{{date}}", &crate::history::format_date(now))
+                        .replace("{{time}}", &crate::history::format_time(now))
+                        .replace("{{title}}", &title)
+                        .replace("{{cursor}}", "")
+                })
+                .unwrap_or_else(|| format!("# {}\n\n", title));
+            if std::fs::write(&path, content).is_err() {
                 return;
             }
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
@@ -922,6 +947,7 @@ impl Workspace {
             PaletteCmd::FollowLink,
             PaletteCmd::ToggleStar,
             PaletteCmd::CopyLink,
+            PaletteCmd::CopyLinkHeading,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -1114,6 +1140,47 @@ impl Workspace {
                         .path
                         .file_stem()
                         .map(|s| format!("[[{}]]", s.to_string_lossy()))
+                });
+                match link {
+                    Some(link) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                        self.note_status(format!("Copied {link}"), cx);
+                    }
+                    None => self.note_status("No note open", cx),
+                }
+            }
+            PaletteCmd::CopyLinkHeading => {
+                // `[[stem#heading]]` for the nearest heading at or above
+                // the caret — Obsidian's "copy link to heading".
+                let link = self.active_doc().and_then(|d| {
+                    let doc = d.read(cx);
+                    let stem = doc.path.file_stem()?.to_string_lossy().to_string();
+                    let text = doc.editor.read(cx).value().to_string();
+                    let cursor = doc.editor.read(cx).cursor().min(text.len());
+                    let line_no = text[..cursor].matches('\n').count() + 1;
+                    let mut heading: Option<String> = None;
+                    let mut in_fence = false;
+                    for (ix, line) in text.split('\n').enumerate() {
+                        if ix + 1 > line_no {
+                            break;
+                        }
+                        let t = line.trim_start();
+                        if t.starts_with("```") {
+                            in_fence = !in_fence;
+                            continue;
+                        }
+                        if in_fence {
+                            continue;
+                        }
+                        let level = t.chars().take_while(|&c| c == '#').count();
+                        if (1..=6).contains(&level) && t.chars().nth(level) == Some(' ') {
+                            heading = Some(t[level + 1..].trim().to_string());
+                        }
+                    }
+                    Some(match heading {
+                        Some(h) => format!("[[{stem}#{h}]]"),
+                        None => format!("[[{stem}]]"),
+                    })
                 });
                 match link {
                     Some(link) => {
