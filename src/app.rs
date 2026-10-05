@@ -70,6 +70,7 @@ pub struct Workspace {
     tags_open: bool,
     tasks_open: bool,
     outline_open: bool,
+    backlinks_open: bool,
     /// Wikilink hover preview — target + anchor point, rendered as a
     /// floating card over the workspace (Obsidian's page preview).
     peek: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
@@ -328,6 +329,7 @@ impl Workspace {
             tags_open: true,
             tasks_open: true,
             outline_open: true,
+            backlinks_open: true,
             peek: None,
             needs_fs_check: false,
             focus_handle,
@@ -1996,6 +1998,14 @@ impl Workspace {
         });
     }
 
+    /// Backlink paths for the active document — shared by the
+    /// backlinks dialog and the sidebar pane.
+    fn backlinks(&self, cx: &App) -> Vec<PathBuf> {
+        self.active_doc()
+            .map(|d| self.vault.read(cx).backlinks_to(&d.read(cx).path))
+            .unwrap_or_default()
+    }
+
     /// Heading navigator for the active note — picks a heading, jumps
     /// the editor caret to its line (fences skipped so `#` inside code
     /// blocks doesn't list).
@@ -2668,6 +2678,78 @@ impl Workspace {
             })
     }
 
+    /// Notes that link to the active document — Obsidian's linked-
+    /// mentions pane, pinned in the sidebar. Click opens the note.
+    fn render_backlinks_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let links = self.backlinks(cx);
+        let root = self.vault.read(cx).root.clone().unwrap_or_default();
+
+        v_flex()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("backlinks-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.backlinks_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Linked mentions · {}", links.len())),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.backlinks_open = !this.backlinks_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.backlinks_open, |this| {
+                let rows =
+                    v_flex()
+                        .w_full()
+                        .children(links.iter().enumerate().map(|(ix, path)| {
+                            let rel = path
+                                .strip_prefix(&root)
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                            let open = path.clone();
+                            div()
+                                .id(("backlink-side", ix))
+                                .w_full()
+                                .px_2()
+                                .py_0p5()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                                .child(div().text_sm().truncate().child(rel))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_document_pub(open.clone(), window, cx);
+                                }))
+                        }));
+                this.child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        rows.max_h(px(160.)),
+                    ),
+                )
+            })
+    }
+
     /// Open `- [ ]` checkboxes vault-wide — click opens the note at
     /// the task's line.
     fn render_tasks(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3100,6 +3182,9 @@ impl Workspace {
             )
             .when(!self.doc_headings(cx).is_empty(), |this| {
                 this.child(self.render_outline(cx))
+            })
+            .when(!self.backlinks(cx).is_empty(), |this| {
+                this.child(self.render_backlinks_pane(cx))
             })
             .when(!self.vault.read(cx).tasks.is_empty(), |this| {
                 this.child(self.render_tasks(cx))
