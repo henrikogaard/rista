@@ -1210,6 +1210,64 @@ impl Document {
         });
     }
 
+    /// Toggle `#`*`level` + ` ` on every line the selection touches —
+    /// Obsidian's "Heading N". Strips any existing ATX marker first
+    /// so `# a` → level 2 becomes `## a`; toggles off (plain text)
+    /// when every non-empty line is already that level.
+    pub fn toggle_heading(&mut self, level: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let ls = text[..sel.start.min(text.len())]
+                .rfind('\n')
+                .map(|j| j + 1)
+                .unwrap_or(0);
+            let le = text[sel.end.min(text.len())..]
+                .find('\n')
+                .map(|j| sel.end + j)
+                .unwrap_or(text.len());
+            let block = &text[ls..le];
+            let atx = |line: &str| -> (usize, usize) {
+                // (heading level, marker length incl. indent) for a line
+                // like `   ### text` → (3, 7). (0, 0) when not a heading.
+                let t = line.trim_start_matches(' ');
+                let hashes = t.len() - t.trim_start_matches('#').len();
+                if hashes > 0 && hashes <= 6 && t[hashes..].starts_with(' ') {
+                    (hashes, line.len() - t.len() + hashes + 1)
+                } else {
+                    (0, 0)
+                }
+            };
+            let all_level = block
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .all(|l| atx(l).0 == level);
+            let prefix = "#".repeat(level) + " ";
+            let mut out = String::with_capacity(block.len() + 8);
+            for (i, line) in block.split('\n').enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                }
+                if line.trim().is_empty() {
+                    out.push_str(line);
+                    continue;
+                }
+                let (_, marker_len) = atx(line);
+                if all_level {
+                    out.push_str(&line[marker_len..]);
+                } else {
+                    let indent_len = line.len() - line.trim_start_matches(' ').len();
+                    out.push_str(&line[..indent_len]);
+                    out.push_str(&prefix);
+                    out.push_str(&line[marker_len.max(indent_len)..]);
+                }
+            }
+            editor.set_selected_range(ls..le, cx);
+            editor.replace(out, window, cx);
+            editor.set_selected_range(ls..ls, cx);
+        });
+    }
+
     /// ⌘⇧K — delete every line the selection touches, trailing
     /// newline included; the caret lands on the next line (or the
     /// previous one at EOF).

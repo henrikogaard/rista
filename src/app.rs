@@ -138,6 +138,12 @@ enum PaletteCmd {
     ListBullet,
     ListNumbered,
     ListTask,
+    Heading1,
+    Heading2,
+    Heading3,
+    Heading4,
+    Heading5,
+    Heading6,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -292,6 +298,36 @@ impl PaletteCmd {
                 assets::IconName::ListTodo,
                 "Toggle task list",
                 &["checklist", "todo", "format"],
+            ),
+            Heading1 => (
+                assets::IconName::Heading1,
+                "Heading 1",
+                &["title", "format", "h1"],
+            ),
+            Heading2 => (
+                assets::IconName::Heading2,
+                "Heading 2",
+                &["title", "format", "h2"],
+            ),
+            Heading3 => (
+                assets::IconName::Heading3,
+                "Heading 3",
+                &["title", "format", "h3"],
+            ),
+            Heading4 => (
+                assets::IconName::Heading4,
+                "Heading 4",
+                &["title", "format", "h4"],
+            ),
+            Heading5 => (
+                assets::IconName::Heading5,
+                "Heading 5",
+                &["title", "format", "h5"],
+            ),
+            Heading6 => (
+                assets::IconName::Heading6,
+                "Heading 6",
+                &["title", "format", "h6"],
             ),
             DeleteLine => (
                 assets::IconName::Delete,
@@ -1381,6 +1417,13 @@ impl Workspace {
         }
     }
 
+    /// Palette heading toggles — `#`*N + ` ` per selected line.
+    fn heading_toggle(&mut self, level: usize, cx: &mut Context<Self>, window: &mut Window) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.toggle_heading(level, window, cx));
+        }
+    }
+
     /// ⌘⇧K — delete the line(s) under the selection.
     fn on_delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
@@ -1610,6 +1653,12 @@ impl Workspace {
             PaletteCmd::ListBullet,
             PaletteCmd::ListNumbered,
             PaletteCmd::ListTask,
+            PaletteCmd::Heading1,
+            PaletteCmd::Heading2,
+            PaletteCmd::Heading3,
+            PaletteCmd::Heading4,
+            PaletteCmd::Heading5,
+            PaletteCmd::Heading6,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -1820,6 +1869,12 @@ impl Workspace {
             PaletteCmd::ListBullet => self.list_toggle("- ", cx, window),
             PaletteCmd::ListNumbered => self.list_toggle("1. ", cx, window),
             PaletteCmd::ListTask => self.list_toggle("- [ ] ", cx, window),
+            PaletteCmd::Heading1 => self.heading_toggle(1, cx, window),
+            PaletteCmd::Heading2 => self.heading_toggle(2, cx, window),
+            PaletteCmd::Heading3 => self.heading_toggle(3, cx, window),
+            PaletteCmd::Heading4 => self.heading_toggle(4, cx, window),
+            PaletteCmd::Heading5 => self.heading_toggle(5, cx, window),
+            PaletteCmd::Heading6 => self.heading_toggle(6, cx, window),
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
