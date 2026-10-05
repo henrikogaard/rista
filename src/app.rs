@@ -162,6 +162,8 @@ enum PaletteCmd {
     ReopenTab,
     CopyLink,
     CopyLinkHeading,
+    CloseOtherTabs,
+    CloseTabsRight,
     ExportHtml,
     Settings,
     ToggleTheme,
@@ -420,6 +422,16 @@ impl PaletteCmd {
                 assets::IconName::Link,
                 "Copy wikilink to heading",
                 &["copy", "link", "anchor", "section", "heading", "clipboard"],
+            ),
+            CloseOtherTabs => (
+                assets::IconName::X,
+                "Close other tabs",
+                &["tab", "keep", "only"],
+            ),
+            CloseTabsRight => (
+                assets::IconName::X,
+                "Close tabs to the right",
+                &["tab", "after"],
             ),
             ExportHtml => (
                 assets::IconName::FileText,
@@ -1742,6 +1754,8 @@ impl Workspace {
             PaletteCmd::ReopenTab,
             PaletteCmd::CopyLink,
             PaletteCmd::CopyLinkHeading,
+            PaletteCmd::CloseOtherTabs,
+            PaletteCmd::CloseTabsRight,
             PaletteCmd::ExportHtml,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
@@ -2040,6 +2054,26 @@ impl Workspace {
                         self.note_status(format!("Copied {link}"), cx);
                     }
                     None => self.note_status("No note open", cx),
+                }
+            }
+            PaletteCmd::CloseOtherTabs => {
+                if let Some(active) = self.active {
+                    let n = self.docs.len().saturating_sub(1);
+                    for ix in (0..self.docs.len()).rev() {
+                        if ix != active {
+                            self.close_tab_at(ix, window, cx);
+                        }
+                    }
+                    self.note_status(format!("Closed {n} other tabs"), cx);
+                } else {
+                    self.note_status("No active tab", cx);
+                }
+            }
+            PaletteCmd::CloseTabsRight => {
+                if let Some(active) = self.active {
+                    for ix in (active + 1..self.docs.len()).rev() {
+                        self.close_tab_at(ix, window, cx);
+                    }
                 }
             }
             PaletteCmd::ExportHtml => self.export_html(window, cx),
