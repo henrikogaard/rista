@@ -60,6 +60,7 @@ pub fn extensions(
         .plugin(LinkCardPlugin);
     match ctx {
         Some(ctx) => ext
+            .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
             .plugin(TranscludePlugin {
                 ctx: ctx.clone(),
@@ -240,8 +241,9 @@ fn render_embed(
             };
             format!("![{}]({}{})", alt, file_url(&path), marker)
         }
-        // Unresolved: render as a wikilink pill, like Obsidian's "missing" chip.
-        None => format!("[{}](wiki:{})", alt, target),
+        // Unresolved embeds aren't note links — a distinct scheme keeps a
+        // click from creating `img.png.md` in `open_wikilink`.
+        None => format!("[{}](missing:{})", alt, target),
     }
 }
 
@@ -1394,6 +1396,101 @@ impl MarkdownPlugin for TranscludePlugin {
                     .into_any_element()
             }
         }
+    }
+}
+
+// ------------------------------------------------------------------
+// Wikilinks — `[label](wiki:target)` rewritten by `preprocess`. Accent
+// when the target resolves, dimmed when it doesn't (Obsidian's
+// "unresolved" styling); clicks flow through `open_wikilink`, which
+// creates the note when it's missing.
+// ------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct WikiLink {
+    target: String,
+    label: String,
+}
+
+struct WikiLinkPlugin {
+    ctx: PreviewCtx,
+}
+
+/// Visible text of an mdast node — wiki labels are plain text almost
+/// always, but `[[x| *emphatic* ]]` nests inline children.
+fn mdast_plain_text(node: &mdast::Node) -> String {
+    match node {
+        mdast::Node::Text(t) => t.value.clone(),
+        mdast::Node::InlineCode(c) => c.value.clone(),
+        _ => node
+            .children()
+            .map(|cs| cs.iter().map(mdast_plain_text).collect::<String>())
+            .unwrap_or_default(),
+    }
+}
+
+impl MarkdownPlugin for WikiLinkPlugin {
+    fn name(&self) -> &str {
+        "wiki-link"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Link(link) = node else {
+            return None;
+        };
+        let target = link.url.strip_prefix("wiki:")?.to_string();
+        let label = link
+            .children
+            .iter()
+            .map(mdast_plain_text)
+            .collect::<String>();
+        let label = if label.is_empty() {
+            target.clone()
+        } else {
+            label
+        };
+        Some(
+            MarkdownNode::new(
+                "wiki-link",
+                WikiLink {
+                    target,
+                    label: label.clone(),
+                },
+            )
+            .text(label),
+        )
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let link = node.data::<WikiLink>().expect("wiki-link node data");
+        let theme = cx.theme();
+        let resolved = self
+            .ctx
+            .vault
+            .read(cx)
+            .resolve_wikilink(&link.target)
+            .is_some();
+        let workspace = self.ctx.workspace.clone();
+        let target = link.target.clone();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&link.target, &mut hasher);
+        let key = std::hash::Hasher::finish(&hasher) as usize;
+
+        div()
+            .id(("wiki-link", key))
+            .text_sm()
+            .text_color(if resolved {
+                theme.info
+            } else {
+                theme.info.opacity(0.45)
+            })
+            .cursor_pointer()
+            .hover(|d| d.underline())
+            .child(link.label.clone())
+            .on_click(move |_, window, cx| {
+                let target = target.clone();
+                let _ = workspace.update(cx, |ws, cx| ws.open_wikilink(&target, window, cx));
+            })
     }
 }
 

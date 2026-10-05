@@ -1959,14 +1959,72 @@ impl Workspace {
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
     }
 
-    /// Public hook used by preview plugins (transclusion fallback links).
+    /// Public hook used by preview plugins (wikilinks, transclusion
+    /// fallback links). Obsidian's create-on-click: an unresolved
+    /// `[[link]]` becomes a new note.
     pub fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.vault.read(cx).resolve_wikilink(target) {
             Some(path) => self.open_document(path, window, cx),
-            None => {
-                self.note_status(format!("No note named “{}”", target), cx);
-            }
+            None => self.create_note_for_wikilink(target, window, cx),
         }
+    }
+
+    /// Create an empty note for an unresolved `[[link]]` — alongside the
+    /// open document, or vault-root-relative when the target carries a
+    /// `dir/name` path — then open it.
+    fn create_note_for_wikilink(
+        &mut self,
+        target: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let stem = target.trim().trim_end_matches(".md").replace('\\', "/");
+        let stem = stem.trim();
+        let bad_name = stem.is_empty()
+            || stem.starts_with('/')
+            || stem.contains("..")
+            || stem
+                .chars()
+                .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'));
+        if bad_name {
+            self.note_status(format!("No note named “{}”", target), cx);
+            return;
+        }
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let dir = if stem.contains('/') {
+            root.clone()
+        } else {
+            self.active_doc()
+                .and_then(|d| d.read(cx).path.parent().map(|p| p.to_path_buf()))
+                .filter(|p| p.starts_with(&root))
+                .unwrap_or_else(|| root.clone())
+        };
+        let path = dir.join(format!("{stem}.md"));
+        if path.exists() {
+            // On disk but not indexed yet — just open it.
+            self.open_document(path, window, cx);
+            return;
+        }
+        let ok = path
+            .parent()
+            .map(|p| std::fs::create_dir_all(p).is_ok())
+            .unwrap_or(false)
+            && std::fs::write(&path, b"").is_ok();
+        if !ok {
+            self.note_status(format!("Couldn't create “{}”", target), cx);
+            return;
+        }
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        self.note_status(
+            format!(
+                "Created {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            cx,
+        );
+        self.open_document(path, window, cx);
     }
 
     /// Public hook used by the project-search view.
@@ -2667,6 +2725,12 @@ impl Workspace {
                                 let target = target.to_string();
                                 view.update(cx, |this, cx| {
                                     this.open_wikilink(&target, window, cx);
+                                });
+                            } else if let Some(target) = url.strip_prefix("missing:") {
+                                // Unresolved `![[file]]` embed — not a note.
+                                let target = target.to_string();
+                                view.update(cx, |this, cx| {
+                                    this.note_status(format!("No file named “{}”", target), cx);
                                 });
                             } else {
                                 cx.open_url(&url);
