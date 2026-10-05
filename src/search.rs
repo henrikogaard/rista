@@ -25,8 +25,9 @@ pub struct ProjectSearch {
 
 impl ProjectSearch {
     fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search across every note…"));
+        let query_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search… (tag:, path:, file:, task: filters)")
+        });
 
         let sub = cx.subscribe_in(&query_input, window, |this, _input, event, _window, cx| {
             if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
@@ -53,30 +54,149 @@ impl ProjectSearch {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        let notes = workspace.read(cx).vault_entity().read(cx).notes.clone();
-        let needle = query.to_lowercase();
+        let vault = workspace.read(cx).vault_entity().read(cx);
+        let notes = vault.notes.clone();
+        let root = vault.root.clone();
+        // Obsidian search operators: `tag:`/`path:`/`file:`/`task:`/
+        // `content:` tokens filter per-note; every term must match (AND).
+        // Non-operator words rejoin into one content needle so multiword
+        // queries still substring-match verbatim.
+        let mut ops: Vec<(String, String)> = Vec::new();
+        let mut rest: Vec<&str> = Vec::new();
+        for tok in query.split_whitespace() {
+            let known = tok
+                .split_once(':')
+                .filter(|(k, v)| {
+                    !v.is_empty()
+                        && matches!(
+                            k.to_ascii_lowercase().as_str(),
+                            "tag" | "path" | "file" | "task" | "content" | "line"
+                        )
+                })
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.to_lowercase()));
+            if let Some(op) = known {
+                ops.push(op);
+            } else {
+                rest.push(tok);
+            }
+        }
+        if !rest.is_empty() {
+            ops.push(("content".into(), rest.join(" ").to_lowercase()));
+        }
+        if ops.is_empty() {
+            cx.notify();
+            return;
+        }
         let mut results = Vec::new();
         for path in notes {
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
+            let rel = root
+                .as_ref()
+                .and_then(|r| path.strip_prefix(r).ok())
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_lowercase();
+            let file = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let need_content = ops
+                .iter()
+                .any(|(k, _)| matches!(k.as_str(), "tag" | "task" | "content" | "line"));
+            let content = if need_content {
+                std::fs::read_to_string(&path).unwrap_or_default()
+            } else {
+                String::new()
             };
             let mut count = 0usize;
             let mut sample = String::new();
-            for line in content.lines() {
-                let lower = line.to_lowercase();
-                let mut offset = 0usize;
-                while let Some(pos) = lower[offset..].find(&needle) {
-                    count += 1;
-                    if sample.is_empty() {
-                        sample = line.trim().chars().take(120).collect();
+            let mut all = true;
+            for (kind, needle) in &ops {
+                match kind.as_str() {
+                    "path" => {
+                        if rel.contains(needle) {
+                            count += 1;
+                            if sample.is_empty() {
+                                sample = rel.clone();
+                            }
+                        } else {
+                            all = false;
+                            break;
+                        }
                     }
-                    offset += pos + needle.len();
-                }
-                if count > 200 {
-                    break;
+                    "file" => {
+                        if file.contains(needle) {
+                            count += 1;
+                            if sample.is_empty() {
+                                sample = rel.clone();
+                            }
+                        } else {
+                            all = false;
+                            break;
+                        }
+                    }
+                    "tag" => {
+                        // `tag:#a` also matches nested `#a/b` (Obsidian).
+                        let arg = needle.trim_start_matches('#');
+                        let hit = crate::properties::note_tags(&content)
+                            .iter()
+                            .any(|t| t == arg || t.starts_with(&format!("{arg}/")));
+                        if hit {
+                            count += 1;
+                            if sample.is_empty() {
+                                sample = format!("#{arg}");
+                            }
+                        } else {
+                            all = false;
+                            break;
+                        }
+                    }
+                    "task" => {
+                        let mut hits = 0;
+                        for line in content.lines() {
+                            let t = line.trim_start();
+                            let is_task = t.len() > 4
+                                && matches!(t.as_bytes()[0], b'-' | b'*' | b'+')
+                                && t[1..].starts_with(" [");
+                            if is_task && t.to_lowercase().contains(needle) {
+                                hits += 1;
+                                if sample.is_empty() {
+                                    sample = t.chars().take(120).collect();
+                                }
+                            }
+                        }
+                        if hits == 0 {
+                            all = false;
+                            break;
+                        }
+                        count += hits;
+                    }
+                    _ => {
+                        // `content:` (and `line:` — we search line-wise
+                        // either way, so they behave the same here).
+                        let mut hits = 0;
+                        for line in content.lines() {
+                            let lower = line.to_lowercase();
+                            let mut offset = 0usize;
+                            while let Some(pos) = lower[offset..].find(needle.as_str()) {
+                                hits += 1;
+                                if sample.is_empty() {
+                                    sample = line.trim().chars().take(120).collect();
+                                }
+                                offset += pos + needle.len();
+                            }
+                            if hits > 200 {
+                                break;
+                            }
+                        }
+                        if hits == 0 {
+                            all = false;
+                            break;
+                        }
+                        count += hits;
+                    }
                 }
             }
-            if count > 0 {
+            if all && count > 0 {
                 results.push(SearchHit {
                     path,
                     count,
