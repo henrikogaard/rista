@@ -79,6 +79,7 @@ fn keymap() -> Vec<KeyBinding> {
         // Editing
         KeyBinding::new("alt-up", MoveLineUp, None),
         KeyBinding::new("alt-down", MoveLineDown, None),
+        KeyBinding::new("cmd-enter", ToggleCheckbox, None),
         // Navigation
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),

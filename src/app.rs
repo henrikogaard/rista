@@ -102,6 +102,7 @@ enum PaletteCmd {
     ProjectSearch,
     MoveLineUp,
     MoveLineDown,
+    ToggleCheckbox,
     PageHistory,
     RestoreDeleted,
     InsertTemplate,
@@ -179,6 +180,11 @@ impl PaletteCmd {
                 assets::IconName::ArrowDown,
                 "Move line down",
                 &["block", "reorder", "option"],
+            ),
+            ToggleCheckbox => (
+                assets::IconName::ListTodo,
+                "Toggle checkbox",
+                &["task", "todo", "check", "done", "line"],
             ),
             PageHistory => (
                 assets::IconName::FileClock,
@@ -695,6 +701,20 @@ impl Workspace {
         }
     }
 
+    fn on_toggle_checkbox(
+        &mut self,
+        _: &ToggleCheckbox,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.active_doc().cloned() {
+            let toggled = doc.update(cx, |doc, cx| doc.toggle_task_at_cursor(window, cx));
+            if !toggled {
+                self.note_status("No task on this line", cx);
+            }
+        }
+    }
+
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.active {
             self.close_tab_at(ix, window, cx);
@@ -820,6 +840,7 @@ impl Workspace {
             PaletteCmd::ProjectSearch,
             PaletteCmd::MoveLineUp,
             PaletteCmd::MoveLineDown,
+            PaletteCmd::ToggleCheckbox,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
             PaletteCmd::InsertTemplate,
@@ -995,6 +1016,7 @@ impl Workspace {
             }
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
+            PaletteCmd::ToggleCheckbox => self.on_toggle_checkbox(&ToggleCheckbox, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
@@ -2563,6 +2585,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_save_as))
             .on_action(cx.listener(Self::on_move_line_up))
             .on_action(cx.listener(Self::on_move_line_down))
+            .on_action(cx.listener(Self::on_toggle_checkbox))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))

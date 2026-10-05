@@ -17,6 +17,7 @@ actions!(
         // Edit
         MoveLineUp,
         MoveLineDown,
+        ToggleCheckbox,
         // Navigation
         NextTab,
         PrevTab,

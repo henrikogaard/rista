@@ -391,7 +391,13 @@ impl Document {
     /// the preview's interactive checkbox writes back into source.
     /// Line numbers survive `preprocess` rewriting; byte offsets don't.
     /// The found `[x]` still has to follow a list bullet before we splice.
-    pub fn toggle_task(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Returns false when the line carries no task marker.
+    pub fn toggle_task(
+        &mut self,
+        line: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut start = 0usize;
@@ -402,13 +408,13 @@ impl Document {
                 }
                 let seg = &text[start..start + l.len()];
                 let Some(rel) = seg.find('[') else {
-                    return;
+                    return false;
                 };
                 let at = start + rel;
                 let next = match (text.as_bytes().get(at + 1), text.as_bytes().get(at + 2)) {
                     (Some(b' '), Some(b']')) => "x",
                     (Some(b'x') | Some(b'X'), Some(b']')) => " ",
-                    _ => return,
+                    _ => return false,
                 };
                 // `- [ ]` / `* [ ]` / `+ [ ]` / `1. [ ]` — the `[` must
                 // follow a list bullet on its line.
@@ -422,13 +428,25 @@ impl Document {
                         .and_then(|t| t.strip_suffix('.'))
                         .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
                 if !bullet {
-                    return;
+                    return false;
                 }
                 editor.set_selected_range(at + 1..at + 2, cx);
                 editor.replace(next.to_string(), window, cx);
-                return;
+                return true;
             }
+            false
+        })
+    }
+
+    /// `toggle_task` for the caret's line — the ⌘⏎ / palette entry point
+    /// used while editing source.
+    pub fn toggle_task_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let line = self.editor.update(cx, |editor, _cx| {
+            let text = editor.value();
+            let cursor = editor.cursor().min(text.len());
+            text[..cursor].bytes().filter(|b| *b == b'\n').count() + 1
         });
+        self.toggle_task(line, window, cx)
     }
 
     /// Called when the watcher noticed a filesystem change under this path.
