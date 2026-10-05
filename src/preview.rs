@@ -25,34 +25,38 @@ use gpui_kit::*;
 use markdown::mdast;
 use std::path::{Path, PathBuf};
 
-/// Live handles an inline ```` ```base ```` embed needs: the vault it
-/// queries, the workspace its rows open notes into, and the per-document
-/// map of spec-hash → view entity (views survive preview re-renders, so
-/// scroll/fold state and the compute cache aren't reset per frame).
+/// Live handles preview plugins need: the vault they query, the workspace
+/// their links/rows open notes into, the per-document map of spec-hash →
+/// base view entity (views survive re-renders), and the transclusion
+/// recursion depth (capped so cyclic `![[a]]`/`![[b]]` embeds terminate).
 #[derive(Clone)]
-pub struct BaseEmbedCtx {
+pub struct PreviewCtx {
     pub vault: Entity<crate::vault::Vault>,
     pub workspace: WeakEntity<crate::app::Workspace>,
-    pub views: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::bases::BaseView>>>,
-    >,
+    pub views: EmbedViews,
+    pub depth: usize,
 }
 
-/// The per-document embed map shared with [`BaseEmbedCtx::views`].
+/// The per-document embed map shared with [`PreviewCtx::views`].
 pub type EmbedViews = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::bases::BaseView>>>,
 >;
 
 /// Markdown extensions Rísta renders with.
-pub fn extensions(folds: &CalloutFolds, base_ctx: Option<&BaseEmbedCtx>) -> MarkdownExtensions {
+pub fn extensions(folds: &CalloutFolds, ctx: Option<&PreviewCtx>) -> MarkdownExtensions {
     let ext = MarkdownExtensions::default()
         .frontmatter()
         .plugin(FrontmatterPlugin::new())
         .plugin(LocalImagePlugin)
-        .plugin(CalloutPlugin::new(folds.clone(), base_ctx.cloned()))
+        .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin);
-    match base_ctx {
-        Some(ctx) => ext.plugin(BaseEmbedPlugin { ctx: ctx.clone() }),
+    match ctx {
+        Some(ctx) => ext
+            .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
+            .plugin(TranscludePlugin {
+                ctx: ctx.clone(),
+                folds: folds.clone(),
+            }),
         None => ext,
     }
 }
@@ -186,15 +190,17 @@ fn render_embed(
         Some((t, s)) => (t.trim(), s.trim()),
         None => (inner, ""),
     };
+    // `.md`, or no extension at all — Obsidian wiki targets are
+    // extensionless note names.
     let looks_like_note = target
         .rsplit('.')
         .next()
         .map(|ext| ext.eq_ignore_ascii_case("md"))
-        .unwrap_or(!target.contains('.'));
+        .unwrap_or_default()
+        || !target.contains('.');
     if looks_like_note {
-        // Transclusion is out of scope — surface embeds of notes as links.
-        let label = if suffix.is_empty() { target } else { suffix };
-        return format!("[{}](wiki:{})", label, target);
+        // Note transclusion — TranscludePlugin renders the note inline.
+        return format!("![](transclude:{target})");
     }
     // `![[img|300]]` width, `![[img|300x200]]` w×h; anything else is a caption.
     let size = parse_size_suffix(suffix);
@@ -513,12 +519,12 @@ struct Callout {
 /// through to the default renderer.
 pub struct CalloutPlugin {
     folds: CalloutFolds,
-    base_ctx: Option<BaseEmbedCtx>,
+    ctx: Option<PreviewCtx>,
 }
 
 impl CalloutPlugin {
-    pub fn new(folds: CalloutFolds, base_ctx: Option<BaseEmbedCtx>) -> Self {
-        Self { folds, base_ctx }
+    pub fn new(folds: CalloutFolds, ctx: Option<PreviewCtx>) -> Self {
+        Self { folds, ctx }
     }
 }
 
@@ -621,7 +627,7 @@ impl MarkdownPlugin for CalloutPlugin {
                                 "callout-body",
                                 callout.body.clone(),
                             )
-                            .markdown_extensions(extensions(&self.folds, self.base_ctx.as_ref())),
+                            .markdown_extensions(extensions(&self.folds, self.ctx.as_ref())),
                         ),
                 )
             })
@@ -1057,7 +1063,7 @@ struct BaseEmbed {
 }
 
 struct BaseEmbedPlugin {
-    ctx: BaseEmbedCtx,
+    ctx: PreviewCtx,
 }
 
 impl MarkdownPlugin for BaseEmbedPlugin {
@@ -1120,5 +1126,89 @@ impl MarkdownPlugin for BaseEmbedPlugin {
             .rounded(cx.theme().radius)
             .overflow_hidden()
             .child(view)
+    }
+}
+
+// ------------------------------------------------------------------
+// `![[note]]` transclusion — note content rendered inline.
+// ------------------------------------------------------------------
+
+/// Deeper nesting than this renders as a link — cyclic embeds terminate.
+const TRANSCLUDE_MAX_DEPTH: usize = 2;
+
+struct Transclude {
+    target: String,
+}
+
+struct TranscludePlugin {
+    ctx: PreviewCtx,
+    folds: CalloutFolds,
+}
+
+impl MarkdownPlugin for TranscludePlugin {
+    // Inline: `![[note]]` parses to an image node inside a paragraph.
+    fn name(&self) -> &str {
+        "transclude"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Image(image) = node else {
+            return None;
+        };
+        let target = image.url.strip_prefix("transclude:")?;
+        Some(MarkdownNode::new(
+            "transclude",
+            Transclude {
+                target: target.to_string(),
+            },
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let embed = node.data::<Transclude>().expect("transclude node data");
+        let theme = cx.theme();
+        let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
+        let content = resolved
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| match crate::properties::frontmatter_span(&text) {
+                Some(span) => text[span.end..].to_string(),
+                None => text,
+            });
+
+        match (self.ctx.depth < TRANSCLUDE_MAX_DEPTH, content) {
+            (true, Some(content)) => {
+                let mut nested = self.ctx.clone();
+                nested.depth += 1;
+                div()
+                    .w_full()
+                    .my_2()
+                    .border_l_2()
+                    .border_color(theme.border)
+                    .pl_3()
+                    .child(
+                        gpui_kit::component::text::TextView::markdown("transclude", content)
+                            .markdown_extensions(extensions(&self.folds, Some(&nested))),
+                    )
+                    .into_any_element()
+            }
+            _ => {
+                // Unresolved, empty, or too deep — fall back to the link form.
+                let workspace = self.ctx.workspace.clone();
+                let target = embed.target.clone();
+                div()
+                    .id(SharedString::from(format!("transclude-{target}")))
+                    .text_sm()
+                    .text_color(theme.accent)
+                    .cursor_pointer()
+                    .child(embed.target.clone())
+                    .on_click(move |_, window, cx| {
+                        let target = target.clone();
+                        let _ =
+                            workspace.update(cx, |ws, cx| ws.open_wikilink(&target, window, cx));
+                    })
+                    .into_any_element()
+            }
+        }
     }
 }

@@ -676,8 +676,10 @@ struct SortKey {
 
 struct ViewSpec {
     name: String,
-    /// `table` (default) or `cards`/`gallery`.
+    /// `table` (default) or `cards`/`gallery`/`kanban`/`board`.
     kind: String,
+    /// Kanban: column the board groups on (`group_by:`/`group:`/`groupBy:`).
+    group_by: Option<String>,
     columns: Vec<String>,
     sort: Vec<SortKey>,
     limit: Option<usize>,
@@ -757,6 +759,9 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 .and_then(|t| t.as_str())
                 .map(str::to_ascii_lowercase)
                 .unwrap_or_else(|| "table".into());
+            let group_by = ["group_by", "groupBy", "group"]
+                .iter()
+                .find_map(|k| getv(k).and_then(|g| g.as_str()).map(str::to_string));
             let columns = getv("order")
                 .and_then(|o| o.as_sequence())
                 .map(|items| {
@@ -817,6 +822,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             spec.views.push(ViewSpec {
                 name,
                 kind,
+                group_by,
                 columns,
                 sort,
                 limit,
@@ -830,6 +836,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
         spec.views.push(ViewSpec {
             name: "Table".into(),
             kind: "table".into(),
+            group_by: None,
             columns: Vec::new(),
             sort: Vec::new(),
             limit: None,
@@ -855,8 +862,10 @@ struct Computed {
     headers: Vec<String>,
     rows: Vec<Row>,
     view_names: Vec<String>,
-    /// `table` or `cards` — picked per selected view.
+    /// `table`, `cards`, or `kanban` — picked per selected view.
     kind: String,
+    /// Kanban grouping column index into `headers`/`cells`, when resolved.
+    group_ix: Option<usize>,
     error: Option<String>,
 }
 
@@ -1024,6 +1033,16 @@ fn compute(
         columns.extend(spec.formulas.keys().map(|f| format!("formula.{f}")));
     }
 
+    // Kanban boards may group on a property not listed in `order` —
+    // Obsidian groups by any property, so it joins the columns silently.
+    if matches!(view.kind.as_str(), "kanban" | "board") {
+        if let Some(group) = &view.group_by {
+            if !columns.iter().any(|c| c == group) {
+                columns.push(group.clone());
+            }
+        }
+    }
+
     // Evaluate every column once per row so sorts compare values.
     let mut rows: Vec<(PathBuf, Vec<Lit>, Option<String>)> = Vec::new();
     for row in &rows_data {
@@ -1123,11 +1142,27 @@ fn compute(
         })
         .collect();
 
+    // Kanban grouping resolves to a column index, defaulting to the first
+    // non-file column (a board without a grouping makes no sense).
+    let group_col = view
+        .group_by
+        .clone()
+        .filter(|g| columns.iter().any(|c| c == g))
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|c| !c.starts_with("file.") && !c.starts_with("formula."))
+                .cloned()
+        })
+        .or_else(|| columns.iter().find(|c| *c != "file.name").cloned());
+    let group_ix = group_col.and_then(|g| columns.iter().position(|c| *c == g));
+
     Computed {
         headers,
         rows,
         view_names: spec.views.iter().map(|v| v.name.clone()).collect(),
         kind: view.kind.clone(),
+        group_ix,
         error,
     }
 }
@@ -1290,6 +1325,7 @@ impl Render for BaseView {
         }
 
         let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
+        let kanban = matches!(computed.kind.as_str(), "kanban" | "board");
         let header = h_flex()
             .w_full()
             .px_3()
@@ -1308,7 +1344,91 @@ impl Render for BaseView {
             }));
 
         let mut rows = v_flex().w_full();
-        if cards {
+        if kanban {
+            // Group rows on the resolved column's display value.
+            let gix = computed.group_ix.unwrap_or(usize::MAX);
+            let mut groups: Vec<(String, Vec<&Row>)> = Vec::new();
+            for row in &computed.rows {
+                let value = row
+                    .cells
+                    .get(gix)
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| "No value".into());
+                match groups.iter_mut().find(|(name, _)| *name == value) {
+                    Some((_, items)) => items.push(row),
+                    None => groups.push((value, vec![row])),
+                }
+            }
+            let mut board = h_flex().gap_3().p_3().items_start();
+            for (name, items) in groups {
+                let mut col = v_flex()
+                    .w(px(240.))
+                    .flex_none()
+                    .gap_1()
+                    .p_2()
+                    .bg(theme.secondary)
+                    .rounded(theme.radius);
+                col = col.child(
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme.foreground)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(format!("{}", items.len())),
+                        ),
+                );
+                for (cix, row) in items.iter().enumerate() {
+                    let path = row.path.clone();
+                    let workspace = self.workspace.clone();
+                    let mut card = v_flex()
+                        .id(("kanban-card", cix))
+                        .gap_0p5()
+                        .p_2()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.background)
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .on_click(move |_, window, cx| {
+                            let path = path.clone();
+                            let _ = workspace
+                                .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                        });
+                    if let Some(cover) = &row.cover {
+                        let source: gpui_kit::ImageSource = cover
+                            .strip_prefix("file://")
+                            .map(|p| std::path::PathBuf::from(p).into())
+                            .unwrap_or_else(|| cover.clone().into());
+                        card = card.child(
+                            img(source)
+                                .w_full()
+                                .h(px(64.))
+                                .rounded(theme.radius)
+                                .object_fit(ObjectFit::Cover),
+                        );
+                    }
+                    card = card.child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.foreground)
+                            .truncate()
+                            .child(row.cells.first().cloned().unwrap_or_default()),
+                    );
+                    col = col.child(card);
+                }
+                board = board.child(col);
+            }
+            rows = rows.child(board);
+        } else if cards {
             let mut grid = div().flex().flex_wrap().gap_3().p_3();
             for (ix, row) in computed.rows.iter().enumerate() {
                 let path = row.path.clone();
@@ -1414,7 +1534,7 @@ impl Render for BaseView {
         v_flex()
             .size_full()
             .child(tabs)
-            .when(!cards, |v| v.child(header))
+            .when(!cards && !kanban, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
                 div()
                     .w_full()

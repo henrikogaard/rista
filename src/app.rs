@@ -88,6 +88,7 @@ enum PaletteCmd {
     InsertTemplate,
     EditProperties,
     BrowseTags,
+    Backlinks,
     Settings,
     ToggleTheme,
     Quit,
@@ -180,6 +181,11 @@ impl PaletteCmd {
                 assets::IconName::Tags,
                 "Browse tags…",
                 &["tags", "labels", "topics"],
+            ),
+            Backlinks => (
+                assets::IconName::Link,
+                "Show backlinks…",
+                &["backlinks", "links", "mentions", "references"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -635,6 +641,7 @@ impl Workspace {
             PaletteCmd::InsertTemplate,
             PaletteCmd::EditProperties,
             PaletteCmd::BrowseTags,
+            PaletteCmd::Backlinks,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -776,6 +783,7 @@ impl Workspace {
             PaletteCmd::InsertTemplate => self.defer_dialog(Self::show_templates, window, cx),
             PaletteCmd::EditProperties => self.defer_dialog(Self::show_properties, window, cx),
             PaletteCmd::BrowseTags => self.defer_dialog(Self::show_tags, window, cx),
+            PaletteCmd::Backlinks => self.defer_dialog(Self::show_backlinks, window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -1075,6 +1083,99 @@ impl Workspace {
         });
     }
 
+    /// Notes whose `[[wikilinks]]` resolve to the active document —
+    /// Obsidian's backlink panel as a dialog.
+    fn show_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc_path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
+            return;
+        };
+        let (notes, vault, root) = {
+            let vault = self.vault.read(cx);
+            (
+                vault.notes.clone(),
+                self.vault.clone(),
+                vault.root.clone().unwrap_or_default(),
+            )
+        };
+        let mut links: Vec<PathBuf> = Vec::new();
+        for note in &notes {
+            if *note == doc_path || note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(note) else {
+                continue;
+            };
+            let mut cursor = 0;
+            let mut linked = false;
+            while let Some(at) = text[cursor..].find("[[") {
+                let start = cursor + at + 2;
+                let Some(end) = text[start..].find("]]") else {
+                    break;
+                };
+                let target = &text[start..start + end];
+                if vault.read(cx).resolve_wikilink(target).as_deref() == Some(doc_path.as_path()) {
+                    linked = true;
+                    break;
+                }
+                cursor = start + end + 2;
+            }
+            if linked {
+                links.push(note.clone());
+            }
+        }
+        let workspace = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if links.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("No backlinks — nothing links to this note yet."),
+                );
+            }
+            for (ix, path) in links.iter().enumerate() {
+                let rel = path
+                    .strip_prefix(&root)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                let open = path.clone();
+                let workspace = workspace.clone();
+                list = list.child(
+                    div()
+                        .id(("backlink-row", ix))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted))
+                        .child(div().text_sm().text_color(theme.foreground).child(rel))
+                        .on_click(move |_, window, cx| {
+                            let workspace = workspace.clone();
+                            let open = open.clone();
+                            window.close_dialog(cx);
+                            window.defer(cx, move |window, cx| {
+                                workspace
+                                    .update(cx, |ws, cx| ws.open_document_pub(open, window, cx));
+                            });
+                        }),
+                );
+            }
+            dialog
+                .title("Backlinks")
+                .w(px(400.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
     /// List `templates/**/*.md`; clicking one inserts it at the cursor
     /// with `{{date}}`/`{{time}}`/`{{title}}`/`{{cursor}}` expansion.
     fn show_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1231,7 +1332,8 @@ impl Workspace {
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
     }
 
-    fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Public hook used by preview plugins (transclusion fallback links).
+    pub fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.vault.read(cx).resolve_wikilink(target) {
             Some(path) => self.open_document(path, window, cx),
             None => {
@@ -1574,10 +1676,11 @@ impl Workspace {
                 doc.base_embeds.clone(),
             )
         };
-        let base_ctx = preview::BaseEmbedCtx {
+        let base_ctx = preview::PreviewCtx {
             vault: self.vault.clone(),
             workspace: view.downgrade(),
             views: embeds,
+            depth: 0,
         };
         v_flex()
             .size_full()
