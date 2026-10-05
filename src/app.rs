@@ -5509,7 +5509,7 @@ impl Workspace {
             .active
             .and_then(|i| self.docs.get(i))
             .and_then(|d| d.base.clone());
-        match self.settings.view_mode {
+        let content = match self.settings.view_mode {
             ViewMode::Source => self.editor_container(&doc, cx).into_any_element(),
             ViewMode::Preview if base.is_some() => {
                 div().size_full().child(base.unwrap()).into_any_element()
@@ -5540,7 +5540,72 @@ impl Workspace {
                         ),
                 )
                 .into_any_element(),
+        };
+        match self.render_breadcrumb(&doc, cx) {
+            Some(crumb) => v_flex()
+                .size_full()
+                .child(crumb)
+                .child(div().flex_1().min_h_0().child(content))
+                .into_any_element(),
+            None => content,
         }
+    }
+
+    /// Breadcrumb row above the editor: `folder / sub / name` — each
+    /// folder segment reveals itself in the file tree, like Obsidian's
+    /// document breadcrumb. Hidden for root-level files.
+    fn render_breadcrumb(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Option<Div> {
+        let path = doc.read(cx).path.clone();
+        let root = self.vault.read(cx).root.clone()?;
+        let rel = path
+            .strip_prefix(&root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut segs: Vec<&str> = rel.split('/').collect();
+        let name = segs.pop()?;
+        if segs.is_empty() {
+            return None;
+        }
+        let stem = std::path::Path::new(name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| name.to_string());
+        let view = cx.entity();
+        let mut row = h_flex()
+            .h(px(24.))
+            .w_full()
+            .px_3()
+            .gap_1()
+            .items_center()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .border_b_1()
+            .border_color(cx.theme().border);
+        let mut acc = String::new();
+        for (ix, seg) in segs.iter().enumerate() {
+            if ix > 0 {
+                acc.push('/');
+            }
+            acc.push_str(seg);
+            let target = root.join(&acc);
+            row = row
+                .child(
+                    div()
+                        .id(SharedString::from(format!("crumb-{ix}")))
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(cx.theme().foreground))
+                        .child(seg.to_string())
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _window, cx| {
+                                view.update(cx, |this, cx| this.reveal_file(&target, cx));
+                            }
+                        }),
+                )
+                .child(div().child("›"));
+        }
+        Some(row.child(div().text_color(cx.theme().foreground).child(stem)))
     }
 
     /// The editor plus the paste/drop handlers that turn images into
