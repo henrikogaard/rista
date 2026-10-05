@@ -335,10 +335,20 @@ pub fn frontmatter_aliases(text: &str) -> Vec<String> {
 /// same state machine `preview::rewrite_line` uses so the index and the
 /// rendered links agree on what counts as a tag.
 fn inline_tags(text: &str) -> Vec<String> {
+    inline_tag_spans(text)
+        .into_iter()
+        .map(|(_, tag)| tag)
+        .collect()
+}
+
+/// Byte range + name of every inline `#tag` — the tag index maps to
+/// names; tag renames edit the ranges directly.
+fn inline_tag_spans(text: &str) -> Vec<(Range<usize>, String)> {
     let mut tags = Vec::new();
     let mut in_fence = false;
     let mut in_comment = false;
-    for line in text.lines() {
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
@@ -402,15 +412,85 @@ fn inline_tags(text: &str) -> Vec<String> {
                     && !tag.ends_with('/')
                     && first.is_some_and(|c| c.is_alphabetic() || c == '_')
                 {
-                    tags.push(tag.to_string());
+                    tags.push((offset + ix..offset + ix + 1 + tag_len, tag.to_string()));
                 }
                 ix += 1 + tag_len;
             } else {
                 ix += ch.len_utf8();
             }
         }
+        offset += line.len();
     }
     tags
+}
+
+/// Edits renaming tag `old` → `new` throughout `text`: inline `#old`
+/// and `#old/sub` (→ `#new`/`#new/sub`) plus `tags:` frontmatter
+/// entries written without the `#`. Tag characters only — `old` must
+/// already be a bare tag name.
+pub fn tag_rename_edits(text: &str, old: &str, new: &str) -> Vec<(Range<usize>, String)> {
+    let mut edits = Vec::new();
+    for (span, tag) in inline_tag_spans(text) {
+        if tag == old {
+            edits.push((span.start + 1..span.end, new.to_string()));
+        } else if let Some(suffix) = tag.strip_prefix(&format!("{old}/")) {
+            edits.push((span.start + 1..span.end, format!("{new}/{suffix}")));
+        }
+    }
+    // `tags:` frontmatter — same swap on each bare token (the `- `
+    // list item or `tags: [a, b]` inline list), nested `old/x` kept.
+    if let Some(fm) = frontmatter_span(text) {
+        let mut offset = fm.start;
+        let mut in_tags = false;
+        for line in text[fm].split_inclusive('\n') {
+            let t = line.trim_start();
+            if in_tags && (t.starts_with("- ") || t.trim_end().is_empty()) {
+                tag_token_edits(line, offset, old, new, &mut edits);
+            } else if t.starts_with("tags:") {
+                in_tags = true;
+                tag_token_edits(line, offset, old, new, &mut edits);
+            } else if !t.trim_end().is_empty() {
+                in_tags = false;
+            }
+            offset += line.len();
+        }
+    }
+    edits.sort_by_key(|(r, _)| r.start);
+    edits
+}
+
+/// Token-bounded `old`/`old/sub` → `new`/`new/sub` inside `slice` —
+/// scans tag characters only, so `,`, `]`, `'` and `- ` boundaries are
+/// left alone.
+fn tag_token_edits(
+    slice: &str,
+    base: usize,
+    old: &str,
+    new: &str,
+    out: &mut Vec<(Range<usize>, String)>,
+) {
+    let mut i = 0;
+    while i < slice.len() {
+        let start = i;
+        while i < slice.len() {
+            let c = slice[i..].chars().next().unwrap();
+            if !(c.is_alphanumeric() || c == '-' || c == '_' || c == '/') {
+                break;
+            }
+            i += c.len_utf8();
+        }
+        if i == start {
+            i += slice[i..].chars().next().unwrap().len_utf8();
+            continue;
+        }
+        let token = &slice[start..i];
+        if let Some(suffix) = token
+            .strip_prefix(old)
+            .filter(|s| s.is_empty() || s.starts_with('/'))
+        {
+            out.push((base + start..base + i, format!("{new}{suffix}")));
+        }
+    }
 }
 
 // ------------------------------------------------------------------

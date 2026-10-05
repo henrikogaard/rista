@@ -44,6 +44,8 @@ pub struct Workspace {
     rename_input: Entity<InputState>,
     /// Input backing the base-cell edit dialog.
     cell_input: Entity<InputState>,
+    /// Name input for the tag-rename dialog (Tags pane context menu).
+    tag_input: Entity<InputState>,
     /// Property-name input for the strip's "Add property" dialog —
     /// the value field reuses `cell_input`.
     prop_name_input: Entity<InputState>,
@@ -525,6 +527,7 @@ impl Workspace {
         let palette_state = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let cell_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let tag_input = cx.new(|cx| InputState::new(window, cx).placeholder("new-name"));
         let prop_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Property name"));
         let settings = Settings::load();
         let weak = cx.weak_entity();
@@ -546,6 +549,7 @@ impl Workspace {
             settings_view,
             rename_input,
             cell_input,
+            tag_input,
             prop_name_input,
             date_sub: None,
             status_note: None,
@@ -2741,6 +2745,97 @@ impl Workspace {
         self.set_note_property(path, &prop, value, window, cx);
     }
 
+    /// Tags pane context menu → "Rename tag…" dialog.
+    pub fn show_rename_tag(&mut self, tag: String, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.tag_input.clone();
+        input.update(cx, |input, cx| input.set_value(tag.clone(), window, cx));
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(format!("Rename tag #{tag}"))
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .on_ok({
+                    let view = view.clone();
+                    let tag = tag.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.commit_tag_rename(&tag, window, cx);
+                            this.refocus(window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+        let input = self.tag_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+        });
+    }
+
+    /// Rename `old` → the dialog's tag value across the vault: inline
+    /// `#tag`/`#tag/sub` and `tags:` frontmatter entries alike, nested
+    /// `old/x` → `new/x`. Open docs splice through the editor; closed
+    /// notes write direct — same path as note renames.
+    fn commit_tag_rename(&mut self, old: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.tag_input.read(cx).value().to_string();
+        let new = raw.trim().trim_start_matches('#').to_string();
+        let valid = !new.is_empty()
+            && !new.ends_with('/')
+            && new
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+            && new
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/');
+        if !valid || new == old {
+            self.note_status("Invalid tag name", cx);
+            return;
+        }
+        let notes = self.vault.read(cx).notes.clone();
+        let mut touched = 0usize;
+        for note in notes {
+            if note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let open = self
+                .docs
+                .iter()
+                .find(|d| d.entity.read(cx).path == note)
+                .map(|d| d.entity.clone());
+            let text = match &open {
+                Some(doc) => doc.read(cx).editor.read(cx).value().to_string(),
+                None => match std::fs::read_to_string(&note) {
+                    Ok(text) => text,
+                    Err(_) => continue,
+                },
+            };
+            let edits = crate::properties::tag_rename_edits(&text, old, &new);
+            if edits.is_empty() {
+                continue;
+            }
+            touched += 1;
+            if let Some(doc) = open {
+                doc.update(cx, |doc, cx| doc.apply_text_edits(edits, window, cx));
+            } else {
+                let mut text = text;
+                for (range, rep) in edits.into_iter().rev() {
+                    text.replace_range(range, &rep);
+                }
+                let _ = std::fs::write(&note, text);
+            }
+        }
+        if touched == 0 {
+            self.note_status(format!("No #{old} found"), cx);
+        } else {
+            self.note_status(format!("Renamed #{old} → #{new} in {touched} notes"), cx);
+        }
+    }
+
     /// Edit cell `col` of the markdown table row on `line` (1-based) —
     /// the preview's table cells call through here. The write lands in
     /// the open doc's editor, so undo and autosave cover it.
@@ -4623,6 +4718,29 @@ impl Workspace {
                                     cx,
                                 );
                             }))
+                            .context_menu({
+                                let tag = tag.clone();
+                                let view = cx.entity();
+                                move |menu, _window, _cx| {
+                                    menu.item(
+                                        PopupMenuItem::new("Rename tag…")
+                                            .icon(assets::IconName::SquarePen)
+                                            .on_click({
+                                                let tag = tag.clone();
+                                                let view = view.clone();
+                                                move |_, window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        this.show_rename_tag(
+                                                            tag.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                }
+                            })
                     },
                 ));
                 this.child(
