@@ -52,6 +52,7 @@ impl Document {
         vault_root: Option<PathBuf>,
         settings: &Settings,
         image_resolver: ImageResolver,
+        vault: Option<Entity<crate::vault::Vault>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -68,7 +69,8 @@ impl Document {
                     hard_tabs: false,
                 })
                 .searchable(true);
-            state.lsp_mut().completion_provider = Some(Rc::new(crate::slash::SlashCommands));
+            state.lsp_mut().completion_provider =
+                Some(Rc::new(crate::slash::VaultCompletions::new(vault)));
             state.set_value(content.clone(), window, cx);
             state
         });

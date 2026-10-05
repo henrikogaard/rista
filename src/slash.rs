@@ -1,12 +1,15 @@
-//! Slash commands: `/` at the start of a line opens the editor's completion
-//! menu with markdown block templates — Notion-style, plain markdown out.
+//! Editor completion: `/` at the start of a line opens markdown block
+//! templates — Notion-style, plain markdown out. `[[` / `![[` anywhere
+//! completes vault notes (and vault images for embeds).
 
 use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt};
-use gpui_kit::{App, Task, Window};
+use gpui_kit::{App, Entity, Task, Window};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     Range, TextEdit,
 };
+
+use crate::vault::Vault;
 
 struct SlashItem {
     label: &'static str,
@@ -103,17 +106,26 @@ const ITEMS: &[SlashItem] = &[
 ];
 
 /// Completion provider installed on every document editor. The menu opens on
-/// `/` and only offers items when the line so far is exactly `/query`.
-pub struct SlashCommands;
+/// `/` (block templates, only when the line so far is exactly `/query`) and
+/// on `[[` / `![[` (note/image links resolved against the live vault).
+pub struct VaultCompletions {
+    vault: Option<Entity<Vault>>,
+}
 
-impl CompletionProvider for SlashCommands {
+impl VaultCompletions {
+    pub fn new(vault: Option<Entity<Vault>>) -> Self {
+        Self { vault }
+    }
+}
+
+impl CompletionProvider for VaultCompletions {
     fn is_completion_trigger(&self, _offset: usize, new_text: &str, _cx: &mut App) -> bool {
         // `completions` decides for real — be permissive here so the query
-        // keeps updating as the user types `/word`. `/` is allowed so a
-        // batched insert like `/h` still triggers.
-        new_text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' || c == '/')
+        // keeps updating as the user types `/word` or `[[wor`. `[` is
+        // allowed so a batched insert like `[[s` still triggers.
+        new_text.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' ' | '/' | '[' | '!' | '.' | '#')
+        })
     }
 
     fn completions(
@@ -124,12 +136,149 @@ impl CompletionProvider for SlashCommands {
         _window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
-        let _ = cx;
-        Task::ready(Ok(items(text, offset)))
+        if let Some(resp) = wiki_items(text, offset, self.vault.as_ref(), cx) {
+            return Task::ready(Ok(resp));
+        }
+        Task::ready(Ok(slash_items(text, offset)))
     }
 }
 
-fn items(text: &Rope, offset: usize) -> CompletionResponse {
+/// `[[query` / `![[query` completions against the live vault index.
+/// Notes insert as `[[stem]]` (or `[[dir/stem]]` when the stem isn't
+/// unique); images insert their basename, matching how `preprocess`
+/// resolves them vault-wide.
+fn wiki_items(
+    text: &Rope,
+    offset: usize,
+    vault: Option<&Entity<Vault>>,
+    cx: &mut App,
+) -> Option<CompletionResponse> {
+    let vault = vault?;
+    let point = text.offset_to_point(offset);
+    let line = text.slice_line(point.row).to_string();
+    let line_start = text.line_start_offset(point.row);
+    let prefix = line.get(..point.column.min(line.len())).unwrap_or_default();
+
+    // Rightmost `[[` before the cursor; `![[` is `[[` preceded by `!`
+    // (the `!` stays outside the replaced range either way).
+    let brackets = prefix.rfind("[[").map(|i| i + 2)?;
+    let query = &prefix[brackets..];
+    // Inside a closed link, or the opener is really a single `[` (rfind
+    // can't see a second `[` — `[[[` still counts).
+    if query.contains(']') || prefix[..brackets - 2].ends_with('[') {
+        return None;
+    }
+    let embed = prefix[..brackets - 2].ends_with('!');
+    let q = query.to_lowercase();
+
+    // Swallow a `]]` the user already typed so `[[a]]` doesn't become
+    // `[[note]]]]`.
+    let suffix = line.get(point.column.min(line.len())..).unwrap_or_default();
+    let extra = if suffix.starts_with("]]") { 2 } else { 0 };
+
+    let range = Range {
+        start: text.offset_to_position(line_start + brackets),
+        end: text.offset_to_position(offset + extra),
+    };
+
+    let vault = vault.read(cx);
+    let root = vault.root.clone().unwrap_or_default();
+
+    // Stems that appear more than once need their directory in the
+    // inserted target to stay unambiguous.
+    let mut stem_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for note in &vault.notes {
+        if let Some(stem) = note.file_stem().and_then(|s| s.to_str()) {
+            *stem_counts.entry(stem.to_lowercase()).or_default() += 1;
+        }
+    }
+
+    let mut note_rows: Vec<(String, String, String)> = Vec::new();
+    for note in &vault.notes {
+        let Some(stem) = note.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let rel = note
+            .strip_prefix(&root)
+            .unwrap_or(note)
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let unique = stem_counts.get(&stem.to_lowercase()).copied().unwrap_or(0) <= 1;
+        let insert = if unique {
+            stem.to_string()
+        } else {
+            rel.clone()
+        };
+        note_rows.push((stem.to_string(), rel, insert));
+    }
+
+    let mut image_rows: Vec<String> = vault.images.borrow().keys().cloned().collect();
+    image_rows.sort();
+
+    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut push = |label: String, detail: String, insert: String, kind| {
+        let hay = label.to_lowercase();
+        if !q.is_empty() && !hay.contains(q.as_str()) {
+            return;
+        }
+        items.push(CompletionItem {
+            label,
+            detail: Some(detail),
+            kind: Some(kind),
+            sort_text: Some(if hay.starts_with(q.as_str()) {
+                format!("0{}", hay)
+            } else {
+                format!("1{}", hay)
+            }),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: format!("{insert}]]"),
+            })),
+            ..Default::default()
+        });
+    };
+
+    if embed {
+        for name in &image_rows {
+            push(
+                name.clone(),
+                "image".to_string(),
+                name.clone(),
+                CompletionItemKind::FILE,
+            );
+        }
+        for (label, rel, insert) in &note_rows {
+            push(
+                label.clone(),
+                rel.clone(),
+                insert.clone(),
+                CompletionItemKind::REFERENCE,
+            );
+        }
+    } else {
+        for (label, rel, insert) in &note_rows {
+            push(
+                label.clone(),
+                rel.clone(),
+                insert.clone(),
+                CompletionItemKind::REFERENCE,
+            );
+        }
+        for name in &image_rows {
+            push(
+                name.clone(),
+                "image".to_string(),
+                name.clone(),
+                CompletionItemKind::FILE,
+            );
+        }
+    }
+    Some(CompletionResponse::Array(items))
+}
+
+fn slash_items(text: &Rope, offset: usize) -> CompletionResponse {
     let point = text.offset_to_point(offset);
     let line = text.slice_line(point.row).to_string();
     let line_start = text.line_start_offset(point.row);

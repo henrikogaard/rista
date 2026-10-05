@@ -316,7 +316,18 @@ impl Workspace {
         let vault_root = self.vault.read(cx).root.clone();
         let settings = self.settings.clone();
         let is_base_file = is_base(&path);
-        let doc = cx.new(|cx| Document::open(path, vault_root, &settings, resolver, window, cx));
+        let vault = self.vault.clone();
+        let doc = cx.new(|cx| {
+            Document::open(
+                path,
+                vault_root,
+                &settings,
+                resolver,
+                Some(vault),
+                window,
+                cx,
+            )
+        });
         let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| {
             if matches!(event, DocumentEvent::Saved | DocumentEvent::Changed) {
                 this.status_note = None;
