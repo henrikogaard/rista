@@ -26,7 +26,8 @@ pub struct ProjectSearch {
 impl ProjectSearch {
     fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search… (tag:, path:, file:, task: filters)")
+            InputState::new(window, cx)
+                .placeholder("Search… (tag:, path:, file:, task:, -term negates)")
         });
 
         let sub = cx.subscribe_in(&query_input, window, |this, _input, event, _window, cx| {
@@ -59,11 +60,16 @@ impl ProjectSearch {
         let root = vault.root.clone();
         // Obsidian search operators: `tag:`/`path:`/`file:`/`task:`/
         // `content:` tokens filter per-note; every term must match (AND).
+        // A `-` prefix negates the term (`-tag:x`, `-path:y`, `-word`).
         // Non-operator words rejoin into one content needle so multiword
         // queries still substring-match verbatim.
-        let mut ops: Vec<(String, String)> = Vec::new();
+        let mut ops: Vec<(String, String, bool)> = Vec::new();
         let mut rest: Vec<&str> = Vec::new();
         for tok in query.split_whitespace() {
+            let (neg, tok) = match tok.strip_prefix('-') {
+                Some(t) if !t.is_empty() => (true, t),
+                _ => (false, tok),
+            };
             let known = tok
                 .split_once(':')
                 .filter(|(k, v)| {
@@ -74,14 +80,16 @@ impl ProjectSearch {
                         )
                 })
                 .map(|(k, v)| (k.to_ascii_lowercase(), v.to_lowercase()));
-            if let Some(op) = known {
-                ops.push(op);
+            if let Some((k, v)) = known {
+                ops.push((k, v, neg));
+            } else if neg {
+                ops.push(("content".into(), tok.to_lowercase(), true));
             } else {
                 rest.push(tok);
             }
         }
         if !rest.is_empty() {
-            ops.push(("content".into(), rest.join(" ").to_lowercase()));
+            ops.push(("content".into(), rest.join(" ").to_lowercase(), false));
         }
         if ops.is_empty() {
             cx.notify();
@@ -101,7 +109,7 @@ impl ProjectSearch {
                 .unwrap_or_default();
             let need_content = ops
                 .iter()
-                .any(|(k, _)| matches!(k.as_str(), "tag" | "task" | "content" | "line"));
+                .any(|(k, _, _)| matches!(k.as_str(), "tag" | "task" | "content" | "line"));
             let content = if need_content {
                 std::fs::read_to_string(&path).unwrap_or_default()
             } else {
@@ -110,48 +118,22 @@ impl ProjectSearch {
             let mut count = 0usize;
             let mut sample = String::new();
             let mut all = true;
-            for (kind, needle) in &ops {
-                match kind.as_str() {
-                    "path" => {
-                        if rel.contains(needle) {
-                            count += 1;
-                            if sample.is_empty() {
-                                sample = rel.clone();
-                            }
-                        } else {
-                            all = false;
-                            break;
-                        }
-                    }
-                    "file" => {
-                        if file.contains(needle) {
-                            count += 1;
-                            if sample.is_empty() {
-                                sample = rel.clone();
-                            }
-                        } else {
-                            all = false;
-                            break;
-                        }
-                    }
+            for (kind, needle, neg) in &ops {
+                // Each op resolves to (matched, hit count, sample line).
+                let (hit, hits, hint) = match kind.as_str() {
+                    "path" => (rel.contains(needle), 1usize, rel.clone()),
+                    "file" => (file.contains(needle), 1usize, rel.clone()),
                     "tag" => {
                         // `tag:#a` also matches nested `#a/b` (Obsidian).
                         let arg = needle.trim_start_matches('#');
                         let hit = crate::properties::note_tags(&content)
                             .iter()
                             .any(|t| t == arg || t.starts_with(&format!("{arg}/")));
-                        if hit {
-                            count += 1;
-                            if sample.is_empty() {
-                                sample = format!("#{arg}");
-                            }
-                        } else {
-                            all = false;
-                            break;
-                        }
+                        (hit, 1, format!("#{arg}"))
                     }
                     "task" => {
-                        let mut hits = 0;
+                        let mut hits = 0usize;
+                        let mut hint = String::new();
                         for line in content.lines() {
                             let t = line.trim_start();
                             let is_task = t.len() > 4
@@ -159,28 +141,25 @@ impl ProjectSearch {
                                 && t[1..].starts_with(" [");
                             if is_task && t.to_lowercase().contains(needle) {
                                 hits += 1;
-                                if sample.is_empty() {
-                                    sample = t.chars().take(120).collect();
+                                if hint.is_empty() {
+                                    hint = t.chars().take(120).collect();
                                 }
                             }
                         }
-                        if hits == 0 {
-                            all = false;
-                            break;
-                        }
-                        count += hits;
+                        (hits > 0, hits, hint)
                     }
                     _ => {
                         // `content:` (and `line:` — we search line-wise
                         // either way, so they behave the same here).
-                        let mut hits = 0;
+                        let mut hits = 0usize;
+                        let mut hint = String::new();
                         for line in content.lines() {
                             let lower = line.to_lowercase();
                             let mut offset = 0usize;
                             while let Some(pos) = lower[offset..].find(needle.as_str()) {
                                 hits += 1;
-                                if sample.is_empty() {
-                                    sample = line.trim().chars().take(120).collect();
+                                if hint.is_empty() {
+                                    hint = line.trim().chars().take(120).collect();
                                 }
                                 offset += pos + needle.len();
                             }
@@ -188,15 +167,23 @@ impl ProjectSearch {
                                 break;
                             }
                         }
-                        if hits == 0 {
-                            all = false;
-                            break;
-                        }
-                        count += hits;
+                        (hits > 0, hits, hint)
+                    }
+                };
+                // Negated ops pass only when they do not match.
+                if hit == *neg {
+                    all = false;
+                    break;
+                }
+                if hit {
+                    count += hits;
+                    if sample.is_empty() {
+                        sample = hint;
                     }
                 }
             }
-            if all && count > 0 {
+            // All-negated queries keep every note that survives the filter.
+            if all && (count > 0 || ops.iter().all(|(_, _, n)| *n)) {
                 results.push(SearchHit {
                     path,
                     count,
