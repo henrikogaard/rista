@@ -581,6 +581,12 @@ impl Workspace {
             _subscriptions: vec![vault_sub],
         };
 
+        // `.base` `file.starred` reads this set — `toggle_star` keeps
+        // it in sync with `settings.starred`.
+        this.vault.update(cx, |vault, _cx| {
+            vault.starred = this.settings.starred.iter().cloned().collect();
+        });
+
         // Reopen the vault the user last had open, then restore the
         // document tabs from last session (Obsidian parity).
         if let Some(root) = this.settings.last_vault.clone() {
@@ -1850,13 +1856,24 @@ impl Workspace {
     /// persisted in settings (absolute paths).
     fn toggle_star(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let key = path.to_string_lossy().to_string();
-        if let Some(ix) = self.settings.starred.iter().position(|s| s == &key) {
+        let starred = if let Some(ix) = self.settings.starred.iter().position(|s| s == &key) {
             self.settings.starred.remove(ix);
-            self.note_status("Unstarred", cx);
+            false
         } else {
-            self.settings.starred.push(key);
-            self.note_status("Starred", cx);
-        }
+            self.settings.starred.push(key.clone());
+            true
+        };
+        self.note_status(if starred { "Starred" } else { "Unstarred" }, cx);
+        // `file.starred` in .base reads the vault copy; the event
+        // re-renders any open base views.
+        self.vault.update(cx, |vault, cx| {
+            if starred {
+                vault.starred.insert(key);
+            } else {
+                vault.starred.remove(&key);
+            }
+            cx.emit(VaultEvent::StarredChanged);
+        });
         self.settings.save();
         cx.notify();
     }

@@ -14,6 +14,8 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"]
 /// Emitted after a filesystem burst settles — the tree was already refreshed.
 pub enum VaultEvent {
     FilesChanged,
+    /// Star/unstar flipped — `.base` `file.starred` rows recompute.
+    StarredChanged,
 }
 
 impl EventEmitter<VaultEvent> for Vault {}
@@ -38,6 +40,10 @@ pub struct Vault {
     /// Lowercase `aliases:` frontmatter values → the note declaring them,
     /// so `[[Alias]]` resolves like Obsidian. Rebuilt with the index.
     pub aliases: std::collections::HashMap<String, PathBuf>,
+    /// Starred notes (absolute path strings) — mirrors
+    /// `Settings::starred` so `.base` `file.starred` can read it
+    /// without touching the workspace borrow.
+    pub starred: std::collections::BTreeSet<String>,
     watcher: Option<notify::RecommendedWatcher>,
     pending_events: usize,
     /// Folder ids the user expanded — reapplied to rebuilt trees so
@@ -67,6 +73,7 @@ impl Vault {
             tags: Vec::new(),
             tasks: Vec::new(),
             aliases: std::collections::HashMap::new(),
+            starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
             _tree_sub: tree_sub,
         }

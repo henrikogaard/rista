@@ -1745,6 +1745,7 @@ fn compute(
     notes: &[PathBuf],
     root: &Path,
     images: &std::collections::HashMap<String, PathBuf>,
+    starred: &std::collections::BTreeSet<String>,
 ) -> Computed {
     // Link index: vault-relative path, file name, and bare stem all
     // resolve — `[[a]]` finds notes/a.md, `[[notes/a.md]]` hits directly.
@@ -1785,7 +1786,13 @@ fn compute(
     let mut all_rows: Vec<RowData> = Vec::new();
     let mut resolved_targets: Vec<Vec<PathBuf>> = Vec::new();
     for note in notes {
-        let (row, targets) = row_data(root, note, &resolve);
+        let (mut row, targets) = row_data(root, note, &resolve);
+        // `file.starred` — absolute-path membership in the vault's
+        // starred set (Obsidian's starred/bookmarked file property).
+        row.file_meta.insert(
+            "starred".into(),
+            Lit::Bool(starred.contains(&note.to_string_lossy().to_string())),
+        );
         resolved_targets.push(targets.iter().filter_map(|t| resolve(t)).collect());
         all_rows.push(row);
     }
@@ -2073,6 +2080,7 @@ fn compute(
                     "file.backlinks" => "Backlinks".into(),
                     "file.mtime" => "Modified".into(),
                     "file.ctime" => "Created".into(),
+                    "file.starred" => "Starred".into(),
                     other => other
                         .strip_prefix("formula.")
                         .or_else(|| other.strip_prefix("note."))
@@ -2421,12 +2429,13 @@ impl BaseView {
         };
         let spec = parse_spec(&yaml);
         let view = &spec.views[self.view_ix.min(spec.views.len() - 1)];
-        let (notes, root, images) = {
+        let (notes, root, images, starred) = {
             let vault = self.vault.read(cx);
             (
                 vault.notes.clone(),
                 vault.root.clone().unwrap_or_default(),
                 vault.images.clone(),
+                vault.starred.clone(),
             )
         };
         // The base file itself never belongs in its own result set.
@@ -2434,7 +2443,14 @@ impl BaseView {
             .into_iter()
             .filter(|n| Some(n) != doc_path.as_ref())
             .collect();
-        let computed = std::rc::Rc::new(compute(&spec, view, &notes, &root, &images.borrow()));
+        let computed = std::rc::Rc::new(compute(
+            &spec,
+            view,
+            &notes,
+            &root,
+            &images.borrow(),
+            &starred,
+        ));
         self.cache_key = Some(key);
         self.cached = Some(computed.clone());
         computed
