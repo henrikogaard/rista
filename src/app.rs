@@ -41,6 +41,8 @@ pub struct Workspace {
     palette_sections: Vec<Vec<PaletteEntry>>,
     settings_view: Entity<SettingsView>,
     rename_input: Entity<InputState>,
+    /// Input backing the base-cell edit dialog.
+    cell_input: Entity<InputState>,
     status_note: Option<SharedString>,
     /// Bumped on every status update so an old expiry timer can't
     /// clear a newer note.
@@ -215,6 +217,7 @@ impl Workspace {
         let vault = cx.new(Vault::new);
         let palette_state = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
+        let cell_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
         let settings = Settings::load();
         let weak = cx.weak_entity();
         let settings_view = cx.new(|cx| SettingsView::new(weak, &settings, window, cx));
@@ -234,6 +237,7 @@ impl Workspace {
             palette_sections: Vec::new(),
             settings_view,
             rename_input,
+            cell_input,
             status_note: None,
             status_epoch: 0,
             recent: Vec::new(),
@@ -976,7 +980,10 @@ impl Workspace {
 
         let input = self.rename_input.clone();
         window.defer(cx, move |window, cx| {
-            input.update(cx, |input, cx| input.focus(window, cx));
+            input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
         });
     }
 
@@ -1005,6 +1012,66 @@ impl Workspace {
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
         }
         let _ = window;
+    }
+
+    /// Edit one frontmatter property of `path` — opened from a base
+    /// table cell. The current display text prefills the input.
+    pub fn show_cell_dialog(
+        &mut self,
+        path: PathBuf,
+        prop: String,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.cell_input.clone();
+        input.update(cx, |input, cx| input.set_value(current, window, cx));
+        let view = cx.entity();
+        let title = format!("Edit {prop}");
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(title.clone())
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .on_ok({
+                    let view = view.clone();
+                    let path = path.clone();
+                    let prop = prop.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.commit_cell_edit(path.clone(), prop.clone(), window, cx);
+                            this.refocus(window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+
+        let input = self.cell_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+        });
+    }
+
+    fn commit_cell_edit(
+        &mut self,
+        path: PathBuf,
+        prop: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.cell_input.read(cx).value().to_string();
+        let text = text.trim();
+        // Parse as YAML so `2`, `true`, `[a, b]` land with their real
+        // types; anything else (incl. `a, b`) stays a plain string.
+        // Empty input clears the property.
+        let value = serde_yaml::from_str::<serde_yaml::Value>(text)
+            .unwrap_or_else(|_| serde_yaml::Value::String(text.to_string()));
+        self.set_note_property(path, &prop, value, window, cx);
     }
 
     fn show_delete_confirm(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {

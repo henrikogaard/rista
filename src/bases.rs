@@ -1134,6 +1134,9 @@ fn stem_of(s: &str) -> String {
 
 struct Computed {
     headers: Vec<String>,
+    /// Column expressions (`note.status`, `formula.x`, `file.name`) —
+    /// `headers` indexes into this; frontmatter columns are editable.
+    columns: Vec<String>,
     rows: Vec<Row>,
     view_names: Vec<String>,
     /// `table`, `cards`, or `kanban` — picked per selected view.
@@ -1583,6 +1586,7 @@ fn compute(
 
     Computed {
         headers,
+        columns,
         rows,
         view_names: spec.views.iter().map(|v| v.name.clone()).collect(),
         kind: view.kind.clone(),
@@ -2135,6 +2139,19 @@ impl Render for BaseView {
                     })
             }));
 
+        // A column is editable when it reads one frontmatter property —
+        // `status` / `note.status`, not `file.*`/`formula.*`/expressions.
+        let editable_prop = |cix: usize| {
+            computed
+                .columns
+                .get(cix)
+                .and_then(|col| match parse_expr(col).ok() {
+                    Some(Expr::Ref(ns, name)) if ns.is_none() || ns.as_deref() == Some("note") => {
+                        Some(name)
+                    }
+                    _ => None,
+                })
+        };
         let mut rows = v_flex().w_full();
         if calendar {
             rows = rows.child(self.render_calendar(&this, &computed, cx));
@@ -2406,6 +2423,32 @@ impl Render for BaseView {
                                             let target = target.clone();
                                             let _ = workspace.update(cx, |ws, cx| {
                                                 ws.open_document_pub(target, window, cx)
+                                            });
+                                        })
+                                        .child(cell.text.clone())
+                                        .into_any_element()
+                                } else if let Some(prop) = editable_prop(cix) {
+                                    let path = row.path.clone();
+                                    let current = cell.text.clone();
+                                    let workspace = self.workspace.clone();
+                                    div()
+                                        .id(("base-cell", ix * 4096 + cix))
+                                        .when(cix == 0, |d| d.flex_1())
+                                        .when(cix > 0, |d| d.w(px(140.)).flex_none())
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(theme.foreground)
+                                        .cursor_pointer()
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            let _ = workspace.update(cx, |ws, cx| {
+                                                ws.show_cell_dialog(
+                                                    path.clone(),
+                                                    prop.clone(),
+                                                    current.clone(),
+                                                    window,
+                                                    cx,
+                                                );
                                             });
                                         })
                                         .child(cell.text.clone())
