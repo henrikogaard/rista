@@ -2126,6 +2126,25 @@ impl BaseView {
         }
     }
 
+    /// `![[db.base#View]]` — switch the embed to the named view
+    /// (case-insensitive). Unknown names keep the first view.
+    pub fn select_view_by_name(&mut self, name: &str, cx: &mut Context<Self>) {
+        let yaml = match &self.spec_src {
+            SpecSrc::Doc(doc) => doc.read(cx).editor.read(cx).value().to_string(),
+            SpecSrc::Inline(spec) => spec.clone(),
+        };
+        let spec = parse_spec(&yaml);
+        if let Some(ix) = spec
+            .views
+            .iter()
+            .position(|v| v.name.eq_ignore_ascii_case(name))
+        {
+            self.view_ix = ix;
+            self.cached = None;
+            cx.notify();
+        }
+    }
+
     fn computed(&mut self, cx: &App) -> std::rc::Rc<Computed> {
         let key = (self.doc_epoch, self.notes_epoch, self.view_ix);
         if self.cache_key == Some(key) {

@@ -341,13 +341,15 @@ fn render_embed(
         None => (inner, ""),
     };
     // `.md`/`.base`, or no extension at all — Obsidian wiki targets
-    // are extensionless note names.
-    let looks_like_note = target
+    // are extensionless note names. The `#anchor`/`#View` suffix is
+    // stripped first so `![[db.base#Board]]` still reads as a note.
+    let file_part = target.split('#').next().unwrap_or(target);
+    let looks_like_note = file_part
         .rsplit('.')
         .next()
         .map(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("base"))
         .unwrap_or_default()
-        || !target.contains('.');
+        || !file_part.contains('.');
     if looks_like_note {
         // Note transclusion — TranscludePlugin renders the note inline.
         return format!("![](transclude:{target})");
@@ -2102,14 +2104,16 @@ impl MarkdownPlugin for TranscludePlugin {
         let embed = node.data::<Transclude>().expect("transclude node data");
         let theme = cx.theme().clone();
         let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
+        let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
         // `![[db.base]]` embeds the live base view (Obsidian parity) —
-        // keyed by spec text so the view survives re-renders.
+        // keyed by spec text + view anchor so the view survives re-renders.
         if let Some(path) = resolved.as_ref().filter(|p| crate::app::is_base(p)) {
             if let Ok(spec) = std::fs::read_to_string(path) {
                 let key = {
                     use std::hash::{Hash, Hasher};
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
                     spec.hash(&mut hasher);
+                    anchor.hash(&mut hasher);
                     hasher.finish()
                 };
                 let view = {
@@ -2131,6 +2135,10 @@ impl MarkdownPlugin for TranscludePlugin {
                         }
                     }
                 };
+                // `![[db.base#View]]` opens on the named view.
+                if let Some(anchor) = anchor.as_deref() {
+                    view.update(cx, |view, cx| view.select_view_by_name(anchor, cx));
+                }
                 return div()
                     .w_full()
                     .h(px(320.))
@@ -2143,7 +2151,6 @@ impl MarkdownPlugin for TranscludePlugin {
                     .into_any_element();
             }
         }
-        let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
         let content = resolved
             .as_ref()
             .and_then(|path| std::fs::read_to_string(path).ok())
