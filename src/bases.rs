@@ -2269,6 +2269,32 @@ impl Render for BaseView {
                     );
                     col = col.child(card);
                 }
+                // "+ New" at the column foot — creates a note holding
+                // the column's value (plus the view's filter prefill).
+                if let Some(prop) = computed.group_prop.clone() {
+                    let workspace = self.workspace.clone();
+                    let vault_root = self.vault.read(cx).root.clone();
+                    let mut fm = computed.prefill.clone();
+                    if let Some(yaml) = lit_to_yaml(&group_lit) {
+                        fm.push((prop, yaml));
+                    }
+                    col = col.child(
+                        Button::new(("kanban-new", gcol))
+                            .ghost()
+                            .xsmall()
+                            .w_full()
+                            .icon(assets::IconName::Plus)
+                            .label("New")
+                            .on_click(move |_, window, cx| {
+                                let Some(root) = vault_root.clone() else {
+                                    return;
+                                };
+                                let _ = workspace.update(cx, |workspace, cx| {
+                                    workspace.new_note_in(root.clone(), fm.clone(), window, cx);
+                                });
+                            }),
+                    );
+                }
                 board = board.child(col);
             }
             rows = rows.child(board);
