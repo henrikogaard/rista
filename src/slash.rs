@@ -139,6 +139,9 @@ impl CompletionProvider for VaultCompletions {
         if let Some(resp) = wiki_items(text, offset, self.vault.as_ref(), cx) {
             return Task::ready(Ok(resp));
         }
+        if let Some(resp) = tag_items(text, offset, self.vault.as_ref(), cx) {
+            return Task::ready(Ok(resp));
+        }
         Task::ready(Ok(slash_items(text, offset)))
     }
 }
@@ -276,6 +279,71 @@ fn wiki_items(
         }
     }
     Some(CompletionResponse::Array(items))
+}
+
+/// `#tag` completion from the vault tag index. A `#` only counts as a
+/// tag opener at a word boundary (start of line or after whitespace) —
+/// `##` stays a heading marker.
+fn tag_items(
+    text: &Rope,
+    offset: usize,
+    vault: Option<&Entity<Vault>>,
+    cx: &mut App,
+) -> Option<CompletionResponse> {
+    let vault = vault?;
+    let point = text.offset_to_point(offset);
+    let line = text.slice_line(point.row).to_string();
+    let line_start = text.line_start_offset(point.row);
+    let prefix = line.get(..point.column.min(line.len())).unwrap_or_default();
+
+    // Rightmost `#` whose query so far is tag-shaped.
+    let hash = prefix.rfind('#')?;
+    if hash > 0 {
+        let before = prefix[..hash].chars().last()?;
+        if !before.is_whitespace() {
+            return None;
+        }
+    }
+    let query = &prefix[hash + 1..];
+    if !query
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '/')
+    {
+        return None;
+    }
+    let q = query.to_lowercase();
+    let range = Range {
+        start: text.offset_to_position(line_start + hash + 1),
+        end: text.offset_to_position(offset),
+    };
+
+    let items: Vec<CompletionItem> = vault
+        .read(cx)
+        .tags
+        .clone()
+        .into_iter()
+        .filter(|(tag, _)| q.is_empty() || tag.to_lowercase().contains(q.as_str()))
+        .map(|(tag, count)| CompletionItem {
+            label: tag.clone(),
+            detail: Some(format!("{count} note{}", if count == 1 { "" } else { "s" })),
+            kind: Some(CompletionItemKind::KEYWORD),
+            sort_text: Some(if tag.to_lowercase().starts_with(q.as_str()) {
+                format!("0{}", tag.to_lowercase())
+            } else {
+                format!("1{}", tag.to_lowercase())
+            }),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: tag,
+            })),
+            ..Default::default()
+        })
+        .collect();
+    if items.is_empty() {
+        None
+    } else {
+        Some(CompletionResponse::Array(items))
+    }
 }
 
 fn slash_items(text: &Rope, offset: usize) -> CompletionResponse {

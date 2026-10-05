@@ -29,6 +29,9 @@ pub struct Vault {
     /// Shared behind one `Rc`: resolvers handed out to documents stay live
     /// and see files added later (paste/drop, watcher refreshes).
     pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
+    /// `(tag, note_count)` pairs, rebuilt with the index — completions read
+    /// this snapshot instead of re-parsing every note per keystroke.
+    pub tags: Vec<(String, usize)>,
     watcher: Option<notify::RecommendedWatcher>,
     pending_events: usize,
     /// Folder ids the user expanded — reapplied to rebuilt trees so
@@ -55,6 +58,7 @@ impl Vault {
             images: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watcher: None,
             pending_events: 0,
+            tags: Vec::new(),
             expanded: Default::default(),
             _tree_sub: tree_sub,
         }
@@ -87,6 +91,7 @@ impl Vault {
         };
         let items = mark_expanded(build_items(&root, 0), &self.expanded);
         let (notes, images) = collect_files(&root);
+        self.tags = crate::properties::vault_tags(&notes);
         self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
         self.notes = notes;
         *self.images.borrow_mut() = images;

@@ -1034,8 +1034,7 @@ impl Workspace {
     /// List every `#tag` and `tags:` entry in the vault; clicking one
     /// opens project search scoped to it.
     fn show_tags(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let notes = self.vault.read(cx).notes.clone();
-        let tags = properties::vault_tags(&notes);
+        let tags = self.vault.read(cx).tags.clone();
         let workspace = cx.entity();
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
