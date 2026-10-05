@@ -2059,8 +2059,12 @@ impl Render for Workspace {
         if self.needs_fs_check {
             self.needs_fs_check = false;
             for doc in &self.docs {
-                doc.entity
-                    .update(cx, |doc, cx| doc.check_external(window, cx));
+                doc.entity.update(cx, |doc, cx| {
+                    doc.check_external(window, cx);
+                    // Embeds/banners resolve against the vault index — a
+                    // newly added image should light up open previews.
+                    doc.resync_preview(cx);
+                });
             }
         }
 

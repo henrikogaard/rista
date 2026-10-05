@@ -186,6 +186,13 @@ impl Document {
             .unwrap_or_default()
     }
 
+    /// Re-resolve embeds/banners after the vault index changed (e.g. an
+    /// image appeared that an `![[embed]]` was waiting on). Safe on dirty
+    /// docs — only the preview surface is touched.
+    pub fn resync_preview(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
     /// Write the buffer to disk. Returns the io result for callers that care.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
