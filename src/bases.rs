@@ -29,6 +29,7 @@ use chrono::Datelike as _;
 use gpui_kit::assets;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1837,6 +1838,9 @@ pub struct BaseView {
     cal_offset: i32,
     /// Interactive header sort: (column index, descending).
     sort: Option<(usize, bool)>,
+    /// Per-view search box — Obsidian's base search; filters rows live
+    /// on note name + every displayed cell.
+    search: Entity<InputState>,
     notes_epoch: u64,
     doc_epoch: u64,
     cache_key: Option<(u64, u64, usize)>,
@@ -1894,6 +1898,12 @@ impl BaseView {
             this.notes_epoch += 1;
             cx.notify();
         });
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let search_sub = cx.subscribe(&search, |_this, _search, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         Self {
             spec_src,
             workspace,
@@ -1901,11 +1911,12 @@ impl BaseView {
             view_ix: 0,
             cal_offset: 0,
             sort: None,
+            search,
             notes_epoch: 0,
             doc_epoch: 0,
             cache_key: None,
             cached: None,
-            _subscriptions: vec![vault_sub],
+            _subscriptions: vec![vault_sub, search_sub],
         }
     }
 
@@ -1957,6 +1968,7 @@ impl BaseView {
         &self,
         this: &Entity<Self>,
         computed: &Computed,
+        rows: &[&Row],
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.theme();
@@ -1976,7 +1988,7 @@ impl BaseView {
         let gix = computed.group_ix.unwrap_or(usize::MAX);
         let mut by_day: std::collections::HashMap<chrono::NaiveDate, Vec<(String, PathBuf)>> =
             std::collections::HashMap::new();
-        for row in &computed.rows {
+        for row in rows {
             let Some(day) = row.cells.get(gix).and_then(|c| parse_date(&c.text)) else {
                 continue;
             };
@@ -2133,6 +2145,25 @@ impl Render for BaseView {
         let computed = self.computed(cx);
         let this = cx.entity();
 
+        // Search box filter — name + every displayed cell, applied to
+        // whatever the current view renders (table/cards/kanban/list/
+        // calendar all iterate `visible`).
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let visible: Vec<&Row> = computed
+            .rows
+            .iter()
+            .filter(|r| {
+                query.is_empty()
+                    || r.path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_lowercase().contains(&query))
+                        .unwrap_or(false)
+                    || r.cells
+                        .iter()
+                        .any(|c| c.text.to_lowercase().contains(&query))
+            })
+            .collect();
+
         // Toolbar row: view switcher on the left, "new note" on the
         // right. Views only appear when the spec declares >1.
         let mut tabs = h_flex().gap_1();
@@ -2196,32 +2227,42 @@ impl Render for BaseView {
             .justify_between()
             .child(tabs)
             .child(
-                Button::new("base-new-note")
-                    .ghost()
-                    .xsmall()
-                    .icon(assets::IconName::Plus)
-                    .tooltip("New note matching this view")
-                    .on_click({
-                        let this = this.clone();
-                        move |_, window, cx| {
-                            let Some(root) = vault_root.clone() else {
-                                return;
-                            };
-                            let (prefill, workspace) = this.update(cx, |view, cx| {
-                                (view.computed(cx).prefill.clone(), view.workspace.clone())
-                            });
-                            if let Some(workspace) = workspace.upgrade() {
-                                workspace.update(cx, |workspace, cx| {
-                                    workspace.new_note_in(
-                                        root.clone(),
-                                        prefill.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            }
-                        }
-                    }),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .child(Input::new(&self.search).appearance(true)),
+                    )
+                    .child(
+                        Button::new("base-new-note")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Plus)
+                            .tooltip("New note matching this view")
+                            .on_click({
+                                let this = this.clone();
+                                move |_, window, cx| {
+                                    let Some(root) = vault_root.clone() else {
+                                        return;
+                                    };
+                                    let (prefill, workspace) = this.update(cx, |view, cx| {
+                                        (view.computed(cx).prefill.clone(), view.workspace.clone())
+                                    });
+                                    if let Some(workspace) = workspace.upgrade() {
+                                        workspace.update(cx, |workspace, cx| {
+                                            workspace.new_note_in(
+                                                root.clone(),
+                                                prefill.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }
+                            }),
+                    ),
             );
 
         let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
@@ -2279,12 +2320,12 @@ impl Render for BaseView {
         };
         let mut rows = v_flex().w_full();
         if calendar {
-            rows = rows.child(self.render_calendar(&this, &computed, cx));
+            rows = rows.child(self.render_calendar(&this, &computed, &visible, cx));
         } else if kanban {
             // Group rows on the resolved column's display value.
             let gix = computed.group_ix.unwrap_or(usize::MAX);
             let mut groups: Vec<(String, Vec<&Row>)> = Vec::new();
-            for row in &computed.rows {
+            for row in visible.iter().copied() {
                 let value = row
                     .cells
                     .get(gix)
@@ -2466,16 +2507,13 @@ impl Render for BaseView {
             // `group_by` sections: a full-width band between groups,
             // then that group's cards. Groups order by lit value.
             let gix = computed.group_ix.unwrap_or(usize::MAX);
-            let mut order: Vec<usize> = (0..computed.rows.len()).collect();
+            let mut order: Vec<usize> = (0..visible.len()).collect();
             let mut group_counts: std::collections::HashMap<&str, usize> = Default::default();
             if computed.grouped {
                 order.sort_by(|a, b| {
-                    lit_cmp(
-                        &computed.rows[*a].cells[gix].lit,
-                        &computed.rows[*b].cells[gix].lit,
-                    )
+                    lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit)
                 });
-                for row in &computed.rows {
+                for row in visible.iter().copied() {
                     let key = row
                         .cells
                         .get(gix)
@@ -2487,7 +2525,7 @@ impl Render for BaseView {
             let mut last_group: Option<&str> = None;
             let mut grid = div().flex().flex_wrap().gap_3().p_3();
             for ix in order {
-                let row = &computed.rows[ix];
+                let row = visible[ix];
                 if computed.grouped {
                     let key = row
                         .cells
@@ -2606,16 +2644,13 @@ impl Render for BaseView {
             // inline. No column header; sort comes from the spec.
             // `group_by` bands the rows like the table view does.
             let gix = computed.group_ix.unwrap_or(usize::MAX);
-            let mut order: Vec<usize> = (0..computed.rows.len()).collect();
+            let mut order: Vec<usize> = (0..visible.len()).collect();
             let mut group_counts: std::collections::HashMap<&str, usize> = Default::default();
             if computed.grouped {
                 order.sort_by(|a, b| {
-                    lit_cmp(
-                        &computed.rows[*a].cells[gix].lit,
-                        &computed.rows[*b].cells[gix].lit,
-                    )
+                    lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit)
                 });
-                for row in &computed.rows {
+                for row in visible.iter().copied() {
                     let key = row
                         .cells
                         .get(gix)
@@ -2627,7 +2662,7 @@ impl Render for BaseView {
             let mut last_group: Option<&str> = None;
             let mut items = v_flex().w_full().p_2().gap_0p5();
             for ix in order {
-                let row = &computed.rows[ix];
+                let row = visible[ix];
                 if computed.grouped {
                     let key = row
                         .cells
@@ -2749,39 +2784,34 @@ impl Render for BaseView {
         } else {
             // Interactive header sort orders rows at render time —
             // `Computed` stays cached; comparisons use the raw `Lit`.
-            let mut order: Vec<usize> = (0..computed.rows.len()).collect();
+            let mut order: Vec<usize> = (0..visible.len()).collect();
             let gix = computed.group_ix.unwrap_or(usize::MAX);
             // Grouped views sort by the group column first so same-value
             // rows land in consecutive runs; the header sort then applies
             // within each group.
             if computed.grouped {
                 order.sort_by(|a, b| {
-                    lit_cmp(
-                        &computed.rows[*a].cells[gix].lit,
-                        &computed.rows[*b].cells[gix].lit,
+                    lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit).then_with(
+                        || {
+                            self.sort
+                                .map(|(cix, desc)| {
+                                    let ord = lit_cmp(
+                                        &visible[*a].cells[cix].lit,
+                                        &visible[*b].cells[cix].lit,
+                                    );
+                                    if desc {
+                                        ord.reverse()
+                                    } else {
+                                        ord
+                                    }
+                                })
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        },
                     )
-                    .then_with(|| {
-                        self.sort
-                            .map(|(cix, desc)| {
-                                let ord = lit_cmp(
-                                    &computed.rows[*a].cells[cix].lit,
-                                    &computed.rows[*b].cells[cix].lit,
-                                );
-                                if desc {
-                                    ord.reverse()
-                                } else {
-                                    ord
-                                }
-                            })
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
                 });
             } else if let Some((cix, desc)) = self.sort {
                 order.sort_by(|a, b| {
-                    let ord = lit_cmp(
-                        &computed.rows[*a].cells[cix].lit,
-                        &computed.rows[*b].cells[cix].lit,
-                    );
+                    let ord = lit_cmp(&visible[*a].cells[cix].lit, &visible[*b].cells[cix].lit);
                     if desc {
                         ord.reverse()
                     } else {
@@ -2793,7 +2823,7 @@ impl Render for BaseView {
             let mut group_counts: std::collections::HashMap<&str, usize> =
                 std::collections::HashMap::new();
             if computed.grouped {
-                for row in &computed.rows {
+                for row in visible.iter().copied() {
                     *group_counts
                         .entry(row.cells[gix].text.as_str())
                         .or_default() += 1;
@@ -2801,7 +2831,7 @@ impl Render for BaseView {
             }
             let mut last_group: Option<&str> = None;
             for (ix, &rix) in order.iter().enumerate() {
-                let row = &computed.rows[rix];
+                let row = visible[rix];
                 let path = row.path.clone();
                 let workspace = self.workspace.clone();
                 if computed.grouped && last_group != Some(row.cells[gix].text.as_str()) {
@@ -2956,7 +2986,7 @@ impl Render for BaseView {
                 );
             }
         }
-        if computed.rows.is_empty() && computed.error.is_none() {
+        if visible.is_empty() && computed.error.is_none() {
             rows = rows.child(
                 div()
                     .px_3()
@@ -3005,23 +3035,15 @@ impl Render for BaseView {
                             .count();
                         format!(
                             "{} {} · {} undated",
-                            computed.rows.len(),
-                            if computed.rows.len() == 1 {
-                                "note"
-                            } else {
-                                "notes"
-                            },
+                            visible.len(),
+                            if visible.len() == 1 { "note" } else { "notes" },
                             undated
                         )
                     } else {
                         format!(
                             "{} {}",
-                            computed.rows.len(),
-                            if computed.rows.len() == 1 {
-                                "note"
-                            } else {
-                                "notes"
-                            }
+                            visible.len(),
+                            if visible.len() == 1 { "note" } else { "notes" }
                         )
                     }),
             )
