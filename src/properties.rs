@@ -331,6 +331,25 @@ pub fn frontmatter_aliases(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// `cssclasses:`/`cssclass:` frontmatter — Obsidian's per-note styling
+/// hook. Accepts a YAML list or a space/comma-separated string.
+pub fn frontmatter_cssclasses(text: &str) -> Vec<String> {
+    fn split(s: &str) -> Vec<String> {
+        s.split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+    properties(text)
+        .into_iter()
+        .find(|(key, _)| key == "cssclasses" || key == "cssclass")
+        .map(|(_, value)| match value {
+            Value::Sequence(items) => items.iter().flat_map(|i| split(&scalar_text(i))).collect(),
+            other => split(&scalar_text(&other)),
+        })
+        .unwrap_or_default()
+}
+
 /// Inline `#tags` outside fenced code, inline `code` and `%%` comments —
 /// same state machine `preview::rewrite_line` uses so the index and the
 /// rendered links agree on what counts as a tag.

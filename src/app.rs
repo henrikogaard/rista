@@ -5796,7 +5796,18 @@ impl Workspace {
             }))
             .child({
                 let editor = Editor::new(&doc.read(cx).editor).h_full();
-                if self.settings.readable_width {
+                // `cssclasses:` per-note override — `wide` lifts the
+                // readable-width cap for this note, `narrow`/`readable`
+                // forces it on (Obsidian's per-note styling hook).
+                let classes = &doc.read(cx).css_classes;
+                let readable = if classes.iter().any(|c| c == "wide") {
+                    false
+                } else if classes.iter().any(|c| c == "narrow" || c == "readable") {
+                    true
+                } else {
+                    self.settings.readable_width
+                };
+                if readable {
                     // Readable line length: cap the text column and
                     // center it (Obsidian's editor setting).
                     div()

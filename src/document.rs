@@ -44,6 +44,9 @@ pub struct Document {
     image_resolver: ImageResolver,
     /// Frontmatter banner (`banner:`/`cover:`), refreshed with the preview.
     pub banner: Option<preview::BannerSpec>,
+    /// `cssclasses:`/`cssclass:` frontmatter — per-note styling hook;
+    /// `wide` lifts the readable-width cap, `narrow`/`readable` forces it.
+    pub css_classes: Vec<String>,
     /// Cached `(words, chars)` refreshed with the preview.
     pub stats: (usize, usize),
     /// Live-preview emphasis layer over the source editor — bold,
@@ -123,6 +126,7 @@ impl Document {
             image_resolver,
             banner,
             stats: word_stats(&content),
+            css_classes: crate::properties::frontmatter_cssclasses(&content),
             decorations: None,
             focus_mode: false,
             focus_cursor: None,
@@ -222,6 +226,7 @@ impl Document {
         let text = preview::preprocess(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
         self.stats = word_stats(&raw);
+        self.css_classes = crate::properties::frontmatter_cssclasses(&raw);
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));
         self.refresh_decorations(cx);
