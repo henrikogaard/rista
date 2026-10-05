@@ -4718,6 +4718,26 @@ impl Workspace {
                     cx.stop_propagation();
                 }
             }))
+            .capture_action::<input::IndentInline>(cx.listener(|this, _a, window, cx| {
+                let handled = this
+                    .active_doc()
+                    .cloned()
+                    .map(|doc| doc.update(cx, |doc, cx| doc.indent_selection(false, window, cx)))
+                    .unwrap_or(false);
+                if handled {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action::<input::OutdentInline>(cx.listener(|this, _a, window, cx| {
+                let handled = this
+                    .active_doc()
+                    .cloned()
+                    .map(|doc| doc.update(cx, |doc, cx| doc.indent_selection(true, window, cx)))
+                    .unwrap_or(false);
+                if handled {
+                    cx.stop_propagation();
+                }
+            }))
             .can_drop(|value, _window, _cx| value.is::<ExternalPaths>() || value.is::<PathBuf>())
             .drag_over::<ExternalPaths>(|style, _paths, _window, cx| {
                 style.bg(cx.theme().accent.opacity(0.08))

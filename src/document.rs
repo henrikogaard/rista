@@ -1036,6 +1036,77 @@ impl Document {
         });
     }
 
+    /// Tab/Shift-Tab on list lines — Obsidian indents list items two
+    /// spaces instead of inserting a tab. Every list line the
+    /// selection touches shifts together; non-list selections fall
+    /// through to the editor's default behavior.
+    pub fn indent_selection(
+        &mut self,
+        outdent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            let mut edits: Vec<(std::ops::Range<usize>, String, isize)> = vec![];
+            let mut ls = text[..sel.start].rfind('\n').map(|j| j + 1).unwrap_or(0);
+            while ls <= sel.end.min(text.len()) {
+                let le = text[ls..].find('\n').map(|j| ls + j).unwrap_or(text.len());
+                let line = &text[ls..le];
+                let trimmed = line.trim_start();
+                let marker = ["- ", "* ", "+ ", "> "]
+                    .iter()
+                    .any(|m| trimmed.starts_with(m))
+                    || {
+                        let digits = trimmed.len()
+                            - trimmed
+                                .trim_start_matches(|c: char| c.is_ascii_digit())
+                                .len();
+                        digits > 0
+                            && (trimmed[digits..].starts_with(". ")
+                                || trimmed[digits..].starts_with(") "))
+                    };
+                if marker {
+                    if outdent {
+                        let take = line
+                            .chars()
+                            .take_while(|c| c.is_whitespace())
+                            .take(2)
+                            .map(|c| c.len_utf8())
+                            .sum::<usize>();
+                        if take > 0 {
+                            edits.push((ls..ls + take, String::new(), -(take as isize)));
+                        }
+                    } else {
+                        edits.push((ls..ls, "  ".to_string(), 2));
+                    }
+                }
+                if le >= text.len() {
+                    break;
+                }
+                ls = le + 1;
+            }
+            if edits.is_empty() {
+                return false;
+            }
+            let (mut s, mut e) = (sel.start as isize, sel.end as isize);
+            for (range, _, delta) in &edits {
+                for point in [&mut s, &mut e] {
+                    if range.start <= *point as usize {
+                        *point = (*point + delta).max(range.start as isize);
+                    }
+                }
+            }
+            for (range, text, _) in edits.into_iter().rev() {
+                editor.set_selected_range(range, cx);
+                editor.replace(text, window, cx);
+            }
+            editor.set_selected_range(s.max(0) as usize..e.max(0) as usize, cx);
+            true
+        })
+    }
+
     /// Splice a set of byte-range replacements into the source text —
     /// link-safe rename retargets wikilinks this way. Ranges must be
     /// sorted by start and non-overlapping; applied right-to-left so
