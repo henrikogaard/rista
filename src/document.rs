@@ -1,5 +1,6 @@
 //! Document: one open note — editor, preview state, autosave, disk sync.
 
+use crate::history;
 use crate::preview;
 use crate::settings::Settings;
 use gpui_kit::component::input::{EditorState, InputEvent, TabSize};
@@ -31,6 +32,8 @@ pub struct Document {
     pub conflict: bool,
     mtime: Option<SystemTime>,
     revision: u64,
+    /// Vault root — history snapshots live under `<root>/.rista/`.
+    pub vault_root: Option<PathBuf>,
     save_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
     image_resolver: ImageResolver,
@@ -44,6 +47,7 @@ pub struct Document {
 impl Document {
     pub fn open(
         path: PathBuf,
+        vault_root: Option<PathBuf>,
         settings: &Settings,
         image_resolver: ImageResolver,
         window: &mut Window,
@@ -81,6 +85,7 @@ impl Document {
             conflict: false,
             mtime,
             revision: 0,
+            vault_root,
             save_task: None,
             preview_task: None,
             image_resolver,
@@ -179,6 +184,9 @@ impl Document {
     /// Write the buffer to disk. Returns the io result for callers that care.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
+        if let Some(root) = &self.vault_root {
+            history::snapshot_before_write(root, &self.path, &text);
+        }
         match std::fs::write(&self.path, text.as_bytes()) {
             Ok(()) => {
                 self.mtime = std::fs::metadata(&self.path)
@@ -206,6 +214,40 @@ impl Document {
         cx.emit(DocumentEvent::Saved);
         cx.notify();
         Ok(())
+    }
+
+    /// Load `text` into the editor as a user edit (dirty, syncs preview).
+    /// Used to restore a history snapshot.
+    pub fn restore_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            editor.set_value(text, window, cx);
+        });
+        self.dirty = true;
+        self.revision += 1;
+        self.sync_preview(cx);
+        cx.emit(DocumentEvent::Changed);
+        cx.notify();
+    }
+
+    /// Insert a template's expanded text at the cursor. `{{date}}`,
+    /// `{{time}}`, `{{title}}` expand; `{{cursor}}` marks where the
+    /// caret lands after insertion.
+    pub fn insert_template(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.title();
+        let now = history::epoch();
+        let expanded = text
+            .replace("{{date}}", &history::format_date(now))
+            .replace("{{time}}", &history::format_time(now))
+            .replace("{{title}}", &title);
+        let cursor_at = expanded.find("{{cursor}}");
+        let expanded = expanded.replace("{{cursor}}", "");
+        self.editor.update(cx, |editor, cx| {
+            let start = editor.cursor();
+            editor.insert(expanded, window, cx);
+            if let Some(at) = cursor_at {
+                editor.set_selected_range(start + at..start + at, cx);
+            }
+        });
     }
 
     /// Called when the watcher noticed a filesystem change under this path.

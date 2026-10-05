@@ -79,6 +79,9 @@ enum PaletteCmd {
     ProjectSearch,
     MoveLineUp,
     MoveLineDown,
+    PageHistory,
+    RestoreDeleted,
+    InsertTemplate,
     Settings,
     ToggleTheme,
     Quit,
@@ -146,6 +149,21 @@ impl PaletteCmd {
                 assets::IconName::ArrowDown,
                 "Move line down",
                 &["block", "reorder", "option"],
+            ),
+            PageHistory => (
+                assets::IconName::FileClock,
+                "Page history",
+                &["version", "snapshot", "restore", "undo"],
+            ),
+            RestoreDeleted => (
+                assets::IconName::ArchiveRestore,
+                "Restore deleted files…",
+                &["trash", "recover", "undelete"],
+            ),
+            InsertTemplate => (
+                assets::IconName::LayoutTemplate,
+                "Insert template…",
+                &["template", "boilerplate", "snippet"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -265,8 +283,9 @@ impl Workspace {
             return;
         }
         let resolver: ImageResolver = self.vault.read(cx).image_resolver();
+        let vault_root = self.vault.read(cx).root.clone();
         let settings = self.settings.clone();
-        let doc = cx.new(|cx| Document::open(path, &settings, resolver, window, cx));
+        let doc = cx.new(|cx| Document::open(path, vault_root, &settings, resolver, window, cx));
         let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| {
             if matches!(event, DocumentEvent::Saved | DocumentEvent::Changed) {
                 this.status_note = None;
@@ -588,6 +607,9 @@ impl Workspace {
             PaletteCmd::ProjectSearch,
             PaletteCmd::MoveLineUp,
             PaletteCmd::MoveLineDown,
+            PaletteCmd::PageHistory,
+            PaletteCmd::RestoreDeleted,
+            PaletteCmd::InsertTemplate,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -722,6 +744,11 @@ impl Workspace {
             }
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
+            // These commands open their own dialog — defer past the
+            // palette's own close_dialog, which would close them too.
+            PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
+            PaletteCmd::RestoreDeleted => self.defer_dialog(Self::show_trash, window, cx),
+            PaletteCmd::InsertTemplate => self.defer_dialog(Self::show_templates, window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -843,10 +870,10 @@ impl Workspace {
             .unwrap_or_default();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             dialog
-                .title(format!("Delete “{}”?", title))
-                .description("This removes the file from disk. This cannot be undone.")
+                .title(format!("Move “{}” to trash?", title))
+                .description("Moves it to the vault trash (.rista/trash) — restorable from the command palette.")
                 .show_cancel(true)
-                .ok_text("Delete")
+                .ok_text("Trash")
                 .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                 .on_ok({
                     let view = view.clone();
@@ -862,11 +889,228 @@ impl Workspace {
         });
     }
 
+    /// Run `f` on the workspace one frame later — used when a palette
+    /// command needs to open a dialog after the palette has closed.
+    fn defer_dialog(
+        &mut self,
+        f: fn(&mut Self, &mut Window, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| f(this, window, cx));
+        });
+    }
+
+    /// List a document's history snapshots; clicking one loads it into
+    /// the editor as a dirty buffer (autosave makes it current).
+    fn show_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let (path, root) = {
+            let doc = doc.read(cx);
+            (doc.path.clone(), doc.vault_root.clone())
+        };
+        let Some(root) = root else {
+            return;
+        };
+        let snaps = crate::history::snapshots(&root, &path);
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if snaps.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("No snapshots yet — history is taken on each save."),
+                );
+            }
+            for (ix, (ts, file)) in snaps.iter().enumerate() {
+                let file = file.clone();
+                let doc = doc.clone();
+                list = list.child(
+                    div()
+                        .id(("history-row", ix))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.foreground)
+                                .child(crate::history::format_epoch(*ts)),
+                        )
+                        .on_click(move |_, window, cx| {
+                            if let Ok(text) = std::fs::read_to_string(&file) {
+                                doc.update(cx, |doc, cx| doc.restore_text(text, window, cx));
+                            }
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            dialog
+                .title("Page history")
+                .w(px(440.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
+    /// List `templates/**/*.md`; clicking one inserts it at the cursor
+    /// with `{{date}}`/`{{time}}`/`{{title}}`/`{{cursor}}` expansion.
+    fn show_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let Some(doc) = self.active_doc().cloned() else {
+            self.status_note = Some("Open a note first".into());
+            cx.notify();
+            return;
+        };
+        let files = template_files(&root);
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if files.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("No templates — drop .md files into templates/."),
+                );
+            }
+            for (ix, file) in files.iter().enumerate() {
+                let name = file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let file = file.clone();
+                let doc = doc.clone();
+                list = list.child(
+                    div()
+                        .id(("template-row", ix))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted))
+                        .child(div().text_sm().text_color(theme.foreground).child(name))
+                        .on_click(move |_, window, cx| {
+                            if let Ok(text) = std::fs::read_to_string(&file) {
+                                doc.update(cx, |doc, cx| doc.insert_template(&text, window, cx));
+                            }
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            dialog
+                .title("Insert template")
+                .w(px(440.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
+    /// List vault trash entries; clicking one restores it to its
+    /// original path.
+    fn show_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let entries = crate::history::trash_entries(&root);
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if entries.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("Trash is empty."),
+                );
+            }
+            for (ix, entry) in entries.iter().enumerate() {
+                let deleted_at: u64 = entry
+                    .trashed
+                    .split("--")
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_default();
+                let root = root.clone();
+                let trashed = entry.trashed.clone();
+                let view = view.clone();
+                list =
+                    list.child(
+                        div()
+                            .id(("trash-row", ix))
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.foreground)
+                                    .child(entry.original.clone()),
+                            )
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                format!("deleted {}", crate::history::format_epoch(deleted_at)),
+                            ))
+                            .on_click(move |_, window, cx| {
+                                let _ = crate::history::restore(&root, &trashed);
+                                view.update(cx, |this, cx| {
+                                    this.vault.update(cx, |vault, cx| vault.refresh(cx));
+                                    this.refocus(window, cx);
+                                });
+                                window.close_dialog(cx);
+                            }),
+                    );
+            }
+            dialog
+                .title("Restore deleted files")
+                .w(px(440.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
     fn delete_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if path.is_dir() {
-            let _ = std::fs::remove_dir_all(&path);
-        } else {
-            let _ = std::fs::remove_file(&path);
+        let root = self.vault.read(cx).root.clone();
+        let moved = root
+            .as_ref()
+            .is_some_and(|root| crate::history::move_to_trash(root, &path).is_ok());
+        if !moved {
+            // Outside the vault or trash failed — fall back to real delete.
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
         }
         // Close any open tab pointing at it.
         if let Some(ix) = self
@@ -1683,4 +1927,25 @@ fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
                     .child(icon),
             )
         })
+}
+
+/// `templates/**/*.md` under the vault root, sorted for a stable dialog list.
+fn template_files(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.join("templates")];
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
 }
