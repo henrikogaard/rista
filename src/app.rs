@@ -4346,14 +4346,49 @@ impl Workspace {
                     cx.stop_propagation();
                 }
             }))
-            .can_drop(|value, _window, _cx| value.is::<ExternalPaths>())
+            .can_drop(|value, _window, _cx| value.is::<ExternalPaths>() || value.is::<PathBuf>())
             .drag_over::<ExternalPaths>(|style, _paths, _window, cx| {
+                style.bg(cx.theme().accent.opacity(0.08))
+            })
+            .drag_over::<PathBuf>(|style, _path, _window, cx| {
                 style.bg(cx.theme().accent.opacity(0.08))
             })
             .on_drop::<ExternalPaths>(cx.listener(|this, paths, window, cx| {
                 this.on_editor_drop(paths, window, cx);
             }))
+            .on_drop::<PathBuf>(cx.listener(|this, path, window, cx| {
+                this.insert_tree_link(path, window, cx);
+            }))
             .child(Editor::new(&doc.read(cx).editor).h_full())
+    }
+
+    /// Dropping a file from the tree into the editor inserts a vault link:
+    /// `![[name.png]]` for images, `[[stem]]` for notes and `.base` files.
+    fn insert_tree_link(&mut self, src: &PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let ext = src
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let markup = if IMAGE_EXTS.contains(&ext.as_str()) {
+            src.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| format!("![[{n}]]"))
+        } else if matches!(ext.as_str(), "md" | "base") {
+            src.file_stem()
+                .and_then(|n| n.to_str())
+                .map(|n| format!("[[{n}]]"))
+        } else {
+            None
+        };
+        if let Some(markup) = markup {
+            doc.update(cx, |doc, cx| {
+                doc.editor.update(cx, |e, cx| e.insert(markup, window, cx));
+            });
+        }
     }
 
     /// Paste with images/files on the clipboard → import into the attachments
