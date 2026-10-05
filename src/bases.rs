@@ -2238,9 +2238,26 @@ impl Render for BaseView {
                                     .is_none()
                             })
                             .count();
-                        format!("{} notes · {} undated", computed.rows.len(), undated)
+                        format!(
+                            "{} {} · {} undated",
+                            computed.rows.len(),
+                            if computed.rows.len() == 1 {
+                                "note"
+                            } else {
+                                "notes"
+                            },
+                            undated
+                        )
                     } else {
-                        format!("{} notes", computed.rows.len())
+                        format!(
+                            "{} {}",
+                            computed.rows.len(),
+                            if computed.rows.len() == 1 {
+                                "note"
+                            } else {
+                                "notes"
+                            }
+                        )
                     }),
             )
     }

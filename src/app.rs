@@ -1606,7 +1606,14 @@ impl Workspace {
             .map(|(ix, doc)| {
                 let (title, dirty) = {
                     let doc = doc.entity.read(cx);
-                    (doc.title(), doc.dirty)
+                    // .base tabs keep their extension so `tasks` and
+                    // `tasks.base` don't look like the same document.
+                    let title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base") {
+                        doc.file_name()
+                    } else {
+                        doc.title()
+                    };
+                    (title, doc.dirty)
                 };
                 Tab::new()
                     .label(if dirty {
@@ -1614,7 +1621,9 @@ impl Workspace {
                     } else {
                         title
                     })
-                    .icon(assets::IconName::FileText)
+                    // Icon goes in `prefix`: the vendored Tab renders the
+                    // `icon` slot INSTEAD of the label, not beside it.
+                    .prefix(Icon::new(assets::IconName::FileText).size_3p5())
                     .suffix(
                         Button::new(("close-tab", ix))
                             .ghost()
