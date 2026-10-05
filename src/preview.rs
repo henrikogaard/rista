@@ -1683,19 +1683,15 @@ impl MarkdownPlugin for WikiLinkPlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let link = node.data::<WikiLink>().expect("wiki-link node data");
         let theme = cx.theme();
-        let resolved = self
-            .ctx
-            .vault
-            .read(cx)
-            .resolve_wikilink(&link.target)
-            .is_some();
+        let resolved_path = self.ctx.vault.read(cx).resolve_wikilink(&link.target);
+        let resolved = resolved_path.is_some();
         let workspace = self.ctx.workspace.clone();
         let target = link.target.clone();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&link.target, &mut hasher);
         let key = std::hash::Hasher::finish(&hasher) as usize;
 
-        div()
+        let mut el = div()
             .id(("wiki-link", key))
             .text_sm()
             .text_color(if resolved {
@@ -1709,7 +1705,31 @@ impl MarkdownPlugin for WikiLinkPlugin {
             .on_click(move |_, window, cx| {
                 let target = target.clone();
                 let _ = workspace.update(cx, |ws, cx| ws.open_wikilink(&target, window, cx));
-            })
+            });
+        // Resolved links get Obsidian's page-preview hover: the card
+        // anchors where the cursor first crossed the link and clears
+        // on hover-out (or on navigation).
+        if let Some(path) = resolved_path {
+            el = el
+                .on_mouse_move({
+                    let workspace = self.ctx.workspace.clone();
+                    let path = path.clone();
+                    move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                        let _ = workspace
+                            .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                    }
+                })
+                .on_hover({
+                    let workspace = self.ctx.workspace.clone();
+                    move |hovered: &bool, _window, cx| {
+                        if !*hovered {
+                            let path = path.clone();
+                            let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                        }
+                    }
+                });
+        }
+        el
     }
 }
 

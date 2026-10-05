@@ -70,6 +70,9 @@ pub struct Workspace {
     tags_open: bool,
     tasks_open: bool,
     outline_open: bool,
+    /// Wikilink hover preview — target + anchor point, rendered as a
+    /// floating card over the workspace (Obsidian's page preview).
+    peek: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -319,6 +322,7 @@ impl Workspace {
             tags_open: true,
             tasks_open: true,
             outline_open: true,
+            peek: None,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -414,7 +418,33 @@ impl Workspace {
         }
     }
 
+    /// Preview wikilink hover → anchor the peek card at `pos`. Repeat
+    /// moves over the same link update silently — the card stays
+    /// anchored where the hover started, like Obsidian's page preview.
+    pub fn peek_at(
+        &mut self,
+        path: PathBuf,
+        pos: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        match &mut self.peek {
+            Some((p, at)) if *p == path => *at = pos,
+            _ => {
+                self.peek = Some((path, pos));
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn hide_peek(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+        if self.peek.as_ref().is_some_and(|(p, _)| p == path) {
+            self.peek = None;
+            cx.notify();
+        }
+    }
+
     fn open_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.peek = None;
         if let Some(ix) = self
             .docs
             .iter()
@@ -3493,6 +3523,7 @@ impl Render for Workspace {
 
         v_flex()
             .size_full()
+            .relative()
             .bg(background)
             .key_context("Rista")
             .track_focus(&self.focus_handle)
@@ -3570,6 +3601,89 @@ impl Render for Workspace {
                         ),
                     )
                     .into_any_element()
+            }))
+            .when_some(self.peek.clone(), |this, (path, pos)| {
+                this.child(self.render_peek_card(&path, pos, window, cx))
+            })
+    }
+}
+
+impl Workspace {
+    /// The floating hover-preview card: note title + the first few
+    /// non-empty body lines, anchored next to the cursor and clamped
+    /// inside the window.
+    fn render_peek_card(
+        &self,
+        path: &PathBuf,
+        pos: gpui::Point<gpui::Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let excerpt: Vec<String> = std::fs::read_to_string(path)
+            .ok()
+            .map(|text| {
+                let body = match crate::properties::frontmatter_span(&text) {
+                    Some(span) => &text[span.end..],
+                    None => text.as_str(),
+                };
+                body.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .take(4)
+                    .map(|l| {
+                        l.trim_start_matches(|c: char| {
+                            c == '#' || c == '>' || c == '-' || c == '*' || c == ' '
+                        })
+                        .to_string()
+                    })
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let viewport = window.bounds().size;
+        let w = px(340.);
+        let left = (pos.x + px(12.))
+            .min(viewport.width - w - px(12.))
+            .max(px(4.));
+        // Below the cursor normally, above it near the window's foot.
+        let top = if pos.y > viewport.height - px(240.) {
+            pos.y - px(180.)
+        } else {
+            pos.y + px(18.)
+        };
+        v_flex()
+            .id("peek-card")
+            .absolute()
+            .left(left)
+            .top(top)
+            .w(w)
+            .gap_1()
+            .p_3()
+            .bg(theme.popover)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius)
+            .shadow_lg()
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(theme.foreground)
+                    .truncate()
+                    .child(title),
+            )
+            .children(excerpt.into_iter().map(|line| {
+                div()
+                    .w_full()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .truncate()
+                    .child(line)
             }))
     }
 }
