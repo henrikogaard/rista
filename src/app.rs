@@ -562,7 +562,12 @@ impl Workspace {
         let base = is_base_file.then(|| {
             let workspace = cx.entity().downgrade();
             let vault = self.vault.clone();
-            cx.new(|cx| bases::BaseView::new(doc.clone(), vault, workspace, window, cx))
+            // The view this file was left on — restored like Obsidian
+            // does. Read here: BaseView::new runs inside our update
+            // borrow, so it can't read Workspace itself.
+            let key = doc.read(cx).path.to_string_lossy().to_string();
+            let saved_ix = self.settings.base_views.get(&key).copied().unwrap_or(0);
+            cx.new(|cx| bases::BaseView::new(doc.clone(), vault, workspace, saved_ix, window, cx))
         });
         doc.update(cx, |doc, cx| doc.set_focus_mode(self.focus_mode, cx));
         self.docs.push(OpenDoc {

@@ -1828,10 +1828,14 @@ pub struct BaseView {
 }
 
 impl BaseView {
+    /// `saved_view_ix` — the view index persisted for this file (from
+    /// `Settings::base_views`); the caller reads it because this runs
+    /// inside the workspace's update borrow.
     pub fn new(
         doc: Entity<Document>,
         vault: Entity<Vault>,
         workspace: WeakEntity<Workspace>,
+        saved_view_ix: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1844,21 +1848,8 @@ impl BaseView {
                 cx.notify();
             }
         });
-        let mut view = Self::init(
-            SpecSrc::Doc(doc.clone()),
-            vault,
-            workspace.clone(),
-            window,
-            cx,
-        );
-        // Restore the view this file was last left on (Obsidian keeps a
-        // `.base` on its chosen view too).
-        if let Some(ws) = workspace.upgrade() {
-            let key = doc.read(cx).path.to_string_lossy().to_string();
-            if let Some(&ix) = ws.read(cx).settings().base_views.get(&key) {
-                view.view_ix = ix;
-            }
-        }
+        let mut view = Self::init(SpecSrc::Doc(doc), vault, workspace, window, cx);
+        view.view_ix = saved_view_ix;
         view._subscriptions.push(doc_sub);
         view
     }
