@@ -69,6 +69,7 @@ pub struct Workspace {
     /// Whether the sidebar's Tags group is expanded.
     tags_open: bool,
     tasks_open: bool,
+    outline_open: bool,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -311,6 +312,7 @@ impl Workspace {
             starred_open: true,
             tags_open: true,
             tasks_open: true,
+            outline_open: true,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -1783,10 +1785,11 @@ impl Workspace {
     /// Heading navigator for the active note — picks a heading, jumps
     /// the editor caret to its line (fences skipped so `#` inside code
     /// blocks doesn't list).
-    fn show_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.active_doc().cloned() else {
-            self.note_status("Open a note first", cx);
-            return;
+    /// (line 1-based, level, text) for the active document, skipping
+    /// fenced code — shared by the outline dialog and sidebar pane.
+    fn doc_headings(&self, cx: &App) -> Vec<(usize, usize, String)> {
+        let Some(doc) = self.active_doc() else {
+            return Vec::new();
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
         let mut headings: Vec<(usize, usize, String)> = Vec::new();
@@ -1805,6 +1808,15 @@ impl Workspace {
                 headings.push((ix + 1, level, trimmed[level + 1..].trim().to_string()));
             }
         }
+        headings
+    }
+
+    fn show_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.note_status("Open a note first", cx);
+            return;
+        };
+        let headings = self.doc_headings(cx);
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
             let mut list = v_flex().w_full().py_1();
@@ -2363,12 +2375,87 @@ impl Workspace {
             })
     }
 
-    /// Vault-wide tag index pinned at the bottom of the sidebar —
-    /// Obsidian's tag pane. Clicking a tag opens project search
-    /// pre-filled with `#tag`.
+    /// Sidebar outline of the active note's headings — click jumps the
+    /// caret to that line, like the palette outline but always visible.
+    fn render_outline(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let headings = self.doc_headings(cx);
+
+        v_flex()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("outline-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.outline_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Outline · {}", headings.len())),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.outline_open = !this.outline_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.outline_open, |this| {
+                let rows = v_flex().w_full().children(headings.iter().enumerate().map(
+                    |(ix, (line, level, text))| {
+                        let (line, level, text) = (*line, *level, text.clone());
+                        div()
+                            .id(("outline-side", ix))
+                            .w_full()
+                            .px_2()
+                            .pl(px(8. + 10. * (level as f32 - 1.)))
+                            .py_0p5()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .truncate()
+                                    .text_color(if level == 1 {
+                                        theme.foreground
+                                    } else {
+                                        theme.muted_foreground
+                                    })
+                                    .child(text),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(doc) = this.active_doc().cloned() {
+                                    doc.update(cx, |doc, cx| doc.jump_to_line(line, window, cx));
+                                }
+                            }))
+                    },
+                ));
+                this.child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        rows.max_h(px(160.)),
+                    ),
+                )
+            })
+    }
+
     /// Open `- [ ]` checkboxes vault-wide — click opens the note at
-    /// the task's line. Mirrors the Tags group's collapsed/expanded
-    /// shape.
+    /// the task's line.
     fn render_tasks(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let tasks = self.vault.read(cx).tasks.clone();
@@ -2468,6 +2555,9 @@ impl Workspace {
             })
     }
 
+    /// Vault-wide tag index pinned at the bottom of the sidebar —
+    /// Obsidian's tag pane. Clicking a tag opens project search
+    /// pre-filled with `#tag`.
     fn render_tags(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let tags = self.vault.read(cx).tags.clone();
@@ -2621,12 +2711,20 @@ impl Workspace {
                         let render_view = view.clone();
                         let starred_rows = self.settings.starred.clone();
                         move |ix, entry, selected, _window, cx| {
-                            render_view.update(cx, |_, cx| {
+                            render_view.update(cx, |this, cx| {
                                 let item = entry.item();
                                 let path = PathBuf::from(item.id.as_str());
                                 let is_file = !entry.is_folder();
                                 let is_starred =
                                     is_file && starred_rows.iter().any(|s| s == item.id.as_str());
+                                // The open note stays lit even when the
+                                // tree's own selection moved (nav via
+                                // wikilinks, palette, tabs…).
+                                let is_active = is_file
+                                    && this
+                                        .active_doc()
+                                        .map(|d| d.read(cx).path == path)
+                                        .unwrap_or(false);
                                 let icon: assets::IconName = if is_file {
                                     assets::IconName::FileText
                                 } else if entry.is_expanded() {
@@ -2640,7 +2738,7 @@ impl Workspace {
                                     .py_0p5()
                                     .px_2()
                                     .pl(px(16.) * entry.depth() + px(8.))
-                                    .selected(selected)
+                                    .selected(selected || is_active)
                                     .child(
                                         h_flex()
                                             .w_full()
@@ -2786,6 +2884,9 @@ impl Workspace {
                     .text_sm(),
                 ),
             )
+            .when(!self.doc_headings(cx).is_empty(), |this| {
+                this.child(self.render_outline(cx))
+            })
             .when(!self.vault.read(cx).tasks.is_empty(), |this| {
                 this.child(self.render_tasks(cx))
             })
