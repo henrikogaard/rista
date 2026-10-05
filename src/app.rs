@@ -89,6 +89,7 @@ enum PaletteCmd {
     EditProperties,
     BrowseTags,
     Backlinks,
+    Outline,
     Settings,
     ToggleTheme,
     Quit,
@@ -186,6 +187,11 @@ impl PaletteCmd {
                 assets::IconName::Link,
                 "Show backlinks…",
                 &["backlinks", "links", "mentions", "references"],
+            ),
+            Outline => (
+                assets::IconName::List,
+                "Document outline…",
+                &["outline", "headings", "sections", "toc", "jump"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -661,6 +667,7 @@ impl Workspace {
             PaletteCmd::EditProperties,
             PaletteCmd::BrowseTags,
             PaletteCmd::Backlinks,
+            PaletteCmd::Outline,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -803,6 +810,7 @@ impl Workspace {
             PaletteCmd::EditProperties => self.defer_dialog(Self::show_properties, window, cx),
             PaletteCmd::BrowseTags => self.defer_dialog(Self::show_tags, window, cx),
             PaletteCmd::Backlinks => self.defer_dialog(Self::show_backlinks, window, cx),
+            PaletteCmd::Outline => self.defer_dialog(Self::show_outline, window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -1223,6 +1231,85 @@ impl Workspace {
             dialog
                 .title("Backlinks")
                 .w(px(400.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
+    /// Heading navigator for the active note — picks a heading, jumps
+    /// the editor caret to its line (fences skipped so `#` inside code
+    /// blocks doesn't list).
+    fn show_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.status_note = Some("Open a note first".into());
+            cx.notify();
+            return;
+        };
+        let raw = doc.read(cx).editor.read(cx).value().to_string();
+        let mut headings: Vec<(usize, usize, String)> = Vec::new();
+        let mut in_fence = false;
+        for (ix, line) in raw.split('\n').enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            let level = trimmed.chars().take_while(|&c| c == '#').count();
+            if (1..=6).contains(&level) && trimmed.chars().nth(level) == Some(' ') {
+                headings.push((ix + 1, level, trimmed[level + 1..].trim().to_string()));
+            }
+        }
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if headings.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("No headings"),
+                );
+            }
+            for (ix, (line, level, text)) in headings.iter().enumerate() {
+                let (line, level, text) = (*line, *level, text.clone());
+                let doc = doc.clone();
+                list = list.child(
+                    div()
+                        .id(("outline-row", ix))
+                        .w_full()
+                        .px_3()
+                        .pl(px(12. + 12. * (level as f32 - 1.)))
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(if level == 1 {
+                                    theme.foreground
+                                } else {
+                                    theme.muted_foreground
+                                })
+                                .child(text),
+                        )
+                        .on_click(move |_, window, cx| {
+                            doc.update(cx, |doc, cx| doc.jump_to_line(line, window, cx));
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            dialog
+                .title("Outline")
+                .w(px(360.))
                 .overlay_closable(true)
                 .child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(

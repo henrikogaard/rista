@@ -193,6 +193,21 @@ impl Document {
         self.sync_preview(cx);
     }
 
+    /// Move the caret to the start of a 1-based line (outline jump).
+    pub fn jump_to_line(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value();
+            let at = text
+                .split_inclusive('\n')
+                .take(line.saturating_sub(1))
+                .map(|s| s.len())
+                .sum::<usize>()
+                .min(text.len());
+            editor.set_selected_range(at..at, cx);
+            editor.focus(window, cx);
+        });
+    }
+
     /// Write the buffer to disk. Returns the io result for callers that care.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
