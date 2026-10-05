@@ -71,6 +71,9 @@ pub struct Workspace {
     tasks_open: bool,
     outline_open: bool,
     backlinks_open: bool,
+    cal_open: bool,
+    /// Month the sidebar calendar is showing (year, month 1-12).
+    cal_month: (i32, u32),
     /// Wikilink hover preview — target + anchor point, rendered as a
     /// floating card over the workspace (Obsidian's page preview).
     peek: Option<(PathBuf, gpui::Point<gpui::Pixels>)>,
@@ -330,6 +333,14 @@ impl Workspace {
             tasks_open: true,
             outline_open: true,
             backlinks_open: true,
+            cal_open: true,
+            cal_month: {
+                let now = chrono::Local::now();
+                (
+                    now.format("%Y").to_string().parse().unwrap_or(2026),
+                    now.format("%m").to_string().parse().unwrap_or(1),
+                )
+            },
             peek: None,
             needs_fs_check: false,
             focus_handle,
@@ -734,6 +745,12 @@ impl Workspace {
             self.note_status("Open a folder first", cx);
             return;
         };
+        self.open_daily_at(path, window, cx);
+    }
+
+    /// Shared tail of `on_open_daily`: write (templated if missing),
+    /// refresh the vault, open. `path` is `YYYY-MM-DD.md`.
+    fn open_daily_at(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if !path.exists() {
             let title = path
                 .file_stem()
@@ -2750,6 +2767,172 @@ impl Workspace {
             })
     }
 
+    /// Month-grid mini-calendar — Obsidian's Calendar plugin. Days
+    /// with a `YYYY-MM-DD.md` daily note render accent+bold; today is
+    /// ringed; click opens (or templates) that day's note.
+    fn render_calendar_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use chrono::{Datelike, NaiveDate};
+        let theme = cx.theme();
+        let (year, month) = self.cal_month;
+        let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else {
+            return v_flex();
+        };
+        let today = chrono::Local::now().date_naive();
+        let days_in_month = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(year, month + 1, 1)
+        }
+        .map(|d| d.pred_opt().map(|p| p.day()).unwrap_or(30))
+        .unwrap_or(30);
+        // Monday-first leading blanks.
+        let lead = (first.weekday().num_days_from_monday()) as usize;
+        // Which days have a daily note at vault root.
+        let root = self.vault.read(cx).root.clone().unwrap_or_default();
+        let have: std::collections::HashSet<String> = self
+            .vault
+            .read(cx)
+            .notes
+            .iter()
+            .filter(|p| p.parent() == Some(root.as_path()))
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .collect();
+        let month_name = first.format("%B %Y").to_string();
+
+        let day_cell = |day: u32| {
+            let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+            let stamp = date.format("%Y-%m-%d").to_string();
+            let has_note = have.contains(&stamp);
+            let is_today = date == today;
+            let path = root.join(format!("{stamp}.md"));
+            div()
+                .id(("cal-day", day as usize))
+                .w(px(26.))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.))
+                .cursor_pointer()
+                .text_xs()
+                .text_color(if has_note {
+                    theme.info
+                } else {
+                    theme.foreground
+                })
+                .when(has_note, |d| d.font_semibold())
+                .when(is_today, |d| d.bg(theme.muted))
+                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                .child(day.to_string())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_daily_at(path.clone(), window, cx);
+                }))
+        };
+
+        let mut weeks: Vec<Div> = Vec::new();
+        let mut week = h_flex().gap_0p5();
+        for _ in 0..lead {
+            week = week.child(div().w(px(26.)).h(px(20.)));
+        }
+        let mut slot = lead;
+        for day in 1..=days_in_month {
+            week = week.child(day_cell(day));
+            slot += 1;
+            if slot % 7 == 0 {
+                weeks.push(week);
+                week = h_flex().gap_0p5();
+            }
+        }
+        if slot % 7 != 0 {
+            weeks.push(week);
+        }
+
+        let nav = |icon: assets::IconName, delta: i32| {
+            div()
+                .id(("cal-nav", (delta + 1) as usize))
+                .px_1()
+                .cursor_pointer()
+                .rounded(px(3.))
+                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                .child(Icon::new(icon).size_3().text_color(theme.muted_foreground))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    let (mut y, mut m) = this.cal_month;
+                    m = (m as i32 + delta) as u32;
+                    if m == 0 {
+                        m = 12;
+                        y -= 1;
+                    } else if m == 13 {
+                        m = 1;
+                        y += 1;
+                    }
+                    this.cal_month = (y, m);
+                    cx.notify();
+                }))
+        };
+
+        v_flex()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("cal-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.cal_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Calendar · {month_name}")),
+                            )
+                            .child(nav(assets::IconName::ChevronLeft, -1))
+                            .child(nav(assets::IconName::ChevronRight, 1)),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.cal_open = !this.cal_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.cal_open, |this| {
+                let head =
+                    h_flex()
+                        .gap_0p5()
+                        .children(["M", "T", "W", "T", "F", "S", "S"].iter().map(|d| {
+                            div()
+                                .w(px(26.))
+                                .flex()
+                                .justify_center()
+                                .text_color(theme.muted_foreground)
+                                .child(d.to_string())
+                                .into_any_element()
+                        }));
+                this.child(
+                    v_flex()
+                        .px_2()
+                        .pb_1p5()
+                        .text_xs()
+                        .child(head)
+                        .children(weeks),
+                )
+            })
+    }
+
     /// Open `- [ ]` checkboxes vault-wide — click opens the note at
     /// the task's line.
     fn render_tasks(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3189,6 +3372,7 @@ impl Workspace {
             .when(!self.vault.read(cx).tasks.is_empty(), |this| {
                 this.child(self.render_tasks(cx))
             })
+            .child(self.render_calendar_pane(cx))
             .when(!self.vault.read(cx).tags.is_empty(), |this| {
                 this.child(self.render_tags(cx))
             })
