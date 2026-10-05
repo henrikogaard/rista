@@ -4722,7 +4722,11 @@ impl Workspace {
                 let handled = this
                     .active_doc()
                     .cloned()
-                    .map(|doc| doc.update(cx, |doc, cx| doc.indent_selection(false, window, cx)))
+                    .map(|doc| {
+                        doc.update(cx, |doc, cx| {
+                            doc.table_cell_nav(false, cx) || doc.indent_selection(false, window, cx)
+                        })
+                    })
                     .unwrap_or(false);
                 if handled {
                     cx.stop_propagation();
@@ -4732,7 +4736,11 @@ impl Workspace {
                 let handled = this
                     .active_doc()
                     .cloned()
-                    .map(|doc| doc.update(cx, |doc, cx| doc.indent_selection(true, window, cx)))
+                    .map(|doc| {
+                        doc.update(cx, |doc, cx| {
+                            doc.table_cell_nav(true, cx) || doc.indent_selection(true, window, cx)
+                        })
+                    })
                     .unwrap_or(false);
                 if handled {
                     cx.stop_propagation();

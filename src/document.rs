@@ -1036,6 +1036,99 @@ impl Document {
         });
     }
 
+    /// Tab/Shift-Tab inside a `|`-table row hops the caret cell to
+    /// cell (Obsidian). Only fires when the caret sits on a table
+    /// line; the separator row and other text fall through.
+    pub fn table_cell_nav(&mut self, backward: bool, cx: &mut Context<Self>) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            if !sel.is_empty() {
+                return false;
+            }
+            let text = editor.value().to_string();
+            let caret = sel.start.min(text.len());
+            let ls = text[..caret].rfind('\n').map(|j| j + 1).unwrap_or(0);
+            let le = text[caret..]
+                .find('\n')
+                .map(|j| caret + j)
+                .unwrap_or(text.len());
+            let line = &text[ls..le];
+            let trimmed = line.trim_start();
+            let is_table = trimmed.starts_with('|')
+                && trimmed.ends_with('|')
+                && trimmed[1..].contains('|')
+                && !trimmed
+                    .trim_matches('|')
+                    .trim()
+                    .chars()
+                    .all(|c| matches!(c, '-' | ':' | ' '));
+            if !is_table {
+                return false;
+            }
+            let bytes = text.as_bytes();
+            let next = if backward {
+                // Previous `|` strictly before the caret's cell —
+                // skip the pipe that opens the current cell.
+                let mut scan = caret.min(le);
+                while scan > ls && bytes[scan - 1] != b'|' {
+                    scan -= 1;
+                }
+                // `scan` is just after the cell's leading pipe.
+                (ls..scan.saturating_sub(1))
+                    .rev()
+                    .find(|&i| bytes[i] == b'|')
+                    .map(|i| i + 1)
+            } else {
+                (caret..le).find(|&i| bytes[i] == b'|').map(|i| i + 1)
+            };
+            // Wrap to the adjacent row's first/last cell when this
+            // row runs out — Obsidian's Tab cycle.
+            let at = match next {
+                Some(at) => at,
+                None => {
+                    let neighbor = if backward {
+                        text[..ls].rfind('\n').map(|j| (j + 1, ls))
+                    } else if le < text.len() {
+                        Some((le + 1, text.len()))
+                    } else {
+                        None
+                    };
+                    let Some((ns, limit)) = neighbor else {
+                        return false;
+                    };
+                    let nle = text[ns..]
+                        .find('\n')
+                        .map(|j| ns + j)
+                        .unwrap_or(limit.min(text.len()));
+                    let nline = &text[ns..nle];
+                    if !nline.trim_start().starts_with('|') {
+                        return false;
+                    }
+                    if backward {
+                        // Last cell of the row above: the `|` before
+                        // its trailing pipe.
+                        let body = nline.trim_end();
+                        if !body.ends_with('|') {
+                            return false;
+                        }
+                        match body[..body.len() - 1].rfind('|').map(|p| ns + p + 1) {
+                            Some(at) => at,
+                            None => return false,
+                        }
+                    } else {
+                        nline.find('|').map(|i| ns + i + 1).unwrap_or(ns)
+                    }
+                }
+            };
+            let mut at = at;
+            while at < text.len() && bytes[at] == b' ' {
+                at += 1;
+            }
+            editor.set_selected_range(at..at, cx);
+            true
+        })
+    }
+
     /// Tab/Shift-Tab on list lines — Obsidian indents list items two
     /// spaces instead of inserting a tab. Every list line the
     /// selection touches shifts together; non-list selections fall
