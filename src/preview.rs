@@ -101,9 +101,15 @@ pub fn extensions(
 /// Rewrite Obsidian syntax into CommonMark for the preview pipeline.
 pub fn preprocess(
     source: &str,
-    doc_dir: &Path,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> String {
+    let doc_dir = doc_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let doc_dir = doc_dir.as_path();
     let mut out = String::with_capacity(source.len() + 128);
     let mut in_fence = false;
     let mut fence_marker = "";
@@ -155,6 +161,8 @@ pub fn preprocess(
                 out.push_str(&rewrite_line(
                     line,
                     doc_dir,
+                    doc_path,
+                    vault_root,
                     image_resolver,
                     &mut in_comment,
                 ));
@@ -167,7 +175,14 @@ pub fn preprocess(
             continue;
         }
 
-        let line = rewrite_line(line, doc_dir, image_resolver, &mut in_comment);
+        let line = rewrite_line(
+            line,
+            doc_dir,
+            doc_path,
+            vault_root,
+            image_resolver,
+            &mut in_comment,
+        );
         out.push_str(&line);
     }
     if in_columns {
@@ -192,6 +207,8 @@ fn colon_fence(line: &str) -> Option<String> {
 fn rewrite_line(
     line: &str,
     doc_dir: &Path,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
     in_comment: &mut bool,
 ) -> String {
@@ -310,6 +327,24 @@ fn rewrite_line(
                 i += 1 + id_len;
                 continue;
             }
+        } else if ch == '[' {
+            // `[label](target)` / `![label](target)` — Obsidian treats
+            // document-relative destinations as vault paths. `.md`/
+            // `.base`/extensionless targets become `wiki:` note links
+            // (create-on-click like `[[…]]`), other existing files
+            // become `file://` links, `![](a.md)` transcludes the note,
+            // and a bare `(#anchor)` jumps to a heading in this note.
+            let image = i > 0 && bytes[i - 1] == b'!';
+            if let Some(end) = line[i..].find("](") {
+                let label = &line[i + 1..i + end];
+                if let Some((url, tail, used)) =
+                    rewrite_link_dest(&line[i + end + 2..], image, doc_dir, doc_path, vault_root)
+                {
+                    out.push_str(&format!("[{label}]({url}{tail})"));
+                    i += end + 2 + used;
+                    continue;
+                }
+            }
         } else if line[i..].starts_with("==") {
             // `==highlight==` — Obsidian's mark syntax; renders through
             // the inline-HTML path as <mark>. The content must be
@@ -352,7 +387,8 @@ fn render_embed(
         || !file_part.contains('.');
     if looks_like_note {
         // Note transclusion — TranscludePlugin renders the note inline.
-        return format!("![](transclude:{target})");
+        // `<>`-wrapped so targets with spaces stay a single URL.
+        return format!("![](<transclude:{target}>)");
     }
     // `![[img|300]]` width, `![[img|300x200]]` w×h; anything else is a caption.
     let size = parse_size_suffix(suffix);
@@ -420,6 +456,135 @@ fn file_url(path: &Path) -> String {
         }
     }
     out
+}
+
+/// Split the `(...)` destination of a `[label](…)` link/image into
+/// (raw target, tail like ` "title"`, bytes consumed through `)`).
+/// Handles `<>`-wrapped targets and quoted titles.
+fn split_link_dest(s: &str) -> Option<(&str, &str, usize)> {
+    let lead = s.len() - s.trim_start().len();
+    let s = &s[lead..];
+    if let Some(a) = s.strip_prefix('<') {
+        let gt = a.find('>')?;
+        let after = &a[gt + 1..];
+        let close = after.find(')')?;
+        let tail = &after[..close];
+        let t = tail.trim();
+        if t.is_empty() || t.starts_with('"') || t.starts_with('\'') {
+            return Some((&a[..gt], tail, lead + 1 + gt + 1 + close + 1));
+        }
+        return None;
+    }
+    let paren = s.find(')')?;
+    let inner = &s[..paren];
+    let w = inner.find(char::is_whitespace).unwrap_or(inner.len());
+    let (raw, tail) = (&inner[..w], &inner[w..]);
+    let t = tail.trim();
+    if t.is_empty() || t.starts_with('"') || t.starts_with('\'') {
+        Some((raw, tail, lead + paren + 1))
+    } else {
+        None
+    }
+}
+
+/// Resolve `.`/`..` components without touching the filesystem.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Vault-root-relative path as a forward-slash string.
+fn vault_rel(path: &Path, root: &Path) -> Option<String> {
+    path.strip_prefix(root).ok().map(|p| {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    })
+}
+
+/// `<>`-wrap a rewritten destination when it can't be a bare URL.
+fn wrap_dest(url: String) -> String {
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c == '(' || c == ')')
+    {
+        format!("<{url}>")
+    } else {
+        url
+    }
+}
+
+/// Rewrite a relative markdown link/image destination the way Obsidian
+/// resolves it: note-ish targets (`.md`, `.base`, extensionless) become
+/// `wiki:` links against the vault, `![](note.md)` becomes a
+/// transclusion, other existing files become `file://` links, and a
+/// bare `#anchor` links to a heading in this note. Returns
+/// (new destination, preserved title tail, bytes consumed).
+fn rewrite_link_dest<'a>(
+    s: &'a str,
+    image: bool,
+    doc_dir: &Path,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
+) -> Option<(String, &'a str, usize)> {
+    let (raw, tail, used) = split_link_dest(s)?;
+    if raw.is_empty() {
+        return None;
+    }
+    // `scheme:`/`//host`/`/abs` destinations are untouched.
+    let head = raw.split(['/', '#', '?']).next().unwrap_or(raw);
+    if raw.contains("://") || head.contains(':') || raw.starts_with(['/', '\\']) {
+        return None;
+    }
+    let (target, anchor) = match raw.split_once('#') {
+        Some((t, a)) => (t, Some(percent_decode(a))),
+        None => (raw, None),
+    };
+    let decoded = percent_decode(target);
+    // `[x](#heading)` — same-document heading link.
+    if target.is_empty() {
+        let anchor = anchor.as_deref().filter(|a| !a.is_empty())?;
+        let stem = doc_path.file_stem()?.to_str()?;
+        return Some((wrap_dest(format!("wiki:{stem}#{anchor}")), tail, used));
+    }
+    let ext = decoded
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let is_note = ext == "md" || ext == "base" || !decoded.contains('.');
+    let joined = normalize_path(&doc_dir.join(&decoded));
+    let rel = vault_root.and_then(|r| vault_rel(&joined, r));
+    if image {
+        if is_note {
+            let mut url = format!("transclude:{}", rel?);
+            if let Some(a) = anchor {
+                url.push('#');
+                url.push_str(&a);
+            }
+            return Some((wrap_dest(url), tail, used));
+        }
+        return joined.exists().then(|| (file_url(&joined), tail, used));
+    }
+    if let Some(rel) = rel.filter(|_| is_note) {
+        let mut url = format!("wiki:{rel}");
+        if let Some(a) = anchor {
+            url.push('#');
+            url.push_str(&a);
+        }
+        return Some((wrap_dest(url), tail, used));
+    }
+    joined.exists().then(|| (file_url(&joined), tail, used))
 }
 
 fn percent_decode(s: &str) -> String {

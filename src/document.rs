@@ -102,7 +102,8 @@ impl Document {
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let preview_text = preview::preprocess(&content, &doc_dir, &*image_resolver);
+        let preview_text =
+            preview::preprocess(&content, &path, vault_root.as_deref(), &*image_resolver);
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
@@ -218,7 +219,7 @@ impl Document {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
-        let text = preview::preprocess(&raw, &doc_dir, &*resolver);
+        let text = preview::preprocess(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
         self.stats = word_stats(&raw);
         self.preview
