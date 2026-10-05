@@ -300,6 +300,67 @@ impl Document {
         });
     }
 
+    /// Splice a blank `|  |  |…` row after 1-based source `line` —
+    /// the rendered table's "+ New row" affordance.
+    pub fn add_table_row(
+        &mut self,
+        line: usize,
+        cols: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let mut start = 0usize;
+            for (ix, l) in text.split_inclusive('\n').enumerate() {
+                if ix + 1 == line {
+                    let off = start + l.trim_end_matches('\n').len();
+                    let row = format!("\n|{}", "  |".repeat(cols.max(1)));
+                    editor.set_selected_range(off..off, cx);
+                    editor.replace(row, window, cx);
+                    return;
+                }
+                start += l.len();
+            }
+        });
+    }
+
+    /// Append one cell to every source line in `start..=end` — the
+    /// "+ column" affordance. `start + 1` is the GFM separator row and
+    /// gets ` --- `; other rows get a blank cell. Splices bottom-up so
+    /// earlier byte offsets stay valid.
+    pub fn add_table_col(
+        &mut self,
+        start: usize,
+        end: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let mut spans = Vec::new();
+            let mut byte = 0usize;
+            for (ix, l) in text.split_inclusive('\n').enumerate() {
+                spans.push((ix + 1, byte));
+                byte += l.len();
+            }
+            for (ix, byte_start) in spans.iter().rev() {
+                if *ix < start || *ix > end {
+                    continue;
+                }
+                let content = text[*byte_start..]
+                    .split('\n')
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end();
+                let cell = if *ix == start + 1 { "---" } else { " " };
+                let off = byte_start + content.len();
+                editor.set_selected_range(off..off, cx);
+                editor.replace(format!(" {cell} |"), window, cx);
+            }
+        });
+    }
+
     /// Write the buffer to disk. Returns the io result for callers that care.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();

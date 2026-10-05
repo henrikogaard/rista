@@ -1774,6 +1774,13 @@ struct EditableCell {
 struct EditableTable {
     /// `rows[0]` is the header row; the rest are body rows.
     rows: Vec<Vec<EditableCell>>,
+    /// 1-based source line of the header row (the GFM `---` separator
+    /// is always `start + 1`).
+    start: usize,
+    /// 1-based source line of the last row.
+    end: usize,
+    /// Column count (header cells).
+    cols: usize,
 }
 
 struct TablePlugin {
@@ -1824,8 +1831,27 @@ impl MarkdownPlugin for TablePlugin {
                     })
                     .collect()
             })
-            .collect();
-        Some(MarkdownNode::new("editable-table", EditableTable { rows }))
+            .collect::<Vec<Vec<EditableCell>>>();
+        let start = rows
+            .first()
+            .and_then(|r| r.first())
+            .map(|c| c.line)
+            .unwrap_or(0);
+        let end = rows
+            .last()
+            .and_then(|r| r.first())
+            .map(|c| c.line)
+            .unwrap_or(start);
+        let cols = rows.first().map(|r| r.len()).unwrap_or(0);
+        Some(MarkdownNode::new(
+            "editable-table",
+            EditableTable {
+                rows,
+                start,
+                end,
+                cols,
+            },
+        ))
     }
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -1886,7 +1912,55 @@ impl MarkdownPlugin for TablePlugin {
                         ),
                 );
             }
+            if rix == 0 {
+                // Trailing "+" cell on the header — appends an empty
+                // column (sep row gets `---`).
+                let workspace = self.ctx.workspace.clone();
+                let (start, end) = (table.start, table.end);
+                r = r.child(
+                    div()
+                        .id("table-add-col")
+                        .w(px(26.))
+                        .flex_none()
+                        .px_1()
+                        .py_1()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                        .child("+")
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let _ = workspace
+                                .update(cx, |ws, cx| ws.add_table_col(start, end, window, cx));
+                        }),
+                );
+            }
             tbl = tbl.child(r);
+        }
+        // "+ New row" footer — splices `|  |  |…` after the table's
+        // last source line.
+        {
+            let workspace = self.ctx.workspace.clone();
+            let (end, cols) = (table.end, table.cols);
+            tbl = tbl.child(
+                div()
+                    .id("table-add-row")
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                    .child("+ New row")
+                    .on_click(move |_, window, cx| {
+                        let _ =
+                            workspace.update(cx, |ws, cx| ws.add_table_row(end, cols, window, cx));
+                    }),
+            );
         }
         tbl.into_any_element()
     }

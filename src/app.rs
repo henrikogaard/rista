@@ -1905,6 +1905,33 @@ impl Workspace {
         });
     }
 
+    /// Rendered table's "+ New row" — splices `|  |  |…` after `line`.
+    pub fn add_table_row(
+        &mut self,
+        line: usize,
+        cols: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |d, cx| d.add_table_row(line, cols, window, cx));
+        }
+    }
+
+    /// Rendered table's header "+" — appends an empty column over
+    /// `start..=end` (`start + 1` is the GFM separator).
+    pub fn add_table_col(
+        &mut self,
+        start: usize,
+        end: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |d, cx| d.add_table_col(start, end, window, cx));
+        }
+    }
+
     /// The Properties strip's "+ Add property" footer — name + value
     /// on the active document. Same YAML-typed commit as cell edits.
     pub fn show_add_property_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
