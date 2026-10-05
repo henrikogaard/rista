@@ -171,8 +171,20 @@ impl Render for ProjectSearch {
 
 /// Open the project-search dialog from anywhere with a workspace handle.
 pub fn open_project_search(workspace: Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    open_project_search_for(workspace, None, window, cx);
+}
+
+/// As [`open_project_search`], with the query field pre-filled.
+pub fn open_project_search_for(
+    workspace: Entity<Workspace>,
+    query: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let search = cx.new(|cx| ProjectSearch::new(workspace.downgrade(), window, cx));
     let input = search.read(cx).query_input.clone();
+    let seeded = search.clone();
+    let query = query.map(|q| q.to_string());
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .title("Find in project")
@@ -181,6 +193,15 @@ pub fn open_project_search(workspace: Entity<Workspace>, window: &mut Window, cx
             .child(search.clone())
     });
     window.defer(cx, move |window, cx| {
-        input.update(cx, |input, cx| input.focus(window, cx));
+        input.update(cx, |input, cx| {
+            if let Some(query) = &query {
+                input.set_value(query.clone(), window, cx);
+            }
+            input.focus(window, cx);
+        });
+        if query.is_some() {
+            // set_value suppresses Change — run the search explicitly.
+            seeded.update(cx, |search, cx| search.recompute(cx));
+        }
     });
 }

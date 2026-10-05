@@ -8,6 +8,7 @@ mod document;
 mod history;
 mod http;
 mod preview;
+mod properties;
 mod search;
 mod settings;
 mod settings_panel;

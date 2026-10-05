@@ -4,6 +4,7 @@
 use crate::actions::*;
 use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
+use crate::properties;
 use crate::search;
 use crate::settings::{Appearance, Settings, ViewMode};
 use crate::settings_panel::SettingsView;
@@ -82,6 +83,8 @@ enum PaletteCmd {
     PageHistory,
     RestoreDeleted,
     InsertTemplate,
+    EditProperties,
+    BrowseTags,
     Settings,
     ToggleTheme,
     Quit,
@@ -164,6 +167,16 @@ impl PaletteCmd {
                 assets::IconName::LayoutTemplate,
                 "Insert template…",
                 &["template", "boilerplate", "snippet"],
+            ),
+            EditProperties => (
+                assets::IconName::TableProperties,
+                "Edit properties…",
+                &["properties", "frontmatter", "metadata", "fields"],
+            ),
+            BrowseTags => (
+                assets::IconName::Tags,
+                "Browse tags…",
+                &["tags", "labels", "topics"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -610,6 +623,8 @@ impl Workspace {
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
             PaletteCmd::InsertTemplate,
+            PaletteCmd::EditProperties,
+            PaletteCmd::BrowseTags,
             PaletteCmd::ToggleTheme,
             PaletteCmd::Settings,
             PaletteCmd::CloseFolder,
@@ -749,6 +764,8 @@ impl Workspace {
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
             PaletteCmd::RestoreDeleted => self.defer_dialog(Self::show_trash, window, cx),
             PaletteCmd::InsertTemplate => self.defer_dialog(Self::show_templates, window, cx),
+            PaletteCmd::EditProperties => self.defer_dialog(Self::show_properties, window, cx),
+            PaletteCmd::BrowseTags => self.defer_dialog(Self::show_tags, window, cx),
             PaletteCmd::Settings => self.on_open_settings(&OpenSettings, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
@@ -958,6 +975,87 @@ impl Workspace {
             dialog
                 .title("Page history")
                 .w(px(440.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
+    /// Open the frontmatter properties editor for the active note.
+    fn show_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.status_note = Some("Open a note first".into());
+            cx.notify();
+            return;
+        };
+        properties::open_properties(doc, window, cx);
+    }
+
+    /// List every `#tag` and `tags:` entry in the vault; clicking one
+    /// opens project search scoped to it.
+    fn show_tags(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let notes = self.vault.read(cx).notes.clone();
+        let tags = properties::vault_tags(&notes);
+        let workspace = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if tags.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("No tags — add #tags inline or a tags: list in frontmatter."),
+                );
+            }
+            for (ix, (tag, count)) in tags.iter().enumerate() {
+                let query = format!("#{tag}");
+                let workspace = workspace.clone();
+                list = list.child(
+                    div()
+                        .id(("tag-row", ix))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.foreground)
+                                        .child(format!("#{tag}")),
+                                )
+                                .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                    format!("{} note{}", count, if *count == 1 { "" } else { "s" }),
+                                )),
+                        )
+                        .on_click(move |_, window, cx| {
+                            let workspace = workspace.clone();
+                            let query = query.clone();
+                            window.close_dialog(cx);
+                            window.defer(cx, move |window, cx| {
+                                search::open_project_search_for(
+                                    workspace,
+                                    Some(query.as_str()),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }),
+                );
+            }
+            dialog
+                .title("Tags")
+                .w(px(400.))
                 .overlay_closable(true)
                 .child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(

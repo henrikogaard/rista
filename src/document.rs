@@ -250,6 +250,41 @@ impl Document {
         });
     }
 
+    /// Replace the note's YAML frontmatter block. `body` is YAML source
+    /// without the `---` delimiters; `None` removes the block entirely.
+    /// One undo unit, cursor lands at the end of the block.
+    pub fn set_properties(
+        &mut self,
+        body: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.editor.read(cx).value().to_string();
+        let span = crate::properties::frontmatter_span(&text);
+        self.editor.update(cx, |editor, cx| match (span, body) {
+            (Some(span), Some(body)) => {
+                let block = format!("---\n{}\n---\n", body.trim_end_matches('\n'));
+                editor.set_selected_range(span, cx);
+                editor.replace(block, window, cx);
+            }
+            (Some(mut span), None) => {
+                // Removing everything — also swallow a following blank line
+                // so the note doesn't gain a leading empty line.
+                if text[span.end..].starts_with('\n') {
+                    span.end += 1;
+                }
+                editor.set_selected_range(span, cx);
+                editor.replace("", window, cx);
+            }
+            (None, Some(body)) => {
+                let block = format!("---\n{}\n---\n\n", body.trim_end_matches('\n'));
+                editor.set_selected_range(0..0, cx);
+                editor.replace(block, window, cx);
+            }
+            (None, None) => {}
+        });
+    }
+
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(meta) = std::fs::metadata(&self.path) else {
