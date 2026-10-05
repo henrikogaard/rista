@@ -153,6 +153,7 @@ enum PaletteCmd {
     InsertCallout,
     InsertDate,
     InsertTime,
+    InsertImage,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -367,6 +368,11 @@ impl PaletteCmd {
                 assets::IconName::Clock,
                 "Insert current time",
                 &["now", "hour", "stamp"],
+            ),
+            InsertImage => (
+                assets::IconName::FileImage,
+                "Insert image…",
+                &["picture", "photo", "attach", "embed"],
             ),
             DeleteLine => (
                 assets::IconName::Delete,
@@ -1859,6 +1865,7 @@ impl Workspace {
             PaletteCmd::InsertCallout,
             PaletteCmd::InsertDate,
             PaletteCmd::InsertTime,
+            PaletteCmd::InsertImage,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
@@ -2117,6 +2124,27 @@ impl Workspace {
                 window,
                 cx,
             ),
+            PaletteCmd::InsertImage => {
+                // Native multi-file picker → each image copies into
+                // attachments/ and inserts ![[name]] at the caret
+                // (import_paths, shared with paste/drop).
+                let receiver = cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: true,
+                    prompt: Some("Insert image".into()),
+                });
+                cx.spawn_in(window, async move |view, window| {
+                    if let Ok(Ok(Some(paths))) = receiver.await {
+                        let _ = window.update(|window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.import_paths(&paths, window, cx);
+                            })
+                        });
+                    }
+                })
+                .detach();
+            }
             PaletteCmd::DeleteLine => self.on_delete_line(&DeleteLine, window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
