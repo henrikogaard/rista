@@ -131,6 +131,7 @@ enum PaletteCmd {
     ToggleHighlight,
     ToggleStrike,
     ExtractSelection,
+    NewBase,
     DeleteLine,
     PageHistory,
     RestoreDeleted,
@@ -158,6 +159,11 @@ impl PaletteCmd {
         use PaletteCmd::*;
         match self {
             NewFile => (assets::IconName::FilePlus, "New file", &["create", "note"]),
+            NewBase => (
+                assets::IconName::Database,
+                "New base",
+                &["create", "database", "table"],
+            ),
             NewFolder => (
                 assets::IconName::FolderPlus,
                 "New folder",
@@ -909,6 +915,26 @@ impl Workspace {
         self.new_note_in(dir, Vec::new(), window, cx);
     }
 
+    /// Palette "New base" — a starter `.base` at the vault root,
+    /// named like Untitled notes, opened in Preview.
+    fn new_base(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let mut name = "Untitled.base".to_string();
+        let mut n = 1;
+        while root.join(&name).exists() {
+            n += 1;
+            name = format!("Untitled {n}.base");
+        }
+        let path = root.join(&name);
+        let spec = "filters:\n  and:\n    - file.folder != \"templates\"\nviews:\n  - type: table\n    name: Table\n";
+        if std::fs::write(&path, spec.as_bytes()).is_ok() {
+            self.vault.update(cx, |vault, cx| vault.refresh(cx));
+            self.open_document(path, window, cx);
+        }
+    }
+
     /// Create a uniquely-named note in `dir`, prefilled with frontmatter
     /// `fm` pairs (`key: yaml-scalar` lines), and open it. Called by base
     /// views so a new note satisfies the view's `==` filters at once.
@@ -1514,6 +1540,7 @@ impl Workspace {
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let commands = [
             PaletteCmd::NewFile,
+            PaletteCmd::NewBase,
             PaletteCmd::DailyNote,
             PaletteCmd::AppendDaily,
             PaletteCmd::OpenFolder,
@@ -1700,6 +1727,7 @@ impl Workspace {
     fn run_command(&mut self, cmd: PaletteCmd, window: &mut Window, cx: &mut Context<Self>) {
         match cmd {
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
+            PaletteCmd::NewBase => self.new_base(window, cx),
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
             PaletteCmd::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             PaletteCmd::DailyNote => self.on_open_daily(&OpenDailyNote, window, cx),
