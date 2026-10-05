@@ -111,7 +111,21 @@ impl Vault {
                 }
             }
         }
-        self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
+        self.tree.update(cx, |tree, cx| {
+            tree.set_items(items, cx);
+            // A scroll offset that outlives a shrunken entry list leaves the
+            // tree rendering whitespace — snap back to the top in that case.
+            let top = tree
+                .scroll_handle()
+                .0
+                .borrow()
+                .base_handle
+                .logical_scroll_top()
+                .0;
+            if top > 0 && tree.entry(top).is_none() {
+                tree.scroll_to_item(0, ScrollStrategy::Top);
+            }
+        });
         self.notes = notes;
         *self.images.borrow_mut() = images;
         cx.notify();
