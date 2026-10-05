@@ -1251,6 +1251,9 @@ struct ViewSpec {
     kind: String,
     /// Kanban: column the board groups on (`group_by:`/`group:`/`groupBy:`).
     group_by: Option<String>,
+    /// `groupBy: {property, direction: DESC}` — group bands order
+    /// descending instead of ascending.
+    group_desc: bool,
     /// Calendar: property the month grid buckets on
     /// (`date:`/`dateProperty:`/`date_property:`/`property:`).
     date_prop: Option<String>,
@@ -1355,9 +1358,27 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 .and_then(|t| t.as_str())
                 .map(str::to_ascii_lowercase)
                 .unwrap_or_else(|| "table".into());
-            let group_by = ["group_by", "groupBy", "group"]
+            let (group_by, group_desc) = ["group_by", "groupBy", "group"]
                 .iter()
-                .find_map(|k| getv(k).and_then(|g| g.as_str()).map(str::to_string));
+                .find_map(|k| match getv(k) {
+                    Some(Value::String(s)) => Some((Some(s.clone()), false)),
+                    // Obsidian: `groupBy: {property: note.age, direction: DESC}`.
+                    Some(Value::Mapping(m)) => {
+                        let prop = m
+                            .get("property")
+                            .or_else(|| m.get("prop"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)?;
+                        let desc = m
+                            .get("direction")
+                            .and_then(|d| d.as_str())
+                            .map(|d| d.eq_ignore_ascii_case("desc"))
+                            .unwrap_or(false);
+                        Some((Some(prop), desc))
+                    }
+                    _ => None,
+                })
+                .unwrap_or((None, false));
             let date_prop = ["date", "dateProperty", "date_property", "property"]
                 .iter()
                 .find_map(|k| getv(k).and_then(|g| g.as_str()).map(str::to_string));
@@ -1432,6 +1453,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 name,
                 kind,
                 group_by,
+                group_desc,
                 date_prop,
                 columns,
                 sort,
@@ -1448,6 +1470,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             name: "Table".into(),
             kind: "table".into(),
             group_by: None,
+            group_desc: false,
             date_prop: None,
             columns: Vec::new(),
             sort: Vec::new(),
@@ -1591,6 +1614,8 @@ struct Computed {
     /// The view has an explicit `group_by:` that resolved to a column —
     /// kanban/calendar always group, tables only when the user asked.
     grouped: bool,
+    /// `groupBy: {direction: DESC}` — group bands order descending.
+    group_desc: bool,
     /// Kanban: frontmatter key the board groups on — card drops write to
     /// it, so `formula.`/`file.` columns are excluded.
     group_prop: Option<String>,
@@ -2094,6 +2119,7 @@ fn compute(
         kind: view.kind.clone(),
         group_ix,
         grouped: view.group_by.is_some() && group_ix.is_some(),
+        group_desc: view.group_desc,
         group_prop: view
             .group_by
             .as_ref()
@@ -2811,10 +2837,22 @@ impl Render for BaseView {
         if calendar {
             rows = rows.child(self.render_calendar(&this, &computed, &visible, cx));
         } else if kanban {
-            // Group rows on the resolved column's display value.
+            // Group rows on the resolved column's display value —
+            // `groupBy: {direction}` orders the columns by value.
             let gix = computed.group_ix.unwrap_or(usize::MAX);
+            let mut ordered: Vec<&Row> = visible.iter().copied().collect();
+            if computed.grouped {
+                ordered.sort_by(|a, b| {
+                    let ord = lit_cmp(&a.cells[gix].lit, &b.cells[gix].lit);
+                    if computed.group_desc {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
+                });
+            }
             let mut groups: Vec<(String, Vec<&Row>)> = Vec::new();
-            for row in visible.iter().copied() {
+            for row in ordered {
                 let value = row
                     .cells
                     .get(gix)
@@ -3007,7 +3045,12 @@ impl Render for BaseView {
             let mut group_counts: std::collections::HashMap<&str, usize> = Default::default();
             if computed.grouped {
                 order.sort_by(|a, b| {
-                    lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit)
+                    let ord = lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit);
+                    if computed.group_desc {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
                 });
                 for row in visible.iter().copied() {
                     let key = row
@@ -3149,7 +3192,12 @@ impl Render for BaseView {
             let mut group_counts: std::collections::HashMap<&str, usize> = Default::default();
             if computed.grouped {
                 order.sort_by(|a, b| {
-                    lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit)
+                    let ord = lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit);
+                    if computed.group_desc {
+                        ord.reverse()
+                    } else {
+                        ord
+                    }
                 });
                 for row in visible.iter().copied() {
                     let key = row
@@ -3297,23 +3345,27 @@ impl Render for BaseView {
             // within each group.
             if computed.grouped {
                 order.sort_by(|a, b| {
-                    lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit).then_with(
-                        || {
-                            self.sort
-                                .map(|(cix, desc)| {
-                                    let ord = lit_cmp(
-                                        &visible[*a].cells[cix].lit,
-                                        &visible[*b].cells[cix].lit,
-                                    );
-                                    if desc {
-                                        ord.reverse()
-                                    } else {
-                                        ord
-                                    }
-                                })
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        },
-                    )
+                    let ord = lit_cmp(&visible[*a].cells[gix].lit, &visible[*b].cells[gix].lit);
+                    let ord = if computed.group_desc {
+                        ord.reverse()
+                    } else {
+                        ord
+                    };
+                    ord.then_with(|| {
+                        self.sort
+                            .map(|(cix, desc)| {
+                                let ord = lit_cmp(
+                                    &visible[*a].cells[cix].lit,
+                                    &visible[*b].cells[cix].lit,
+                                );
+                                if desc {
+                                    ord.reverse()
+                                } else {
+                                    ord
+                                }
+                            })
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
                 });
             } else if let Some((cix, desc)) = self.sort {
                 order.sort_by(|a, b| {
