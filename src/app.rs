@@ -126,6 +126,10 @@ enum PaletteCmd {
     MoveLineUp,
     MoveLineDown,
     ToggleCheckbox,
+    ToggleBold,
+    ToggleItalic,
+    ToggleHighlight,
+    ToggleStrike,
     PageHistory,
     RestoreDeleted,
     InsertTemplate,
@@ -219,6 +223,26 @@ impl PaletteCmd {
                 assets::IconName::ListTodo,
                 "Toggle checkbox",
                 &["task", "todo", "check", "done", "line"],
+            ),
+            ToggleBold => (
+                assets::IconName::Bold,
+                "Bold",
+                &["strong", "format", "wrap"],
+            ),
+            ToggleItalic => (
+                assets::IconName::Italic,
+                "Italic",
+                &["emphasis", "format", "wrap"],
+            ),
+            ToggleHighlight => (
+                assets::IconName::Highlighter,
+                "Highlight",
+                &["mark", "format", "wrap"],
+            ),
+            ToggleStrike => (
+                assets::IconName::Strikethrough,
+                "Strikethrough",
+                &["strike", "format", "wrap"],
             ),
             PageHistory => (
                 assets::IconName::FileClock,
@@ -1166,6 +1190,19 @@ impl Workspace {
         }
     }
 
+    /// ⌘I — italic wrap on the selection or the word under the caret.
+    fn on_toggle_italic(&mut self, _: &ToggleItalic, window: &mut Window, cx: &mut Context<Self>) {
+        self.wrap("*", window, cx);
+    }
+
+    /// Inline-formatting wrap — `**`, `*`, `~~`, `==` around the
+    /// selection or the word under the caret (palette + ⌘I).
+    fn wrap(&mut self, marker: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.toggle_wrap(marker, window, cx));
+        }
+    }
+
     /// ⌘D — duplicate the line(s) under the selection.
     fn on_duplicate_block(
         &mut self,
@@ -1376,6 +1413,10 @@ impl Workspace {
             PaletteCmd::MoveLineUp,
             PaletteCmd::MoveLineDown,
             PaletteCmd::ToggleCheckbox,
+            PaletteCmd::ToggleBold,
+            PaletteCmd::ToggleItalic,
+            PaletteCmd::ToggleHighlight,
+            PaletteCmd::ToggleStrike,
             PaletteCmd::PageHistory,
             PaletteCmd::RestoreDeleted,
             PaletteCmd::InsertTemplate,
@@ -1563,6 +1604,10 @@ impl Workspace {
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
             PaletteCmd::ToggleCheckbox => self.on_toggle_checkbox(&ToggleCheckbox, window, cx),
+            PaletteCmd::ToggleBold => self.wrap("**", window, cx),
+            PaletteCmd::ToggleItalic => self.wrap("*", window, cx),
+            PaletteCmd::ToggleHighlight => self.wrap("==", window, cx),
+            PaletteCmd::ToggleStrike => self.wrap("~~", window, cx),
             // These commands open their own dialog — defer past the
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
@@ -4919,6 +4964,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_move_line_up))
             .on_action(cx.listener(Self::on_move_line_down))
             .on_action(cx.listener(Self::on_toggle_checkbox))
+            .on_action(cx.listener(Self::on_toggle_italic))
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_reopen_tab))
             .on_action(cx.listener(Self::on_next_tab))

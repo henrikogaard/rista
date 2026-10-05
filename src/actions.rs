@@ -19,6 +19,7 @@ actions!(
         MoveLineUp,
         MoveLineDown,
         ToggleCheckbox,
+        ToggleItalic,
         DuplicateBlock,
         ToggleComment,
         // Navigation

@@ -953,6 +953,61 @@ impl Document {
         });
     }
 
+    /// Toggle `marker` (`**`, `*`, `~~`, `==`) around the selection —
+    /// Obsidian's inline formatting toggle. With no selection it wraps
+    /// the word under the caret; already-wrapped text unwraps.
+    pub fn toggle_wrap(&mut self, marker: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let sel = editor.selected_range();
+            let word_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+            let (start, end) = if sel.is_empty() {
+                let i = sel.start.min(text.len());
+                let bytes = text.as_bytes();
+                let mut s = i;
+                while s > 0 && word_char(bytes[s - 1]) {
+                    s -= 1;
+                }
+                let mut e = i;
+                while e < bytes.len() && word_char(bytes[e]) {
+                    e += 1;
+                }
+                if s == e {
+                    return;
+                }
+                (s, e)
+            } else {
+                (sel.start, sel.end)
+            };
+            let m = marker.len();
+            let (span, inner) = if start >= m
+                && end + m <= text.len()
+                && &text[start - m..start] == marker
+                && &text[end..end + m] == marker
+            {
+                (start - m..end + m, Some(text[start..end].to_string()))
+            } else if end - start >= 2 * m
+                && text[start..end].starts_with(marker)
+                && text[start..end].ends_with(marker)
+            {
+                (start..end, Some(text[start + m..end - m].to_string()))
+            } else {
+                (start..end, None)
+            };
+            let (replacement, inner_start, inner_len) = match inner {
+                Some(inner) => (inner.clone(), span.start, inner.len()),
+                None => (
+                    format!("{marker}{}{marker}", &text[start..end]),
+                    start + m,
+                    end - start,
+                ),
+            };
+            editor.set_selected_range(span, cx);
+            editor.replace(replacement, window, cx);
+            editor.set_selected_range(inner_start..inner_start + inner_len, cx);
+        });
+    }
+
     /// Splice a set of byte-range replacements into the source text —
     /// link-safe rename retargets wikilinks this way. Ranges must be
     /// sorted by start and non-overlapping; applied right-to-left so
