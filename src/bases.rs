@@ -2840,7 +2840,7 @@ impl Render for BaseView {
             // Group rows on the resolved column's display value —
             // `groupBy: {direction}` orders the columns by value.
             let gix = computed.group_ix.unwrap_or(usize::MAX);
-            let mut ordered: Vec<&Row> = visible.iter().copied().collect();
+            let mut ordered: Vec<&Row> = visible.to_vec();
             if computed.grouped {
                 ordered.sort_by(|a, b| {
                     let ord = lit_cmp(&a.cells[gix].lit, &b.cells[gix].lit);
