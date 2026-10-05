@@ -1526,6 +1526,36 @@ impl Workspace {
     }
 
     /// Public hook used by the project-search view.
+    /// Set one frontmatter property on a note — through the editor when
+    /// the note is open (undo-able, autosaved), straight to disk
+    /// otherwise so base views can write back.
+    pub fn set_note_property(
+        &mut self,
+        path: PathBuf,
+        key: &str,
+        value: serde_yaml::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self
+            .docs
+            .iter()
+            .find(|d| d.entity.read(cx).path == path)
+            .map(|d| d.entity.clone())
+        {
+            doc.update(cx, |doc, cx| {
+                let text = doc.editor.read(cx).value().to_string();
+                let body = crate::properties::body_with(&text, key, value);
+                doc.set_properties(body, window, cx);
+            });
+        } else if let Ok(text) = std::fs::read_to_string(&path) {
+            let body = crate::properties::body_with(&text, key, value);
+            if std::fs::write(&path, crate::properties::splice_frontmatter(&text, body)).is_ok() {
+                self.note_status(format!("Set {key}"), cx);
+            }
+        }
+    }
+
     pub fn open_document_pub(
         &mut self,
         path: PathBuf,

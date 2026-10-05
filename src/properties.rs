@@ -66,6 +66,46 @@ pub fn properties(text: &str) -> Vec<(String, Value)> {
         .unwrap_or_default()
 }
 
+/// The frontmatter body of `text` with `key` set to `value` (`Null`
+/// removes the key), serialized back to YAML. `None` when the block
+/// would be left empty. Existing keys keep their order; new keys append.
+pub fn body_with(text: &str, key: &str, value: Value) -> Option<String> {
+    let mut map = Mapping::new();
+    for (k, v) in properties(text) {
+        map.insert(Value::String(k.into()), v);
+    }
+    if matches!(value, Value::Null) {
+        map.remove(Value::String(key.into()));
+    } else {
+        map.insert(Value::String(key.into()), value);
+    }
+    if map.is_empty() {
+        None
+    } else {
+        serde_yaml::to_string(&map).ok()
+    }
+}
+
+/// Whole-document equivalent of `Document::set_properties` for notes
+/// that aren't open in an editor — splices a new frontmatter block into
+/// `text` (`None` removes it) and returns the whole file.
+pub fn splice_frontmatter(text: &str, body: Option<String>) -> String {
+    match (frontmatter_span(text), body) {
+        (Some(span), Some(body)) => {
+            let block = format!("---\n{}\n---\n", body.trim_end_matches('\n'));
+            format!("{}{}{}", &text[..span.start], block, &text[span.end..])
+        }
+        (Some(mut span), None) => {
+            if text[span.end..].starts_with('\n') {
+                span.end += 1;
+            }
+            format!("{}{}", &text[..span.start], &text[span.end..])
+        }
+        (None, Some(body)) => format!("---\n{}\n---\n\n{text}", body.trim_end_matches('\n')),
+        (None, None) => text.to_string(),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum PropKind {
     Text,

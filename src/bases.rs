@@ -1140,6 +1140,9 @@ struct Computed {
     kind: String,
     /// Kanban grouping column index into `headers`/`cells`, when resolved.
     group_ix: Option<usize>,
+    /// Kanban: frontmatter key the board groups on — card drops write to
+    /// it, so `formula.`/`file.` columns are excluded.
+    group_prop: Option<String>,
     /// Frontmatter pairs a new note needs to satisfy the base + view
     /// filters — `prop == literal` under conjunctions only.
     prefill: Vec<(String, String)>,
@@ -1584,12 +1587,48 @@ fn compute(
         view_names: spec.views.iter().map(|v| v.name.clone()).collect(),
         kind: view.kind.clone(),
         group_ix,
+        group_prop: view
+            .group_by
+            .as_ref()
+            .map(|g| g.strip_prefix("note.").unwrap_or(g).to_string())
+            .filter(|g| !g.is_empty() && !g.starts_with("formula.") && !g.starts_with("file.")),
         prefill: prefill_pairs(spec, view),
         error,
     }
 }
 
 /// Render a literal as a YAML scalar for a frontmatter value.
+/// `Lit` → `serde_yaml::Value` for frontmatter write-back (kanban drops).
+fn lit_to_value(lit: &Lit) -> Value {
+    match lit {
+        Lit::Null => Value::Null,
+        Lit::Bool(b) => Value::Bool(*b),
+        Lit::Num(n) if n.fract() == 0.0 => Value::Number((*n as i64).into()),
+        Lit::Num(n) => Value::Number(serde_yaml::Number::from(*n)),
+        Lit::Str(s) => Value::String(s.clone()),
+        Lit::List(items) => Value::Sequence(items.iter().map(lit_to_value).collect()),
+    }
+}
+
+/// Little floating chip shown while dragging a kanban card.
+struct KanbanDrag {
+    label: SharedString,
+}
+
+impl Render for KanbanDrag {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .child(self.label.clone())
+    }
+}
+
 fn lit_to_yaml(lit: &Lit) -> Option<String> {
     match lit {
         Lit::Null => None,
@@ -2115,15 +2154,48 @@ impl Render for BaseView {
                     None => groups.push((value, vec![row])),
                 }
             }
-            let mut board = h_flex().gap_3().p_3().items_start();
-            for (name, items) in groups {
+            // Columns stretch to the board's full height (default
+            // `items` alignment, no items_start) so a card dropped
+            // anywhere under a column still lands on it.
+            let mut board = h_flex().gap_3().p_3().h_full();
+            for (gcol, (name, items)) in groups.into_iter().enumerate() {
+                let group_lit = items
+                    .first()
+                    .and_then(|row| row.cells.get(gix))
+                    .map(|cell| cell.lit.clone())
+                    .unwrap_or(Lit::Null);
                 let mut col = v_flex()
+                    .id(("kanban-col", gcol))
                     .w(px(240.))
+                    .h_full()
                     .flex_none()
                     .gap_1()
                     .p_2()
+                    .border_1()
+                    .border_color(theme.border.opacity(0.0))
                     .bg(theme.secondary)
                     .rounded(theme.radius);
+                // Drag a card onto a column → set the grouped property on
+                // the note's frontmatter. "No value" clears it (Null).
+                if let Some(prop) = computed.group_prop.clone() {
+                    let workspace = self.workspace.clone();
+                    let value = lit_to_value(&group_lit);
+                    col = col
+                        .drag_over::<PathBuf>(|style, _, _, cx| {
+                            style.border_color(cx.theme().accent)
+                        })
+                        .on_drop::<PathBuf>(move |path: &PathBuf, window, cx| {
+                            let _ = workspace.update(cx, |workspace, cx| {
+                                workspace.set_note_property(
+                                    path.clone(),
+                                    &prop,
+                                    value.clone(),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        });
+                }
                 col = col.child(
                     h_flex()
                         .justify_between()
@@ -2145,7 +2217,7 @@ impl Render for BaseView {
                     let path = row.path.clone();
                     let workspace = self.workspace.clone();
                     let mut card = v_flex()
-                        .id(("kanban-card", cix))
+                        .id(("kanban-card", gcol * 1000 + cix))
                         .gap_0p5()
                         .p_2()
                         .border_1()
@@ -2153,6 +2225,18 @@ impl Render for BaseView {
                         .bg(theme.background)
                         .rounded(theme.radius)
                         .cursor_pointer()
+                        .on_drag(path.clone(), {
+                            let label: SharedString = row
+                                .cells
+                                .first()
+                                .map(|cell| cell.text.clone().into())
+                                .unwrap_or_default();
+                            move |_, _, _, cx| {
+                                cx.new(|_| KanbanDrag {
+                                    label: label.clone(),
+                                })
+                            }
+                        })
                         .on_click(move |_, window, cx| {
                             let path = path.clone();
                             let _ = workspace
