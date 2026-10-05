@@ -2103,6 +2103,7 @@ impl Render for BaseView {
         let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
         let kanban = matches!(computed.kind.as_str(), "kanban" | "board");
         let calendar = computed.kind == "calendar";
+        let list = computed.kind == "list";
         let header = h_flex()
             .w_full()
             .px_3()
@@ -2374,6 +2375,73 @@ impl Render for BaseView {
                 grid = grid.child(card.child(body));
             }
             rows = rows.child(grid);
+        } else if list {
+            // Obsidian's list view: one compact row per note — cover
+            // thumb, name, then the first few non-empty properties
+            // inline. No column header; sort comes from the spec.
+            let mut items = v_flex().w_full().p_2().gap_0p5();
+            for (ix, row) in computed.rows.iter().enumerate() {
+                let path = row.path.clone();
+                let workspace = self.workspace.clone();
+                let mut line = h_flex()
+                    .id(("base-list", ix))
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded(theme.radius)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                    .on_click(move |_, window, cx| {
+                        let path = path.clone();
+                        let _ =
+                            workspace.update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                    });
+                if let Some(cover) = &row.cover {
+                    let source: gpui_kit::ImageSource = cover
+                        .strip_prefix("file://")
+                        .map(|p| std::path::PathBuf::from(p).into())
+                        .unwrap_or_else(|| cover.clone().into());
+                    line = line.child(
+                        img(source)
+                            .w(px(22.))
+                            .h(px(22.))
+                            .flex_none()
+                            .rounded(theme.radius)
+                            .object_fit(ObjectFit::Cover),
+                    );
+                }
+                line = line.child(
+                    div().w(px(160.)).flex_none().text_sm().truncate().child(
+                        row.cells
+                            .first()
+                            .map(|c| c.text.clone())
+                            .unwrap_or_default(),
+                    ),
+                );
+                let mut shown = 0;
+                for (cix, cell) in row.cells.iter().enumerate().skip(1) {
+                    if shown >= 3 || cell.text.trim().is_empty() {
+                        continue;
+                    }
+                    shown += 1;
+                    line = line.child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .truncate()
+                            .child(format!(
+                                "{}: {}",
+                                computed.headers.get(cix).cloned().unwrap_or_default(),
+                                cell.text
+                            )),
+                    );
+                }
+                items = items.child(line);
+            }
+            rows = rows.child(items);
         } else {
             // Interactive header sort orders rows at render time —
             // `Computed` stays cached; comparisons use the raw `Lit`.
@@ -2487,7 +2555,7 @@ impl Render for BaseView {
         v_flex()
             .size_full()
             .child(toolbar)
-            .when(!cards && !kanban && !calendar, |v| v.child(header))
+            .when(!cards && !kanban && !calendar && !list, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
                 div()
                     .w_full()
