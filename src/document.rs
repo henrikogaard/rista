@@ -18,6 +18,8 @@ pub enum DocumentEvent {
     Changed,
     /// Saved to disk.
     Saved,
+    /// Caret moved — the status bar's Ln/Col display tracks it.
+    Selection,
 }
 
 impl EventEmitter<DocumentEvent> for Document {}
@@ -54,6 +56,9 @@ pub struct Document {
     /// itself notifies the editor, so without this guard refresh → notify
     /// → refresh would spin forever.
     focus_cursor: Option<usize>,
+    /// Last caret offset broadcast as `DocumentEvent::Selection` —
+    /// dedupes so unchanged cursors don't re-render the workspace.
+    status_cursor: Option<usize>,
     /// Vault for link-graph lookups (linked mentions). Absent for
     /// documents opened outside a vault.
     vault: Option<Entity<crate::vault::Vault>>,
@@ -120,6 +125,7 @@ impl Document {
             decorations: None,
             focus_mode: false,
             focus_cursor: None,
+            status_cursor: None,
             vault,
             linked_mentions: Vec::new(),
             mentions_open: false,
@@ -152,6 +158,10 @@ impl Document {
                 if this.focus_mode && this.focus_cursor != Some(cursor) {
                     this.focus_cursor = Some(cursor);
                     this.refresh_decorations(cx);
+                }
+                if this.status_cursor != Some(cursor) {
+                    this.status_cursor = Some(cursor);
+                    cx.emit(DocumentEvent::Selection);
                 }
             }),
         ];

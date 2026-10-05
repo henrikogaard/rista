@@ -869,11 +869,12 @@ impl Workspace {
                 cx,
             )
         });
-        let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| {
-            if matches!(event, DocumentEvent::Saved | DocumentEvent::Changed) {
+        let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| match event {
+            DocumentEvent::Saved | DocumentEvent::Changed => {
                 this.status_note = None;
                 cx.notify();
             }
+            DocumentEvent::Selection => cx.notify(),
         });
         let base = is_base_file.then(|| {
             let workspace = cx.entity().downgrade();
@@ -5513,8 +5514,7 @@ impl Workspace {
                 doc.base_embeds.clone(),
                 doc.linked_mentions.clone(),
                 doc.mentions_open,
-                crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref())
-                    .is_some(),
+                crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref()).is_some(),
             )
         };
         let base_ctx = preview::PreviewCtx {
@@ -5662,8 +5662,8 @@ impl Workspace {
     }
 
     /// Breadcrumb row above the editor: `folder / sub / name` — each
-    /// folder segment reveals itself in the file tree, like Obsidian's
-    /// document breadcrumb. Hidden for root-level files.
+    /// folder segment reveals itself in the file tree; the filename
+    /// opens the rename dialog, like Obsidian's inline title.
     fn render_breadcrumb(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Option<Div> {
         let path = doc.read(cx).path.clone();
         let root = self.vault.read(cx).root.clone()?;
@@ -5674,9 +5674,6 @@ impl Workspace {
             .replace('\\', "/");
         let mut segs: Vec<&str> = rel.split('/').collect();
         let name = segs.pop()?;
-        if segs.is_empty() {
-            return None;
-        }
         let stem = std::path::Path::new(name)
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -5715,7 +5712,24 @@ impl Workspace {
                 )
                 .child(div().child("›"));
         }
-        Some(row.child(div().text_color(cx.theme().foreground).child(stem)))
+        Some(
+            row.child(
+                div()
+                    .id("crumb-name")
+                    .cursor_pointer()
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.text_color(cx.theme().accent))
+                    .child(stem)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.show_rename_dialog(path.clone(), window, cx);
+                            });
+                        }
+                    }),
+            ),
+        )
     }
 
     /// The editor plus the paste/drop handlers that turn images into
@@ -6025,7 +6039,7 @@ impl Workspace {
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let doc = self.active_doc();
-        let (rel_path, words, dirty, conflict) = doc
+        let (rel_path, words, dirty, conflict, cursor) = doc
             .map(|doc| {
                 let doc = doc.read(cx);
                 let rel = self
@@ -6036,7 +6050,14 @@ impl Workspace {
                     .and_then(|r| doc.path.strip_prefix(r).ok())
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| doc.path.to_string_lossy().to_string());
-                (rel, doc.stats.0, doc.dirty, doc.conflict)
+                let pos = doc.editor.read(cx).cursor_position();
+                (
+                    rel,
+                    doc.stats.0,
+                    doc.dirty,
+                    doc.conflict,
+                    Some((pos.line + 1, pos.character + 1)),
+                )
             })
             .unwrap_or_default();
 
@@ -6078,6 +6099,14 @@ impl Workspace {
                 h_flex()
                     .gap_3()
                     .items_center()
+                    .when_some(cursor, |this, (line, col)| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("Ln {line}, Col {col}")),
+                        )
+                    })
                     .when(doc.is_some(), |this| {
                         this.child(
                             div()
