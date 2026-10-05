@@ -1394,9 +1394,10 @@ fn compute(
         columns.extend(spec.formulas.keys().map(|f| format!("formula.{f}")));
     }
 
-    // Kanban boards may group on a property not listed in `order` —
-    // Obsidian groups by any property, so it joins the columns silently.
-    if matches!(view.kind.as_str(), "kanban" | "board") {
+    // Grouping may target a property not listed in `order` — Obsidian
+    // groups by any property, so it joins the columns silently. For the
+    // table view that also surfaces the group prop as a trailing column.
+    if matches!(view.kind.as_str(), "kanban" | "board" | "table" | "list") {
         if let Some(group) = &view.group_by {
             if !columns.iter().any(|c| c == group) {
                 columns.push(group.clone());
@@ -2434,8 +2435,65 @@ impl Render for BaseView {
             // Obsidian's list view: one compact row per note — cover
             // thumb, name, then the first few non-empty properties
             // inline. No column header; sort comes from the spec.
+            // `group_by` bands the rows like the table view does.
+            let gix = computed.group_ix.unwrap_or(usize::MAX);
+            let mut order: Vec<usize> = (0..computed.rows.len()).collect();
+            let mut group_counts: std::collections::HashMap<&str, usize> = Default::default();
+            if computed.grouped {
+                order.sort_by(|a, b| {
+                    lit_cmp(
+                        &computed.rows[*a].cells[gix].lit,
+                        &computed.rows[*b].cells[gix].lit,
+                    )
+                });
+                for row in &computed.rows {
+                    let key = row
+                        .cells
+                        .get(gix)
+                        .map(|c| c.text.trim())
+                        .unwrap_or_default();
+                    *group_counts.entry(key).or_default() += 1;
+                }
+            }
+            let mut last_group: Option<&str> = None;
             let mut items = v_flex().w_full().p_2().gap_0p5();
-            for (ix, row) in computed.rows.iter().enumerate() {
+            for ix in order {
+                let row = &computed.rows[ix];
+                if computed.grouped {
+                    let key = row
+                        .cells
+                        .get(gix)
+                        .map(|c| c.text.trim())
+                        .unwrap_or_default();
+                    if last_group != Some(key) {
+                        last_group = Some(key);
+                        let label = if key.is_empty() {
+                            format!(
+                                "No {}",
+                                computed.headers.get(gix).cloned().unwrap_or_default()
+                            )
+                        } else {
+                            key.to_string()
+                        };
+                        items = items.child(
+                            div()
+                                .id(("base-list-group", ix))
+                                .px_2()
+                                .py_1()
+                                .mt_1()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(theme.muted_foreground)
+                                .child(format!(
+                                    "{} · {}",
+                                    label,
+                                    group_counts.get(key).copied().unwrap_or(0)
+                                )),
+                        );
+                    }
+                }
                 let path = row.path.clone();
                 let workspace = self.workspace.clone();
                 let mut line = h_flex()
