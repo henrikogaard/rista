@@ -176,6 +176,7 @@ enum PaletteCmd {
     RevealFile,
     CloseOtherTabs,
     CloseTabsRight,
+    CloseAllTabs,
     TogglePin,
     ToggleReadable,
     ExportHtml,
@@ -486,6 +487,11 @@ impl PaletteCmd {
                 assets::IconName::X,
                 "Close tabs to the right",
                 &["tab", "after"],
+            ),
+            CloseAllTabs => (
+                assets::IconName::X,
+                "Close all tabs",
+                &["tab", "everything", "clear"],
             ),
             TogglePin => (
                 assets::IconName::Pin,
@@ -1005,6 +1011,28 @@ impl Workspace {
         for t in (ix + 1..self.docs.len()).rev() {
             self.close_tab_at(t, window, cx);
         }
+    }
+
+    /// Close every unpinned tab — palette "Close all tabs" (Obsidian:
+    /// pinned tabs survive).
+    fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self
+            .docs
+            .iter()
+            .filter(|d| !self.is_pinned(&d.entity.read(cx).path))
+            .count();
+        if n == 0 {
+            if !self.docs.is_empty() {
+                self.note_status("All tabs pinned", cx);
+            }
+            return;
+        }
+        for ix in (0..self.docs.len()).rev() {
+            if !self.is_pinned(&self.docs[ix].entity.read(cx).path) {
+                self.close_tab_at(ix, window, cx);
+            }
+        }
+        self.note_status(format!("Closed {n} tabs"), cx);
     }
 
     /// Scroll the file tree to `path`, expanding ancestors.
@@ -1906,6 +1934,7 @@ impl Workspace {
             PaletteCmd::RevealFile,
             PaletteCmd::CloseOtherTabs,
             PaletteCmd::CloseTabsRight,
+            PaletteCmd::CloseAllTabs,
             PaletteCmd::TogglePin,
             PaletteCmd::ToggleReadable,
             PaletteCmd::ExportHtml,
@@ -2274,6 +2303,7 @@ impl Workspace {
                     self.close_tabs_right_of(active, window, cx);
                 }
             }
+            PaletteCmd::CloseAllTabs => self.close_all_tabs(window, cx),
             PaletteCmd::RevealFile => self.reveal_active_file(cx),
             PaletteCmd::TogglePin => self.toggle_pin(cx),
             PaletteCmd::ToggleReadable => {
