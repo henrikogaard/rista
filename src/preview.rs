@@ -25,14 +25,36 @@ use gpui_kit::*;
 use markdown::mdast;
 use std::path::{Path, PathBuf};
 
+/// Live handles an inline ```` ```base ```` embed needs: the vault it
+/// queries, the workspace its rows open notes into, and the per-document
+/// map of spec-hash → view entity (views survive preview re-renders, so
+/// scroll/fold state and the compute cache aren't reset per frame).
+#[derive(Clone)]
+pub struct BaseEmbedCtx {
+    pub vault: Entity<crate::vault::Vault>,
+    pub workspace: WeakEntity<crate::app::Workspace>,
+    pub views: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::bases::BaseView>>>,
+    >,
+}
+
+/// The per-document embed map shared with [`BaseEmbedCtx::views`].
+pub type EmbedViews = std::sync::Arc<
+    std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::bases::BaseView>>>,
+>;
+
 /// Markdown extensions Rísta renders with.
-pub fn extensions(folds: &CalloutFolds) -> MarkdownExtensions {
-    MarkdownExtensions::default()
+pub fn extensions(folds: &CalloutFolds, base_ctx: Option<&BaseEmbedCtx>) -> MarkdownExtensions {
+    let ext = MarkdownExtensions::default()
         .frontmatter()
         .plugin(FrontmatterPlugin::new())
         .plugin(LocalImagePlugin)
-        .plugin(CalloutPlugin::new(folds.clone()))
-        .plugin(LinkCardPlugin)
+        .plugin(CalloutPlugin::new(folds.clone(), base_ctx.cloned()))
+        .plugin(LinkCardPlugin);
+    match base_ctx {
+        Some(ctx) => ext.plugin(BaseEmbedPlugin { ctx: ctx.clone() }),
+        None => ext,
+    }
 }
 
 /// Rewrite Obsidian syntax into CommonMark for the preview pipeline.
@@ -491,11 +513,12 @@ struct Callout {
 /// through to the default renderer.
 pub struct CalloutPlugin {
     folds: CalloutFolds,
+    base_ctx: Option<BaseEmbedCtx>,
 }
 
 impl CalloutPlugin {
-    pub fn new(folds: CalloutFolds) -> Self {
-        Self { folds }
+    pub fn new(folds: CalloutFolds, base_ctx: Option<BaseEmbedCtx>) -> Self {
+        Self { folds, base_ctx }
     }
 }
 
@@ -598,7 +621,7 @@ impl MarkdownPlugin for CalloutPlugin {
                                 "callout-body",
                                 callout.body.clone(),
                             )
-                            .markdown_extensions(extensions(&self.folds)),
+                            .markdown_extensions(extensions(&self.folds, self.base_ctx.as_ref())),
                         ),
                 )
             })
@@ -1023,4 +1046,79 @@ fn decode_entities(s: &str) -> String {
         .replace("&amp;", "&")
         .trim()
         .to_string()
+}
+
+// ------------------------------------------------------------------
+// Inline ```` ```base ```` embeds — a vault database inside a note.
+// ------------------------------------------------------------------
+
+struct BaseEmbed {
+    spec: String,
+}
+
+struct BaseEmbedPlugin {
+    ctx: BaseEmbedCtx,
+}
+
+impl MarkdownPlugin for BaseEmbedPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "base-embed"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Code(code) = node else {
+            return None;
+        };
+        if code.lang.as_deref() != Some("base") {
+            return None;
+        }
+        Some(MarkdownNode::new(
+            "base-embed",
+            BaseEmbed {
+                spec: code.value.clone(),
+            },
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let embed = node.data::<BaseEmbed>().expect("base-embed node data");
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            embed.spec.hash(&mut hasher);
+            hasher.finish()
+        };
+        let view = {
+            let mut views = self.ctx.views.lock().expect("embed views");
+            match views.get(&key) {
+                Some(view) => view.clone(),
+                None => {
+                    let view = cx.new(|cx| {
+                        crate::bases::BaseView::for_inline(
+                            embed.spec.clone(),
+                            self.ctx.vault.clone(),
+                            self.ctx.workspace.clone(),
+                            window,
+                            cx,
+                        )
+                    });
+                    views.insert(key, view.clone());
+                    view
+                }
+            }
+        };
+        div()
+            .w_full()
+            .h(px(320.))
+            .my_2()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius)
+            .overflow_hidden()
+            .child(view)
+    }
 }

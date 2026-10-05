@@ -1565,13 +1565,19 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let (state, banner, folds) = {
+        let (state, banner, folds, embeds) = {
             let doc = doc.read(cx);
             (
                 doc.preview.clone(),
                 doc.banner.clone(),
                 doc.callout_folds.clone(),
+                doc.base_embeds.clone(),
             )
+        };
+        let base_ctx = preview::BaseEmbedCtx {
+            vault: self.vault.clone(),
+            workspace: view.downgrade(),
+            views: embeds,
         };
         v_flex()
             .size_full()
@@ -1579,7 +1585,7 @@ impl Workspace {
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
             .child(
                 TextView::new(&state)
-                    .markdown_extensions(preview::extensions(&folds))
+                    .markdown_extensions(preview::extensions(&folds, Some(&base_ctx)))
                     .selectable(true)
                     .scrollable(true)
                     .on_link_click({

@@ -676,6 +676,8 @@ struct SortKey {
 
 struct ViewSpec {
     name: String,
+    /// `table` (default) or `cards`/`gallery`.
+    kind: String,
     columns: Vec<String>,
     sort: Vec<SortKey>,
     limit: Option<usize>,
@@ -751,6 +753,10 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 .and_then(|n| n.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("View {}", spec.views.len() + 1));
+            let kind = getv("type")
+                .and_then(|t| t.as_str())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| "table".into());
             let columns = getv("order")
                 .and_then(|o| o.as_sequence())
                 .map(|items| {
@@ -810,6 +816,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             let limit = getv("limit").and_then(|l| l.as_u64()).map(|n| n as usize);
             spec.views.push(ViewSpec {
                 name,
+                kind,
                 columns,
                 sort,
                 limit,
@@ -822,6 +829,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
     if spec.views.is_empty() {
         spec.views.push(ViewSpec {
             name: "Table".into(),
+            kind: "table".into(),
             columns: Vec::new(),
             sort: Vec::new(),
             limit: None,
@@ -835,11 +843,74 @@ fn parse_spec(yaml: &str) -> BaseSpec {
 // Evaluation pipeline — shared between views and tests.
 // ------------------------------------------------------------------
 
+struct Row {
+    path: PathBuf,
+    /// Display strings aligned with `Computed::headers`.
+    cells: Vec<String>,
+    /// `cover:`/`banner:`/`image:` property resolved to a file path or URL.
+    cover: Option<String>,
+}
+
 struct Computed {
     headers: Vec<String>,
-    rows: Vec<(PathBuf, Vec<String>)>,
+    rows: Vec<Row>,
     view_names: Vec<String>,
+    /// `table` or `cards` — picked per selected view.
+    kind: String,
     error: Option<String>,
+}
+
+/// First image-ish property a note declares — `cover`, `banner`, `image`.
+/// `![[name]]`/`[[name]]`/`![](url)` wrappers are unwrapped; vault basenames
+/// resolve through the image index, relative paths against the vault root.
+fn cover_of(
+    row: &RowData,
+    root: &Path,
+    images: &std::collections::HashMap<String, PathBuf>,
+) -> Option<String> {
+    let raw = ["cover", "banner", "image", "cover_image"]
+        .iter()
+        .find_map(|key| match row.props.get(*key) {
+            Some(Lit::Str(s)) => Some(s.clone()),
+            Some(Lit::List(items)) => items.iter().find_map(|i| match i {
+                Lit::Str(s) => Some(s.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })?;
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix("![[")
+        .or_else(|| raw.strip_prefix("[["))
+        .and_then(|s| s.strip_suffix("]]"))
+        .map(|s| s.split('|').next().unwrap_or(s).trim())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            raw.strip_prefix("![](")
+                .or_else(|| raw.strip_prefix("[]("))
+                .and_then(|s| s.strip_suffix(')'))
+                .map(str::to_string)
+                .unwrap_or_else(|| raw.to_string())
+        });
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return Some(raw.to_string());
+    }
+    let name = std::path::Path::new(raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(raw)
+        .to_lowercase();
+    if let Some(path) = images.get(&name) {
+        return Some(format!("file://{}", path.display()));
+    }
+    let candidate = root.join(raw);
+    candidate
+        .exists()
+        .then(|| format!("file://{}", candidate.display()))
 }
 
 fn eval_filter_node(node: &Value, env: &mut Env) -> Result<bool, String> {
@@ -898,7 +969,13 @@ fn is_date_column(name: &str) -> bool {
         || name.strip_prefix("note.").is_some_and(|p| p == "date")
 }
 
-fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> Computed {
+fn compute(
+    spec: &BaseSpec,
+    view: &ViewSpec,
+    notes: &[PathBuf],
+    root: &Path,
+    images: &std::collections::HashMap<String, PathBuf>,
+) -> Computed {
     // Default columns: file.name plus every property seen in the vault.
     let mut columns = view.columns.clone();
     let mut rows_data = Vec::new();
@@ -948,7 +1025,7 @@ fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> 
     }
 
     // Evaluate every column once per row so sorts compare values.
-    let mut rows: Vec<(PathBuf, Vec<Lit>)> = Vec::new();
+    let mut rows: Vec<(PathBuf, Vec<Lit>, Option<String>)> = Vec::new();
     for row in &rows_data {
         let mut env = Env {
             row,
@@ -969,7 +1046,8 @@ fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> 
                 },
             )
             .collect();
-        rows.push((row.path.clone(), cells));
+        let cover = cover_of(row, root, images);
+        rows.push((row.path.clone(), cells, cover));
     }
 
     if !view.sort.is_empty() {
@@ -1001,9 +1079,9 @@ fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> 
 
     // Display pass — timestamps render as local datetimes, everything
     // else via Lit::display.
-    let rows: Vec<(PathBuf, Vec<String>)> = rows
+    let rows: Vec<Row> = rows
         .into_iter()
-        .map(|(path, cells)| {
+        .map(|(path, cells, cover)| {
             let cells = cells
                 .iter()
                 .enumerate()
@@ -1017,7 +1095,7 @@ fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> 
                     _ => cell.display(),
                 })
                 .collect();
-            (path, cells)
+            Row { path, cells, cover }
         })
         .collect();
 
@@ -1049,6 +1127,7 @@ fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> 
         headers,
         rows,
         view_names: spec.views.iter().map(|v| v.name.clone()).collect(),
+        kind: view.kind.clone(),
         error,
     }
 }
@@ -1057,8 +1136,15 @@ fn compute(spec: &BaseSpec, view: &ViewSpec, notes: &[PathBuf], root: &Path) -> 
 // View — renders inside the workspace for `.base` documents.
 // ------------------------------------------------------------------
 
+/// Where the base spec comes from: a `.base` document, or an inline
+/// ```` ```base ```` code fence embedded in a note.
+enum SpecSrc {
+    Doc(Entity<Document>),
+    Inline(String),
+}
+
 pub struct BaseView {
-    doc: Entity<Document>,
+    spec_src: SpecSrc,
     workspace: WeakEntity<Workspace>,
     vault: Entity<Vault>,
     view_ix: usize,
@@ -1086,12 +1172,36 @@ impl BaseView {
                 cx.notify();
             }
         });
+        let mut view = Self::init(SpecSrc::Doc(doc), vault, workspace, window, cx);
+        view._subscriptions.push(doc_sub);
+        view
+    }
+
+    /// Inline embed — spec text fixed at creation; the parent Document
+    /// swaps in a fresh view when the fence's contents change.
+    pub fn for_inline(
+        spec: String,
+        vault: Entity<Vault>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::init(SpecSrc::Inline(spec), vault, workspace, window, cx)
+    }
+
+    fn init(
+        spec_src: SpecSrc,
+        vault: Entity<Vault>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let vault_sub = cx.subscribe_in(&vault, window, |this, _vault, _event, _window, cx| {
             this.notes_epoch += 1;
             cx.notify();
         });
         Self {
-            doc,
+            spec_src,
             workspace,
             vault,
             view_ix: 0,
@@ -1099,7 +1209,7 @@ impl BaseView {
             doc_epoch: 0,
             cache_key: None,
             cached: None,
-            _subscriptions: vec![doc_sub, vault_sub],
+            _subscriptions: vec![vault_sub],
         }
     }
 
@@ -1110,17 +1220,32 @@ impl BaseView {
                 return cached.clone();
             }
         }
-        let yaml = self.doc.read(cx).editor.read(cx).value().to_string();
+        let (yaml, doc_path) = match &self.spec_src {
+            SpecSrc::Doc(doc) => {
+                let doc = doc.read(cx);
+                (
+                    doc.editor.read(cx).value().to_string(),
+                    Some(doc.path.clone()),
+                )
+            }
+            SpecSrc::Inline(spec) => (spec.clone(), None),
+        };
         let spec = parse_spec(&yaml);
         let view = &spec.views[self.view_ix.min(spec.views.len() - 1)];
-        let (notes, root) = {
+        let (notes, root, images) = {
             let vault = self.vault.read(cx);
-            (vault.notes.clone(), vault.root.clone().unwrap_or_default())
+            (
+                vault.notes.clone(),
+                vault.root.clone().unwrap_or_default(),
+                vault.images.clone(),
+            )
         };
         // The base file itself never belongs in its own result set.
-        let doc_path = self.doc.read(cx).path.clone();
-        let notes: Vec<_> = notes.into_iter().filter(|n| *n != doc_path).collect();
-        let computed = std::rc::Rc::new(compute(&spec, view, &notes, &root));
+        let notes: Vec<_> = notes
+            .into_iter()
+            .filter(|n| Some(n) != doc_path.as_ref())
+            .collect();
+        let computed = std::rc::Rc::new(compute(&spec, view, &notes, &root, &images.borrow()));
         self.cache_key = Some(key);
         self.cached = Some(computed.clone());
         computed
@@ -1164,6 +1289,7 @@ impl Render for BaseView {
             }
         }
 
+        let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
         let header = h_flex()
             .w_full()
             .px_3()
@@ -1182,36 +1308,97 @@ impl Render for BaseView {
             }));
 
         let mut rows = v_flex().w_full();
-        for (ix, (path, cells)) in computed.rows.iter().enumerate() {
-            let path = path.clone();
-            let workspace = self.workspace.clone();
-            rows = rows.child(
-                div()
-                    .id(("base-row", ix))
-                    .w_full()
-                    .px_3()
-                    .py_1p5()
-                    .border_b_1()
-                    .border_color(theme.border.opacity(0.5))
+        if cards {
+            let mut grid = div().flex().flex_wrap().gap_3().p_3();
+            for (ix, row) in computed.rows.iter().enumerate() {
+                let path = row.path.clone();
+                let workspace = self.workspace.clone();
+                let mut card = v_flex()
+                    .id(("base-card", ix))
+                    .w(px(210.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(theme.radius)
+                    .overflow_hidden()
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                    .child(h_flex().w_full().children(cells.iter().enumerate().map(
-                        |(cix, cell)| {
-                            div()
-                                .when(cix == 0, |d| d.flex_1())
-                                .when(cix > 0, |d| d.w(px(140.)).flex_none())
-                                .text_sm()
-                                .text_color(theme.foreground)
-                                .truncate()
-                                .child(cell.clone())
-                        },
-                    )))
+                    .hover(|s| s.border_color(theme.accent))
                     .on_click(move |_, window, cx| {
                         let path = path.clone();
                         let _ =
                             workspace.update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
-                    }),
-            );
+                    });
+                if let Some(cover) = &row.cover {
+                    let source: gpui_kit::ImageSource = cover
+                        .strip_prefix("file://")
+                        .map(|p| std::path::PathBuf::from(p).into())
+                        .unwrap_or_else(|| cover.clone().into());
+                    card = card.child(
+                        img(source)
+                            .w_full()
+                            .h(px(110.))
+                            .object_fit(ObjectFit::Cover),
+                    );
+                }
+                let mut body = v_flex().p_2().gap_0p5();
+                for (cix, cell) in row.cells.iter().enumerate() {
+                    if cix == 0 {
+                        body = body.child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(theme.foreground)
+                                .truncate()
+                                .child(cell.clone()),
+                        );
+                    } else if cix <= 3 && !cell.trim().is_empty() {
+                        body = body.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .truncate()
+                                .child(format!(
+                                    "{}: {}",
+                                    computed.headers.get(cix).cloned().unwrap_or_default(),
+                                    cell
+                                )),
+                        );
+                    }
+                }
+                grid = grid.child(card.child(body));
+            }
+            rows = rows.child(grid);
+        } else {
+            for (ix, row) in computed.rows.iter().enumerate() {
+                let path = row.path.clone();
+                let workspace = self.workspace.clone();
+                rows = rows.child(
+                    div()
+                        .id(("base-row", ix))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .border_b_1()
+                        .border_color(theme.border.opacity(0.5))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                        .child(h_flex().w_full().children(row.cells.iter().enumerate().map(
+                            |(cix, cell)| {
+                                div()
+                                    .when(cix == 0, |d| d.flex_1())
+                                    .when(cix > 0, |d| d.w(px(140.)).flex_none())
+                                    .text_sm()
+                                    .text_color(theme.foreground)
+                                    .truncate()
+                                    .child(cell.clone())
+                            },
+                        )))
+                        .on_click(move |_, window, cx| {
+                            let path = path.clone();
+                            let _ = workspace
+                                .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                        }),
+                );
+            }
         }
         if computed.rows.is_empty() && computed.error.is_none() {
             rows = rows.child(
@@ -1227,7 +1414,7 @@ impl Render for BaseView {
         v_flex()
             .size_full()
             .child(tabs)
-            .child(header)
+            .when(!cards, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
                 div()
                     .w_full()

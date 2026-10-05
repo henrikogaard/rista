@@ -26,6 +26,8 @@ pub struct Document {
     pub editor: Entity<EditorState>,
     /// Collapsible-callout fold state, keyed by callout source offset.
     pub callout_folds: preview::CalloutFolds,
+    /// ```` ```base ```` embeds in this note's preview — spec-hash → live view.
+    pub base_embeds: preview::EmbedViews,
     pub preview: Entity<TextViewState>,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
@@ -80,6 +82,7 @@ impl Document {
             path,
             editor,
             callout_folds: preview::CalloutFolds::default(),
+            base_embeds: preview::EmbedViews::default(),
             preview,
             dirty: false,
             conflict: false,
