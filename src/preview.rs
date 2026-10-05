@@ -682,6 +682,33 @@ impl MarkdownPlugin for PropertiesPlugin {
                 }
                 rows = rows.child(row);
             }
+            if let Some(workspace) = edit_ctx.clone() {
+                rows = rows.child(
+                    div()
+                        .id("property-add")
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .border_t_1()
+                        .border_color(theme.border.opacity(0.5))
+                        .cursor_pointer()
+                        .hover(|row| row.bg(theme.accent.opacity(0.4)))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("+ Add property"),
+                        )
+                        .on_click(move |_, window, cx| {
+                            let Some(workspace) = workspace.upgrade() else {
+                                return;
+                            };
+                            workspace.update(cx, |workspace, cx| {
+                                workspace.show_add_property_dialog(window, cx);
+                            });
+                        }),
+                );
+            }
         }
         v_flex()
             .w_full()

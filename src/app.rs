@@ -43,6 +43,9 @@ pub struct Workspace {
     rename_input: Entity<InputState>,
     /// Input backing the base-cell edit dialog.
     cell_input: Entity<InputState>,
+    /// Property-name input for the strip's "Add property" dialog —
+    /// the value field reuses `cell_input`.
+    prop_name_input: Entity<InputState>,
     status_note: Option<SharedString>,
     /// Bumped on every status update so an old expiry timer can't
     /// clear a newer note.
@@ -276,6 +279,7 @@ impl Workspace {
         let palette_state = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let cell_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
+        let prop_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Property name"));
         let settings = Settings::load();
         let weak = cx.weak_entity();
         let settings_view = cx.new(|cx| SettingsView::new(weak, &settings, window, cx));
@@ -296,6 +300,7 @@ impl Workspace {
             settings_view,
             rename_input,
             cell_input,
+            prop_name_input,
             status_note: None,
             status_epoch: 0,
             recent: Vec::new(),
@@ -1409,6 +1414,81 @@ impl Workspace {
         let value = serde_yaml::from_str::<serde_yaml::Value>(text)
             .unwrap_or_else(|_| serde_yaml::Value::String(text.to_string()));
         self.set_note_property(path, &prop, value, window, cx);
+    }
+
+    /// The Properties strip's "+ Add property" footer — name + value
+    /// on the active document. Same YAML-typed commit as cell edits.
+    pub fn show_add_property_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_doc().is_none() {
+            return;
+        }
+        let name_input = self.prop_name_input.clone();
+        let value_input = self.cell_input.clone();
+        name_input.update(cx, |i, cx| i.set_value("", window, cx));
+        value_input.update(cx, |i, cx| i.set_value("", window, cx));
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Add property")
+                .w(px(400.))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w_full()
+                                .child(Input::new(&name_input).appearance(true)),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .child(Input::new(&value_input).appearance(true)),
+                        ),
+                )
+                .on_ok({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.commit_add_property(window, cx);
+                            this.refocus(window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+
+        let name_input = self.prop_name_input.clone();
+        window.defer(cx, move |window, cx| {
+            name_input.update(cx, |input, cx| input.focus(window, cx));
+        });
+    }
+
+    fn commit_add_property(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.prop_name_input.read(cx).value().trim().to_string();
+        if name.is_empty()
+            || name
+                .chars()
+                .any(|c| c == ':' || c == '\n' || c == '[' || c == ']')
+        {
+            self.note_status("Property needs a name", cx);
+            return;
+        }
+        let text = self.cell_input.read(cx).value().to_string();
+        let text = text.trim();
+        // Empty writes a blank `key:` value — `body_with` treats
+        // YAML-null as "remove", which would make "add" a no-op.
+        let value = if text.is_empty() {
+            serde_yaml::Value::String(String::new())
+        } else {
+            serde_yaml::from_str::<serde_yaml::Value>(text)
+                .unwrap_or_else(|_| serde_yaml::Value::String(text.to_string()))
+        };
+        let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
+            return;
+        };
+        self.set_note_property(path, &name, value, window, cx);
     }
 
     fn show_delete_confirm(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
