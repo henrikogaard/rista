@@ -19,7 +19,7 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -59,6 +59,10 @@ pub struct Workspace {
     recent: Vec<PathBuf>,
     /// Paths of tabs closed this session, latest last — ⌘⇧T pops it.
     closed_tabs: Vec<PathBuf>,
+    /// Tab index the right-click menu should act on — set by each tab's
+    /// Right mouse-down handler (the strip-level context menu reads it
+    /// when it builds its items on the next frame).
+    tab_menu_ix: Option<usize>,
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
@@ -518,6 +522,7 @@ impl Workspace {
             status_epoch: 0,
             recent: Vec::new(),
             closed_tabs: Vec::new(),
+            tab_menu_ix: None,
             focus_mode: settings.focus_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
@@ -931,11 +936,19 @@ impl Workspace {
     /// across close-others/close-right and can't be closed until
     /// unpinned (Obsidian parity). Persisted in `pinned_tabs`.
     fn toggle_pin(&mut self, cx: &mut Context<Self>) {
-        let Some(doc) = self.active_doc().cloned() else {
+        let Some(ix) = self.active else {
             self.note_status("No note open", cx);
             return;
         };
-        let path = doc.read(cx).path.display().to_string();
+        self.toggle_pin_at(ix, cx);
+    }
+
+    /// Pin/unpin the tab at `ix` (tab context menu + palette share this).
+    fn toggle_pin_at(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(ix) else {
+            return;
+        };
+        let path = doc.entity.read(cx).path.display().to_string();
         if let Some(ix) = self.settings.pinned_tabs.iter().position(|p| *p == path) {
             self.settings.pinned_tabs.remove(ix);
             self.note_status("Tab unpinned", cx);
@@ -947,9 +960,41 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Close every tab except `keep` — pinned tabs survive (they refuse
+    /// inside `close_tab_at`).
+    fn close_others_except(&mut self, keep: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter(|(i, d)| *i != keep && !self.is_pinned(&d.entity.read(cx).path))
+            .count();
+        for ix in (0..self.docs.len()).rev() {
+            if ix != keep {
+                self.close_tab_at(ix, window, cx);
+            }
+        }
+        self.note_status(format!("Closed {n} other tabs"), cx);
+    }
+
+    fn close_tabs_right_of(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        for t in (ix + 1..self.docs.len()).rev() {
+            self.close_tab_at(t, window, cx);
+        }
+    }
+
+    /// Scroll the file tree to `path`, expanding ancestors.
+    fn reveal_file(&self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let tree = self.vault.read(cx).tree.clone();
+        tree.update(cx, |tree, cx| {
+            let id: SharedString = path.to_string_lossy().to_string().into();
+            tree.reveal_item(&id, ScrollStrategy::Nearest, cx);
+        });
+    }
+
     fn is_pinned(&self, path: &std::path::Path) -> bool {
         let s = path.display().to_string();
-        self.settings.pinned_tabs.iter().any(|p| *p == s)
+        self.settings.pinned_tabs.contains(&s)
     }
 
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1042,11 +1087,7 @@ impl Workspace {
         let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
             return;
         };
-        let tree = self.vault.read(cx).tree.clone();
-        tree.update(cx, |tree, cx| {
-            let id: SharedString = path.to_string_lossy().to_string().into();
-            tree.reveal_item(&id, ScrollStrategy::Nearest, cx);
-        });
+        self.reveal_file(&path, cx);
     }
 
     /// Insert `text` at the active editor's caret (palette insert cmds).
@@ -2156,27 +2197,14 @@ impl Workspace {
             }
             PaletteCmd::CloseOtherTabs => {
                 if let Some(active) = self.active {
-                    let n = self
-                        .docs
-                        .iter()
-                        .filter(|d| !self.is_pinned(&d.entity.read(cx).path))
-                        .count()
-                        .saturating_sub(1);
-                    for ix in (0..self.docs.len()).rev() {
-                        if ix != active {
-                            self.close_tab_at(ix, window, cx);
-                        }
-                    }
-                    self.note_status(format!("Closed {n} other tabs"), cx);
+                    self.close_others_except(active, window, cx);
                 } else {
                     self.note_status("No active tab", cx);
                 }
             }
             PaletteCmd::CloseTabsRight => {
                 if let Some(active) = self.active {
-                    for ix in (active + 1..self.docs.len()).rev() {
-                        self.close_tab_at(ix, window, cx);
-                    }
+                    self.close_tabs_right_of(active, window, cx);
                 }
             }
             PaletteCmd::RevealFile => self.reveal_active_file(cx),
@@ -4940,7 +4968,7 @@ impl Workspace {
                 let pinned = {
                     let doc = doc.entity.read(cx);
                     let s = doc.path.display().to_string();
-                    self.settings.pinned_tabs.iter().any(|p| *p == s)
+                    self.settings.pinned_tabs.contains(&s)
                 };
                 let tab = if pinned {
                     // Pinned tabs swap the × for a pin glyph — no way to
@@ -4986,6 +5014,16 @@ impl Workspace {
                     move |_ev, window, cx| {
                         view.update(cx, |this, cx| {
                             this.close_tab_at(ix, window, cx);
+                        });
+                    }
+                })
+                // Right-click records which tab the strip-level context
+                // menu should act on (the menu builder runs next frame).
+                .on_mouse_down(gpui::MouseButton::Right, {
+                    let view = view.clone();
+                    move |_ev, _window, cx| {
+                        view.update(cx, |this, _cx| {
+                            this.tab_menu_ix = Some(ix);
                         });
                     }
                 })
@@ -5037,23 +5075,96 @@ impl Workspace {
                     ),
             )
             .child(
-                TabBar::new("doc-tabs")
-                    .underline()
-                    .selected_index(self.active.unwrap_or(0))
-                    .children(tabs)
-                    .on_click(cx.listener(|this, &ix, _window, cx| {
-                        // The × suffix button closes a tab but its click
-                        // still lands here — skip reselecting an index
-                        // that no longer exists, which would blank the
-                        // editor until another tab is clicked.
-                        if ix < this.docs.len() {
-                            this.active = Some(ix);
-                            this.persist_tabs(cx);
-                            this.reveal_active_file(cx);
-                            cx.notify();
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        TabBar::new("doc-tabs")
+                            .underline()
+                            .selected_index(self.active.unwrap_or(0))
+                            .children(tabs)
+                            .on_click(cx.listener(|this, &ix, _window, cx| {
+                                // The × suffix button closes a tab but its
+                                // click still lands here — skip reselecting
+                                // an index that no longer exists, which
+                                // would blank the editor until another tab
+                                // is clicked.
+                                if ix < this.docs.len() {
+                                    this.active = Some(ix);
+                                    this.persist_tabs(cx);
+                                    this.reveal_active_file(cx);
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    // Right-click anywhere on the strip opens the tab menu
+                    // (Obsidian parity). Each tab's Right mouse-down sets
+                    // `tab_menu_ix` first — the menu builder runs deferred.
+                    .context_menu({
+                        let view = view.clone();
+                        move |menu, _window, cx| {
+                            let ws = view.read(cx);
+                            let Some((ix, pinned, path)) =
+                                ws.tab_menu_ix.or(ws.active).and_then(|ix| {
+                                    ws.docs.get(ix).map(|d| {
+                                        let p = d.entity.read(cx).path.clone();
+                                        (ix, ws.is_pinned(&p), p)
+                                    })
+                                })
+                            else {
+                                return menu;
+                            };
+                            menu.item(
+                                PopupMenuItem::new(if pinned { "Unpin tab" } else { "Pin tab" })
+                                    .icon(assets::IconName::Pin)
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, _w, cx| {
+                                            view.update(cx, |this, cx| this.toggle_pin_at(ix, cx));
+                                        }
+                                    }),
+                            )
+                            .item(
+                                PopupMenuItem::new("Reveal in tree")
+                                    .icon(assets::IconName::Crosshair)
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, _w, cx| {
+                                            view.update(cx, |this, cx| this.reveal_file(&path, cx));
+                                        }
+                                    }),
+                            )
+                            .separator()
+                            .item(
+                                PopupMenuItem::new("Close tab")
+                                    .icon(assets::IconName::X)
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, w, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.close_tab_at(ix, w, cx)
+                                            });
+                                        }
+                                    }),
+                            )
+                            .item(PopupMenuItem::new("Close other tabs").on_click({
+                                let view = view.clone();
+                                move |_, w, cx| {
+                                    view.update(cx, |this, cx| this.close_others_except(ix, w, cx));
+                                }
+                            }))
+                            .item(
+                                PopupMenuItem::new("Close tabs to the right").on_click({
+                                    let view = view.clone();
+                                    move |_, w, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.close_tabs_right_of(ix, w, cx)
+                                        });
+                                    }
+                                }),
+                            )
                         }
-                    }))
-                    .flex_1(),
+                    }),
             )
             .child(div().pr_2().child(self.render_view_mode_tabs(cx)))
     }
