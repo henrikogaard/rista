@@ -893,7 +893,6 @@ impl Workspace {
             .unwrap_or_else(|| "Rísta".to_string());
 
         let collapsed = self.settings.sidebar_collapsed;
-        let mode = self.settings.view_mode;
         let dark = matches!(self.settings.appearance, Appearance::Dark);
 
         TitleBar::new()
@@ -929,30 +928,6 @@ impl Workspace {
                 h_flex()
                     .gap_1()
                     .items_center()
-                    .child(
-                        TabBar::new("view-mode")
-                            .segmented()
-                            .selected_index(match mode {
-                                ViewMode::Source => 0,
-                                ViewMode::Split => 1,
-                                ViewMode::Preview => 2,
-                            })
-                            .children([
-                                Tab::new().icon(assets::IconName::SquarePen).label("Source"),
-                                Tab::new()
-                                    .icon(assets::IconName::SquareSplitHorizontal)
-                                    .label("Split"),
-                                Tab::new().icon(assets::IconName::Eye).label("Preview"),
-                            ])
-                            .on_click(cx.listener(|this, &ix, window, cx| {
-                                match ix {
-                                    0 => this.set_view_mode(ViewMode::Source, window, cx),
-                                    1 => this.set_view_mode(ViewMode::Split, window, cx),
-                                    _ => this.set_view_mode(ViewMode::Preview, window, cx),
-                                }
-                                cx.notify();
-                            })),
-                    )
                     .child(
                         Button::new("palette")
                             .ghost()
@@ -1162,12 +1137,48 @@ impl Workspace {
             })
             .collect();
 
-        TabBar::new("doc-tabs")
-            .underline()
-            .selected_index(self.active.unwrap_or(0))
-            .children(tabs)
-            .on_click(cx.listener(|this, &ix, _window, cx| {
-                this.active = Some(ix);
+        h_flex()
+            .w_full()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                TabBar::new("doc-tabs")
+                    .underline()
+                    .selected_index(self.active.unwrap_or(0))
+                    .children(tabs)
+                    .on_click(cx.listener(|this, &ix, _window, cx| {
+                        this.active = Some(ix);
+                        cx.notify();
+                    }))
+                    .flex_1(),
+            )
+            .child(div().pr_2().child(self.render_view_mode_tabs(cx)))
+    }
+
+    /// The Source/Split/Preview switcher, kept out of the window titlebar so
+    /// the top bar stays quiet. Lives at the right end of the tab strip.
+    fn render_view_mode_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mode = self.settings.view_mode;
+        TabBar::new("view-mode")
+            .segmented()
+            .small()
+            .selected_index(match mode {
+                ViewMode::Source => 0,
+                ViewMode::Split => 1,
+                ViewMode::Preview => 2,
+            })
+            .children([
+                Tab::new().label("Source"),
+                Tab::new().label("Split"),
+                Tab::new().label("Preview"),
+            ])
+            .on_click(cx.listener(|this, &ix, window, cx| {
+                match ix {
+                    0 => this.set_view_mode(ViewMode::Source, window, cx),
+                    1 => this.set_view_mode(ViewMode::Split, window, cx),
+                    _ => this.set_view_mode(ViewMode::Preview, window, cx),
+                }
                 cx.notify();
             }))
     }
