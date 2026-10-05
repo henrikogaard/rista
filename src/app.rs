@@ -45,6 +45,9 @@ pub struct Workspace {
     /// Bumped on every status update so an old expiry timer can't
     /// clear a newer note.
     status_epoch: u64,
+    /// Most-recently-opened note paths, front = latest. The palette's
+    /// "Recent" group reads this.
+    recent: Vec<PathBuf>,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -233,6 +236,7 @@ impl Workspace {
             rename_input,
             status_note: None,
             status_epoch: 0,
+            recent: Vec::new(),
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -335,12 +339,18 @@ impl Workspace {
             .position(|d| d.entity.read(cx).path == path)
         {
             self.active = Some(ix);
+            self.recent.retain(|p| *p != path);
+            self.recent.insert(0, path);
+            self.recent.truncate(12);
             cx.notify();
             return;
         }
         if !path.is_file() {
             return;
         }
+        self.recent.retain(|p| *p != path);
+        self.recent.insert(0, path.clone());
+        self.recent.truncate(12);
         let resolver: ImageResolver = self.vault.read(cx).image_resolver();
         let vault_root = self.vault.read(cx).root.clone();
         let settings = self.settings.clone();
@@ -723,15 +733,43 @@ impl Workspace {
             .cloned()
             .map(PaletteEntry::File)
             .collect();
+        // Recently opened notes come first — Obsidian quick-switcher
+        // style — but only ones still on disk.
+        let recent: Vec<PaletteEntry> = self
+            .recent
+            .iter()
+            .filter(|p| p.is_file())
+            .cloned()
+            .map(PaletteEntry::File)
+            .collect();
 
-        self.palette_sections = vec![
-            commands
-                .iter()
-                .cloned()
-                .map(PaletteEntry::Command)
-                .collect(),
-            notes,
-        ];
+        self.palette_sections = vec![commands
+            .iter()
+            .cloned()
+            .map(PaletteEntry::Command)
+            .collect()];
+        if !recent.is_empty() {
+            self.palette_sections.push(recent.clone());
+        }
+        self.palette_sections.push(notes);
+
+        let file_item = |path: &std::path::Path| {
+            CommandItem::new()
+                .icon(assets::IconName::File)
+                .label(
+                    path.file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                )
+                .keywords([path.to_string_lossy().to_string()])
+        };
+        let recent_items: Vec<CommandItem> = recent
+            .iter()
+            .filter_map(|entry| match entry {
+                PaletteEntry::File(path) => Some(file_item(path)),
+                _ => None,
+            })
+            .collect();
 
         let command_items: Vec<CommandItem> = commands
             .iter()
@@ -743,17 +781,11 @@ impl Workspace {
                     .keywords(keywords.iter().copied())
             })
             .collect();
-        let note_items: Vec<CommandItem> = self.palette_sections[1]
+        let notes_section = self.palette_sections.len() - 1;
+        let note_items: Vec<CommandItem> = self.palette_sections[notes_section]
             .iter()
             .map(|entry| match entry {
-                PaletteEntry::File(path) => CommandItem::new()
-                    .icon(assets::IconName::File)
-                    .label(
-                        path.file_name()
-                            .map(|f| f.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                    )
-                    .keywords([path.to_string_lossy().to_string()]),
+                PaletteEntry::File(path) => file_item(path),
                 PaletteEntry::Command(_) => CommandItem::new().label(""),
             })
             .collect();
@@ -762,22 +794,31 @@ impl Workspace {
         let view = cx.entity();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let mut palette = Command::new(&state)
+                .placeholder("Notes and commands…")
+                .searchable(true)
+                .filterable(true)
+                .group(
+                    CommandGroup::new()
+                        .label("Commands")
+                        .items(command_items.clone()),
+                );
+            if !recent_items.is_empty() {
+                palette = palette.group(
+                    CommandGroup::new()
+                        .label("Recent")
+                        .items(recent_items.clone()),
+                );
+            }
+            palette = palette
+                .group(CommandGroup::new().label("Notes").items(note_items.clone()))
+                .max_h(px(440.));
             dialog
                 .w(px(560.))
                 .overlay_closable(true)
                 .close_button(false)
                 .child(
-                    Command::new(&state)
-                        .placeholder("Notes and commands…")
-                        .searchable(true)
-                        .filterable(true)
-                        .group(
-                            CommandGroup::new()
-                                .label("Commands")
-                                .items(command_items.clone()),
-                        )
-                        .group(CommandGroup::new().label("Notes").items(note_items.clone()))
-                        .max_h(px(440.))
+                    palette
                         .on_confirm({
                             let view = view.clone();
                             move |index, window, cx| {
