@@ -3534,7 +3534,7 @@ impl Workspace {
                                         let view = render_view.clone();
                                         move |ev: &gpui::MouseMoveEvent, _window, cx| {
                                             if is_file {
-                                                let _ = view.update(cx, |ws, cx| {
+                                                view.update(cx, |ws, cx| {
                                                     ws.peek_at(path.clone(), ev.position, cx)
                                                 });
                                             }
@@ -3545,8 +3545,7 @@ impl Workspace {
                                         let view = render_view.clone();
                                         move |hovered: &bool, _window, cx| {
                                             if is_file && !*hovered {
-                                                let _ = view
-                                                    .update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                                view.update(cx, |ws, cx| ws.hide_peek(&path, cx));
                                             }
                                         }
                                     });
