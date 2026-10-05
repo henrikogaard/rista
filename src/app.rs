@@ -516,6 +516,7 @@ impl Workspace {
                 self.recent.insert(0, path);
                 self.recent.truncate(12);
                 self.persist_tabs(cx);
+                self.reveal_active_file(cx);
                 cx.notify();
                 return;
             }
@@ -562,6 +563,7 @@ impl Workspace {
         });
         self.active = Some(self.docs.len() - 1);
         self.persist_tabs(cx);
+        self.reveal_active_file(cx);
         cx.notify();
 
         // Focus the editor once the frame settles.
@@ -706,7 +708,21 @@ impl Workspace {
             self.active = None;
         }
         self.persist_tabs(cx);
+        self.reveal_active_file(cx);
         cx.notify();
+    }
+
+    /// Expand ancestors and scroll the file tree to the active document —
+    /// Obsidian's "reveal active file in navigation", automatic.
+    fn reveal_active_file(&self, cx: &mut Context<Self>) {
+        let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
+            return;
+        };
+        let tree = self.vault.read(cx).tree.clone();
+        tree.update(cx, |tree, cx| {
+            let id: SharedString = path.to_string_lossy().to_string().into();
+            tree.reveal_item(&id, ScrollStrategy::Nearest, cx);
+        });
     }
 
     fn save_all(&mut self, cx: &mut Context<Self>) {
@@ -1090,6 +1106,7 @@ impl Workspace {
             None => 0,
         });
         self.persist_tabs(cx);
+        self.reveal_active_file(cx);
         cx.notify();
     }
 
@@ -1102,6 +1119,7 @@ impl Workspace {
             Some(i) => i - 1,
         });
         self.persist_tabs(cx);
+        self.reveal_active_file(cx);
         cx.notify();
     }
 
@@ -4135,6 +4153,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, &ix, _window, cx| {
                         this.active = Some(ix);
                         this.persist_tabs(cx);
+                        this.reveal_active_file(cx);
                         cx.notify();
                     }))
                     .flex_1(),
