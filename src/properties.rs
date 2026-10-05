@@ -221,6 +221,84 @@ fn frontmatter_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// An open `- [ ]` checkbox somewhere in the vault — one sidebar row.
+#[derive(Debug, Clone)]
+pub struct VaultTask {
+    pub path: PathBuf,
+    /// 1-based source line — the click target.
+    pub line: usize,
+    /// Task text after the marker.
+    pub text: String,
+}
+
+/// All open `- [ ]` checkboxes across the vault, in file order —
+/// the sidebar Tasks index. Skips fenced blocks and `%%` comment
+/// regions like the tag scan; done markers (`[x]`, `[/]`, …) don't
+/// count.
+pub fn vault_tasks(notes: &[PathBuf]) -> Vec<VaultTask> {
+    let mut out = Vec::new();
+    for path in notes {
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut in_fence = false;
+        let mut fence_marker = "";
+        let mut in_comment = false;
+        for (ix, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                let marker = &trimmed[..3];
+                if !in_fence {
+                    in_fence = true;
+                    fence_marker = marker;
+                } else if marker == fence_marker {
+                    in_fence = false;
+                }
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            // Inside a `%%` region a `%%` closes it; nothing else counts.
+            if in_comment {
+                if trimmed.contains("%%") {
+                    in_comment = false;
+                }
+                continue;
+            }
+            if let Some(text) = task_line_text(trimmed) {
+                out.push(VaultTask {
+                    path: path.clone(),
+                    line: ix + 1,
+                    text,
+                });
+            }
+            // An odd number of `%%` on the line leaves a comment open.
+            if trimmed.matches("%%").count() % 2 == 1 {
+                in_comment = true;
+            }
+        }
+    }
+    out
+}
+
+/// The text after `- [ ]` / `* [ ]` / `+ [ ]`, or `None` when the line
+/// isn't an open task (`[ ]x` without a space isn't a marker either).
+fn task_line_text(trimmed: &str) -> Option<String> {
+    let rest = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))?;
+    let text = rest.strip_prefix("[ ]")?;
+    if !text.is_empty() && !text.starts_with(' ') {
+        return None;
+    }
+    Some(text.trim().to_string())
+}
+
 /// `aliases:` entries from frontmatter — sequence or comma-separated
 /// scalar, same shapes `vault_tags` accepts.
 pub fn frontmatter_aliases(text: &str) -> Vec<String> {

@@ -65,6 +65,7 @@ pub struct Workspace {
     starred_open: bool,
     /// Whether the sidebar's Tags group is expanded.
     tags_open: bool,
+    tasks_open: bool,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -304,6 +305,7 @@ impl Workspace {
             nav_suppress: false,
             starred_open: true,
             tags_open: true,
+            tasks_open: true,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -2284,6 +2286,108 @@ impl Workspace {
     /// Vault-wide tag index pinned at the bottom of the sidebar —
     /// Obsidian's tag pane. Clicking a tag opens project search
     /// pre-filled with `#tag`.
+    /// Open `- [ ]` checkboxes vault-wide — click opens the note at
+    /// the task's line. Mirrors the Tags group's collapsed/expanded
+    /// shape.
+    fn render_tasks(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let tasks = self.vault.read(cx).tasks.clone();
+
+        v_flex()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("tasks-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.tasks_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Tasks · {}", tasks.len())),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tasks_open = !this.tasks_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.tasks_open, |this| {
+                let rows =
+                    v_flex()
+                        .w_full()
+                        .children(tasks.iter().enumerate().map(|(ix, task)| {
+                            let path = task.path.clone();
+                            let note = task
+                                .path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let line = task.line;
+                            div()
+                                .id(("task-row", ix))
+                                .w_full()
+                                .px_2()
+                                .py_0p5()
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(
+                                            Icon::new(assets::IconName::Square)
+                                                .size_3()
+                                                .text_color(theme.muted_foreground),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .text_sm()
+                                                .truncate()
+                                                .child(task.text.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .child(note),
+                                        ),
+                                )
+                                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_document(path.clone(), window, cx);
+                                    if let Some(doc) = this.active_doc() {
+                                        let doc = doc.clone();
+                                        doc.update(cx, |doc, cx| {
+                                            doc.jump_to_line(line, window, cx)
+                                        });
+                                    }
+                                }))
+                        }));
+                this.child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        rows.max_h(px(200.)),
+                    ),
+                )
+            })
+    }
+
     fn render_tags(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let tags = self.vault.read(cx).tags.clone();
@@ -2602,6 +2706,9 @@ impl Workspace {
                     .text_sm(),
                 ),
             )
+            .when(!self.vault.read(cx).tasks.is_empty(), |this| {
+                this.child(self.render_tasks(cx))
+            })
             .when(!self.vault.read(cx).tags.is_empty(), |this| {
                 this.child(self.render_tags(cx))
             })

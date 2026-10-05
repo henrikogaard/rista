@@ -32,6 +32,9 @@ pub struct Vault {
     /// `(tag, note_count)` pairs, rebuilt with the index — completions read
     /// this snapshot instead of re-parsing every note per keystroke.
     pub tags: Vec<(String, usize)>,
+    /// Open `- [ ]` checkboxes vault-wide — the sidebar Tasks index.
+    /// Rebuilt with the note index.
+    pub tasks: Vec<crate::properties::VaultTask>,
     /// Lowercase `aliases:` frontmatter values → the note declaring them,
     /// so `[[Alias]]` resolves like Obsidian. Rebuilt with the index.
     pub aliases: std::collections::HashMap<String, PathBuf>,
@@ -62,6 +65,7 @@ impl Vault {
             watcher: None,
             pending_events: 0,
             tags: Vec::new(),
+            tasks: Vec::new(),
             aliases: std::collections::HashMap::new(),
             expanded: Default::default(),
             _tree_sub: tree_sub,
@@ -96,6 +100,7 @@ impl Vault {
         let items = mark_expanded(build_items(&root, 0), &self.expanded);
         let (notes, images) = collect_files(&root);
         self.tags = crate::properties::vault_tags(&notes);
+        self.tasks = crate::properties::vault_tasks(&notes);
         self.aliases.clear();
         for note in &notes {
             if note.extension().and_then(|e| e.to_str()) == Some("md") {
