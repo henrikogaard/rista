@@ -42,6 +42,9 @@ pub struct Workspace {
     settings_view: Entity<SettingsView>,
     rename_input: Entity<InputState>,
     status_note: Option<SharedString>,
+    /// Bumped on every status update so an old expiry timer can't
+    /// clear a newer note.
+    status_epoch: u64,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -229,6 +232,7 @@ impl Workspace {
             settings_view,
             rename_input,
             status_note: None,
+            status_epoch: 0,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -264,6 +268,25 @@ impl Workspace {
         self.vault.update(cx, |vault, cx| vault.close(cx));
         self.settings.last_vault = None;
         self.settings.save();
+        cx.notify();
+    }
+
+    /// Show a status-bar note that fades after ~4s. A bumped epoch keeps
+    /// an older timer from clearing a newer message.
+    fn note_status(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.status_epoch += 1;
+        let epoch = self.status_epoch;
+        self.status_note = Some(msg.into());
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            smol::Timer::after(std::time::Duration::from_secs(4)).await;
+            let _ = this.update(&mut *cx, |this, cx| {
+                if this.status_epoch == epoch {
+                    this.status_note = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -486,8 +509,7 @@ impl Workspace {
 
     fn on_open_daily(&mut self, _: &OpenDailyNote, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.vault.read(cx).daily_note() else {
-            self.status_note = Some("Open a folder first".into());
-            cx.notify();
+            self.note_status("Open a folder first", cx);
             return;
         };
         if !path.exists() {
@@ -628,8 +650,7 @@ impl Workspace {
     }
 
     fn on_about(&mut self, _: &About, _w: &mut Window, cx: &mut Context<Self>) {
-        self.status_note = Some("Rísta — a quiet place for words.".into());
-        cx.notify();
+        self.note_status("Rísta — a quiet place for words.", cx);
     }
 
     // ------------------------------------------------------------------
@@ -965,14 +986,15 @@ impl Workspace {
         };
         let dest = dest_dir.join(name);
         if dest.exists() {
-            self.status_note =
-                Some(format!("“{}” already exists there", name.to_string_lossy()).into());
-            cx.notify();
+            self.note_status(
+                format!("“{}” already exists there", name.to_string_lossy()),
+                cx,
+            );
             return;
         }
         match std::fs::rename(&src, &dest) {
             Ok(()) => {
-                self.status_note = Some(format!("Moved {}", name.to_string_lossy()).into());
+                self.note_status(format!("Moved {}", name.to_string_lossy()), cx);
                 for doc in &self.docs {
                     doc.entity.update(cx, |doc, _cx| {
                         if let Ok(rel) = doc.path.strip_prefix(&src) {
@@ -983,7 +1005,7 @@ impl Workspace {
                 self.vault.update(cx, |vault, cx| vault.refresh(cx));
             }
             Err(err) => {
-                self.status_note = Some(format!("Move failed: {err}").into());
+                self.note_status(format!("Move failed: {err}"), cx);
             }
         }
         cx.notify();
@@ -1070,8 +1092,7 @@ impl Workspace {
     /// Open the frontmatter properties editor for the active note.
     fn show_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.active_doc().cloned() else {
-            self.status_note = Some("Open a note first".into());
-            cx.notify();
+            self.note_status("Open a note first", cx);
             return;
         };
         properties::open_properties(doc, window, cx);
@@ -1245,8 +1266,7 @@ impl Workspace {
     /// blocks doesn't list).
     fn show_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.active_doc().cloned() else {
-            self.status_note = Some("Open a note first".into());
-            cx.notify();
+            self.note_status("Open a note first", cx);
             return;
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
@@ -1326,8 +1346,7 @@ impl Workspace {
             return;
         };
         let Some(doc) = self.active_doc().cloned() else {
-            self.status_note = Some("Open a note first".into());
-            cx.notify();
+            self.note_status("Open a note first", cx);
             return;
         };
         let files = template_files(&root);
@@ -1480,8 +1499,7 @@ impl Workspace {
         match self.vault.read(cx).resolve_wikilink(target) {
             Some(path) => self.open_document(path, window, cx),
             None => {
-                self.status_note = Some(format!("No note named “{}”", target).into());
-                cx.notify();
+                self.note_status(format!("No note named “{}”", target), cx);
             }
         }
     }
