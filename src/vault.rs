@@ -1,7 +1,7 @@
 //! Vault: an opened folder. Owns the file tree, the flattened note index,
 //! and the filesystem watcher that keeps both honest.
 
-use gpui_kit::component::tree::{TreeItem, TreeState};
+use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::*;
 use notify::{RecursiveMode, Watcher};
 
@@ -31,11 +31,23 @@ pub struct Vault {
     pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
     watcher: Option<notify::RecommendedWatcher>,
     pending_events: usize,
+    /// Folder ids the user expanded — reapplied to rebuilt trees so
+    /// watcher refreshes don't collapse the sidebar.
+    expanded: std::collections::BTreeSet<String>,
+    _tree_sub: Subscription,
 }
 
 impl Vault {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
+        let tree_sub = cx.subscribe(&tree, |this, _tree, event, _cx| match event {
+            TreeEvent::Expanded(id) => {
+                this.expanded.insert(id.to_string());
+            }
+            TreeEvent::Collapsed(id) => {
+                this.expanded.remove(id.as_str());
+            }
+        });
         Self {
             root: None,
             tree,
@@ -43,6 +55,8 @@ impl Vault {
             images: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watcher: None,
             pending_events: 0,
+            expanded: Default::default(),
+            _tree_sub: tree_sub,
         }
     }
 
@@ -71,7 +85,7 @@ impl Vault {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let items = build_items(&root, 0);
+        let items = mark_expanded(build_items(&root, 0), &self.expanded);
         let (notes, images) = collect_files(&root);
         self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
         self.notes = notes;
@@ -221,6 +235,24 @@ fn build_items(dir: &Path, depth: usize) -> Vec<TreeItem> {
     files.sort_by(|a, b| a.label.cmp(&b.label));
     dirs.extend(files);
     dirs
+}
+
+/// Re-mark folders expanded after a rebuild — `set_items` drops the
+/// previous `TreeItem`s and their expansion flags with them.
+fn mark_expanded(
+    items: Vec<TreeItem>,
+    expanded: &std::collections::BTreeSet<String>,
+) -> Vec<TreeItem> {
+    items
+        .into_iter()
+        .map(|mut item| {
+            if expanded.contains(item.id.as_str()) {
+                item = item.expanded(true);
+            }
+            item.children = mark_expanded(std::mem::take(&mut item.children), expanded);
+            item
+        })
+        .collect()
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp"];
