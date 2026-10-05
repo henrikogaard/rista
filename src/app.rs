@@ -2778,6 +2778,17 @@ impl Workspace {
             return;
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
+        // `[[note#^block-id]]` — the line whose trailing `^id` matches.
+        if let Some(block) = anchor.strip_prefix('^') {
+            for (ix, line) in raw.split('\n').enumerate() {
+                if line.trim_end().ends_with(&format!("^{block}")) {
+                    doc.update(cx, |doc, cx| doc.jump_to_line(ix + 1, window, cx));
+                    return;
+                }
+            }
+            self.note_status(format!("No block “{}”", anchor), cx);
+            return;
+        }
         let mut in_fence = false;
         for (ix, line) in raw.split('\n').enumerate() {
             let trimmed = line.trim_start();
