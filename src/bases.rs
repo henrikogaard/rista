@@ -25,8 +25,10 @@ use crate::document::Document;
 use crate::properties;
 use crate::vault::Vault;
 use chrono::Datelike as _;
+use gpui_kit::assets;
 use gpui_kit::base::StyledExt as _;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_yaml::Value;
@@ -1138,6 +1140,9 @@ struct Computed {
     kind: String,
     /// Kanban grouping column index into `headers`/`cells`, when resolved.
     group_ix: Option<usize>,
+    /// Frontmatter pairs a new note needs to satisfy the base + view
+    /// filters — `prop == literal` under conjunctions only.
+    prefill: Vec<(String, String)>,
     error: Option<String>,
 }
 
@@ -1579,8 +1584,94 @@ fn compute(
         view_names: spec.views.iter().map(|v| v.name.clone()).collect(),
         kind: view.kind.clone(),
         group_ix,
+        prefill: prefill_pairs(spec, view),
         error,
     }
+}
+
+/// Render a literal as a YAML scalar for a frontmatter value.
+fn lit_to_yaml(lit: &Lit) -> Option<String> {
+    match lit {
+        Lit::Null => None,
+        Lit::Bool(b) => Some(b.to_string()),
+        Lit::Num(n) => Some(if n.fract() == 0.0 {
+            format!("{}", *n as i64)
+        } else {
+            format!("{n}")
+        }),
+        Lit::Str(s) => serde_json::to_string(s).ok(),
+        Lit::List(items) => {
+            let parts: Vec<String> = items.iter().filter_map(lit_to_yaml).collect();
+            Some(format!("[{}]", parts.join(", ")))
+        }
+    }
+}
+
+/// `prop == literal` inside an expression contributes to prefill only
+/// when it must hold for every row: `&&` chains and `==` at that level.
+fn collect_prefill_expr(expr: &Expr, out: &mut Vec<(String, Lit)>) {
+    match expr {
+        Expr::Binary("&&", a, b) => {
+            collect_prefill_expr(a, out);
+            collect_prefill_expr(b, out);
+        }
+        Expr::Binary("==", a, b) => {
+            let (prop, lit) = match (a.as_ref(), b.as_ref()) {
+                (Expr::Ref(ns, p), Expr::Lit(l)) | (Expr::Lit(l), Expr::Ref(ns, p))
+                    if ns.is_none() || ns.as_deref() == Some("note") =>
+                {
+                    (p, l)
+                }
+                _ => return,
+            };
+            out.push((prop.clone(), lit.clone()));
+        }
+        _ => {}
+    }
+}
+
+/// Conjunctive filter nodes contribute their `==` predicates; `or`/`not`
+/// branches aren't guaranteed for a new row, so they don't.
+fn collect_prefill(node: &Value, out: &mut Vec<(String, Lit)>) {
+    match node {
+        Value::String(src) => {
+            if let Ok(expr) = parse_expr(src) {
+                collect_prefill_expr(&expr, out);
+            }
+        }
+        Value::Sequence(items) => {
+            for item in items {
+                collect_prefill(item, out);
+            }
+        }
+        Value::Mapping(map) => {
+            for (key, value) in map {
+                if key.as_str() == Some("and") {
+                    collect_prefill(value, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Frontmatter pairs making a brand-new note land in this view: base-level
+/// `and` filters plus the active view's, the view's winning on a key clash.
+fn prefill_pairs(spec: &BaseSpec, view: &ViewSpec) -> Vec<(String, String)> {
+    let mut lits = Vec::new();
+    if let Some(filters) = &spec.filters {
+        collect_prefill(filters, &mut lits);
+    }
+    if let Some(filters) = &view.filters {
+        collect_prefill(filters, &mut lits);
+    }
+    let mut pairs = std::collections::BTreeMap::new();
+    for (key, value) in lits {
+        if let Some(yaml) = lit_to_yaml(&value) {
+            pairs.insert(key, yaml);
+        }
+    }
+    pairs.into_iter().collect()
 }
 
 // ------------------------------------------------------------------
@@ -1896,8 +1987,9 @@ impl Render for BaseView {
         let computed = self.computed(cx);
         let this = cx.entity();
 
-        // View switcher strip — only when the spec declares >1 view.
-        let mut tabs = h_flex().gap_1().px_3().pt_2().pb_1();
+        // Toolbar row: view switcher on the left, "new note" on the
+        // right. Views only appear when the spec declares >1.
+        let mut tabs = h_flex().gap_1();
         if computed.view_names.len() > 1 {
             for (ix, name) in computed.view_names.iter().enumerate() {
                 let selected = ix == self.view_ix;
@@ -1927,6 +2019,43 @@ impl Render for BaseView {
                 );
             }
         }
+
+        let vault_root = self.vault.read(cx).root.clone();
+        let toolbar = h_flex()
+            .w_full()
+            .px_3()
+            .pt_2()
+            .pb_1()
+            .justify_between()
+            .child(tabs)
+            .child(
+                Button::new("base-new-note")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Plus)
+                    .tooltip("New note matching this view")
+                    .on_click({
+                        let this = this.clone();
+                        move |_, window, cx| {
+                            let Some(root) = vault_root.clone() else {
+                                return;
+                            };
+                            let (prefill, workspace) = this.update(cx, |view, cx| {
+                                (view.computed(cx).prefill.clone(), view.workspace.clone())
+                            });
+                            if let Some(workspace) = workspace.upgrade() {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.new_note_in(
+                                        root.clone(),
+                                        prefill.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                        }
+                    }),
+            );
 
         let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
         let kanban = matches!(computed.kind.as_str(), "kanban" | "board");
@@ -2204,7 +2333,7 @@ impl Render for BaseView {
 
         v_flex()
             .size_full()
-            .child(tabs)
+            .child(toolbar)
             .when(!cards && !kanban && !calendar, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
                 div()
@@ -2265,7 +2394,7 @@ impl Render for BaseView {
 
 #[cfg(test)]
 mod tests {
-    use super::{eval, eval_filter_node, parse_expr, Env, Lit, RowData};
+    use super::{eval, eval_filter_node, parse_expr, parse_spec, prefill_pairs, Env, Lit, RowData};
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -2390,5 +2519,37 @@ mod tests {
         )
         .unwrap();
         assert!(eval_filter_node(&spec, &mut env).unwrap());
+    }
+
+    #[test]
+    fn prefill() {
+        let spec = parse_spec(
+            r#"
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'status == "draft"'
+views:
+  - type: table
+    name: Drafts
+    filters:
+      and:
+        - 'priority == 2'
+        - or:
+            - 'kind == "x"'
+            - 'kind == "y"'
+"#,
+        );
+        let view = &spec.views[0];
+        let pairs = prefill_pairs(&spec, view);
+        // file.* refs are metadata (not frontmatter), or-branches aren't
+        // guaranteed — only the two `and` equalities prefill.
+        assert_eq!(
+            pairs,
+            vec![
+                ("priority".to_string(), "2".to_string()),
+                ("status".to_string(), "\"draft\"".to_string()),
+            ]
+        );
     }
 }

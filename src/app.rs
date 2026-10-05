@@ -460,6 +460,19 @@ impl Workspace {
 
     /// Create a uniquely-named empty note in `dir` and open it.
     fn new_file_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_note_in(dir, Vec::new(), window, cx);
+    }
+
+    /// Create a uniquely-named note in `dir`, prefilled with frontmatter
+    /// `fm` pairs (`key: yaml-scalar` lines), and open it. Called by base
+    /// views so a new note satisfies the view's `==` filters at once.
+    pub fn new_note_in(
+        &mut self,
+        dir: PathBuf,
+        fm: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut name = "Untitled.md".to_string();
         let mut n = 1;
         while dir.join(&name).exists() {
@@ -467,7 +480,15 @@ impl Workspace {
             name = format!("Untitled {}.md", n);
         }
         let path = dir.join(&name);
-        if std::fs::write(&path, b"").is_ok() {
+        let mut body = String::new();
+        if !fm.is_empty() {
+            body.push_str("---\n");
+            for (key, value) in &fm {
+                body.push_str(&format!("{key}: {value}\n"));
+            }
+            body.push_str("---\n\n");
+        }
+        if std::fs::write(&path, body.as_bytes()).is_ok() {
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
             self.open_document(path, window, cx);
         }
