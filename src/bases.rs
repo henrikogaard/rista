@@ -2276,6 +2276,23 @@ impl Render for BaseView {
                             let path = path.clone();
                             let _ = workspace
                                 .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                        })
+                        .on_mouse_move({
+                            let workspace = self.workspace.clone();
+                            let path = row.path.clone();
+                            move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                let _ = workspace
+                                    .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                            }
+                        })
+                        .on_hover({
+                            let workspace = self.workspace.clone();
+                            let path = row.path.clone();
+                            move |hovered: &bool, _window, cx| {
+                                if !*hovered {
+                                    let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                }
+                            }
                         });
                     if let Some(cover) = &row.cover {
                         let source: gpui_kit::ImageSource = cover
@@ -2351,6 +2368,23 @@ impl Render for BaseView {
                         let path = path.clone();
                         let _ =
                             workspace.update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                    })
+                    .on_mouse_move({
+                        let workspace = self.workspace.clone();
+                        let path = row.path.clone();
+                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                            let _ = workspace
+                                .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                        }
+                    })
+                    .on_hover({
+                        let workspace = self.workspace.clone();
+                        let path = row.path.clone();
+                        move |hovered: &bool, _window, cx| {
+                            if !*hovered {
+                                let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                            }
+                        }
                     });
                 if let Some(cover) = &row.cover {
                     let source: gpui_kit::ImageSource = cover
@@ -2414,6 +2448,23 @@ impl Render for BaseView {
                         let path = path.clone();
                         let _ =
                             workspace.update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                    })
+                    .on_mouse_move({
+                        let workspace = self.workspace.clone();
+                        let path = row.path.clone();
+                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                            let _ = workspace
+                                .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                        }
+                    })
+                    .on_hover({
+                        let workspace = self.workspace.clone();
+                        let path = row.path.clone();
+                        move |hovered: &bool, _window, cx| {
+                            if !*hovered {
+                                let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                            }
+                        }
                     });
                 if let Some(cover) = &row.cover {
                     let source: gpui_kit::ImageSource = cover
@@ -2554,6 +2605,23 @@ impl Render for BaseView {
                             let path = path.clone();
                             let _ = workspace
                                 .update(cx, |ws, cx| ws.open_document_pub(path, window, cx));
+                        })
+                        .on_mouse_move({
+                            let workspace = self.workspace.clone();
+                            let path = row.path.clone();
+                            move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                let _ = workspace
+                                    .update(cx, |ws, cx| ws.peek_at(path.clone(), ev.position, cx));
+                            }
+                        })
+                        .on_hover({
+                            let workspace = self.workspace.clone();
+                            let path = row.path.clone();
+                            move |hovered: &bool, _window, cx| {
+                                if !*hovered {
+                                    let _ = workspace.update(cx, |ws, cx| ws.hide_peek(&path, cx));
+                                }
+                            }
                         }),
                 );
             }
