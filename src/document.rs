@@ -655,6 +655,93 @@ impl Document {
         })
     }
 
+    /// Duplicate the line(s) covered by the selection (⌘D). The copy
+    /// lands right below and the selection follows it.
+    pub fn duplicate_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let sel = editor.selected_range();
+            let line_start = |i: usize| {
+                text[..i.min(text.len())]
+                    .rfind('\n')
+                    .map(|j| j + 1)
+                    .unwrap_or(0)
+            };
+            let line_end = |i: usize| {
+                text[i.min(text.len())..]
+                    .find('\n')
+                    .map(|j| i.min(text.len()) + j + 1)
+                    .unwrap_or(text.len())
+            };
+            let start = line_start(sel.start);
+            let end_anchor = if sel.end > sel.start && text[..sel.end].ends_with('\n') {
+                sel.end - 1
+            } else {
+                sel.end
+            };
+            let end = line_end(end_anchor);
+            let stripped = text[start..end]
+                .strip_suffix('\n')
+                .unwrap_or(&text[start..end]);
+            editor.set_selected_range(start..end, cx);
+            editor.replace(format!("{stripped}\n{stripped}"), window, cx);
+            let delta = stripped.len() + 1;
+            editor.set_selected_range(sel.start + delta..sel.end + delta, cx);
+        });
+    }
+
+    /// Toggle `%%` around the selection — Obsidian's ⌘/ comment. With
+    /// no selection it toggles the current line's trimmed span.
+    pub fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let sel = editor.selected_range();
+            let (start, end) = if sel.is_empty() {
+                let ls = text[..sel.start.min(text.len())]
+                    .rfind('\n')
+                    .map(|j| j + 1)
+                    .unwrap_or(0);
+                let le = text[sel.start.min(text.len())..]
+                    .find('\n')
+                    .map(|j| sel.start.min(text.len()) + j)
+                    .unwrap_or(text.len());
+                let line = &text[ls..le];
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return;
+                }
+                let off = line.len() - line.trim_start().len();
+                (ls + off, ls + off + trimmed.len())
+            } else {
+                (sel.start, sel.end)
+            };
+            // Markers may sit just outside the selection (the selection
+            // left inside `%%…%%` after a wrap, or a manual inner select)
+            // — unwrap those rather than double-wrapping.
+            let (span, inner) = if start >= 2
+                && end + 2 <= text.len()
+                && &text[start - 2..start] == "%%"
+                && &text[end..end + 2] == "%%"
+            {
+                (start - 2..end + 2, Some(text[start..end].to_string()))
+            } else if end - start >= 4
+                && text[start..end].starts_with("%%")
+                && text[start..end].ends_with("%%")
+            {
+                (start..end, Some(text[start + 2..end - 2].to_string()))
+            } else {
+                (start..end, None)
+            };
+            let (replacement, inner_start, inner_len) = match inner {
+                Some(inner) => (inner.clone(), span.start, inner.len()),
+                None => (format!("%%{}%%", &text[start..end]), start + 2, end - start),
+            };
+            editor.set_selected_range(span, cx);
+            editor.replace(replacement, window, cx);
+            editor.set_selected_range(inner_start..inner_start + inner_len, cx);
+        });
+    }
+
     /// Splice a set of byte-range replacements into the source text —
     /// link-safe rename retargets wikilinks this way. Ranges must be
     /// sorted by start and non-overlapping; applied right-to-left so

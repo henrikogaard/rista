@@ -80,6 +80,8 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", MoveLineUp, None),
         KeyBinding::new("alt-down", MoveLineDown, None),
         KeyBinding::new("cmd-enter", ToggleCheckbox, None),
+        KeyBinding::new("cmd-d", DuplicateBlock, None),
+        KeyBinding::new("cmd-/", ToggleComment, None),
         // Navigation
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
@@ -93,6 +95,9 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-2", ViewSplit, None),
         KeyBinding::new("cmd-3", ViewPreview, None),
         KeyBinding::new("cmd-e", ToggleEditPreview, None),
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-minus", ZoomOut, None),
+        KeyBinding::new("cmd-0", ZoomReset, None),
         // App
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
         KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
@@ -243,6 +248,21 @@ fn menus() -> Vec<Menu> {
                 checked: false,
                 disabled: false,
             },
+            MenuItem::separator(),
+            MenuItem::Action {
+                name: "Duplicate Line".into(),
+                action: Box::new(DuplicateBlock),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: "Toggle Comment".into(),
+                action: Box::new(ToggleComment),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
         ]),
         Menu::new("View").items([
             MenuItem::Action {
@@ -269,6 +289,28 @@ fn menus() -> Vec<Menu> {
             MenuItem::Action {
                 name: "Toggle Edit/Preview".into(),
                 action: Box::new(ToggleEditPreview),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::separator(),
+            MenuItem::Action {
+                name: "Zoom In".into(),
+                action: Box::new(ZoomIn),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: "Zoom Out".into(),
+                action: Box::new(ZoomOut),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: "Reset Zoom".into(),
+                action: Box::new(ZoomReset),
                 os_action: None,
                 checked: false,
                 disabled: false,

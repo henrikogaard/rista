@@ -18,6 +18,8 @@ actions!(
         MoveLineUp,
         MoveLineDown,
         ToggleCheckbox,
+        DuplicateBlock,
+        ToggleComment,
         // Navigation
         NextTab,
         PrevTab,
@@ -31,6 +33,9 @@ actions!(
         ViewSplit,
         ViewPreview,
         ToggleEditPreview,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
         // App
         OpenCommandPalette,
         OpenProjectSearch,

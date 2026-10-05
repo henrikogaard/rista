@@ -874,6 +874,52 @@ impl Workspace {
         }
     }
 
+    /// ⌘D — duplicate the line(s) under the selection.
+    fn on_duplicate_block(
+        &mut self,
+        _: &DuplicateBlock,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.duplicate_block(window, cx));
+        }
+    }
+
+    /// ⌘/ — toggle `%%` around the selection (or the current line).
+    fn on_toggle_comment(
+        &mut self,
+        _: &ToggleComment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.toggle_comment(window, cx));
+        }
+    }
+
+    /// ⌘+/⌘−/⌘0 — editor font zoom, clamped to a readable range.
+    fn adjust_editor_font(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let mut s = self.settings.clone();
+        s.editor_font_size = (s.editor_font_size + delta).clamp(10.0, 28.0);
+        self.note_status(format!("Editor font {:.0}px", s.editor_font_size), cx);
+        self.apply_settings(s, window, cx);
+    }
+
+    fn on_zoom_in(&mut self, _: &ZoomIn, w: &mut Window, cx: &mut Context<Self>) {
+        self.adjust_editor_font(1.0, w, cx);
+    }
+
+    fn on_zoom_out(&mut self, _: &ZoomOut, w: &mut Window, cx: &mut Context<Self>) {
+        self.adjust_editor_font(-1.0, w, cx);
+    }
+
+    fn on_zoom_reset(&mut self, _: &ZoomReset, w: &mut Window, cx: &mut Context<Self>) {
+        let mut s = self.settings.clone();
+        s.editor_font_size = 14.0;
+        self.apply_settings(s, w, cx);
+    }
+
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.active {
             self.close_tab_at(ix, window, cx);
@@ -3638,6 +3684,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_view_split))
             .on_action(cx.listener(Self::on_view_preview))
             .on_action(cx.listener(Self::on_toggle_edit_preview))
+            .on_action(cx.listener(Self::on_duplicate_block))
+            .on_action(cx.listener(Self::on_toggle_comment))
+            .on_action(cx.listener(Self::on_zoom_in))
+            .on_action(cx.listener(Self::on_zoom_out))
+            .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))
