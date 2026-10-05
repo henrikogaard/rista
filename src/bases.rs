@@ -3312,11 +3312,14 @@ impl Render for BaseView {
                             undated
                         )
                     } else {
-                        format!(
-                            "{} {}",
-                            visible.len(),
-                            if visible.len() == 1 { "note" } else { "notes" }
-                        )
+                        let noun = if visible.len() == 1 { "note" } else { "notes" };
+                        // Show the pre-filter total when the search box
+                        // is hiding rows — "8 of 10 notes".
+                        if query.is_empty() || visible.len() == computed.rows.len() {
+                            format!("{} {}", visible.len(), noun)
+                        } else {
+                            format!("{} of {} {}", visible.len(), computed.rows.len(), noun)
+                        }
                     }),
             )
     }
