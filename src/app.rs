@@ -4116,11 +4116,24 @@ impl Workspace {
 
         let can_back = self.nav_pos > 0;
         let can_fwd = self.nav_pos + 1 < self.nav_stack.len();
+        let view = cx.entity();
         h_flex()
+            .id("tab-strip")
             .w_full()
             .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
+            // Drop a file from the tree onto the strip to open it as a tab.
+            .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
+            .on_drop::<PathBuf>({
+                let view = view.clone();
+                move |src, window, cx| {
+                    let src = src.clone();
+                    view.update(cx, |this, cx| {
+                        this.open_document_new_tab(src, window, cx);
+                    });
+                }
+            })
             .child(
                 h_flex()
                     .pl_1p5()
