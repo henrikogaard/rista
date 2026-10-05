@@ -25,7 +25,10 @@ use gpui_kit::*;
 
 fn main() {
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        // AllAssets embeds the full lucide set — the default `Assets` bundle
+        // only covers ~100 icons, which silently blanked several IconName
+        // variants we use (Table, SquareKanban, ListTodo, FileClock…).
+        .with_assets(gpui_kit::assets::AllAssets)
         .with_http_client(http::client())
         .run(move |cx| {
             gpui_kit::init(cx);

@@ -28,7 +28,7 @@ use chrono::Datelike as _;
 use gpui_kit::assets;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_yaml::Value;
@@ -1139,6 +1139,9 @@ struct Computed {
     columns: Vec<String>,
     rows: Vec<Row>,
     view_names: Vec<String>,
+    /// Kind of each view in `view_names` order — `table`, `cards`,
+    /// `kanban`, `calendar`, `list` — for the tab icons.
+    view_kinds: Vec<String>,
     /// `table`, `cards`, or `kanban` — picked per selected view.
     kind: String,
     /// Kanban grouping column index into `headers`/`cells`, when resolved.
@@ -1589,6 +1592,7 @@ fn compute(
         columns,
         rows,
         view_names: spec.views.iter().map(|v| v.name.clone()).collect(),
+        view_kinds: spec.views.iter().map(|v| v.kind.clone()).collect(),
         kind: view.kind.clone(),
         group_ix,
         group_prop: view
@@ -2036,6 +2040,13 @@ impl Render for BaseView {
         if computed.view_names.len() > 1 {
             for (ix, name) in computed.view_names.iter().enumerate() {
                 let selected = ix == self.view_ix;
+                let icon = match computed.view_kinds.get(ix).map(String::as_str) {
+                    Some("cards") | Some("gallery") => assets::IconName::GalleryVerticalEnd,
+                    Some("kanban") | Some("board") => assets::IconName::SquareKanban,
+                    Some("calendar") => assets::IconName::Calendar,
+                    Some("list") => assets::IconName::List,
+                    _ => assets::IconName::Table,
+                };
                 tabs = tabs.child(
                     div()
                         .id(("base-view", ix))
@@ -2048,7 +2059,13 @@ impl Render for BaseView {
                             d.bg(theme.secondary).text_color(theme.foreground)
                         })
                         .when(!selected, |d| d.text_color(theme.muted_foreground))
-                        .child(name.clone())
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(Icon::new(icon).size_3p5())
+                                .child(name.clone()),
+                        )
                         .on_click({
                             let this = this.clone();
                             move |_, _window, cx| {
