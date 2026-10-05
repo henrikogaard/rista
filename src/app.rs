@@ -1436,6 +1436,59 @@ impl Workspace {
         }
     }
 
+    /// File context menu "Duplicate" — `<stem> copy.ext` (then
+    /// `copy 2`, `copy 3`, …) next to the source; refreshes the tree.
+    fn duplicate_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(parent) = path.parent().map(|p| p.to_path_buf()) else {
+            return;
+        };
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("copy");
+        let ext = path.extension().and_then(|e| e.to_str());
+        let mut n = 0u32;
+        let dest = loop {
+            let suffix = if n == 0 {
+                " copy".to_string()
+            } else {
+                format!(" copy {}", n + 1)
+            };
+            let name = match ext {
+                Some(e) => format!("{stem}{suffix}.{e}"),
+                None => format!("{stem}{suffix}"),
+            };
+            let cand = parent.join(name);
+            if !cand.exists() {
+                break cand;
+            }
+            n += 1;
+            if n > 99 {
+                return;
+            }
+        };
+        if std::fs::copy(&path, &dest).is_ok() {
+            self.vault.update(cx, |v, cx| v.refresh(cx));
+            let name = dest
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            self.note_status(format!("Duplicated as {name}"), cx);
+        }
+    }
+
+    /// Copy the vault-relative path (forward slashes) to the clipboard.
+    fn copy_rel_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let rel = self
+            .vault
+            .read(cx)
+            .root
+            .as_ref()
+            .and_then(|root| path.strip_prefix(root).ok().map(|p| p.to_path_buf()))
+            .unwrap_or(path);
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            rel.to_string_lossy().replace('\\', "/"),
+        ));
+        self.note_status("Path copied", cx);
+    }
+
     /// ⌘⇧K — delete the line(s) under the selection.
     fn on_delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
@@ -4548,6 +4601,34 @@ impl Workspace {
                                         move |_, window, cx| {
                                             view.update(cx, |this, cx| {
                                                 this.show_rename_dialog(path.clone(), window, cx);
+                                            });
+                                        }
+                                    }),
+                            )
+                            .when(!entry.is_folder(), |menu| {
+                                menu.item(
+                                    PopupMenuItem::new("Duplicate")
+                                        .icon(assets::IconName::CopyPlus)
+                                        .on_click({
+                                            let path = path.clone();
+                                            let view = view.clone();
+                                            move |_, _window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.duplicate_file(path.clone(), cx);
+                                                });
+                                            }
+                                        }),
+                                )
+                            })
+                            .item(
+                                PopupMenuItem::new("Copy path")
+                                    .icon(assets::IconName::Link)
+                                    .on_click({
+                                        let path = path.clone();
+                                        let view = view.clone();
+                                        move |_, _window, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.copy_rel_path(path.clone(), cx);
                                             });
                                         }
                                     }),
