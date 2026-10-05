@@ -1030,6 +1030,13 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
             vals => aggregate(name, vals.to_vec()),
         },
         "now" => Ok(Lit::Num(chrono::Local::now().timestamp() as f64)),
+        "today" => Ok(Lit::Num(
+            chrono::Local::now()
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .map(|t| t.and_utc().timestamp() as f64)
+                .unwrap_or(0.0),
+        )),
         "if" => match args {
             [cond, then, otherwise] => Ok(if cond.truthy() {
                 then.clone()
@@ -3274,6 +3281,11 @@ mod tests {
         assert_eq!(
             evals(r#"path.split("/").sort().join(",")"#, &p),
             Lit::Str("2026.md,daily,notes".into())
+        );
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
+        assert_eq!(
+            evals(&format!(r#"today() == date("{today}")"#), &p),
+            Lit::Bool(true)
         );
     }
 
