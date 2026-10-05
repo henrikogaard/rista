@@ -785,6 +785,27 @@ impl Document {
             let trimmed = line.trim_start();
             let indent = &line[..line.len() - trimmed.len()];
 
+            // Table row — Enter appends an empty row with the same
+            // column count and lands the caret in its first cell
+            // (Obsidian parity). Separator lines get a normal newline.
+            let is_table = trimmed.starts_with('|')
+                && trimmed.ends_with('|')
+                && trimmed[1..].contains('|')
+                && !trimmed
+                    .trim_matches('|')
+                    .trim()
+                    .chars()
+                    .all(|c| matches!(c, '-' | ':' | ' '));
+            if is_table {
+                let cols = trimmed.matches('|').count().saturating_sub(1);
+                let row = format!("|{}", "  |".repeat(cols));
+                editor.set_selected_range(le..le, cx);
+                editor.replace(format!("\n{indent}{row}"), window, cx);
+                let at = le + 1 + indent.len() + 2;
+                editor.set_selected_range(at..at, cx);
+                return true;
+            }
+
             let marker: Option<String> = (|| {
                 for b in ["-", "*", "+"] {
                     if let Some(rest) = trimmed.strip_prefix(&format!("{b} ")) {
