@@ -63,6 +63,8 @@ pub struct Workspace {
     nav_suppress: bool,
     /// Whether the sidebar's Starred group is expanded.
     starred_open: bool,
+    /// Whether the sidebar's Tags group is expanded.
+    tags_open: bool,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -295,6 +297,7 @@ impl Workspace {
             nav_pos: 0,
             nav_suppress: false,
             starred_open: true,
+            tags_open: true,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -2148,6 +2151,89 @@ impl Workspace {
             })
     }
 
+    /// Vault-wide tag index pinned at the bottom of the sidebar —
+    /// Obsidian's tag pane. Clicking a tag opens project search
+    /// pre-filled with `#tag`.
+    fn render_tags(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let tags = self.vault.read(cx).tags.clone();
+
+        v_flex()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("tags-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.tags_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("Tags · {}", tags.len())),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tags_open = !this.tags_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.tags_open, |this| {
+                let rows = v_flex().w_full().children(tags.iter().enumerate().map(
+                    |(ix, (tag, count))| {
+                        let query = format!("#{tag}");
+                        div()
+                            .id(("tag-row", ix))
+                            .w_full()
+                            .px_2()
+                            .py_0p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(div().text_sm().truncate().child(format!("#{tag}")))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(count.to_string()),
+                                    ),
+                            )
+                            .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                            .on_click(cx.listener(move |_, _, window, cx| {
+                                crate::search::open_project_search_for(
+                                    cx.entity(),
+                                    Some(query.as_str()),
+                                    window,
+                                    cx,
+                                );
+                            }))
+                    },
+                ));
+                this.child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        rows.max_h(px(200.)),
+                    ),
+                )
+            })
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let tree_state = self.vault.read(cx).tree.clone();
@@ -2365,6 +2451,9 @@ impl Workspace {
                     .text_sm(),
                 ),
             )
+            .when(!self.vault.read(cx).tags.is_empty(), |this| {
+                this.child(self.render_tags(cx))
+            })
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
