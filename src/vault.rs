@@ -252,6 +252,17 @@ impl Vault {
         None
     }
 
+    /// Line containing the first plain-text `needle` mention in `note`
+    /// — the context snippet shown beside an unlinked-mention row.
+    /// `needle` must already be lowercase (see `unlinked_mentions`).
+    pub fn unlinked_context(&self, note: &Path, needle: &str) -> Option<String> {
+        let text = std::fs::read_to_string(note).ok()?;
+        let at = plain_mention_offset(&text, needle)?;
+        let start = text[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let end = text[at..].find('\n').map(|i| at + i).unwrap_or(text.len());
+        Some(text[start..end].trim().to_string())
+    }
+
     /// Notes whose body mentions the target's file stem as plain
     /// text outside `[[...]]` — Obsidian's "unlinked mentions".
     /// Whole-phrase, case-insensitive; linked mentions don't count.

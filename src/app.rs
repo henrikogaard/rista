@@ -2838,11 +2838,20 @@ impl Workspace {
                                 .child(format!("Unlinked · {}", unlinked.len())),
                         ),
                     );
+                    // The plain-text needle is the active note's stem —
+                    // `unlinked_context` finds the line it's on.
+                    let needle = active_path
+                        .as_ref()
+                        .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
+                        .map(|s| s.to_lowercase());
                     for (ix, path) in unlinked.iter().enumerate() {
                         let rel = path
                             .strip_prefix(&root)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                        let snippet = needle
+                            .as_ref()
+                            .and_then(|n| self.vault.read(cx).unlinked_context(path, n));
                         let open = path.clone();
                         let link_note = path.clone();
                         rows = rows.child(
@@ -2853,7 +2862,21 @@ impl Workspace {
                                 .py_0p5()
                                 .cursor_pointer()
                                 .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                                .child(div().text_sm().truncate().child(rel))
+                                .child(
+                                    v_flex()
+                                        .w_full()
+                                        .child(div().text_sm().truncate().child(rel))
+                                        .when_some(snippet, |row, line| {
+                                            row.child(
+                                                div()
+                                                    .pl_2()
+                                                    .text_xs()
+                                                    .truncate()
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(line),
+                                            )
+                                        }),
+                                )
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_document_pub(open.clone(), window, cx);
                                 })),
@@ -2881,7 +2904,9 @@ impl Workspace {
                 }
                 this.child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
-                        rows.max_h(px(160.)),
+                        // Two-line rows (name + context snippet) need
+                        // more than the old one-line 160px budget.
+                        rows.max_h(px(240.)),
                     ),
                 )
             })
