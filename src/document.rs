@@ -633,6 +633,87 @@ impl Document {
         });
     }
 
+    /// Obsidian's list continuation: Enter on a list/quote line
+    /// inserts `\n` + the same marker (tasks get a fresh `- [ ] `,
+    /// ordered lists increment); Enter on a marker-only line just
+    /// strips the marker, ending the list. Returns false outside
+    /// lists so the default newline proceeds.
+    pub fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            if !sel.is_empty() {
+                return false;
+            }
+            let text = editor.value().to_string();
+            let caret = sel.start.min(text.len());
+            let ls = text[..caret].rfind('\n').map(|j| j + 1).unwrap_or(0);
+            let le = text[caret..]
+                .find('\n')
+                .map(|j| caret + j)
+                .unwrap_or(text.len());
+            let line = &text[ls..le];
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+
+            let marker: Option<String> = (|| {
+                for b in ["-", "*", "+"] {
+                    if let Some(rest) = trimmed.strip_prefix(&format!("{b} ")) {
+                        for boxed in ["[ ] ", "[x] ", "[X] "] {
+                            if let Some(item) = rest.strip_prefix(boxed) {
+                                return Some(if item.trim().is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("{b} [ ] ")
+                                });
+                            }
+                        }
+                        return Some(if rest.trim().is_empty() {
+                            String::new()
+                        } else {
+                            format!("{b} ")
+                        });
+                    }
+                }
+                if let Some(rest) = trimmed.strip_prefix("> ") {
+                    return Some(if rest.trim().is_empty() {
+                        String::new()
+                    } else {
+                        "> ".to_string()
+                    });
+                }
+                let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() {
+                    let after = &trimmed[digits.len()..];
+                    for sep in [". ", ") "] {
+                        if let Some(item) = after.strip_prefix(sep) {
+                            let n: u64 = digits.parse().unwrap_or(0);
+                            return Some(if item.trim().is_empty() {
+                                String::new()
+                            } else {
+                                format!("{}{sep}", n + 1)
+                            });
+                        }
+                    }
+                }
+                None
+            })();
+
+            let Some(marker) = marker else {
+                return false;
+            };
+            if marker.is_empty() {
+                // Marker-only line — remove it, leaving a bare line.
+                editor.set_selected_range(ls..le, cx);
+                editor.replace("", window, cx);
+                editor.set_selected_range(ls..ls, cx);
+            } else {
+                editor.set_selected_range(caret..caret, cx);
+                editor.replace(format!("\n{indent}{marker}"), window, cx);
+            }
+            true
+        })
+    }
+
     /// Pasting a URL over a selection wraps the selection in
     /// `[selection](url)` — returns false when nothing is selected so
     /// the caller lets the normal paste through.

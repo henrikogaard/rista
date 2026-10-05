@@ -3623,6 +3623,16 @@ impl Workspace {
             .capture_action::<input::Paste>(cx.listener(|this, _paste, window, cx| {
                 this.on_editor_paste_action(window, cx);
             }))
+            .capture_action::<input::Enter>(cx.listener(|this, _enter, window, cx| {
+                let handled = this
+                    .active_doc()
+                    .cloned()
+                    .map(|doc| doc.update(cx, |doc, cx| doc.continue_list(window, cx)))
+                    .unwrap_or(false);
+                if handled {
+                    cx.stop_propagation();
+                }
+            }))
             .can_drop(|value, _window, _cx| value.is::<ExternalPaths>())
             .drag_over::<ExternalPaths>(|style, _paths, _window, cx| {
                 style.bg(cx.theme().accent.opacity(0.08))
