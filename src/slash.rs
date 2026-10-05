@@ -124,7 +124,8 @@ impl CompletionProvider for VaultCompletions {
         // keeps updating as the user types `/word` or `[[wor`. `[` is
         // allowed so a batched insert like `[[s` still triggers.
         new_text.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' ' | '/' | '[' | '!' | '.' | '#')
+            c.is_ascii_alphanumeric()
+                || matches!(c, '-' | '_' | ' ' | '/' | '[' | '!' | '.' | '#' | '^')
         })
     }
 
@@ -201,41 +202,89 @@ fn wiki_items(
         };
         let mut items: Vec<CompletionItem> = Vec::new();
         if let Some(src) = src {
-            let mut in_fence = false;
-            for (ix, line) in src.lines().enumerate() {
-                let t = line.trim_start();
-                if t.starts_with("```") || t.starts_with("~~~") {
-                    in_fence = !in_fence;
-                    continue;
+            if let Some(bid_q) = head_q.strip_prefix('^') {
+                // `[[note#^…` — block-id anchors: lines carrying a
+                // trailing ` ^id` marker (or a lone `^id` line), same
+                // convention `slice_section` resolves.
+                let bid_q = bid_q.to_lowercase();
+                let mut in_fence = false;
+                for (ix, line) in src.lines().enumerate() {
+                    let t = line.trim_end();
+                    if t.starts_with("```") || t.starts_with("~~~") {
+                        in_fence = !in_fence;
+                        continue;
+                    }
+                    if in_fence {
+                        continue;
+                    }
+                    let Some(pos) = t.rfind('^') else {
+                        continue;
+                    };
+                    let id = &t[pos + 1..];
+                    if id.is_empty()
+                        || !id
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                        || !(pos == 0 || t.as_bytes()[pos - 1] == b' ')
+                    {
+                        continue;
+                    }
+                    if !bid_q.is_empty() && !id.to_lowercase().contains(&bid_q) {
+                        continue;
+                    }
+                    items.push(CompletionItem {
+                        label: format!("^{id}"),
+                        detail: Some(if note_part.is_empty() {
+                            "block · this note".to_string()
+                        } else {
+                            format!("block · {note_part}")
+                        }),
+                        kind: Some(CompletionItemKind::REFERENCE),
+                        sort_text: Some(format!("{:04}", ix)),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: format!("{note_part}#^{id}]]"),
+                        })),
+                        ..Default::default()
+                    });
                 }
-                if in_fence || !t.starts_with('#') {
-                    continue;
+            } else {
+                let mut in_fence = false;
+                for (ix, line) in src.lines().enumerate() {
+                    let t = line.trim_start();
+                    if t.starts_with("```") || t.starts_with("~~~") {
+                        in_fence = !in_fence;
+                        continue;
+                    }
+                    if in_fence || !t.starts_with('#') {
+                        continue;
+                    }
+                    let marks = t.chars().take_while(|c| *c == '#').count();
+                    if marks > 6 {
+                        continue;
+                    }
+                    let heading = t[marks..].trim_start();
+                    if heading.is_empty()
+                        || (!head_q.is_empty() && !heading.to_lowercase().contains(&head_q))
+                    {
+                        continue;
+                    }
+                    items.push(CompletionItem {
+                        label: heading.to_string(),
+                        detail: Some(if note_part.is_empty() {
+                            "heading · this note".to_string()
+                        } else {
+                            format!("heading · {note_part}")
+                        }),
+                        kind: Some(CompletionItemKind::REFERENCE),
+                        sort_text: Some(format!("{:04}", ix)),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: format!("{note_part}#{heading}]]"),
+                        })),
+                        ..Default::default()
+                    });
                 }
-                let marks = t.chars().take_while(|c| *c == '#').count();
-                if marks > 6 {
-                    continue;
-                }
-                let heading = t[marks..].trim_start();
-                if heading.is_empty()
-                    || (!head_q.is_empty() && !heading.to_lowercase().contains(&head_q))
-                {
-                    continue;
-                }
-                items.push(CompletionItem {
-                    label: heading.to_string(),
-                    detail: Some(if note_part.is_empty() {
-                        "heading · this note".to_string()
-                    } else {
-                        format!("heading · {note_part}")
-                    }),
-                    kind: Some(CompletionItemKind::REFERENCE),
-                    sort_text: Some(format!("{:04}", ix)),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range,
-                        new_text: format!("{note_part}#{heading}]]"),
-                    })),
-                    ..Default::default()
-                });
             }
         }
         return Some(CompletionResponse::Array(items));
