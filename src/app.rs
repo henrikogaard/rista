@@ -3593,7 +3593,7 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, doc)| {
-                let (title, dirty) = {
+                let (title, dirty, icon) = {
                     let doc = doc.entity.read(cx);
                     // .base tabs keep their extension so `tasks` and
                     // `tasks.base` don't look like the same document.
@@ -3602,7 +3602,17 @@ impl Workspace {
                     } else {
                         doc.title()
                     };
-                    (title, doc.dirty)
+                    let ext = doc
+                        .path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase());
+                    let icon = match ext.as_deref() {
+                        Some("base") => assets::IconName::Database,
+                        Some(e) if IMAGE_EXTS.contains(&e) => assets::IconName::FileImage,
+                        _ => assets::IconName::FileText,
+                    };
+                    (title, doc.dirty, icon)
                 };
                 Tab::new()
                     .label(if dirty {
@@ -3612,7 +3622,7 @@ impl Workspace {
                     })
                     // Icon goes in `prefix`: the vendored Tab renders the
                     // `icon` slot INSTEAD of the label, not beside it.
-                    .prefix(Icon::new(assets::IconName::FileText).size_3p5())
+                    .prefix(Icon::new(icon).size_3p5())
                     .suffix(
                         Button::new(("close-tab", ix))
                             .ghost()
