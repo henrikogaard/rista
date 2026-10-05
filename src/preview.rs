@@ -668,16 +668,60 @@ impl MarkdownPlugin for PropertiesPlugin {
                                 .child(label);
                             if let Some(workspace) = workspace.clone() {
                                 let target = target.clone();
-                                chip = chip.cursor_pointer().hover(|c| c.underline()).on_click(
-                                    move |_, window, cx| {
-                                        let Some(workspace) = workspace.upgrade() else {
-                                            return;
-                                        };
-                                        workspace.update(cx, |workspace, cx| {
-                                            workspace.open_wikilink(&target, window, cx);
-                                        });
-                                    },
-                                );
+                                chip = chip
+                                    .cursor_pointer()
+                                    .hover(|c| c.underline())
+                                    .on_click({
+                                        let workspace = workspace.clone();
+                                        let target = target.clone();
+                                        move |_, window, cx| {
+                                            let Some(workspace) = workspace.upgrade() else {
+                                                return;
+                                            };
+                                            workspace.update(cx, |workspace, cx| {
+                                                workspace.open_wikilink(&target, window, cx);
+                                            });
+                                        }
+                                    })
+                                    // Same page-preview hover as body wikilinks.
+                                    .on_mouse_move({
+                                        let workspace = workspace.clone();
+                                        let target = target.clone();
+                                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                            let Some(ws) = workspace.upgrade() else {
+                                                return;
+                                            };
+                                            let _ = ws.update(cx, |ws, cx| {
+                                                if let Some(path) = ws
+                                                    .vault_entity()
+                                                    .read(cx)
+                                                    .resolve_wikilink(&target)
+                                                {
+                                                    ws.peek_at(path, ev.position, cx);
+                                                }
+                                            });
+                                        }
+                                    })
+                                    .on_hover({
+                                        let target = target.clone();
+                                        move |hovered: &bool, _window, cx| {
+                                            if *hovered {
+                                                return;
+                                            }
+                                            let Some(ws) = workspace.upgrade() else {
+                                                return;
+                                            };
+                                            let _ = ws.update(cx, |ws, cx| {
+                                                if let Some(path) = ws
+                                                    .vault_entity()
+                                                    .read(cx)
+                                                    .resolve_wikilink(&target)
+                                                {
+                                                    ws.hide_peek(&path, cx);
+                                                }
+                                            });
+                                        }
+                                    });
                             }
                             chips = chips.child(chip);
                             if jx + 1 < targets.len() {

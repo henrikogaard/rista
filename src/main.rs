@@ -100,6 +100,8 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-0", ZoomReset, None),
         // App
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
+        // Obsidian muscle memory — same palette as ⌘K.
+        KeyBinding::new("cmd-p", OpenCommandPalette, None),
         KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-q", Quit, None),
