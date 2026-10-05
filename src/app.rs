@@ -2023,6 +2023,14 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// Unlinked mentions of the active document (plain-text title
+    /// occurrences) — listed under the linked mentions.
+    fn unlinked(&self, cx: &App) -> Vec<PathBuf> {
+        self.active_doc()
+            .map(|d| self.vault.read(cx).unlinked_mentions(&d.read(cx).path))
+            .unwrap_or_default()
+    }
+
     /// Heading navigator for the active note — picks a heading, jumps
     /// the editor caret to its line (fences skipped so `#` inside code
     /// blocks doesn't list).
@@ -2738,17 +2746,46 @@ impl Workspace {
                     })),
             )
             .when(self.backlinks_open, |this| {
-                let rows =
-                    v_flex()
-                        .w_full()
-                        .children(links.iter().enumerate().map(|(ix, path)| {
-                            let rel = path
-                                .strip_prefix(&root)
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                            let open = path.clone();
+                let unlinked = self.unlinked(cx);
+                let mut rows = v_flex().w_full();
+                for (ix, path) in links.iter().enumerate() {
+                    let rel = path
+                        .strip_prefix(&root)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    let open = path.clone();
+                    rows = rows.child(
+                        div()
+                            .id(("backlink-side", ix))
+                            .w_full()
+                            .px_2()
+                            .py_0p5()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                            .child(div().text_sm().truncate().child(rel))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_document_pub(open.clone(), window, cx);
+                            })),
+                    );
+                }
+                if !unlinked.is_empty() {
+                    rows = rows.child(
+                        div().w_full().px_2().pt_1().child(
                             div()
-                                .id(("backlink-side", ix))
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(format!("Unlinked · {}", unlinked.len())),
+                        ),
+                    );
+                    for (ix, path) in unlinked.iter().enumerate() {
+                        let rel = path
+                            .strip_prefix(&root)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                        let open = path.clone();
+                        rows = rows.child(
+                            div()
+                                .id(("unlinked-side", ix))
                                 .w_full()
                                 .px_2()
                                 .py_0p5()
@@ -2757,8 +2794,10 @@ impl Workspace {
                                 .child(div().text_sm().truncate().child(rel))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_document_pub(open.clone(), window, cx);
-                                }))
-                        }));
+                                })),
+                        );
+                    }
+                }
                 this.child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
                         rows.max_h(px(160.)),
@@ -3366,9 +3405,10 @@ impl Workspace {
             .when(!self.doc_headings(cx).is_empty(), |this| {
                 this.child(self.render_outline(cx))
             })
-            .when(!self.backlinks(cx).is_empty(), |this| {
-                this.child(self.render_backlinks_pane(cx))
-            })
+            .when(
+                !self.backlinks(cx).is_empty() || !self.unlinked(cx).is_empty(),
+                |this| this.child(self.render_backlinks_pane(cx)),
+            )
             .when(!self.vault.read(cx).tasks.is_empty(), |this| {
                 this.child(self.render_tasks(cx))
             })

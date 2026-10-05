@@ -232,6 +232,58 @@ impl Vault {
         links
     }
 
+    /// Notes whose body mentions the target's file stem as plain
+    /// text outside `[[...]]` — Obsidian's "unlinked mentions".
+    /// Whole-phrase, case-insensitive; linked mentions don't count.
+    pub fn unlinked_mentions(&self, target: &Path) -> Vec<PathBuf> {
+        let Some(stem) = target.file_stem().and_then(|s| s.to_str()) else {
+            return Vec::new();
+        };
+        let needle = stem.to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let boundary =
+            |c: Option<char>| c.map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false);
+        let mut out = Vec::new();
+        for note in &self.notes {
+            if *note == target || note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(note) else {
+                continue;
+            };
+            // Blank out `[[...]]` spans so existing links don't count.
+            let mut scrubbed = String::with_capacity(text.len());
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find("[[") {
+                scrubbed.push_str(&rest[..at]);
+                match rest[at + 2..].find("]]") {
+                    Some(e) => rest = &rest[at + 2 + e + 2..],
+                    None => break,
+                }
+            }
+            scrubbed.push_str(rest);
+            let hay = scrubbed.to_lowercase();
+            let mut cur = 0;
+            let mut found = false;
+            while let Some(at) = hay[cur..].find(&needle) {
+                let start = cur + at;
+                let before = hay[..start].chars().next_back();
+                let after = hay[start + needle.len()..].chars().next();
+                if !boundary(before) && !boundary(after) {
+                    found = true;
+                    break;
+                }
+                cur = start + needle.len();
+            }
+            if found {
+                out.push(note.clone());
+            }
+        }
+        out
+    }
+
     /// Byte ranges of the inner `target` text of every `[[wikilink]]` /
     /// `![[embed]]` in `text` that resolves to `target` — used by
     /// link-safe rename to rewrite the span in place.
