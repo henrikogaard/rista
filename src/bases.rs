@@ -1844,7 +1844,21 @@ impl BaseView {
                 cx.notify();
             }
         });
-        let mut view = Self::init(SpecSrc::Doc(doc), vault, workspace, window, cx);
+        let mut view = Self::init(
+            SpecSrc::Doc(doc.clone()),
+            vault,
+            workspace.clone(),
+            window,
+            cx,
+        );
+        // Restore the view this file was last left on (Obsidian keeps a
+        // `.base` on its chosen view too).
+        if let Some(ws) = workspace.upgrade() {
+            let key = doc.read(cx).path.to_string_lossy().to_string();
+            if let Some(&ix) = ws.read(cx).settings().base_views.get(&key) {
+                view.view_ix = ix;
+            }
+        }
         view._subscriptions.push(doc_sub);
         view
     }
@@ -2149,6 +2163,14 @@ impl Render for BaseView {
                                 this.update(cx, |view, cx| {
                                     view.view_ix = ix;
                                     view.sort = None;
+                                    if let SpecSrc::Doc(doc) = &view.spec_src {
+                                        let key = doc.read(cx).path.to_string_lossy().to_string();
+                                        if let Some(ws) = view.workspace.upgrade() {
+                                            ws.update(cx, |ws, _cx| {
+                                                ws.remember_base_view(key, ix);
+                                            });
+                                        }
+                                    }
                                     cx.notify();
                                 });
                             }

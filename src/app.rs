@@ -2865,6 +2865,13 @@ impl Workspace {
         self.open_document_impl(path, true, window, cx);
     }
 
+    /// Called by BaseView when its view tab changes — remembered per
+    /// file so a `.base` reopens on the view it was left on.
+    pub fn remember_base_view(&mut self, path: String, view_ix: usize) {
+        self.settings.base_views.insert(path, view_ix);
+        self.settings.save();
+    }
+
     pub fn iter_docs(&self) -> impl Iterator<Item = &Entity<Document>> {
         self.docs.iter().map(|d| &d.entity)
     }

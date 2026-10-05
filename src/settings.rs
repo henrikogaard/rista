@@ -52,6 +52,9 @@ pub struct Settings {
     pub open_tabs: Vec<String>,
     /// Active tab's path (one of `open_tabs`) when the app closed.
     pub active_tab: Option<String>,
+    /// Which `.base` view (index into `views:`) each opened `.base`
+    /// file was last left on — note path → view index.
+    pub base_views: std::collections::HashMap<String, usize>,
 }
 
 fn default_true() -> bool {
@@ -108,6 +111,7 @@ impl Default for Settings {
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),
             active_tab: None,
+            base_views: std::collections::HashMap::new(),
         }
     }
 }
