@@ -679,6 +679,9 @@ impl Workspace {
     fn open_vault_at(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.close_all_docs(cx);
         self.graph = None;
+        self.nav_stack.clear();
+        self.nav_pos = 0;
+        self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
             vault.open(root.clone(), cx);
@@ -693,6 +696,9 @@ impl Workspace {
         self.save_all(cx);
         self.close_all_docs(cx);
         self.graph = None;
+        self.nav_stack.clear();
+        self.nav_pos = 0;
+        self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| vault.close(cx));
         self.settings.last_vault = None;
         self.settings.save();
@@ -7153,6 +7159,9 @@ fn render_linked_mentions(
                         doc.mentions_open = !doc.mentions_open;
                         cx.notify();
                     });
+                    // The toggle lives on Document but the strip is rendered
+                    // by the workspace — notify it or nothing repaints.
+                    view.update(cx, |_, cx| cx.notify());
                 }),
         )
         .when(open, |this| {
