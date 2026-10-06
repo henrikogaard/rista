@@ -4836,6 +4836,183 @@ impl Render for BaseView {
                                                 }
                                             }),
                                     )
+                                    // Obsidian's card-art knobs —
+                                    // `imageFit:` cover/contain and a
+                                    // numeric `imageAspectRatio:`.
+                                    .item(
+                                        PopupMenuItem::new("Image fit…")
+                                            .icon(assets::IconName::Images)
+                                            .on_click({
+                                                let this = this.clone();
+                                                move |_, window, cx| {
+                                                    let this = this.clone();
+                                                    window.open_dialog(
+                                                        cx,
+                                                        move |dialog, _window, _cx| {
+                                                            let theme = _cx.theme();
+                                                            let mut list =
+                                                                v_flex().w_full().py_1();
+                                                            for (nix, (label, val)) in [
+                                                                ("Cover", Some("cover")),
+                                                                ("Contain", Some("contain")),
+                                                                ("Default", None),
+                                                            ]
+                                                            .into_iter()
+                                                            .enumerate()
+                                                            {
+                                                                let this = this.clone();
+                                                                list = list.child(
+                                                                    div()
+                                                                        .id(("fit-pick", nix))
+                                                                        .w_full()
+                                                                        .px_3()
+                                                                        .py_1p5()
+                                                                        .cursor_pointer()
+                                                                        .hover(|s| {
+                                                                            s.bg(theme.muted)
+                                                                        })
+                                                                        .child(
+                                                                            div()
+                                                                                .text_sm()
+                                                                                .text_color(theme.foreground)
+                                                                                .child(label),
+                                                                        )
+                                                                        .on_click(move |_, window, cx| {
+                                                                            this.update(cx, |view, cx| {
+                                                                                if let SpecSrc::Doc(doc) =
+                                                                                    &view.spec_src
+                                                                                {
+                                                                                    doc.update(cx, |doc, cx| {
+                                                                                        doc.set_base_view_key(
+                                                                                            ix,
+                                                                                            "imageFit",
+                                                                                            val,
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    });
+                                                                                }
+                                                                                view.doc_epoch += 1;
+                                                                                cx.notify();
+                                                                            });
+                                                                            window.close_dialog(cx);
+                                                                        }),
+                                                                );
+                                                            }
+                                                            dialog
+                                                                .title("Image fit")
+                                                                .w(px(240.))
+                                                                .overlay_closable(true)
+                                                                .child(list)
+                                                        },
+                                                    );
+                                                }
+                                            }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new("Image aspect ratio…")
+                                            .icon(assets::IconName::Image)
+                                            .on_click({
+                                                let this = this.clone();
+                                                move |_, window, cx| {
+                                                    let input =
+                                                        this.read(cx).rename_input.clone();
+                                                    input.update(cx, |input, cx| {
+                                                        input.set_value("", window, cx);
+                                                    });
+                                                    let this = this.clone();
+                                                    let input2 = input.clone();
+                                                    window.open_dialog(
+                                                        cx,
+                                                        move |dialog, _window, _cx| {
+                                                            let input = input.clone();
+                                                            dialog
+                                                                .title(
+                                                                    "Aspect ratio (w/h) — blank clears",
+                                                                )
+                                                                .w(px(320.))
+                                                                .child(
+                                                                    div().w_full().child(
+                                                                        Input::new(&input)
+                                                                            .appearance(true),
+                                                                    ),
+                                                                )
+                                                                .on_ok({
+                                                                    let this = this.clone();
+                                                                    move |_, window, cx| {
+                                                                        this.update(
+                                                                            cx,
+                                                                            |view, cx| {
+                                                                                let text = view
+                                                                                    .rename_input
+                                                                                    .read(cx)
+                                                                                    .value()
+                                                                                    .trim()
+                                                                                    .to_string();
+                                                                                let val = if text
+                                                                                    .is_empty()
+                                                                                {
+                                                                                    None
+                                                                                } else {
+                                                                                    // "16:9" or a plain
+                                                                                    // decimal both work.
+                                                                                    let r = text
+                                                                                        .split(':')
+                                                                                        .filter_map(|p| {
+                                                                                            p.trim()
+                                                                                                .parse::<f32>()
+                                                                                                .ok()
+                                                                                        })
+                                                                                        .reduce(|w, h| {
+                                                                                            w / h
+                                                                                        });
+                                                                                    match r {
+                                                                                        Some(r)
+                                                                                            if r
+                                                                                                .is_finite()
+                                                                                                && r > 0.0 =>
+                                                                                        {
+                                                                                            Some(format!(
+                                                                                                "{r:.2}"
+                                                                                            ))
+                                                                                        }
+                                                                                        _ => return,
+                                                                                    }
+                                                                                };
+                                                                                if let SpecSrc::Doc(
+                                                                                    doc,
+                                                                                ) = &view.spec_src
+                                                                                {
+                                                                                    doc.update(
+                                                                                        cx,
+                                                                                        |doc, cx| {
+                                                                                            doc.set_base_view_key(
+                                                                                                ix,
+                                                                                                "imageAspectRatio",
+                                                                                                val.as_deref(),
+                                                                                                window,
+                                                                                                cx,
+                                                                                            );
+                                                                                        },
+                                                                                    );
+                                                                                }
+                                                                                view.doc_epoch += 1;
+                                                                                cx.notify();
+                                                                            },
+                                                                        );
+                                                                        true
+                                                                    }
+                                                                })
+                                                        },
+                                                    );
+                                                    window.defer(cx, move |window, cx| {
+                                                        input2.update(cx, |input, cx| {
+                                                            input.focus(window, cx);
+                                                        });
+                                                    });
+                                                }
+                                            }),
+                                    )
                                 } else {
                                     menu
                                 };
