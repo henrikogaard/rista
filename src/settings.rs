@@ -23,6 +23,14 @@ pub enum ViewMode {
     Preview,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TreeSort {
+    #[default]
+    Name,
+    Modified,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -77,6 +85,8 @@ pub struct Settings {
     /// Readable line length — cap the editor at a centered column
     /// (Obsidian's editor setting).
     pub readable_width: bool,
+    /// File-tree ordering — Obsidian's explorer offers name/modified.
+    pub tree_sort: TreeSort,
 }
 
 fn default_true() -> bool {
@@ -151,6 +161,7 @@ impl Default for Settings {
             base_sorts: std::collections::HashMap::new(),
             pinned_tabs: Vec::new(),
             readable_width: false,
+            tree_sort: TreeSort::default(),
         }
     }
 }

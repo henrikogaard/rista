@@ -6,6 +6,8 @@ use gpui_kit::*;
 use notify::{RecursiveMode, Watcher};
 
 use chrono::NaiveDate;
+
+use crate::settings::TreeSort;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -50,6 +52,8 @@ pub struct Vault {
     /// Folder ids the user expanded — reapplied to rebuilt trees so
     /// watcher refreshes don't collapse the sidebar.
     expanded: std::collections::BTreeSet<String>,
+    /// File ordering inside each folder — dirs stay alphabetical.
+    pub tree_sort: TreeSort,
     _tree_sub: Subscription,
 }
 
@@ -76,6 +80,7 @@ impl Vault {
             aliases: std::collections::HashMap::new(),
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
+            tree_sort: TreeSort::default(),
             _tree_sub: tree_sub,
         }
     }
@@ -105,7 +110,7 @@ impl Vault {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let items = mark_expanded(build_items(&root, 0), &self.expanded);
+        let items = mark_expanded(build_items(&root, 0, self.tree_sort), &self.expanded);
         let (notes, images) = collect_files(&root);
         self.tags = crate::properties::vault_tags(&notes);
         self.tasks = crate::properties::vault_tasks(&notes);
@@ -641,7 +646,7 @@ fn should_skip(entry: &std::fs::DirEntry) -> bool {
     name.starts_with('.') || (entry.path().is_dir() && SKIP_DIRS.iter().any(|d| name == *d))
 }
 
-fn build_items(dir: &Path, depth: usize) -> Vec<TreeItem> {
+fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
     if depth > 12 {
         return Vec::new();
     }
@@ -658,8 +663,11 @@ fn build_items(dir: &Path, depth: usize) -> Vec<TreeItem> {
         let label = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
             dirs.push(
-                TreeItem::new(path.to_string_lossy().to_string(), label)
-                    .children(build_items(&path, depth + 1)),
+                TreeItem::new(path.to_string_lossy().to_string(), label).children(build_items(
+                    &path,
+                    depth + 1,
+                    sort,
+                )),
             );
         } else if path
             .extension()
@@ -674,7 +682,16 @@ fn build_items(dir: &Path, depth: usize) -> Vec<TreeItem> {
         }
     }
     dirs.sort_by(|a, b| a.label.cmp(&b.label));
-    files.sort_by(|a, b| a.label.cmp(&b.label));
+    match sort {
+        TreeSort::Name => files.sort_by(|a, b| a.label.cmp(&b.label)),
+        TreeSort::Modified => files.sort_by_key(|f| {
+            std::cmp::Reverse(
+                std::fs::metadata(f.id.as_str())
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH),
+            )
+        }),
+    }
     dirs.extend(files);
     dirs
 }

@@ -7,7 +7,7 @@ use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
 use crate::properties;
 use crate::search;
-use crate::settings::{Appearance, Settings, ViewMode};
+use crate::settings::{Appearance, Settings, TreeSort, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
@@ -679,8 +679,10 @@ impl Workspace {
     fn open_vault_at(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.close_all_docs(cx);
         self.graph = None;
-        self.vault
-            .update(cx, |vault, cx| vault.open(root.clone(), cx));
+        self.vault.update(cx, |vault, cx| {
+            vault.tree_sort = self.settings.tree_sort;
+            vault.open(root.clone(), cx);
+        });
         self.settings.last_vault = Some(root);
         self.settings.save();
         self.status_note = None;
@@ -1478,6 +1480,19 @@ impl Workspace {
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
             self.open_document(path, window, cx);
         }
+    }
+
+    fn toggle_tree_sort(&mut self, cx: &mut Context<Self>) {
+        self.settings.tree_sort = match self.settings.tree_sort {
+            TreeSort::Name => TreeSort::Modified,
+            TreeSort::Modified => TreeSort::Name,
+        };
+        self.settings.save();
+        self.vault.update(cx, |vault, cx| {
+            vault.tree_sort = self.settings.tree_sort;
+            vault.refresh(cx);
+        });
+        cx.notify();
     }
 
     fn on_new_folder(&mut self, _: &NewFolder, _window: &mut Window, cx: &mut Context<Self>) {
@@ -5418,6 +5433,22 @@ impl Workspace {
                                     .tooltip("New file")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.on_new_file(&NewFile, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("sort-files")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(match self.settings.tree_sort {
+                                        TreeSort::Name => assets::IconName::ListOrdered,
+                                        TreeSort::Modified => assets::IconName::FileClock,
+                                    })
+                                    .tooltip(match self.settings.tree_sort {
+                                        TreeSort::Name => "Sorted by name",
+                                        TreeSort::Modified => "Sorted by modified",
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_tree_sort(cx);
                                     })),
                             )
                             .child(
