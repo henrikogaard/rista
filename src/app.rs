@@ -7132,6 +7132,7 @@ fn render_linked_mentions(
     } else {
         assets::IconName::ChevronRight
     };
+    let toggle_view = view.clone();
     v_flex()
         .w_full()
         .flex_none()
@@ -7155,14 +7156,13 @@ fn render_linked_mentions(
                         )),
                 )
                 .on_click(move |_, _window, cx| {
-                    let view = view.clone();
                     doc.update(cx, |doc, cx| {
                         doc.mentions_open = !doc.mentions_open;
                         cx.notify();
                     });
                     // The toggle lives on Document but the strip is rendered
                     // by the workspace — notify it or nothing repaints.
-                    view.update(cx, |_, cx| cx.notify());
+                    toggle_view.update(cx, |_, cx| cx.notify());
                 }),
         )
         .when(open, |this| {
