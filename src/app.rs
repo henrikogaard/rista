@@ -21,7 +21,8 @@ use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerSt
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, ResizablePanelGroup};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
@@ -32,6 +33,30 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::path::{Path, PathBuf};
+
+fn canvas_columns(id: &'static str) -> ResizablePanelGroup {
+    h_resizable(id).with_handle_appearance(std::rc::Rc::new(|handle, _, cx| {
+        let engaged = handle.state() != gpui_kit::base::ResizeHandleState::Idle;
+        Some(
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(engaged, |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .w(px(3.))
+                            .h(px(32.))
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().muted_foreground),
+                    )
+                })
+                .into_any_element(),
+        )
+    }))
+}
 
 pub struct Workspace {
     vault: Entity<Vault>,
@@ -4234,6 +4259,7 @@ impl Workspace {
         let dark = matches!(self.settings.appearance, Appearance::Dark);
 
         TitleBar::new()
+            .border_0()
             .child(
                 h_flex()
                     .gap_1()
@@ -4241,7 +4267,8 @@ impl Workspace {
                     .child(
                         Button::new("toggle-sidebar")
                             .ghost()
-                            .xsmall()
+                            .small()
+                            .tooltip("Toggle sidebar")
                             .icon(if collapsed {
                                 assets::IconName::PanelLeftOpen
                             } else {
@@ -4273,7 +4300,8 @@ impl Workspace {
                     .child(
                         Button::new("palette")
                             .ghost()
-                            .xsmall()
+                            .small()
+                            .tooltip("Search commands and notes")
                             .icon(assets::IconName::Search)
                             .label("⌘K")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -4283,7 +4311,8 @@ impl Workspace {
                     .child(
                         Button::new("theme")
                             .ghost()
-                            .xsmall()
+                            .small()
+                            .tooltip("Toggle appearance")
                             .icon(if dark {
                                 assets::IconName::Sun
                             } else {
@@ -4296,7 +4325,8 @@ impl Workspace {
                     .child(
                         Button::new("settings")
                             .ghost()
-                            .xsmall()
+                            .small()
+                            .tooltip("Settings")
                             .icon(assets::IconName::Settings)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_open_settings(&OpenSettings, window, cx);
@@ -5390,16 +5420,14 @@ impl Workspace {
 
         v_flex()
             .size_full()
-            .bg(cx.theme().sidebar)
             .child(
                 h_flex()
                     .w_full()
-                    // Same 36px as the doc tab strip so the bottom rules
-                    // meet at the divider instead of stepping.
-                    .h_9()
+                    .h_11()
+                    .flex_shrink_0()
                     .items_center()
                     .justify_between()
-                    .px_2()
+                    .px_3()
                     // Drop zone for "move to vault root" — the header is
                     // the only always-visible non-folder target.
                     .drag_over::<PathBuf>(|style, _, _, cx| {
@@ -5466,10 +5494,7 @@ impl Workspace {
             )
             .child(self.render_starred(cx))
             .child(
-                // flex_1 fills leftover space; min_h keeps ~3 rows visible
-                // when the panes below crowd the window (it collapsed to a
-                // blank clip — rows rendered into a zero-height region).
-                div().flex_1().min_h(px(72.)).child(
+                div().flex_1().min_h(px(120.)).child(
                     tree(&tree_state, {
                         let render_view = view.clone();
                         let starred_rows = self.settings.starred.clone();
@@ -5798,12 +5823,23 @@ impl Workspace {
                     .text_sm(),
                 ),
             )
-            .child(self.render_outline(cx))
-            .child(self.render_backlinks_pane(cx))
-            .child(self.render_outgoing_pane(cx))
-            .child(self.render_tasks(cx))
-            .child(self.render_calendar_pane(cx))
-            .child(self.render_tags(cx))
+            .child(
+                v_flex()
+                    .id("sidebar-details")
+                    .w_full()
+                    .max_h(relative(0.45))
+                    .min_h_0()
+                    .flex_shrink_0()
+                    .px_1()
+                    .py_2()
+                    .overflow_y_scrollbar()
+                    .child(self.render_outline(cx))
+                    .child(self.render_backlinks_pane(cx))
+                    .child(self.render_outgoing_pane(cx))
+                    .child(self.render_tasks(cx))
+                    .child(self.render_calendar_pane(cx))
+                    .child(self.render_tags(cx)),
+            )
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5938,6 +5974,9 @@ impl Workspace {
         h_flex()
             .id("tab-strip")
             .w_full()
+            .h_11()
+            .flex_shrink_0()
+            .gap_2()
             .items_center()
             // Drop a file from the tree onto the strip to open it as a tab.
             .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
@@ -5952,7 +5991,7 @@ impl Workspace {
             })
             .child(
                 h_flex()
-                    .pl_1p5()
+                    .pl_3()
                     .child(
                         Button::new("nav-back")
                             .ghost()
@@ -5980,10 +6019,9 @@ impl Workspace {
                     .min_w_0()
                     .child(
                         TabBar::new("doc-tabs")
-                            // Segmented = no bar hairline or tab borders —
-                            // the strip reads as one quiet track inside the
-                            // pane card, like the view-mode switcher.
                             .segmented()
+                            .small()
+                            .bg(cx.theme().transparent)
                             .selected_index(self.active.unwrap_or(0))
                             .children(tabs)
                             .on_click(cx.listener(|this, &ix, _window, cx| {
@@ -6071,6 +6109,7 @@ impl Workspace {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     // Same right inset as the titlebar cluster above.
                     .pr_3()
                     // Image tabs have no source/preview modes; an open
@@ -6145,15 +6184,12 @@ impl Workspace {
             .size_full()
             .overflow_hidden()
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
-            // Notes without frontmatter get the same "+ Add property"
-            // affordance the reference editor shows — the write path creates the
-            // `---` block on first use.
             .when(!has_frontmatter, |this| {
                 this.child(
                     div()
                         .id("properties-empty")
                         .w_full()
-                        .px_3()
+                        .px_6()
                         .py_1()
                         .my_2()
                         .cursor_pointer()
@@ -6253,7 +6289,7 @@ impl Workspace {
             ViewMode::Split => div()
                 .size_full()
                 .child(
-                    h_resizable("split")
+                    canvas_columns("split")
                         .child(
                             resizable_panel()
                                 .size_range(px(280.)..px(4000.))
@@ -6352,7 +6388,8 @@ impl Workspace {
             .unwrap_or_else(|| name.to_string());
         let view = cx.entity();
         let mut row = h_flex()
-            .h(px(24.))
+            .h_8()
+            .flex_shrink_0()
             .w_full()
             // Same left edge as the preview text column (px_6).
             .px_6()
@@ -6389,7 +6426,7 @@ impl Workspace {
                     .id("crumb-name")
                     .cursor_pointer()
                     .text_color(cx.theme().foreground)
-                    .hover(|s| s.text_color(cx.theme().accent))
+                    .hover(|s| s.text_color(cx.theme().info))
                     .child(stem)
                     .on_click({
                         let view = view.clone();
@@ -6411,6 +6448,8 @@ impl Workspace {
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
         div()
             .size_full()
+            .px_3()
+            .py_4()
             // Scoped key context — the auto-pair bindings only fire when the
             // document editor is focused, so dialog/search inputs keep the
             // plain characters.
@@ -6935,76 +6974,75 @@ impl Render for Workspace {
             .when(!self.zen, |this| {
                 this.child(self.render_title_bar(window, cx))
             })
-            .child(div().flex_1().min_h_0().child(if !vault_open {
+            .child(
                 div()
-                    .size_full()
-                    .child(self.render_empty_editor(cx))
-                    .into_any_element()
-            } else {
-                h_resizable("workspace")
-                    .when(sidebar_visible, |this| {
-                        this.child(
-                            resizable_panel()
-                                .size(px(240.))
-                                .size_range(px(170.)..px(420.))
-                                // Floating card on the canvas — every pane
-                                // gets the same padding + border + radius.
-                                .child(
+                    .flex_1()
+                    .min_h_0()
+                    .px_1()
+                    .py_1()
+                    .child(if !vault_open {
+                        div()
+                            .size_full()
+                            .child(self.render_empty_editor(cx))
+                            .into_any_element()
+                    } else {
+                        canvas_columns("workspace")
+                            .when(sidebar_visible, |this| {
+                                this.child(
+                                    resizable_panel()
+                                        .size(px(260.))
+                                        .size_range(px(200.)..px(420.))
+                                        .child(
+                                            div().size_full().p_1().child(
+                                                div()
+                                                    .size_full()
+                                                    .bg(cx.theme().sidebar)
+                                                    .rounded(cx.theme().radius_lg)
+                                                    .overflow_hidden()
+                                                    .child(self.render_sidebar(cx)),
+                                            ),
+                                        ),
+                                )
+                            })
+                            .child(
+                                resizable_panel().child(
                                     div().size_full().p_1().child(
-                                        div()
+                                        v_flex()
                                             .size_full()
-                                            .bg(cx.theme().sidebar)
-                                            .border_1()
-                                            .border_color(cx.theme().border)
+                                            .bg(cx.theme().group_box)
                                             .rounded(cx.theme().radius_lg)
                                             .overflow_hidden()
-                                            .child(self.render_sidebar(cx)),
+                                            .when(!self.zen && !self.docs.is_empty(), |this| {
+                                                this.child(self.render_tab_bar(cx))
+                                            })
+                                            .child(div().flex_1().min_h_0().child({
+                                                if let Some(graph) = self.graph.clone() {
+                                                    graph.into_any_element()
+                                                } else {
+                                                    let content = self.render_editor_area(cx);
+                                                    if self.zen {
+                                                        h_flex()
+                                                            .size_full()
+                                                            .justify_center()
+                                                            .child(
+                                                                div()
+                                                                    .h_full()
+                                                                    .w_full()
+                                                                    .max_w(px(920.))
+                                                                    .child(content),
+                                                            )
+                                                            .into_any_element()
+                                                    } else {
+                                                        content
+                                                    }
+                                                }
+                                            })),
                                     ),
                                 ),
-                        )
-                    })
-                    .child(
-                        resizable_panel().child(
-                            div().size_full().p_1().child(
-                                v_flex()
-                                    .size_full()
-                                    .bg(cx.theme().group_box)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .rounded(cx.theme().radius_lg)
-                                    .overflow_hidden()
-                                    .when(!self.zen && !self.docs.is_empty(), |this| {
-                                        this.child(self.render_tab_bar(cx))
-                                    })
-                                    .child(div().flex_1().min_h_0().child({
-                                        if let Some(graph) = self.graph.clone() {
-                                            graph.into_any_element()
-                                        } else {
-                                            let content = self.render_editor_area(cx);
-                                            if self.zen {
-                                                h_flex()
-                                                    .size_full()
-                                                    .justify_center()
-                                                    .child(
-                                                        div()
-                                                            .h_full()
-                                                            .w_full()
-                                                            .max_w(px(920.))
-                                                            .child(content),
-                                                    )
-                                                    .into_any_element()
-                                            } else {
-                                                content
-                                            }
-                                        }
-                                    })),
-                            ),
-                        ),
-                    )
-                    .into_any_element()
-            }))
-            // Full-width status bar: its top rule runs edge-to-edge and
-            // the sidebar divider lands on it.
+                            )
+                            .into_any_element()
+                    }),
+            )
             .when(!self.zen && vault_open, |this| {
                 this.child(self.render_status_bar(cx))
             })

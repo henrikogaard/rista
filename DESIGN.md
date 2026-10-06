@@ -1,6 +1,6 @@
 # Rísta Design System
 
-Quiet, modern-mythic. Nordic restraint: mineral surfaces, muted blue accents,
+Quiet, modern-mythic. Nordic restraint: mineral surfaces, restrained accents,
 terse type, nothing ornamental. Files are the product; chrome recedes.
 
 The tokens below are the single source of truth in `src/theme.rs`
@@ -17,9 +17,8 @@ Regenerate after editing `src/theme.rs` (see "Generating token exports").
 ## Principles
 
 1. **Dark first.** Rísta Night is the default; Day is a full peer, not an inversion.
-2. **Quiet chrome.** Borderless toolbar controls; one-pixel separators; no
-   gradients anywhere (the old web app allowed one on the welcome surface — the
-   native app does not need it).
+2. **Quiet chrome.** Borderless pane cards and toolbar controls; canvas gutters
+   separate the panes. Resize grips appear only on hover or drag. No gradients.
 3. **Compact density.** Small type, tight spacing, no wasted vertical space.
    Default UI text 13px, editor 14px, chrome labels 11–12px.
 4. **Semantic tokens only.** Never hardcode a color in Rust UI code —
@@ -32,16 +31,16 @@ Palette intent per token group (values in `design/tokens.json`):
 
 | Token | Night | Day | Role |
 |---|---|---|---|
-| `background` | `#1a1d24` | `#f6f4ef` | Deepest surface |
+| `background` | `#0a0b0e` | `#f6f4ef` | Canvas |
 | `foreground` | `#d8dce5` | `#363b47` | Primary text |
-| `accent.background` | `#232834` | `#e9e6dd` | Interactive fills |
-| `ring` / `caret` | `#88b3d4` / `#9fc2dd` | `#5b7fa3` / `#4a6b8f` | Focus + cursor |
-| `primary.background` | `#6b86a8` | `#5b7fa3` | Primary action |
-| `sidebar.background` | `#1f232c` | `#f0eee7` | Vault rail |
-| `muted.foreground` | `#7a8194` | `#8a8fa0` | Secondary text |
+| `accent.background` | `#181b22` | `#e9e6dd` | Interactive fills |
+| `ring` / `caret` | `#6fd8c8` / `#7ee0d0` | `#5b7fa3` / `#4a6b8f` | Focus + cursor |
+| `primary.background` | `#6fd8c8` | `#5b7fa3` | Primary action |
+| `sidebar.background` | `#121419` | `#ffffff` | Vault rail |
+| `muted.foreground` | `#82899a` | `#727887` | Secondary text |
 | `success` / `warning` / `danger` | muted green/amber/red | — | Semantic only |
 
-Accent is desaturated Nordic blue-grey — never electric blue, never warm brand color.
+Night uses a restrained teal accent; Day uses blue-grey.
 
 ## Typography
 
@@ -52,13 +51,16 @@ Accent is desaturated Nordic blue-grey — never electric blue, never warm brand
 ## Spacing & radius
 
 - Base spacing unit 4px; standard gaps 8/12/16px (`gap_2/3/4`).
-- Radius follows gpui-kit `radius`/`radius.lg` — no custom radii.
-- Sidebar default 240px, resizable 170–420px. Split panes ≥ 280px each.
+- Radius follows `radius` (8px) / `radius.lg` (12px) — no custom radii.
+- Sidebar default 260px, resizable 200–420px. Split panes ≥ 280px each.
+- Files and document headers are 44px high; pane gutters are 8px.
+- Sidebar detail sections scroll within at most 45% of the pane height so the
+  file tree retains room. Each section keeps its own collapse control.
 
 ## Components
 
-- **TitleBar** — custom chrome with traffic-light spacing, vault name centered,
-  right-side actions (search ⌘K, zen, theme, settings).
+- **TitleBar** — flat canvas chrome with traffic-light spacing, vault name
+  beside the sidebar toggle, and right-side search, theme, and settings actions.
 - **File tree** — `TreeItem` folders before files, depth ≤ 12, dotfiles and
   `.git/node_modules/target/dist` hidden. Context menu: New file here / Rename / Delete.
 - **Tabs** — one per open note, close on click; dirty state implicit (autosave).
@@ -79,11 +81,42 @@ with `IconName` glyphs. `^block-id` → hidden anchor (stripped).
 ```bash
 python3 - <<'EOF'
 import re, json
+from pathlib import Path
 src = open('src/theme.rs').read()
 j = re.search(r'const RISTA_THEMES: &str = r##"(.*?)"##;', src, re.S).group(1)
-json.dump({"rista": json.loads(j)}, open('design/tokens.json','w'), indent=2)
+themes = {
+    t["mode"]: {
+        "name": t["name"],
+        "colors": {
+            **t["colors"],
+            **{
+                f"highlight.{name}": value
+                for name, value in t["highlight"].items()
+                if name != "syntax"
+            },
+            **{
+                f"syntax.{name}": value["color"]
+                for name, value in t["highlight"]["syntax"].items()
+            },
+        },
+    }
+    for t in json.loads(j)["themes"]
+}
+tokens = {"themes": themes}
+Path("design/tokens.json").write_text(json.dumps({"rista": tokens}, indent=2) + "\n")
+header = "Rísta design tokens — generated from src/theme.rs. Do not edit by hand."
+Path("design/tokens.ts").write_text(
+    f"// {header}\n\nexport const rista = "
+    + json.dumps(tokens, indent=2)
+    + " as const;\n\nexport default rista;\n"
+)
+css = [f"/* {header} */", ""]
+for mode, theme in themes.items():
+    selector = ':root, ' if mode == "dark" else ''
+    css.append(selector + f'[data-rista-theme="{mode}"] {{')
+    for name, value in theme["colors"].items():
+        css.append(f'  --rista-{name.replace(".", "-")}: {value};')
+    css.extend(["}", ""])
+Path("design/tokens.css").write_text("\n".join(css))
 EOF
 ```
-
-then rebuild `tokens.css`/`tokens.ts` by flattening `colors` + `highlight.syntax`
-into `--rista-<token>` names (see git history for the generator snippet).

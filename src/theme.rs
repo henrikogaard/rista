@@ -1,6 +1,6 @@
 //! Rísta theme: two carved palettes — Night (default) and Day.
 //!
-//! Nordic restraint: deep mineral slate, frost-blue accent, warm paper light.
+//! Mineral panes on a dark canvas, a teal accent, and warm paper light.
 //! Colors live in the JSON theme configs below; application code reads only
 //! semantic tokens from `cx.theme()`.
 
@@ -20,7 +20,7 @@ const RISTA_THEMES: &str = r##"{
       "name": "Rísta Night",
       "mode": "dark",
       "radius": 8,
-      "radius.lg": 10,
+      "radius.lg": 12,
       "colors": {
         "background": "#0a0b0e",
         "foreground": "#d8dce5",
@@ -31,7 +31,7 @@ const RISTA_THEMES: &str = r##"{
         "accent.background": "#181b22",
         "accent.foreground": "#b8c0ce",
         "title_bar.background": "#0a0b0e",
-        "title_bar.border": "#14161c",
+        "title_bar.border": "#0a0b0e",
         "tab.background": "#12141900",
         "tab.active.background": "#1d212b",
         "tab.active.foreground": "#e4e8f0",
@@ -119,7 +119,7 @@ const RISTA_THEMES: &str = r##"{
       "name": "Rísta Day",
       "mode": "light",
       "radius": 8,
-      "radius.lg": 10,
+      "radius.lg": 12,
       "colors": {
         "background": "#f6f4ef",
         "foreground": "#363b47",
@@ -130,7 +130,7 @@ const RISTA_THEMES: &str = r##"{
         "accent.background": "#e9e6dd",
         "accent.foreground": "#454b58",
         "title_bar.background": "#f6f4ef",
-        "title_bar.border": "#e6e3d8",
+        "title_bar.border": "#f6f4ef",
         "tab.background": "#f6f4ef00",
         "tab.active.background": "#ffffff",
         "tab.active.foreground": "#2e3340",
@@ -153,7 +153,7 @@ const RISTA_THEMES: &str = r##"{
         "list.active.border": "#5b7fa3",
         "list.hover.background": "#e8e5dc",
         "muted.background": "#e9e6dd",
-        "muted.foreground": "#8a8fa0",
+        "muted.foreground": "#727887",
         "primary.background": "#5b7fa3",
         "primary.foreground": "#f6f4ef",
         "primary.hover.background": "#6b8db0",
