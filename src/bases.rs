@@ -1355,7 +1355,7 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
 /// Moment.js pattern → chrono strftime. Covers the common tokens:
 /// `YYYY MM DD HH mm ss`, ordinals `Do`, names `dddd/ddd/MMMM/MMM`,
 /// `A/a` meridian — Obsidian `.base` `format(date, pattern)`.
-fn moment_to_chrono(pattern: &str) -> String {
+pub(crate) fn moment_to_chrono(pattern: &str) -> String {
     const TOKENS: &[(&str, &str)] = &[
         // Longest first — `find` returns the first prefix match.
         ("dddd", "%A"),
@@ -2818,9 +2818,8 @@ impl BaseView {
                 let workspace = self.workspace.clone();
                 let root = root.clone();
                 cell = cell.cursor_pointer().on_click(move |_, window, cx| {
-                    if let Some(root) = &root {
-                        let path = root.join(format!("{}.md", day.format("%Y-%m-%d")));
-                        let _ = workspace.update(cx, |ws, cx| ws.open_daily_at(path, window, cx));
+                    if root.is_some() {
+                        let _ = workspace.update(cx, |ws, cx| ws.open_daily_at(day, window, cx));
                     }
                 });
                 row_el = row_el.child(cell);

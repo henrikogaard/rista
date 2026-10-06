@@ -11,6 +11,7 @@ use crate::settings::{Appearance, Settings, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
+use chrono::NaiveDate;
 use gpui_kit::assets;
 use gpui_kit::base::Placement;
 use gpui_kit::base::StyledExt;
@@ -1365,12 +1366,25 @@ impl Workspace {
         .detach();
     }
 
+    /// `<daily_dir>/<daily_format>.md` for `date` — the daily-format
+    /// setting is Moment syntax (`YYYY-MM-DD`), translated via
+    /// `bases::moment_to_chrono`.
+    fn daily_path_for(&self, date: NaiveDate, cx: &App) -> Option<PathBuf> {
+        let fmt = crate::bases::moment_to_chrono(&self.settings.daily_format);
+        self.vault
+            .read(cx)
+            .daily_note(date, &self.settings.daily_dir, &fmt)
+    }
+
     fn on_open_daily(&mut self, _: &OpenDailyNote, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.vault.read(cx).daily_note() else {
+        if self
+            .daily_path_for(chrono::Local::now().date_naive(), cx)
+            .is_none()
+        {
             self.note_status("Open a folder first", cx);
             return;
-        };
-        self.open_daily_at(path, window, cx);
+        }
+        self.open_daily_at(chrono::Local::now().date_naive(), window, cx);
     }
 
     /// Initial content for a missing daily note — Obsidian convention:
@@ -1400,15 +1414,24 @@ impl Workspace {
     }
 
     /// Shared tail of `on_open_daily`: write (templated if missing),
-    /// refresh the vault, open. `path` is `YYYY-MM-DD.md`.
+    /// refresh the vault, open — `daily_dir`/`daily_format` resolve
+    /// `date` to the path.
     pub(crate) fn open_daily_at(
         &mut self,
-        path: PathBuf,
+        date: NaiveDate,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(path) = self.daily_path_for(date, cx) else {
+            self.note_status("Open a folder first", cx);
+            return;
+        };
         if !path.exists() {
-            if std::fs::write(&path, self.daily_seed(&path, cx)).is_err() {
+            if path
+                .parent()
+                .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+                || std::fs::write(&path, self.daily_seed(&path, cx)).is_err()
+            {
                 return;
             }
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
@@ -1419,7 +1442,7 @@ impl Workspace {
     /// Palette "Append to daily note…" — prompt for a line, append it
     /// as `- {text}` without opening the note (Obsidian parity).
     fn show_append_daily_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.vault.read(cx).daily_note() else {
+        let Some(path) = self.daily_path_for(chrono::Local::now().date_naive(), cx) else {
             self.note_status("Open a folder first", cx);
             return;
         };
@@ -1463,7 +1486,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !path.exists() && std::fs::write(path, self.daily_seed(path, cx)).is_err() {
+        if !path.exists()
+            && (path
+                .parent()
+                .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+                || std::fs::write(path, self.daily_seed(path, cx)).is_err())
+        {
             self.note_status("Could not create daily note", cx);
             return;
         }
@@ -4460,7 +4488,7 @@ impl Workspace {
     /// with a `YYYY-MM-DD.md` daily note render accent+bold; today is
     /// ringed; click opens (or templates) that day's note.
     fn render_calendar_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        use chrono::{Datelike, NaiveDate};
+        use chrono::Datelike;
         let theme = cx.theme();
         let (year, month) = self.cal_month;
         let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else {
@@ -4476,14 +4504,15 @@ impl Workspace {
         .unwrap_or(30);
         // Monday-first leading blanks.
         let lead = (first.weekday().num_days_from_monday()) as usize;
-        // Which days have a daily note at vault root.
+        // Which days have a daily note in the daily-note folder.
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
+        let daily_root = root.join(&self.settings.daily_dir);
         let have: std::collections::HashSet<String> = self
             .vault
             .read(cx)
             .notes
             .iter()
-            .filter(|p| p.parent() == Some(root.as_path()))
+            .filter(|p| p.parent() == Some(daily_root.as_path()))
             .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
             .collect();
         let month_name = first.format("%B %Y").to_string();
@@ -4493,7 +4522,6 @@ impl Workspace {
             let stamp = date.format("%Y-%m-%d").to_string();
             let has_note = have.contains(&stamp);
             let is_today = date == today;
-            let path = root.join(format!("{stamp}.md"));
             div()
                 .id(("cal-day", day as usize))
                 .w(px(26.))
@@ -4514,7 +4542,7 @@ impl Workspace {
                 .hover(|s| s.bg(theme.muted.opacity(0.5)))
                 .child(day.to_string())
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_daily_at(path.clone(), window, cx);
+                    this.open_daily_at(date, window, cx);
                 }))
         };
 

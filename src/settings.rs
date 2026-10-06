@@ -48,6 +48,15 @@ pub struct Settings {
     /// template live in (Obsidian's template folder setting).
     #[serde(default = "default_templates_dir")]
     pub templates_dir: String,
+    /// Vault-relative folder daily notes are created in (Obsidian's
+    /// daily-notes "new file location"; empty = vault root).
+    #[serde(default)]
+    pub daily_dir: String,
+    /// Daily-note filename pattern in Moment syntax, e.g.
+    /// `YYYY-MM-DD` → `2026-10-05.md` (Obsidian's daily-notes
+    /// "date format").
+    #[serde(default = "default_daily_format")]
+    pub daily_format: String,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     /// Which sidebar panes are expanded — persists across launches.
@@ -76,6 +85,10 @@ fn default_true() -> bool {
 
 fn default_templates_dir() -> String {
     "templates".to_string()
+}
+
+fn default_daily_format() -> String {
+    "YYYY-MM-DD".to_string()
 }
 
 /// Expanded/collapsed state of the optional sidebar sections.
@@ -125,6 +138,8 @@ impl Default for Settings {
             last_vault: None,
             attachments_dir: "attachments".to_string(),
             templates_dir: default_templates_dir(),
+            daily_dir: String::new(),
+            daily_format: default_daily_format(),
             starred: Vec::new(),
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),

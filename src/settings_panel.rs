@@ -18,6 +18,8 @@ pub struct SettingsView {
     tab_size_select: Entity<SelectState<SearchableVec<String>>>,
     attachments_input: Entity<InputState>,
     templates_input: Entity<InputState>,
+    daily_dir_input: Entity<InputState>,
+    daily_format_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -97,6 +99,16 @@ impl SettingsView {
             state.set_value(settings.templates_dir.clone(), window, cx);
             state
         });
+        let daily_dir_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("vault root");
+            state.set_value(settings.daily_dir.clone(), window, cx);
+            state
+        });
+        let daily_format_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("YYYY-MM-DD");
+            state.set_value(settings.daily_format.clone(), window, cx);
+            state
+        });
 
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(
@@ -170,6 +182,34 @@ impl SettingsView {
                 this.update_setting(cx, |s| s.templates_dir = dir, window);
             },
         ));
+        subs.push(cx.subscribe_in(
+            &daily_dir_input,
+            window,
+            |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let dir = state.read(cx).value().trim().to_string();
+                if dir.starts_with('/') || dir.contains("..") {
+                    return;
+                }
+                this.update_setting(cx, |s| s.daily_dir = dir, window);
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &daily_format_input,
+            window,
+            |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let fmt = state.read(cx).value().trim().to_string();
+                if fmt.is_empty() {
+                    return;
+                }
+                this.update_setting(cx, |s| s.daily_format = fmt, window);
+            },
+        ));
 
         Self {
             workspace,
@@ -179,6 +219,8 @@ impl SettingsView {
             tab_size_select,
             attachments_input,
             templates_input,
+            daily_dir_input,
+            daily_format_input,
             _subscriptions: subs,
         }
     }
@@ -369,6 +411,16 @@ impl Render for SettingsView {
                         cx,
                         "Template folder",
                         Input::new(&self.templates_input).w(px(180.)),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        "Daily note folder",
+                        Input::new(&self.daily_dir_input).w(px(180.)),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        "Daily note format",
+                        Input::new(&self.daily_format_input).w(px(180.)),
                     )),
             )
             .child(

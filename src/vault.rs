@@ -5,6 +5,7 @@ use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::*;
 use notify::{RecursiveMode, Watcher};
 
+use chrono::NaiveDate;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -391,11 +392,20 @@ impl Vault {
             .any(|p| normalize_path(p) == want)
     }
 
-    /// The daily-note path for today: `YYYY-MM-DD.md` at vault root.
-    pub fn daily_note(&self) -> Option<PathBuf> {
-        self.root
-            .as_ref()
-            .map(|root| root.join(format!("{}.md", chrono::Local::now().format("%Y-%m-%d"))))
+    /// The daily-note path for `date` — `<daily_dir>/<chrono_fmt>.md`.
+    /// `daily_dir` is vault-relative ("" = root); `chrono_fmt` is a
+    /// strftime pattern the caller derives from the daily-format
+    /// setting.
+    pub fn daily_note(
+        &self,
+        date: NaiveDate,
+        daily_dir: &str,
+        chrono_fmt: &str,
+    ) -> Option<PathBuf> {
+        self.root.as_ref().map(|root| {
+            root.join(daily_dir)
+                .join(format!("{}.md", date.format(chrono_fmt)))
+        })
     }
 
     /// Resolver for `![[image.png]]` embeds — basename lookup, vault-wide.
