@@ -3110,7 +3110,7 @@ pub fn splice_name(src: &str, view_ix: usize, name: &str) -> Option<(usize, usiz
 /// Delete the `view_ix`-th view item outright — the tab context-menu
 /// "Delete view" write path.
 pub fn drop_view(src: &str, view_ix: usize) -> Option<(usize, usize, String)> {
-    let (lines, offs, start_ln, end_ln, _) = view_item(src, view_ix)?;
+    let (_, offs, start_ln, end_ln, _) = view_item(src, view_ix)?;
     Some((offs[start_ln], offs[end_ln], String::new()))
 }
 
@@ -4024,7 +4024,13 @@ impl Render for BaseView {
             .pt_2()
             .pb_1()
             .justify_between()
-            .child(tabs)
+            // More views than width? The strip scrolls sideways
+            // instead of clipping tabs under the search box.
+            .child(
+                gpui_kit::component::scroll::ScrollableElement::overflow_x_scrollbar(
+                    tabs.flex_1().min_w_0(),
+                ),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -5057,11 +5063,18 @@ impl Render for BaseView {
                     .text_color(theme.danger)
                     .child(e.clone())
             }))
-            .child(
+            // Kanban columns run past the pane's width — the board
+            // scrolls horizontally (and vertically) rather than
+            // clipping the rightmost column.
+            .child(if kanban {
+                gpui_kit::component::scroll::ScrollableElement::overflow_scrollbar(
+                    rows.flex_1().min_h_0(),
+                )
+            } else {
                 gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
                     rows.flex_1().min_h_0(),
-                ),
-            )
+                )
+            })
             .child(
                 div()
                     .w_full()
