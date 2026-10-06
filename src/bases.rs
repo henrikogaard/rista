@@ -5618,6 +5618,96 @@ impl Render for BaseView {
                                         });
                                     })
                             });
+                            // Column width… — `columnSize: {col: px}`,
+                            // blank resets to the auto width.
+                            let menu = menu.item({
+                                let this = this.clone();
+                                let col = col.clone();
+                                PopupMenuItem::new(format!("{col} width…"))
+                                    .icon(assets::IconName::MoveHorizontal)
+                                    .on_click(move |_, window, cx| {
+                                        let input =
+                                            this.read(cx).rename_input.clone();
+                                        input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx);
+                                        });
+                                        let this = this.clone();
+                                        let col = col.clone();
+                                        let input2 = input.clone();
+                                        window.open_dialog(
+                                            cx,
+                                            move |dialog, _window, _cx| {
+                                                let input = input.clone();
+                                                dialog
+                                                    .title(format!(
+                                                        "{col} width (px) — blank resets"
+                                                    ))
+                                                    .w(px(320.))
+                                                    .child(
+                                                        div().w_full().child(
+                                                            Input::new(&input)
+                                                                .appearance(true),
+                                                        ),
+                                                    )
+                                                    .on_ok({
+                                                        let this = this.clone();
+                                                        let col = col.clone();
+                                                        move |_, window, cx| {
+                                                            this.update(
+                                                                cx,
+                                                                |view, cx| {
+                                                                    let text = view
+                                                                        .rename_input
+                                                                        .read(cx)
+                                                                        .value()
+                                                                        .trim()
+                                                                        .to_string();
+                                                                    let val = if text
+                                                                        .is_empty()
+                                                                    {
+                                                                        None
+                                                                    } else if text
+                                                                        .parse::<f64>()
+                                                                        .is_ok()
+                                                                    {
+                                                                        Some(text)
+                                                                    } else {
+                                                                        return;
+                                                                    };
+                                                                    if let SpecSrc::Doc(
+                                                                        doc,
+                                                                    ) = &view.spec_src
+                                                                    {
+                                                                        doc.update(
+                                                                            cx,
+                                                                            |doc, cx| {
+                                                                                doc.set_base_view_map_entry(
+                                                                                    view.view_ix,
+                                                                                    "columnSize",
+                                                                                    &col,
+                                                                                    val.as_deref(),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            },
+                                                                        );
+                                                                    }
+                                                                    view.doc_epoch += 1;
+                                                                    cx.notify();
+                                                                },
+                                                            );
+                                                            true
+                                                        }
+                                                    })
+                                            },
+                                        );
+                                        window.defer(cx, move |window, cx| {
+                                            input2.update(cx, |input, cx| {
+                                                input.focus(window, cx);
+                                            });
+                                        });
+                                    })
+                            });
                             let this = this.clone();
                             let col = col.clone();
                             menu.item(
