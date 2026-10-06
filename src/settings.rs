@@ -44,6 +44,10 @@ pub struct Settings {
     /// Vault-relative folder pasted/dropped images are copied into
     /// (Obsidian's "attachment folder path").
     pub attachments_dir: String,
+    /// Vault-relative folder the template picker and the daily-note
+    /// template live in (Obsidian's template folder setting).
+    #[serde(default = "default_templates_dir")]
+    pub templates_dir: String,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     /// Which sidebar panes are expanded — persists across launches.
@@ -68,6 +72,10 @@ pub struct Settings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_templates_dir() -> String {
+    "templates".to_string()
 }
 
 /// Expanded/collapsed state of the optional sidebar sections.
@@ -116,6 +124,7 @@ impl Default for Settings {
             focus_mode: false,
             last_vault: None,
             attachments_dir: "attachments".to_string(),
+            templates_dir: default_templates_dir(),
             starred: Vec::new(),
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),

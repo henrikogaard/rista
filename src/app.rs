@@ -1290,7 +1290,10 @@ impl Workspace {
             name = format!("Untitled {n}.base");
         }
         let path = root.join(&name);
-        let spec = "filters:\n  and:\n    - file.folder != \"templates\"\nviews:\n  - type: table\n    name: Table\n";
+        let spec = format!(
+            "filters:\n  and:\n    - file.folder != \"{}\"\nviews:\n  - type: table\n    name: Table\n",
+            self.settings.templates_dir
+        );
         if std::fs::write(&path, spec.as_bytes()).is_ok() {
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
             self.open_document(path, window, cx);
@@ -1371,7 +1374,7 @@ impl Workspace {
     }
 
     /// Initial content for a missing daily note — Obsidian convention:
-    /// `templates/daily.md` seeds it with `{{date}}`/`{{time}}`/
+    /// `<templates_dir>/daily.md` seeds it with `{{date}}`/`{{time}}`/
     /// `{{title}}`/`{{cursor}}` expanded, else a plain heading.
     fn daily_seed(&self, path: &Path, cx: &App) -> String {
         let title = path
@@ -1382,7 +1385,10 @@ impl Workspace {
             .read(cx)
             .root
             .as_ref()
-            .and_then(|root| std::fs::read_to_string(root.join("templates").join("daily.md")).ok())
+            .and_then(|root| {
+                std::fs::read_to_string(root.join(&self.settings.templates_dir).join("daily.md"))
+                    .ok()
+            })
             .map(|tpl| {
                 let now = crate::history::epoch();
                 tpl.replace("{{date}}", &crate::history::format_date(now))
@@ -3544,7 +3550,7 @@ impl Workspace {
             self.note_status("Open a note first", cx);
             return;
         };
-        let files = template_files(&root);
+        let files = template_files(&root, &self.settings.templates_dir);
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
             let mut list = v_flex().w_full().py_1();
@@ -6692,10 +6698,10 @@ pub(crate) fn is_base(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `templates/**/*.md` under the vault root, sorted for a stable dialog list.
-fn template_files(root: &std::path::Path) -> Vec<PathBuf> {
+/// `<templates_dir>/**/*.md` under the vault root, sorted for a stable dialog list.
+fn template_files(root: &std::path::Path, templates_dir: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let mut stack = vec![root.join("templates")];
+    let mut stack = vec![root.join(templates_dir)];
     while let Some(dir) = stack.pop() {
         let Ok(read) = std::fs::read_dir(&dir) else {
             continue;
