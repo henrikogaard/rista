@@ -837,16 +837,37 @@ impl Render for GraphView {
                     // open_document runs persist_tabs →
                     // sync_graph_active, which would re-enter this
                     // same entity update and panic.
-                    let open = this.update(cx, |view, _cx| {
+                    let open = this.update(cx, |view, cx| {
                         let drag = view.drag.take();
                         match drag {
                             Some(Drag::Node { ix, moved: false }) => {
-                                view.nodes.get(ix).and_then(|n| n.path.clone())
+                                view.nodes.get(ix).and_then(|n| {
+                                    n.path.clone().or_else(|| {
+                                        // Ghost click → create the
+                                        // missing note (Obsidian does
+                                        // the same from its graph).
+                                        let label = n.label.to_string();
+                                        if label.is_empty()
+                                            || label.contains('/')
+                                            || label.contains('\\')
+                                        {
+                                            return None;
+                                        }
+                                        Some(
+                                            view.vault
+                                                .read(cx)
+                                                .root
+                                                .clone()?
+                                                .join(format!("{label}.md")),
+                                        )
+                                    })
+                                })
                             }
                             _ => None,
                         }
                     });
                     if let Some(path) = open {
+                        let _ = std::fs::File::create_new(&path);
                         let ws = this.read(cx).workspace.upgrade();
                         if let Some(ws) = ws {
                             ws.update(cx, |ws, cx| {
