@@ -1870,6 +1870,23 @@ fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
     None
 }
 
+/// `file.size` cell text — human-readable bytes like Obsidian
+/// ("12.3 KB" instead of raw "12600").
+fn human_size(bytes: f64) -> String {
+    let units = ["B", "KB", "MB", "GB"];
+    let mut v = bytes;
+    let mut u = 0usize;
+    while v >= 1024.0 && u < units.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{} B", v as i64)
+    } else {
+        format!("{v:.1} {}", units[u])
+    }
+}
+
 /// Stem of a resolved path, or the string itself when it isn't one.
 fn stem_of(s: &str) -> String {
     let p = Path::new(s);
@@ -2395,6 +2412,17 @@ fn compute(
                 .enumerate()
                 .map(|(ix, cell)| {
                     let col = &columns[ix];
+                    if col == "file.size" {
+                        if let Lit::Num(n) = cell {
+                            if *n > 0.0 {
+                                return Cell {
+                                    text: human_size(*n),
+                                    link: None,
+                                    lit: cell.clone(),
+                                };
+                            }
+                        }
+                    }
                     if is_date_column(col) {
                         if let Lit::Num(epoch) = cell {
                             if *epoch > 0.0 {
