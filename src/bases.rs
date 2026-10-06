@@ -1585,6 +1585,9 @@ struct ViewSpec {
 struct BaseSpec {
     filters: Option<Value>,
     formulas: BTreeMap<String, Expr>,
+    /// Raw `formulas:` source strings (unquoted) — the "Edit formula"
+    /// dialog's prefill, since `Expr` doesn't round-trip to text.
+    formula_srcs: BTreeMap<String, String>,
     /// Top-level `summaries:` — named custom formulas evaluated over
     /// `values` (the column's values across the filtered row set).
     summaries: BTreeMap<String, Expr>,
@@ -1598,6 +1601,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
     let mut spec = BaseSpec {
         filters: None,
         formulas: BTreeMap::new(),
+        formula_srcs: BTreeMap::new(),
         summaries: BTreeMap::new(),
         properties: BTreeMap::new(),
         views: Vec::new(),
@@ -1623,6 +1627,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             let (Some(name), Some(src)) = (k.as_str(), v.as_str()) else {
                 continue;
             };
+            spec.formula_srcs.insert(name.to_string(), src.to_string());
             match parse_expr(src) {
                 Ok(expr) => {
                     spec.formulas.insert(name.to_string(), expr);
@@ -2033,6 +2038,9 @@ struct Computed {
     /// Per-view `filters:` presence — drives the view menu's
     /// "Clear filters" item.
     filters_by_view: Vec<bool>,
+    /// Raw `formulas:` sources — the "Edit formula…" dialog prefill
+    /// for `formula.*` headers.
+    formula_srcs: BTreeMap<String, String>,
     /// Selected view's `imageFit:` (`cover`/`contain`) for card art.
     image_fit: Option<String>,
     /// Selected view's `imageAspectRatio:` for card art.
@@ -2624,6 +2632,7 @@ fn compute(
         groupable,
         sort_spec: view.sort.first().map(|k| (k.prop.clone(), k.desc)),
         filters_by_view: spec.views.iter().map(|v| v.filters.is_some()).collect(),
+        formula_srcs: spec.formula_srcs.clone(),
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
         col_size,
@@ -2870,7 +2879,7 @@ fn view_item<'a>(
 
 /// Escape a value for embedding inside a single-quoted YAML scalar —
 /// `'` doubles per YAML rules.
-fn yaml_squote(s: &str) -> String {
+pub(crate) fn yaml_squote(s: &str) -> String {
     s.replace('\'', "''")
 }
 
@@ -3134,6 +3143,86 @@ pub fn splice_view_map_entry(
             yaml_name(v)
         ),
     ))
+}
+
+/// Text-splice a scalar entry under a spec-root mapping —
+/// `{map_key}: {entry}: v` — the `formulas:` write path. Creates the
+/// map before `views:` when absent; `None` deletes the entry (and the
+/// map when it was the last). Returns `(byte_start, byte_end,
+/// replacement)` or None.
+pub fn splice_root_map_entry(
+    src: &str,
+    map_key: &str,
+    entry_key: &str,
+    value: Option<&str>,
+) -> Option<(usize, usize, String)> {
+    let lines: Vec<&str> = src.split_inclusive('\n').collect();
+    let mut offs = Vec::with_capacity(lines.len() + 1);
+    offs.push(0usize);
+    for l in &lines {
+        offs.push(offs.last().unwrap() + l.len());
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let at = |i: usize| offs.get(i).copied().unwrap_or(src.len());
+    let ehead = format!("{}:", yaml_name(entry_key));
+
+    let map_ln = lines
+        .iter()
+        .position(|l| indent(l) == 0 && l.trim_start().starts_with(&format!("{map_key}:")));
+    let Some(map_ln) = map_ln else {
+        let v = value?;
+        let views_ln = lines
+            .iter()
+            .position(|l| indent(l) == 0 && l.trim_start().starts_with("views:"));
+        let at = views_ln.map(at).unwrap_or(src.len());
+        return Some((at, at, format!("{map_key}:\n  {ehead} {v}\n")));
+    };
+
+    let map_end = (map_ln + 1..lines.len())
+        .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) == 0)
+        .unwrap_or(lines.len());
+    let entry_ind = (map_ln + 1..map_end)
+        .filter(|&i| !lines[i].trim().is_empty())
+        .map(|i| indent(lines[i]))
+        .next()
+        .unwrap_or(2);
+
+    let entry_ln = (map_ln + 1..map_end)
+        .find(|&i| indent(lines[i]) == entry_ind && lines[i].trim_start().starts_with(&ehead));
+    let Some(entry_ln) = entry_ln else {
+        let v = value?;
+        return Some((
+            at(map_end),
+            at(map_end),
+            format!("{}{ehead} {v}\n", " ".repeat(entry_ind)),
+        ));
+    };
+
+    // The entry's block ends at the next line at ≤ entry_ind — scalar
+    // entries occupy exactly one line, but tolerate deeper children.
+    let block_end = (entry_ln + 1..map_end)
+        .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) <= entry_ind)
+        .unwrap_or(map_end);
+
+    match value {
+        Some(v) => Some((
+            offs[entry_ln],
+            offs[block_end],
+            format!("{}{ehead} {v}\n", " ".repeat(entry_ind)),
+        )),
+        None => {
+            let other_entries = (map_ln + 1..map_end)
+                .filter(|&i| {
+                    !lines[i].trim().is_empty() && indent(lines[i]) == entry_ind && i != entry_ln
+                })
+                .count();
+            if other_entries > 0 {
+                Some((offs[entry_ln], offs[block_end], String::new()))
+            } else {
+                Some((offs[map_ln], offs[map_end], String::new()))
+            }
+        }
+    }
 }
 
 /// Text-splice `properties: {prop: {displayName: v}}` at spec root —
@@ -3954,6 +4043,7 @@ impl BaseView {
                 groupable: Vec::new(),
                 sort_spec: None,
                 filters_by_view: Vec::new(),
+                formula_srcs: BTreeMap::new(),
                 summaries: Vec::new(),
                 image_fit: None,
                 image_aspect: None,
@@ -5537,6 +5627,7 @@ impl Render for BaseView {
                         let col = computed.columns.get(ix).cloned().unwrap_or_default();
                         let h_name = h.clone();
                         let available = computed.available.clone();
+                        let formula_srcs = computed.formula_srcs.clone();
                         move |menu, _window, _cx| {
                             let menu = menu
                                 .item(
@@ -5826,6 +5917,99 @@ impl Render for BaseView {
                                         });
                                     })
                             });
+                            // Edit formula… — only on `formula.*`
+                            // columns; rewrites `formulas: {name:
+                            // 'expr'}`, blank deletes the formula.
+                            let menu = if let Some(fname) =
+                                col.strip_prefix("formula.")
+                            {
+                                let fname = fname.to_string();
+                                menu.item({
+                                    let this = this.clone();
+                                    let formula_srcs = formula_srcs.clone();
+                                    PopupMenuItem::new(format!("Edit formula.{fname}…"))
+                                        .icon(assets::IconName::SquareFunction)
+                                        .on_click(move |_, window, cx| {
+                                            let input =
+                                                this.read(cx).rename_input.clone();
+                                            let src = formula_srcs
+                                                .get(&fname)
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            input.update(cx, |input, cx| {
+                                                input.set_value(&src, window, cx);
+                                            });
+                                            let this = this.clone();
+                                            let fname = fname.clone();
+                                            let input2 = input.clone();
+                                            window.open_dialog(
+                                                cx,
+                                                move |dialog, _window, _cx| {
+                                                    let input = input.clone();
+                                                    dialog
+                                                        .title(format!(
+                                                            "formula.{fname}"
+                                                        ))
+                                                        .w(px(360.))
+                                                        .child(
+                                                            div().w_full().child(
+                                                                Input::new(&input)
+                                                                    .appearance(true),
+                                                            ),
+                                                        )
+                                                        .on_ok({
+                                                            let this = this.clone();
+                                                            let fname = fname.clone();
+                                                            move |_, window, cx| {
+                                                                this.update(
+                                                                    cx,
+                                                                    |view, cx| {
+                                                                        let text = view
+                                                                            .rename_input
+                                                                            .read(cx)
+                                                                            .value()
+                                                                            .trim()
+                                                                            .to_string();
+                                                                        let val =
+                                                                            (!text.is_empty())
+                                                                                .then_some(
+                                                                                    text.as_str(),
+                                                                                );
+                                                                        if let SpecSrc::Doc(
+                                                                            doc,
+                                                                        ) = &view.spec_src
+                                                                        {
+                                                                            doc.update(
+                                                                                cx,
+                                                                                |doc, cx| {
+                                                                                    doc.set_base_formula(
+                                                                                        &fname,
+                                                                                        val,
+                                                                                        window,
+                                                                                        cx,
+                                                                                    );
+                                                                                },
+                                                                            );
+                                                                        }
+                                                                        view.doc_epoch += 1;
+                                                                        cx.notify();
+                                                                    },
+                                                                );
+                                                                true
+                                                            }
+                                                        })
+                                                },
+                                            );
+                                            window.defer(cx, move |window, cx| {
+                                                input2.update(cx, |input, cx| {
+                                                    input.focus(window, cx);
+                                                });
+                                            });
+                                        })
+                                })
+                            } else {
+                                menu
+                            };
                             // Column width… — `columnSize: {col: px}`,
                             // blank resets to the auto width.
                             let menu = menu.item({
@@ -7276,6 +7460,49 @@ views:
         assert!(out.contains("  - type: cards\n    summaries:\n      size: sum\n    name: Bare\n"));
         // Nothing to delete when the key is absent.
         assert!(super::splice_view_map_entry(spec, 2, "summaries", "size", None).is_none());
+    }
+
+    #[test]
+    fn splice_root_map_entry() {
+        let spec = r#"filters:
+  and:
+    - 'file.ext == "md"'
+formulas:
+  words: 'file.size / 5'
+  hours: 'rollup(file.backlinks, "hours", "sum")'
+views:
+  - type: table
+    name: All notes
+"#;
+        // Rewrite an existing entry in place.
+        let (s, e, ins) =
+            super::splice_root_map_entry(spec, "formulas", "words", Some("'file.size / 6'"))
+                .unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("  words: 'file.size / 6'"));
+        assert!(out.contains("hours:"));
+        // New entry — appended at map end, before views:.
+        let (s, e, ins) =
+            super::splice_root_map_entry(spec, "formulas", "days", Some("'today()'")).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("  days: 'today()'\nviews:\n"));
+        // Delete one of two — map survives.
+        let (s, e, ins) = super::splice_root_map_entry(spec, "formulas", "words", None).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(!out.contains("words:"));
+        assert!(out.contains("formulas:\n  hours:"));
+        // Delete the last — the whole map key leaves.
+        let (s, e, ins) = super::splice_root_map_entry(&out, "formulas", "hours", None).unwrap();
+        let out2 = format!("{}{}{}", &out[..s], ins, &out[e..]);
+        assert!(!out2.contains("formulas:"));
+        assert!(out2.contains("views:"));
+        // No map — created before views:.
+        let bare = "views:\n  - type: table\n    name: T\n";
+        let (s, e, ins) = super::splice_root_map_entry(bare, "formulas", "w", Some("'1'")).unwrap();
+        let out = format!("{}{}{}", &bare[..s], ins, &bare[e..]);
+        assert!(out.starts_with("formulas:\n  w: '1'\nviews:\n"));
+        // Nothing to delete when the map is absent.
+        assert!(super::splice_root_map_entry(bare, "formulas", "w", None).is_none());
     }
 
     #[test]

@@ -627,6 +627,31 @@ impl Document {
         true
     }
 
+    /// Set/delete `formulas: {name: 'expr'}` at spec root — the
+    /// formula-column "Edit formula" write path. `None` removes the
+    /// formula (and `formulas:` when it was the last). Returns false
+    /// when the spec can't be edited.
+    pub fn set_base_formula(
+        &mut self,
+        name: &str,
+        expr: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let value = expr.map(|e| format!("'{}'", crate::bases::yaml_squote(e)));
+        let Some((start, end, insert)) =
+            crate::bases::splice_root_map_entry(&text, "formulas", name, value.as_deref())
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Drop `prop` from the `order:` list of a `.base` spec's
     /// `view_ix`-th view — the header "Hide column" write path.
     /// `current_cols` is the displayed column set, needed when the
