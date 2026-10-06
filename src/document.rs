@@ -807,6 +807,29 @@ impl Document {
         true
     }
 
+    /// Remove the `term_ix`-th expression item under the `view_ix`-th
+    /// view's `filters:` — the "Remove filter…" write path. Returns
+    /// false when the view or term can't be located.
+    pub fn remove_base_view_filter(
+        &mut self,
+        view_ix: usize,
+        term_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) =
+            crate::bases::splice_view_filter_remove(&text, view_ix, term_ix)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Delete the `view_ix`-th view item from the spec — the tab
     /// "Delete view" write path. Returns false when the view can't
     /// be located.

@@ -2039,6 +2039,10 @@ struct Computed {
     /// Per-view `filters:` presence — drives the view menu's
     /// "Clear filters" item.
     filters_by_view: Vec<bool>,
+    /// Per-view filter expression texts in file order — the
+    /// "Remove filter…" list, indexed like
+    /// `splice_view_filter_remove`.
+    view_filters: Vec<Vec<String>>,
     /// Raw `formulas:` sources — the "Edit formula…" dialog prefill
     /// for `formula.*` headers.
     formula_srcs: BTreeMap<String, String>,
@@ -2116,6 +2120,25 @@ fn cover_of(
     candidate
         .exists()
         .then(|| format!("file://{}", candidate.display()))
+}
+
+/// Flatten a view's `filters:` Value into expression strings in file
+/// order — indexes align with `splice_view_filter_remove`'s items:
+/// `and:`/`or:`/`not:` unwrap to their sequence, sequences recurse,
+/// scalars arrive as their source text.
+fn filter_terms(node: &Value) -> Vec<String> {
+    match node {
+        Value::String(s) => vec![s.clone()],
+        Value::Sequence(items) => items.iter().flat_map(filter_terms).collect(),
+        Value::Mapping(map) => map
+            .values()
+            .flat_map(|v| match v {
+                Value::Sequence(items) => items.iter().flat_map(filter_terms).collect(),
+                other => filter_terms(other),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn eval_filter_node(node: &Value, env: &mut Env) -> Result<bool, String> {
@@ -2633,6 +2656,11 @@ fn compute(
         groupable,
         sort_spec: view.sort.first().map(|k| (k.prop.clone(), k.desc)),
         filters_by_view: spec.views.iter().map(|v| v.filters.is_some()).collect(),
+        view_filters: spec
+            .views
+            .iter()
+            .map(|v| v.filters.as_ref().map(filter_terms).unwrap_or_default())
+            .collect(),
         formula_srcs: spec.formula_srcs.clone(),
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
@@ -2982,6 +3010,118 @@ pub fn splice_view_filter(src: &str, view_ix: usize, expr: &str) -> Option<(usiz
     };
     let insert = offs.get(anchor).copied().unwrap_or(src.len());
     Some((insert, insert, item_line(depth)))
+}
+
+/// Remove the `term_ix`-th `- expr` item under the `view_ix`-th view's
+/// `filters:` — the "Remove filter…" write path. Empty group lines
+/// (`and:`/`or:`/`not:`) drop with their last item, and an emptied
+/// `filters:` key drops entirely — the progressive-delete convention
+/// used by the other splices. Handles the scalar `filters: 'e'` form
+/// as a single item. Returns `(byte_start, byte_end, replacement)`
+/// (empty for pure deletions) or None when no such item exists.
+pub fn splice_view_filter_remove(
+    src: &str,
+    view_ix: usize,
+    term_ix: usize,
+) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let fl = (start_ln..end_ln).find(|&i| {
+        let depth = lines[i].len() - lines[i].trim_start().len();
+        let t = lines[i].trim();
+        i > start_ln && depth == key_ind && (t == "filters:" || t.starts_with("filters: "))
+    })?;
+    // Scalar form — one item, delete the whole key line.
+    if !lines[fl].trim()["filters:".len()..].trim().is_empty() {
+        if term_ix == 0 {
+            return Some((
+                offs[fl],
+                offs.get(fl + 1).copied().unwrap_or(src.len()),
+                String::new(),
+            ));
+        }
+        return None;
+    }
+    // Collect `- ` item lines and group lines (`and:`/`or:`/`not:`)
+    // inside the filters block.
+    let mut items: Vec<usize> = Vec::new();
+    let mut groups: Vec<usize> = Vec::new();
+    let mut i = fl + 1;
+    while i < end_ln {
+        let t = lines[i].trim();
+        if t.is_empty() {
+            i += 1;
+            continue;
+        }
+        let depth = lines[i].len() - lines[i].trim_start().len();
+        if depth <= key_ind {
+            break;
+        }
+        if t.starts_with("- ") || t == "-" {
+            items.push(i);
+        } else if t == "and:" || t == "or:" || t == "not:" {
+            groups.push(i);
+        }
+        i += 1;
+    }
+    let block_end = i;
+    let &il = items.get(term_ix)?;
+    let item_depth = lines[il].len() - lines[il].trim_start().len();
+    // The item's lines extend until the next `- ` at its depth or any
+    // shallower/equal line (multi-line expressions, nested blocks).
+    let mut next = il + 1;
+    while next < block_end {
+        let t = lines[next].trim();
+        if t.is_empty() {
+            next += 1;
+            continue;
+        }
+        let depth = lines[next].len() - lines[next].trim_start().len();
+        if depth <= item_depth {
+            break;
+        }
+        next += 1;
+    }
+    // Removing the last item under `filters:` kills the whole key.
+    if items.len() == 1 {
+        return Some((
+            offs[fl],
+            offs.get(block_end).copied().unwrap_or(src.len()),
+            String::new(),
+        ));
+    }
+    // A group line dies when its block holds no other `- ` item.
+    // Doomed groups can only be this item's own ancestors, so the
+    // splice runs from the shallowest doomed line to the item's end.
+    let group_doomed = |g: usize| -> bool {
+        let gdepth = lines[g].len() - lines[g].trim_start().len();
+        let mut j = g + 1;
+        while j < block_end {
+            let t = lines[j].trim();
+            if !t.is_empty() {
+                let d = lines[j].len() - lines[j].trim_start().len();
+                if d <= gdepth {
+                    break;
+                }
+                if (t.starts_with("- ") || t == "-") && j != il {
+                    return false;
+                }
+            }
+            j += 1;
+        }
+        true
+    };
+    let doomed = groups
+        .iter()
+        .copied()
+        .filter(|&g| group_doomed(g))
+        .chain([il])
+        .min()
+        .unwrap_or(il);
+    Some((
+        offs[doomed],
+        offs.get(next).copied().unwrap_or(src.len()),
+        String::new(),
+    ))
 }
 
 /// Set or clear a scalar `key:` on the `view_ix`-th view item —
@@ -4048,6 +4188,7 @@ impl BaseView {
                 groupable: Vec::new(),
                 sort_spec: None,
                 filters_by_view: Vec::new(),
+                view_filters: Vec::new(),
                 formula_srcs: BTreeMap::new(),
                 summaries: Vec::new(),
                 image_fit: None,
@@ -4443,6 +4584,11 @@ impl Render for BaseView {
                                 .get(ix)
                                 .copied()
                                 .unwrap_or(false);
+                            let filter_terms = computed
+                                .view_filters
+                                .get(ix)
+                                .cloned()
+                                .unwrap_or_default();
                             let has_art = matches!(
                                 computed.view_kinds.get(ix).map(String::as_str),
                                 Some("cards") | Some("kanban")
@@ -4999,6 +5145,81 @@ impl Render for BaseView {
                                         }),
                                 );
                                 let menu = if filtered {
+                                    let menu = menu.item(
+                                        PopupMenuItem::new("Remove filter…")
+                                            .icon(assets::IconName::FunnelX)
+                                            .on_click({
+                                                let this = this.clone();
+                                                // Expression texts in
+                                                // file order — matches
+                                                // the splice's index.
+                                                let terms = filter_terms.clone();
+                                                move |_, window, cx| {
+                                                    let terms = terms.clone();
+                                                    let this = this.clone();
+                                                    window.open_dialog(
+                                                        cx,
+                                                        move |dialog, _window, _cx| {
+                                                            let theme = _cx.theme();
+                                                            let mut list =
+                                                                v_flex().w_full().py_1();
+                                                            for (tix, term) in
+                                                                terms.iter().enumerate()
+                                                            {
+                                                                let term = term.clone();
+                                                                let this = this.clone();
+                                                                list = list.child(
+                                                                    div()
+                                                                        .id(("filter-rm", tix))
+                                                                        .w_full()
+                                                                        .px_3()
+                                                                        .py_1p5()
+                                                                        .cursor_pointer()
+                                                                        .hover(|s| {
+                                                                            s.bg(theme.muted)
+                                                                        })
+                                                                        .child(
+                                                                            div()
+                                                                                .text_sm()
+                                                                                .text_color(
+                                                                                    theme.foreground,
+                                                                                )
+                                                                                .child(
+                                                                                    term.clone(),
+                                                                                ),
+                                                                        )
+                                                                        .on_click(
+                                                                            move |_, window, cx| {
+                                                                                window.close_dialog(cx);
+                                                                                this.update(cx, |view, cx| {
+                                                                                    if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                                                        doc.update(cx, |doc, cx| {
+                                                                                            doc.remove_base_view_filter(
+                                                                                                ix, tix, window, cx,
+                                                                                            );
+                                                                                        });
+                                                                                    }
+                                                                                    view.doc_epoch += 1;
+                                                                                    cx.notify();
+                                                                                });
+                                                                            },
+                                                                        ),
+                                                                );
+                                                            }
+                                                            dialog
+                                                                .title("Remove filter")
+                                                                .w(px(320.))
+                                                                .overlay_closable(true)
+                                                                .child(
+                                                                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                        list.max_h(px(320.)),
+                                                                    ),
+                                                                )
+                                                        },
+                                                    );
+                                                }
+                                            }),
+                                    );
                                     menu.item(
                                         PopupMenuItem::new("Clear filters")
                                             .icon(assets::IconName::FunnelX)
@@ -8121,5 +8342,28 @@ views:
             super::splice_view_filter(spec, 0, "name == \"it's\"").unwrap(),
         );
         assert!(out.contains("- 'name == \"it''s\"'"));
+    }
+
+    #[test]
+    fn splice_view_filter_remove() {
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        // Middle of three → only that item leaves.
+        let spec = "views:\n  - type: table\n    filters:\n      and:\n        - 'a == 1'\n        - 'b == 2'\n        - 'c == 3'\n    order: [file.name]\n";
+        let out = apply(spec, super::splice_view_filter_remove(spec, 0, 1).unwrap());
+        assert!(out.contains("        - 'a == 1'\n        - 'c == 3'\n    order:"));
+        // Last of two → the other stays, `and:`/`filters:` survive.
+        let out = apply(spec, super::splice_view_filter_remove(spec, 0, 1).unwrap());
+        assert!(out.contains("    filters:\n      and:\n        - 'a == 1'\n        - 'c == 3'"));
+        // Single item → the whole `filters:` block drops.
+        let spec = "views:\n  - type: table\n    filters:\n      and:\n        - 'a == 1'\n    order: [file.name]\n";
+        let out = apply(spec, super::splice_view_filter_remove(spec, 0, 0).unwrap());
+        assert!(out.contains("  - type: table\n    order: [file.name]\n"));
+        // Scalar `filters: 'e'` → the key line drops.
+        let spec = "views:\n  - type: table\n    filters: 'a == 1'\n    order: [file.name]\n";
+        let out = apply(spec, super::splice_view_filter_remove(spec, 0, 0).unwrap());
+        assert!(out.contains("  - type: table\n    order: [file.name]\n"));
+        // Out of range → None.
+        assert!(super::splice_view_filter_remove(spec, 0, 2).is_none());
     }
 }
