@@ -639,6 +639,29 @@ impl Document {
         true
     }
 
+    /// Set or clear a scalar key on the `view_ix`-th view item —
+    /// `group_by:` from the tab "Group by…" menu. Returns false when
+    /// the view (or a key to clear) can't be located.
+    pub fn set_base_view_key(
+        &mut self,
+        view_ix: usize,
+        key: &str,
+        value: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::splice_view_key(&text, view_ix, key, value)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Delete the `view_ix`-th view item from the spec — the tab
     /// "Delete view" write path. Returns false when the view can't
     /// be located.

@@ -2024,6 +2024,9 @@ struct Computed {
     /// Column-chooser candidates: every property/formula/file.* in the
     /// vault not already on show — offered by the header `+` cell.
     available: Vec<String>,
+    /// Group-chooser candidates: every property/formula/file.* in the
+    /// vault — the view-tab "Group by…" pick list.
+    groupable: Vec<String>,
     /// Selected view's `imageFit:` (`cover`/`contain`) for card art.
     image_fit: Option<String>,
     /// Selected view's `imageAspectRatio:` for card art.
@@ -2579,6 +2582,7 @@ fn compute(
     let group_ix = group_col.and_then(|g| columns.iter().position(|c| *c == g));
 
     let available = available_columns(&all_rows, &spec.formulas, &columns);
+    let groupable = available_columns(&all_rows, &spec.formulas, &[]);
     // `columnSize:` keys may name the column (`file.mtime`,
     // `note.status`, `formula.x`) or the property the header
     // shows (`status`).
@@ -2611,6 +2615,7 @@ fn compute(
         prefill: prefill_pairs(spec, view),
         summaries,
         available,
+        groupable,
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
         col_size,
@@ -2853,6 +2858,42 @@ fn view_item<'a>(
     }
     let (start_ln, end_ln) = view_span(&lines, &items, view_ix, views_ind);
     Some((lines, offs, start_ln, end_ln, item_ind + 2))
+}
+
+/// Set or clear a scalar `key:` on the `view_ix`-th view item —
+/// `group_by: status` and friends. `Some(value)` rewrites the existing
+/// key line or inserts it after `type:`; `None` deletes the key line.
+/// Returns `(byte_start, byte_end, replacement)` or None when the view
+/// can't be located (or there's no key to clear).
+pub fn splice_view_key(
+    src: &str,
+    view_ix: usize,
+    key: &str,
+    value: Option<&str>,
+) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let head = format!("{key}:");
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if indent(lines[i]) == key_ind && t.starts_with(&head) {
+            return Some(match value {
+                Some(v) => (
+                    offs[i],
+                    offs[i + 1],
+                    format!("{}{head} {}\n", " ".repeat(key_ind), yaml_name(v)),
+                ),
+                None => (offs[i], offs[i + 1], String::new()),
+            });
+        }
+    }
+    let v = value?;
+    // Missing key — insert right after the item's `- ` line.
+    Some((
+        offs[start_ln + 1],
+        offs[start_ln + 1],
+        format!("{}{head} {}\n", " ".repeat(key_ind), yaml_name(v)),
+    ))
 }
 
 /// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
@@ -3131,7 +3172,7 @@ pub fn splice_view(src: &str, name: &str, kind: &str) -> Option<(usize, usize, S
 fn yaml_name(name: &str) -> String {
     if name
         .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-'))
+        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.'))
     {
         name.to_string()
     } else {
@@ -3441,6 +3482,7 @@ impl BaseView {
                 group_prop: None,
                 prefill: Vec::new(),
                 available: Vec::new(),
+                groupable: Vec::new(),
                 summaries: Vec::new(),
                 image_fit: None,
                 image_aspect: None,
@@ -3817,6 +3859,7 @@ impl Render for BaseView {
                             let name = name.clone();
                             let names = computed.view_names.clone();
                             let multi = computed.view_names.len() > 1;
+                            let groupable = computed.groupable.clone();
                             move |menu, _window, cx| {
                                 if !matches!(this.read(cx).spec_src, SpecSrc::Doc(_)) {
                                     return menu;
@@ -3941,6 +3984,91 @@ impl Render for BaseView {
                                                     }
                                                     cx.notify();
                                                 });
+                                            }
+                                        }),
+                                );
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Group by…")
+                                        .icon(assets::IconName::Group)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let candidates = groupable.clone();
+                                            move |_, window, cx| {
+                                                let candidates = candidates.clone();
+                                                let this = this.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let theme = _cx.theme();
+                                                        let mut list =
+                                                            v_flex().w_full().py_1();
+                                                        let this2 = this.clone();
+                                                        let row = |label: String,
+                                                                   row_ix: usize,
+                                                                   value: Option<String>,
+                                                                   theme: &gpui_kit::component::theme::Theme| {
+                                                            let this = this2.clone();
+                                                            div()
+                                                                .id(("group-pick", row_ix))
+                                                                .w_full()
+                                                                .px_3()
+                                                                .py_1p5()
+                                                                .cursor_pointer()
+                                                                .hover(|s| s.bg(theme.muted))
+                                                                .child(
+                                                                    div()
+                                                                        .text_sm()
+                                                                        .text_color(theme.foreground)
+                                                                        .child(label),
+                                                                )
+                                                                .on_click(move |_, window, cx| {
+                                                                    this.update(cx, |view, cx| {
+                                                                        if let SpecSrc::Doc(doc) =
+                                                                            &view.spec_src
+                                                                        {
+                                                                            doc.update(cx, |doc, cx| {
+                                                                                doc.set_base_view_key(
+                                                                                    ix,
+                                                                                    "group_by",
+                                                                                    value.as_deref(),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            });
+                                                                        }
+                                                                        view.doc_epoch += 1;
+                                                                        cx.notify();
+                                                                    });
+                                                                    window.close_dialog(cx);
+                                                                })
+                                                        };
+                                                        list = list.child(row(
+                                                            "No grouping".to_string(),
+                                                            0,
+                                                            None,
+                                                            theme,
+                                                        ));
+                                                        for (nix, prop) in
+                                                            candidates.iter().enumerate()
+                                                        {
+                                                            list = list.child(row(
+                                                                prop.clone(),
+                                                                nix + 1,
+                                                                Some(prop.clone()),
+                                                                theme,
+                                                            ));
+                                                        }
+                                                        dialog
+                                                            .title("Group by")
+                                                            .w(px(320.))
+                                                            .overlay_closable(true)
+                                                            .child(
+                                                                gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                    list.max_h(px(320.)),
+                                                                ),
+                                                            )
+                                                    },
+                                                );
                                             }
                                         }),
                                 );
@@ -5595,5 +5723,33 @@ views:
         // Same index / out of range → nothing.
         assert!(super::reorder_views(spec, 1, 1).is_none());
         assert!(super::reorder_views(spec, 0, 5).is_none());
+    }
+
+    #[test]
+    fn splice_view_key() {
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        let spec = "views:\n  - type: table\n    name: A\n    group_by: status\n  - type: cards\n    name: B\n";
+        // Rewrite an existing key.
+        let out = apply(
+            spec,
+            super::splice_view_key(spec, 0, "group_by", Some("file.folder")).unwrap(),
+        );
+        assert!(out.contains("    group_by: file.folder\n  - type: cards"));
+        // Clear it.
+        let out = apply(
+            spec,
+            super::splice_view_key(spec, 0, "group_by", None).unwrap(),
+        );
+        assert!(out.contains("    name: A\n  - type: cards"));
+        assert!(!out.contains("group_by"));
+        // Insert after `type:` when the key is absent.
+        let out = apply(
+            spec,
+            super::splice_view_key(spec, 1, "group_by", Some("status")).unwrap(),
+        );
+        assert!(out.contains("  - type: cards\n    group_by: status\n    name: B\n"));
+        // Clearing a missing key → nothing.
+        assert!(super::splice_view_key(spec, 1, "group_by", None).is_none());
     }
 }
