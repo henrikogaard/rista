@@ -6942,44 +6942,64 @@ impl Render for Workspace {
                             resizable_panel()
                                 .size(px(240.))
                                 .size_range(px(170.)..px(420.))
-                                .child(self.render_sidebar(cx)),
+                                // Floating card on the canvas — every pane
+                                // gets the same padding + border + radius.
+                                .child(
+                                    div().size_full().p_1().child(
+                                        div()
+                                            .size_full()
+                                            .bg(cx.theme().sidebar)
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .rounded(cx.theme().radius_lg)
+                                            .overflow_hidden()
+                                            .child(self.render_sidebar(cx)),
+                                    ),
+                                ),
                         )
                     })
                     .child(
                         resizable_panel().child(
-                            v_flex()
-                                .size_full()
-                                .when(!self.zen && !self.docs.is_empty(), |this| {
-                                    this.child(self.render_tab_bar(cx))
-                                })
-                                .child(div().flex_1().min_h_0().child({
-                                    if let Some(graph) = self.graph.clone() {
-                                        graph.into_any_element()
-                                    } else {
-                                        let content = self.render_editor_area(cx);
-                                        if self.zen {
-                                            h_flex()
-                                                .size_full()
-                                                .justify_center()
-                                                .child(
-                                                    div()
-                                                        .h_full()
-                                                        .w_full()
-                                                        .max_w(px(920.))
-                                                        .child(content),
-                                                )
-                                                .into_any_element()
+                            div().size_full().p_1().child(
+                                v_flex()
+                                    .size_full()
+                                    .bg(cx.theme().group_box)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .rounded(cx.theme().radius_lg)
+                                    .overflow_hidden()
+                                    .when(!self.zen && !self.docs.is_empty(), |this| {
+                                        this.child(self.render_tab_bar(cx))
+                                    })
+                                    .child(div().flex_1().min_h_0().child({
+                                        if let Some(graph) = self.graph.clone() {
+                                            graph.into_any_element()
                                         } else {
-                                            content
+                                            let content = self.render_editor_area(cx);
+                                            if self.zen {
+                                                h_flex()
+                                                    .size_full()
+                                                    .justify_center()
+                                                    .child(
+                                                        div()
+                                                            .h_full()
+                                                            .w_full()
+                                                            .max_w(px(920.))
+                                                            .child(content),
+                                                    )
+                                                    .into_any_element()
+                                            } else {
+                                                content
+                                            }
                                         }
-                                    }
-                                })),
+                                    })),
+                            ),
                         ),
                     )
                     .into_any_element()
             }))
-            // Full-width status bar (Obsidian-style): its top rule runs
-            // edge-to-edge and the sidebar divider lands on it.
+            // Full-width status bar: its top rule runs edge-to-edge and
+            // the sidebar divider lands on it.
             .when(!self.zen && vault_open, |this| {
                 this.child(self.render_status_bar(cx))
             })
