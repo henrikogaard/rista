@@ -2030,6 +2030,9 @@ struct Computed {
     /// Selected view's spec `sort:` — first `(prop, desc)` key, for
     /// the view-tab "Sort by…" direction toggle.
     sort_spec: Option<(String, bool)>,
+    /// Per-view `filters:` presence — drives the view menu's
+    /// "Clear filters" item.
+    filters_by_view: Vec<bool>,
     /// Selected view's `imageFit:` (`cover`/`contain`) for card art.
     image_fit: Option<String>,
     /// Selected view's `imageAspectRatio:` for card art.
@@ -2620,6 +2623,7 @@ fn compute(
         available,
         groupable,
         sort_spec: view.sort.first().map(|k| (k.prop.clone(), k.desc)),
+        filters_by_view: spec.views.iter().map(|v| v.filters.is_some()).collect(),
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
         col_size,
@@ -2862,6 +2866,112 @@ fn view_item<'a>(
     }
     let (start_ln, end_ln) = view_span(&lines, &items, view_ix, views_ind);
     Some((lines, offs, start_ln, end_ln, item_ind + 2))
+}
+
+/// Escape a value for embedding inside a single-quoted YAML scalar —
+/// `'` doubles per YAML rules.
+fn yaml_squote(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Append `'expr'` to the `view_ix`-th view's `filters:` — creates
+/// `filters: and: - expr` when the view has none, converts the scalar
+/// form `filters: 'e'` into an and-block carrying both expressions,
+/// and appends inside an existing `and:`/`or:`/`not:` (or direct
+/// sequence) block at its item indent. Returns the usual
+/// `(byte_start, byte_end, replacement)` splice.
+pub fn splice_view_filter(src: &str, view_ix: usize, expr: &str) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let ind = |depth: usize| " ".repeat(depth);
+    let item_line = |depth: usize| format!("{}- '{}'\n", ind(depth), yaml_squote(expr));
+    // `filters:` sits among the view's own keys at `key_ind`.
+    let fkey = (start_ln..end_ln).find(|&i| {
+        let depth = lines[i].len() - lines[i].trim_start().len();
+        let t = lines[i].trim();
+        i > start_ln && depth == key_ind && (t == "filters:" || t.starts_with("filters: "))
+    });
+    let Some(fl) = fkey else {
+        // No filters key — insert a fresh and-block right after the
+        // `- type:` line, like the scalar-key insert.
+        let insert = offs[start_ln + 1];
+        let item = item_line(key_ind + 4);
+        let text = format!("{}filters:\n{}  and:\n{}", ind(key_ind), ind(key_ind), item);
+        return Some((insert, insert, text));
+    };
+    let rest = lines[fl].trim()["filters:".len()..].trim();
+    if !rest.is_empty() {
+        // Scalar form `filters: 'e'` → and-block keeping the old
+        // expression alongside the new one. Swallow any deeper
+        // lines under the key (there shouldn't be any).
+        let old = rest
+            .trim_start_matches('\'')
+            .trim_end_matches('\'')
+            .replace("''", "'");
+        let old_item = format!("{}- '{}'\n", ind(key_ind + 4), yaml_squote(&old));
+        let new_item = item_line(key_ind + 4);
+        let text = format!(
+            "{}filters:\n{}  and:\n{}{}",
+            ind(key_ind),
+            ind(key_ind),
+            old_item,
+            new_item
+        );
+        let mut last = fl + 1;
+        while last < end_ln
+            && !lines[last].trim().is_empty()
+            && lines[last].len() - lines[last].trim_start().len() > key_ind
+        {
+            last += 1;
+        }
+        return Some((offs[fl], offs.get(last).copied().unwrap_or(src.len()), text));
+    }
+    // Nested block — append a `- ` item after the deepest last one,
+    // or just under the block's first line when it has none (e.g.
+    // `and:` with no items yet).
+    let mut last_dash: Option<usize> = None;
+    let mut first: Option<usize> = None;
+    let mut i = fl + 1;
+    while i < end_ln {
+        let t = lines[i].trim_start();
+        if !t.is_empty() {
+            let depth = lines[i].len() - t.len();
+            if depth <= key_ind {
+                break;
+            }
+            if first.is_none() {
+                first = Some(i);
+            }
+            if t.starts_with("- ") || t == "-" {
+                last_dash = Some(i);
+            }
+        }
+        i += 1;
+    }
+    let (anchor, depth) = match last_dash {
+        Some(d) => {
+            let depth = lines[d].len() - lines[d].trim_start().len();
+            (d + 1, depth)
+        }
+        None => match first {
+            Some(f) => (f + 1, lines[f].len() - lines[f].trim_start().len() + 2),
+            // `filters:` with no block at all — fill it in place.
+            None => {
+                let text = format!(
+                    "{}filters:\n{}  and:\n{}",
+                    ind(key_ind),
+                    ind(key_ind),
+                    item_line(key_ind + 4)
+                );
+                return Some((
+                    offs[fl],
+                    offs.get(fl + 1).copied().unwrap_or(src.len()),
+                    text,
+                ));
+            }
+        },
+    };
+    let insert = offs.get(anchor).copied().unwrap_or(src.len());
+    Some((insert, insert, item_line(depth)))
 }
 
 /// Set or clear a scalar `key:` on the `view_ix`-th view item —
@@ -3518,6 +3628,7 @@ impl BaseView {
                 available: Vec::new(),
                 groupable: Vec::new(),
                 sort_spec: None,
+                filters_by_view: Vec::new(),
                 summaries: Vec::new(),
                 image_fit: None,
                 image_aspect: None,
@@ -3898,6 +4009,11 @@ impl Render for BaseView {
                             let sort_spec = computed.sort_spec.clone();
                             let is_cal = computed.view_kinds.get(ix).map(String::as_str)
                                 == Some("calendar");
+                            let filtered = computed
+                                .filters_by_view
+                                .get(ix)
+                                .copied()
+                                .unwrap_or(false);
                             let has_art = matches!(
                                 computed.view_kinds.get(ix).map(String::as_str),
                                 Some("cards") | Some("kanban")
@@ -4215,6 +4331,178 @@ impl Render for BaseView {
                                             }
                                         }),
                                 );
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Filter by…")
+                                        .icon(assets::IconName::Funnel)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let candidates = groupable.clone();
+                                            move |_, window, cx| {
+                                                let candidates = candidates.clone();
+                                                let this = this.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let theme = _cx.theme();
+                                                        let mut list =
+                                                            v_flex().w_full().py_1();
+                                                        for (nix, prop) in
+                                                            candidates.iter().enumerate()
+                                                        {
+                                                            let prop = prop.clone();
+                                                            let this = this.clone();
+                                                            list = list.child(
+                                                                div()
+                                                                    .id(("filter-pick", nix))
+                                                                    .w_full()
+                                                                    .px_3()
+                                                                    .py_1p5()
+                                                                    .cursor_pointer()
+                                                                    .hover(|s| {
+                                                                        s.bg(theme.muted)
+                                                                    })
+                                                                    .child(
+                                                                        div()
+                                                                            .text_sm()
+                                                                            .text_color(theme.foreground)
+                                                                            .child(prop.clone()),
+                                                                    )
+                                                                    .on_click(move |_, window, cx| {
+                                                                        // Property picked —
+                                                                        // ask for the value
+                                                                        // it should equal.
+                                                                        window.close_dialog(cx);
+                                                                        let this = this.clone();
+                                                                        let prop = prop.clone();
+                                                                        window.defer(
+                                                                            cx,
+                                                                            move |window, cx| {
+                                                                                let input = this
+                                                                                    .read(cx)
+                                                                                    .rename_input
+                                                                                    .clone();
+                                                                                input.update(
+                                                                                    cx,
+                                                                                    |input, cx| {
+                                                                                        input.set_value(
+                                                                                            "",
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    },
+                                                                                );
+                                                                                let this = this.clone();
+                                                                                let prop = prop.clone();
+                                                                                let input2 = input.clone();
+                                                                                window.open_dialog(
+                                                                                    cx,
+                                                                                    move |dialog, _window, _cx| {
+                                                                                        let input = input.clone();
+                                                                                        dialog
+                                                                                            .title(format!("{prop} equals"))
+                                                                                            .w(px(320.))
+                                                                                            .child(
+                                                                                                div().w_full().child(
+                                                                                                    Input::new(&input)
+                                                                                                        .appearance(true),
+                                                                                                ),
+                                                                                            )
+                                                                                            .on_ok({
+                                                                                                let this = this.clone();
+                                                                                                let prop = prop.clone();
+                                                                                                move |_, window, cx| {
+                                                                                                    this.update(
+                                                                                                        cx,
+                                                                                                        |view, cx| {
+                                                                                                            let value = view
+                                                                                                                .rename_input
+                                                                                                                .read(cx)
+                                                                                                                .value()
+                                                                                                                .trim()
+                                                                                                                .to_string();
+                                                                                                            if let SpecSrc::Doc(doc) =
+                                                                                                                &view.spec_src
+                                                                                                            {
+                                                                                                                doc.update(
+                                                                                                                    cx,
+                                                                                                                    |doc, cx| {
+                                                                                                                        doc.add_base_view_filter(
+                                                                                                                            ix,
+                                                                                                                            &prop,
+                                                                                                                            &value,
+                                                                                                                            window,
+                                                                                                                            cx,
+                                                                                                                        );
+                                                                                                                    },
+                                                                                                                );
+                                                                                                            }
+                                                                                                            view.doc_epoch += 1;
+                                                                                                            cx.notify();
+                                                                                                        },
+                                                                                                    );
+                                                                                                    true
+                                                                                                }
+                                                                                            })
+                                                                                    },
+                                                                                );
+                                                                                window.defer(
+                                                                                    cx,
+                                                                                    move |window, cx| {
+                                                                                        input2.update(
+                                                                                            cx,
+                                                                                            |input, cx| {
+                                                                                                input.focus(window, cx);
+                                                                                            },
+                                                                                        );
+                                                                                    },
+                                                                                );
+                                                                            },
+                                                                        );
+                                                                    }),
+                                                            );
+                                                        }
+                                                        dialog
+                                                            .title("Filter by property")
+                                                            .w(px(320.))
+                                                            .overlay_closable(true)
+                                                            .child(
+                                                                gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                    list.max_h(px(320.)),
+                                                                ),
+                                                            )
+                                                    },
+                                                );
+                                            }
+                                        }),
+                                );
+                                let menu = if filtered {
+                                    menu.item(
+                                        PopupMenuItem::new("Clear filters")
+                                            .icon(assets::IconName::FunnelX)
+                                            .on_click({
+                                                let this = this.clone();
+                                                move |_, window, cx| {
+                                                    let _ = this.update(cx, |view, cx| {
+                                                        if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                            doc.update(cx, |doc, cx| {
+                                                                doc.set_base_view_key(
+                                                                    ix,
+                                                                    "filters",
+                                                                    None,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }
+                                                        view.doc_epoch += 1;
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                } else {
+                                    menu
+                                };
                                 let menu = menu.item(
                                     PopupMenuItem::new("Row limit…")
                                         .icon(assets::IconName::ArrowDownWideNarrow)
@@ -6208,5 +6496,35 @@ views:
         );
         assert!(out.contains("    sort: file.mtime\n    order: [file.name]"));
         assert!(!out.contains("property: x"));
+    }
+
+    #[test]
+    fn splice_view_filter() {
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        // No filters key → fresh and-block after the `- ` line.
+        let spec = "views:\n  - type: table\n    name: A\n";
+        let out = apply(
+            spec,
+            super::splice_view_filter(spec, 0, "status == \"done\"").unwrap(),
+        );
+        assert!(out.contains(
+            "  - type: table\n    filters:\n      and:\n        - 'status == \"done\"'\n    name: A\n"
+        ));
+        // Existing and-block → appends at the item indent.
+        let spec = "views:\n  - type: table\n    name: A\n    filters:\n      and:\n        - 'a == 1'\n    order: [file.name]\n";
+        let out = apply(spec, super::splice_view_filter(spec, 0, "b == 2").unwrap());
+        assert!(out.contains("        - 'a == 1'\n        - 'b == 2'\n    order:"));
+        // Scalar form → converts to an and-block keeping the old expr.
+        let spec = "views:\n  - type: table\n    name: A\n    filters: 'a == 1'\n";
+        let out = apply(spec, super::splice_view_filter(spec, 0, "b == 2").unwrap());
+        assert!(out.contains("    filters:\n      and:\n        - 'a == 1'\n        - 'b == 2'\n"));
+        // A `'` inside the expression doubles per YAML quoting.
+        let spec = "views:\n  - type: table\n    name: A\n";
+        let out = apply(
+            spec,
+            super::splice_view_filter(spec, 0, "name == \"it's\"").unwrap(),
+        );
+        assert!(out.contains("- 'name == \"it''s\"'"));
     }
 }

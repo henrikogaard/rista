@@ -662,6 +662,37 @@ impl Document {
         true
     }
 
+    /// Append `'prop == "value"'` to the `view_ix`-th view's `filters:`
+    /// — the tab "Filter by…" write path. Returns false when the view
+    /// can't be located.
+    pub fn add_base_view_filter(
+        &mut self,
+        view_ix: usize,
+        prop: &str,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Numbers and booleans write unquoted so they compare against
+        // typed frontmatter — everything else is a string literal.
+        let bare = value.parse::<f64>().is_ok() || value == "true" || value == "false";
+        let expr = if bare {
+            format!("{prop} == {value}")
+        } else {
+            format!("{prop} == \"{value}\"")
+        };
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::splice_view_filter(&text, view_ix, &expr)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Delete the `view_ix`-th view item from the spec — the tab
     /// "Delete view" write path. Returns false when the view can't
     /// be located.
