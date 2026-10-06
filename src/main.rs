@@ -114,6 +114,21 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-q", Quit, None),
+        // Auto-pairs (Obsidian) — "RistaEditor" scopes them to the document
+        // editor so search/dialog inputs still type the plain characters.
+        KeyBinding::new("(", PairInsert { pair: "()" }, Some("RistaEditor")),
+        KeyBinding::new("[", PairInsert { pair: "[]" }, Some("RistaEditor")),
+        KeyBinding::new("{", PairInsert { pair: "{}" }, Some("RistaEditor")),
+        KeyBinding::new("\"", PairInsert { pair: "\"\"" }, Some("RistaEditor")),
+        KeyBinding::new("'", PairInsert { pair: "''" }, Some("RistaEditor")),
+        KeyBinding::new("`", PairInsert { pair: "``" }, Some("RistaEditor")),
+        KeyBinding::new("~", PairInsert { pair: "~~" }, Some("RistaEditor")),
+        KeyBinding::new("=", PairInsert { pair: "==" }, Some("RistaEditor")),
+        KeyBinding::new("%", PairInsert { pair: "%%" }, Some("RistaEditor")),
+        KeyBinding::new("$", PairInsert { pair: "$$" }, Some("RistaEditor")),
+        KeyBinding::new(")", PairClose { pair: "()" }, Some("RistaEditor")),
+        KeyBinding::new("]", PairClose { pair: "[]" }, Some("RistaEditor")),
+        KeyBinding::new("}", PairClose { pair: "{}" }, Some("RistaEditor")),
     ]
 }
 

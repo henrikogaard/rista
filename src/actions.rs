@@ -48,3 +48,20 @@ actions!(
         About,
     ]
 );
+
+/// Auto-pair actions — `pair` is the two-character pair string
+/// ("()", "\"\"", "~~", …) whose first half opens and second half closes.
+/// `PairInsert` is bound on openers and symmetric chars; `PairClose` on the
+/// closers `)]}`. Bound with the "RistaEditor" key context so they only fire
+/// in the document editor (dialog/search inputs type the plain chars).
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct PairInsert {
+    pub pair: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct PairClose {
+    pub pair: &'static str,
+}

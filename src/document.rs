@@ -2037,6 +2037,71 @@ impl Document {
         })
     }
 
+    /// Auto-pair — bound on openers and symmetric chars in the "RistaEditor"
+    /// key context. Selection → wrap in the pair and re-select the inner text;
+    /// empty caret → insert the pair with the caret inside. Symmetric pairs
+    /// typed against their own closer skip over it, doubled markers
+    /// (`~~x~~`, `==x==`) close plainly after the same char, and quotes/`~`/
+    /// `=`/`%`/`$` don't pair after a letter/digit (apostrophes, `a=b`) —
+    /// Obsidian's rules.
+    pub fn insert_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.pair_edit(pair, true, window, cx);
+    }
+
+    /// Closer key (`)`, `]`, `}`): selection → wrap in the pair; caret against
+    /// the closer → step over it; otherwise insert the closer alone.
+    pub fn close_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.pair_edit(pair, false, window, cx);
+    }
+
+    fn pair_edit(
+        &mut self,
+        pair: &'static str,
+        opener: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let half = pair.len() / 2;
+        let (open, close) = (&pair[..half], &pair[half..]);
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let text = editor.value().to_string();
+            if sel.start != sel.end {
+                let inner = text[sel.clone()].to_string();
+                editor.replace(format!("{open}{inner}{close}"), window, cx);
+                let s = sel.start + open.len();
+                editor.set_selected_range(s..s + inner.len(), cx);
+                return;
+            }
+            let pos = sel.start.min(text.len());
+            let symmetric = open == close;
+            let next_is_close = text[pos..].starts_with(close);
+            if next_is_close && (!opener || symmetric) {
+                editor.set_selected_range(pos + close.len()..pos + close.len(), cx);
+                return;
+            }
+            if !opener {
+                editor.replace(close.to_string(), window, cx);
+                return;
+            }
+            let prev = text[..pos].chars().next_back();
+            // Doubled-marker close: `~~`/`==`/`%%`/`$$` typed after the same
+            // char completes the closing marker instead of nesting a pair.
+            let doubled = symmetric && prev == open.chars().next();
+            // Word guard — quotes and markdown pair chars don't pair after a
+            // letter/digit (apostrophes, `a=b`), Obsidian's rule.
+            let word_guard = prev.is_some_and(|c| c.is_alphanumeric())
+                && matches!(open, "'" | "\"" | "~" | "=" | "%" | "$");
+            if doubled || word_guard {
+                editor.replace(open.to_string(), window, cx);
+                return;
+            }
+            editor.replace(pair.to_string(), window, cx);
+            let s = pos + open.len();
+            editor.set_selected_range(s..s, cx);
+        });
+    }
+
     /// Tab/Shift-Tab on list lines — Obsidian indents list items two
     /// spaces instead of inserting a tab. Every list line the
     /// selection touches shifts together; non-list selections fall

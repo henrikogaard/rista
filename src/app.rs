@@ -757,6 +757,22 @@ impl Workspace {
             .map(|d| &d.entity)
     }
 
+    /// `(`/`[`/`{`/quotes/etc. — insert the pair, wrap the selection, or
+    /// skip the matching closer (Document::insert_pair).
+    fn on_pair_insert(&mut self, action: &PairInsert, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.insert_pair(action.pair, window, cx));
+        }
+    }
+
+    /// `)`/`]`/`}` — skip over the closer, wrap the selection, or insert the
+    /// closer plainly (Document::close_pair).
+    fn on_pair_close(&mut self, action: &PairClose, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| doc.close_pair(action.pair, window, cx));
+        }
+    }
+
     /// Preview checkbox click → flip the `- [ ]` marker on `line`
     /// (1-based) in the active document.
     pub fn toggle_task_pub(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -6210,6 +6226,12 @@ impl Workspace {
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
         div()
             .size_full()
+            // Scoped key context — the auto-pair bindings only fire when the
+            // document editor is focused, so dialog/search inputs keep the
+            // plain characters.
+            .key_context("RistaEditor")
+            .on_action(cx.listener(Self::on_pair_insert))
+            .on_action(cx.listener(Self::on_pair_close))
             .capture_action::<input::Paste>(cx.listener(|this, _paste, window, cx| {
                 this.on_editor_paste_action(window, cx);
             }))
