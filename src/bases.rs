@@ -2043,6 +2043,9 @@ struct Computed {
     /// "Remove filter…" list, indexed like
     /// `splice_view_filter_remove`.
     view_filters: Vec<Vec<String>>,
+    /// Per-view `order:` columns — the view-tab "Columns" submenu's
+    /// check state + the `remove_base_column` fallback set.
+    view_columns: Vec<Vec<String>>,
     /// Raw `formulas:` sources — the "Edit formula…" dialog prefill
     /// for `formula.*` headers.
     formula_srcs: BTreeMap<String, String>,
@@ -2661,6 +2664,7 @@ fn compute(
             .iter()
             .map(|v| v.filters.as_ref().map(filter_terms).unwrap_or_default())
             .collect(),
+        view_columns: spec.views.iter().map(|v| v.columns.clone()).collect(),
         formula_srcs: spec.formula_srcs.clone(),
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
@@ -4189,6 +4193,7 @@ impl BaseView {
                 sort_spec: None,
                 filters_by_view: Vec::new(),
                 view_filters: Vec::new(),
+                view_columns: Vec::new(),
                 formula_srcs: BTreeMap::new(),
                 summaries: Vec::new(),
                 image_fit: None,
@@ -4589,6 +4594,11 @@ impl Render for BaseView {
                                 .get(ix)
                                 .cloned()
                                 .unwrap_or_default();
+                            let view_cols = computed
+                                .view_columns
+                                .get(ix)
+                                .cloned()
+                                .unwrap_or_default();
                             let has_art = matches!(
                                 computed.view_kinds.get(ix).map(String::as_str),
                                 Some("cards") | Some("kanban")
@@ -4894,6 +4904,103 @@ impl Render for BaseView {
                                                         }
                                                         dialog
                                                             .title("Sort by")
+                                                            .w(px(320.))
+                                                            .overlay_closable(true)
+                                                            .child(
+                                                                gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                    list.max_h(px(320.)),
+                                                                ),
+                                                            )
+                                                    },
+                                                );
+                                            }
+                                        }),
+                                );
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Columns…")
+                                        .icon(assets::IconName::Table2)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let candidates = groupable.clone();
+                                            let view_cols = view_cols.clone();
+                                            move |_, window, cx| {
+                                                let candidates = candidates.clone();
+                                                let view_cols = view_cols.clone();
+                                                let this = this.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let theme = _cx.theme();
+                                                        let mut list =
+                                                            v_flex().w_full().py_1();
+                                                        for (nix, prop) in
+                                                            candidates.iter().enumerate()
+                                                        {
+                                                            if prop == "file.name" {
+                                                                continue;
+                                                            }
+                                                            let checked =
+                                                                view_cols.contains(prop);
+                                                            let prop = prop.clone();
+                                                            let this = this.clone();
+                                                            let cols = view_cols.clone();
+                                                            list = list.child(
+                                                                div()
+                                                                    .id(("col-pick", nix))
+                                                                    .w_full()
+                                                                    .px_3()
+                                                                    .py_1p5()
+                                                                    .cursor_pointer()
+                                                                    .hover(|s| {
+                                                                        s.bg(theme.muted)
+                                                                    })
+                                                                    .child(
+                                                                        div()
+                                                                            .text_sm()
+                                                                            .text_color(theme.foreground)
+                                                                            .child(if checked {
+                                                                                format!("✓ {prop}")
+                                                                            } else {
+                                                                                format!("  {prop}")
+                                                                            }),
+                                                                    )
+                                                                    .on_click(
+                                                                        move |_, window, cx| {
+                                                                            this.update(
+                                                                                cx,
+                                                                                |view, cx| {
+                                                                                    if let SpecSrc::Doc(doc) =
+                                                                                        &view.spec_src
+                                                                                    {
+                                                                                        doc.update(
+                                                                                            cx,
+                                                                                            |doc, cx| {
+                                                                                                if checked {
+                                                                                                    doc.remove_base_column(
+                                                                                                        ix, &prop,
+                                                                                                        &cols, window,
+                                                                                                        cx,
+                                                                                                    );
+                                                                                                } else {
+                                                                                                    doc.add_base_column(
+                                                                                                        ix, &prop,
+                                                                                                        window, cx,
+                                                                                                    );
+                                                                                                }
+                                                                                            },
+                                                                                        );
+                                                                                    }
+                                                                                    view.doc_epoch += 1;
+                                                                                    cx.notify();
+                                                                                },
+                                                                            );
+                                                                            window.close_dialog(cx);
+                                                                        },
+                                                                    ),
+                                                            );
+                                                        }
+                                                        dialog
+                                                            .title("Columns")
                                                             .w(px(320.))
                                                             .overlay_closable(true)
                                                             .child(
