@@ -408,7 +408,9 @@ impl Render for GraphView {
             .enumerate()
             .filter(|(ix, n)| self.hovered == Some(*ix) || (n.degree >= 3 && !n.ghost))
             .map(|(ix, n)| {
-                let c = self.to_screen(n.pos, last_bounds);
+                // to_screen gives window-absolute points; absolute
+                // positioning here is relative to the pane's origin.
+                let c = self.to_screen(n.pos, last_bounds) - last_bounds.origin;
                 let r = px(self.node_radius(ix) * self.scale);
                 let lift = self.hovered == Some(ix);
                 div()
