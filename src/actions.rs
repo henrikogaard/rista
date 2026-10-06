@@ -40,6 +40,7 @@ actions!(
         ZoomOut,
         ZoomReset,
         OpenGraph,
+        OpenLocalGraph,
         CloseGraph,
         // App
         OpenCommandPalette,

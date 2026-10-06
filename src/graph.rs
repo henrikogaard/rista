@@ -27,6 +27,8 @@ struct GNode {
     vel: Point<f32>,
     degree: usize,
     ghost: bool,
+    /// Pinned nodes (the local-graph center) don't move under layout.
+    pinned: bool,
 }
 
 enum Drag {
@@ -37,10 +39,15 @@ enum Drag {
 pub struct GraphView {
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
+    vault: Entity<crate::vault::Vault>,
     nodes: Vec<GNode>,
     edges: Vec<(usize, usize)>,
     /// Adjacency list for hover highlighting.
     adjacent: Vec<Vec<usize>>,
+    /// Local-graph center node (pinned at the origin, emphasised).
+    local: Option<usize>,
+    /// The workspace's active document — painted with a halo ring.
+    pub(crate) active: Option<PathBuf>,
     hovered: Option<usize>,
     scale: f32,
     /// Pan offset in screen pixels.
@@ -57,19 +64,25 @@ const REPULSION: f32 = 110.0; // ideal spacing k
 const STEPS_INIT: u32 = 120; // silent warmup before first paint
 const STEPS_LIVE: u32 = 600; // animated settle
 
+/// `build()`'s product — nodes, the path → index map, edges, and the
+/// adjacency lists hover highlighting walks.
+type BuiltGraph = (
+    Vec<GNode>,
+    HashMap<PathBuf, usize>,
+    Vec<(usize, usize)>,
+    Vec<Vec<usize>>,
+);
+
 impl GraphView {
-    pub fn new(
-        workspace: WeakEntity<Workspace>,
-        vault: Entity<crate::vault::Vault>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    /// Build the node/edge graph from the vault's link index. Also
+    /// returns the path → node-index map for the callers that need it
+    /// (local-graph center, rebuild position carry-over).
+    fn build(vault: &crate::vault::Vault) -> BuiltGraph {
         let mut nodes: Vec<GNode> = Vec::new();
         let mut by_path: HashMap<PathBuf, usize> = HashMap::new();
         let mut ghosts: HashMap<String, usize> = HashMap::new();
         let mut edges: Vec<(usize, usize)> = Vec::new();
 
-        let vault = vault.read(cx);
         for path in &vault.notes {
             let ix = nodes.len();
             by_path.insert(path.clone(), ix);
@@ -84,6 +97,7 @@ impl GraphView {
                 vel: point(0., 0.),
                 degree: 0,
                 ghost: false,
+                pinned: false,
             });
         }
         for path in &vault.notes {
@@ -113,6 +127,7 @@ impl GraphView {
                         vel: point(0., 0.),
                         degree: 0,
                         ghost: true,
+                        pinned: false,
                     });
                     ix
                 });
@@ -137,13 +152,25 @@ impl GraphView {
             let t = ix as f32 / n * std::f32::consts::TAU;
             node.pos = point(radius * t.cos(), radius * t.sin());
         }
+        (nodes, by_path, edges, adjacent)
+    }
 
+    pub fn new(
+        workspace: WeakEntity<Workspace>,
+        vault: Entity<crate::vault::Vault>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (nodes, _by_path, edges, adjacent) = Self::build(vault.read(cx));
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
+            vault,
             nodes,
             edges,
             adjacent,
+            local: None,
+            active: None,
             hovered: None,
             scale: 1.0,
             offset: point(0., 0.),
@@ -156,6 +183,92 @@ impl GraphView {
         }
         view.kick(window, cx);
         view
+    }
+
+    /// Local graph — `center`'s node pinned at the origin; the rest of
+    /// the map still renders but fades back, like Obsidian's local view.
+    pub fn new_local(
+        workspace: WeakEntity<Workspace>,
+        vault: Entity<crate::vault::Vault>,
+        center: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (mut nodes, by_path, edges, adjacent) = Self::build(vault.read(cx));
+        let local = by_path.get(center).copied();
+        if let Some(ix) = local {
+            nodes[ix].pos = point(0., 0.);
+            nodes[ix].pinned = true;
+        }
+        let mut view = Self {
+            focus_handle: cx.focus_handle(),
+            workspace,
+            vault,
+            nodes,
+            edges,
+            adjacent,
+            local,
+            active: Some(center.to_path_buf()),
+            hovered: None,
+            // Slightly zoomed in — the neighbourhood is what matters.
+            scale: 1.4,
+            offset: point(0., 0.),
+            drag: None,
+            steps: STEPS_LIVE,
+            bounds: Rc::new(Cell::new(Bounds::default())),
+        };
+        for _ in 0..STEPS_INIT.min(view.steps) {
+            view.step();
+        }
+        view.kick(window, cx);
+        view
+    }
+
+    /// Rebuild the node set after vault changes — positions carry over
+    /// by path (and ghosts by label) so the map doesn't jump.
+    pub(crate) fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let (mut nodes, _by_path, edges, adjacent) = Self::build(self.vault.read(cx));
+        let mut old_pos: HashMap<String, Point<f32>> = HashMap::new();
+        for n in &self.nodes {
+            let key = n
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("ghost:{}", n.label));
+            old_pos.insert(key, n.pos);
+        }
+        for n in &mut nodes {
+            let key = n
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("ghost:{}", n.label));
+            if let Some(pos) = old_pos.get(&key) {
+                n.pos = *pos;
+            }
+        }
+        // Local center may sit at a new index — re-find it by path.
+        if let Some(c) = self.local {
+            if let Some(old) = self.nodes.get(c).and_then(|n| n.path.clone()) {
+                self.local = nodes
+                    .iter()
+                    .position(|n| n.path.as_deref() == Some(old.as_path()));
+                if let Some(ix) = self.local {
+                    nodes[ix].pos = point(0., 0.);
+                    nodes[ix].pinned = true;
+                }
+            } else {
+                self.local = None;
+            }
+        }
+        self.nodes = nodes;
+        self.edges = edges;
+        self.adjacent = adjacent;
+        self.steps = STEPS_INIT;
+        for _ in 0..self.steps {
+            self.step();
+        }
+        cx.notify();
     }
 
     /// One Fruchterman–Reingold iteration in place.
@@ -200,6 +313,9 @@ impl GraphView {
         let t = (STEPS_LIVE as f32 * 0.5) * (self.steps as f32 / STEPS_LIVE as f32) + 1.0;
         let mut max_move = 0f32;
         for (node, dvec) in self.nodes.iter_mut().zip(disp.iter()) {
+            if node.pinned {
+                continue;
+            }
             let d = (dvec.x * dvec.x + dvec.y * dvec.y).sqrt();
             if d < 0.01 {
                 continue;
@@ -293,6 +409,11 @@ struct Painted {
     nodes: Vec<(Point<Pixels>, Pixels)>, // center, radius
     ghost: Vec<bool>,
     lit: Vec<bool>,
+    /// Per-node opacity — local mode fades the wider map, hover dims
+    /// non-neighbours further.
+    fade: Vec<f32>,
+    /// Nodes that get a halo ring (local center / active doc).
+    ring: Vec<bool>,
 }
 
 impl Render for GraphView {
@@ -308,6 +429,31 @@ impl Render for GraphView {
         let ghosts: Vec<bool> = self.nodes.iter().map(|n| n.ghost).collect();
         let lit = self.lit();
         let hovered = self.hovered;
+        // Local mode: center + its neighbourhood stays bright, the
+        // wider map fades back (Obsidian's local-graph emphasis).
+        let fade: Vec<f32> = (0..self.nodes.len())
+            .map(|ix| {
+                let base = match self.local {
+                    Some(c) if ix == c || self.adjacent[c].contains(&ix) => 1.0,
+                    Some(_) => 0.18,
+                    None => 1.0,
+                };
+                if hovered.is_some() && !lit[ix] {
+                    base * 0.35
+                } else {
+                    base
+                }
+            })
+            .collect();
+        let ring: Vec<bool> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(ix, n)| {
+                self.local == Some(ix)
+                    || (self.active.is_some() && n.path.as_ref() == self.active.as_ref())
+            })
+            .collect();
         let edge_color = theme.border;
         let edge_lit = theme.muted_foreground;
         let node_fill = theme.primary;
@@ -339,13 +485,18 @@ impl Render for GraphView {
                     nodes: nodes_px,
                     ghost: ghosts,
                     lit,
+                    fade,
+                    ring,
                 }
             },
             move |bounds, painted, window, _cx| {
                 let painted: Painted = painted;
                 let _ = bounds;
-                // Edges — dim layer first, lit neighbours on top.
+                // Edges — dim layer first, lit neighbours on top. In
+                // local mode edges off the center's neighbourhood fade.
                 let mut dim = gpui::PathBuilder::stroke(px(1.));
+                let mut dim_far = gpui::PathBuilder::stroke(px(1.));
+                let mut any_far = false;
                 let mut hot = gpui::PathBuilder::stroke(px(1.5));
                 let mut any_hot = false;
                 for (a, b) in &edges {
@@ -356,6 +507,10 @@ impl Render for GraphView {
                         any_hot = true;
                         hot.move_to(ca);
                         hot.line_to(cb);
+                    } else if painted.fade[*a].min(painted.fade[*b]) < 0.5 {
+                        any_far = true;
+                        dim_far.move_to(ca);
+                        dim_far.line_to(cb);
                     } else {
                         dim.move_to(ca);
                         dim.line_to(cb);
@@ -365,6 +520,11 @@ impl Render for GraphView {
                 if let Ok(path) = dim.build() {
                     window.paint_path(path, edge_color);
                 }
+                if any_far {
+                    if let Ok(path) = dim_far.build() {
+                        window.paint_path(path, edge_color.opacity(0.3));
+                    }
+                }
                 if any_hot {
                     if let Ok(path) = hot.build() {
                         window.paint_path(path, edge_lit);
@@ -373,7 +533,6 @@ impl Render for GraphView {
                 // Nodes — ghosts first, then normal, hovered last.
                 for (ix, (c, r)) in painted.nodes.iter().enumerate() {
                     let is_hover = hovered == Some(ix);
-                    let is_dimmed = hovered.is_some() && !painted.lit[ix];
                     let color = if painted.ghost[ix] {
                         ghost_fill
                     } else if is_hover {
@@ -381,11 +540,21 @@ impl Render for GraphView {
                     } else {
                         node_fill
                     };
-                    let color = if is_dimmed {
-                        color.opacity(0.35)
-                    } else {
-                        color
-                    };
+                    let color = color.opacity(painted.fade[ix]);
+                    if painted.ring[ix] {
+                        // Halo ring — the local center / active note.
+                        window.paint_quad(gpui::PaintQuad {
+                            bounds: Bounds {
+                                origin: point(c.x - *r - px(3.), c.y - *r - px(3.)),
+                                size: size(*r * 2. + px(6.), *r * 2. + px(6.)),
+                            },
+                            corner_radii: Corners::all(*r + px(3.)),
+                            background: gpui::transparent_black().into(),
+                            border_widths: Edges::all(px(1.5)),
+                            border_color: node_hover,
+                            border_style: BorderStyle::default(),
+                        });
+                    }
                     window.paint_quad(gpui::PaintQuad {
                         bounds: Bounds {
                             origin: point(c.x - *r, c.y - *r),
@@ -552,11 +721,19 @@ impl Render for GraphView {
                     .left_4()
                     .text_xs()
                     .text_color(theme.muted_foreground.opacity(0.7))
-                    .child(format!(
-                        "{} notes · {} links · scroll to zoom, drag to pan",
-                        self.nodes.iter().filter(|n| !n.ghost).count(),
-                        self.edges.len()
-                    )),
+                    .child(match self.local {
+                        Some(c) => format!(
+                            "local graph · {} · {} notes · {} links",
+                            self.nodes[c].label,
+                            self.nodes.iter().filter(|n| !n.ghost).count(),
+                            self.edges.len()
+                        ),
+                        None => format!(
+                            "{} notes · {} links · scroll to zoom, drag to pan",
+                            self.nodes.iter().filter(|n| !n.ghost).count(),
+                            self.edges.len()
+                        ),
+                    }),
             )
             .child(
                 div().absolute().top_2().right_3().child(

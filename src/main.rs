@@ -332,6 +332,13 @@ fn menus() -> Vec<Menu> {
                 checked: false,
                 disabled: false,
             },
+            MenuItem::Action {
+                name: "Local Graph".into(),
+                action: Box::new(OpenLocalGraph),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
             MenuItem::separator(),
             MenuItem::Action {
                 name: "Zoom In".into(),

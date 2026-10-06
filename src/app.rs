@@ -225,6 +225,7 @@ enum PaletteCmd {
     ToggleTheme,
     Quit,
     Graph,
+    LocalGraph,
 }
 
 impl PaletteCmd {
@@ -567,6 +568,11 @@ impl PaletteCmd {
                 "Open graph view",
                 &["graph", "network", "map", "links", "wiki"],
             ),
+            LocalGraph => (
+                assets::IconName::Waypoints,
+                "Open local graph",
+                &["graph", "local", "neighborhood", "links", "current"],
+            ),
         }
     }
 }
@@ -724,10 +730,15 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_vault_event(&mut self, _event: &VaultEvent, _cx: &mut Context<Self>) {
+    fn on_vault_event(&mut self, _event: &VaultEvent, cx: &mut Context<Self>) {
         // Flag docs whose files changed underneath; they reload themselves on
         // the next frame where a window handle is available.
         self.needs_fs_check = true;
+        // An open graph keeps its map in sync — positions carry over
+        // so it settles instead of jumping.
+        if let Some(graph) = self.graph.clone() {
+            graph.update(cx, |g, cx| g.rebuild(cx));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1089,7 +1100,36 @@ impl Workspace {
         }
         let weak = cx.weak_entity();
         let vault = self.vault.clone();
+        let active = self
+            .active
+            .and_then(|i| self.docs.get(i))
+            .map(|d| d.entity.read(cx).path.clone());
         let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, window, cx));
+        graph.update(cx, |g, _cx| g.active = active);
+        graph.read(cx).focus_handle(cx).focus(window, cx);
+        self.graph = Some(graph);
+        cx.notify();
+    }
+
+    /// Palette "Open local graph" — neighbourhood view pinned on the
+    /// current note (Obsidian's local graph).
+    fn on_open_local_graph(
+        &mut self,
+        _: &OpenLocalGraph,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self
+            .active
+            .and_then(|i| self.docs.get(i))
+            .map(|d| d.entity.read(cx).path.clone())
+        else {
+            self.note_status("No note open", cx);
+            return;
+        };
+        let weak = cx.weak_entity();
+        let vault = self.vault.clone();
+        let graph = cx.new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, window, cx));
         graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
         cx.notify();
@@ -2098,6 +2138,7 @@ impl Workspace {
             PaletteCmd::ToggleZen,
             PaletteCmd::ProjectSearch,
             PaletteCmd::Graph,
+            PaletteCmd::LocalGraph,
             PaletteCmd::MoveLineUp,
             PaletteCmd::MoveLineDown,
             PaletteCmd::ToggleCheckbox,
@@ -2321,6 +2362,7 @@ impl Workspace {
                 cx,
             ),
             PaletteCmd::Graph => self.on_open_graph(&OpenGraph, window, cx),
+            PaletteCmd::LocalGraph => self.on_open_local_graph(&OpenLocalGraph, window, cx),
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
             PaletteCmd::ToggleCheckbox => self.on_toggle_checkbox(&ToggleCheckbox, window, cx),
@@ -6772,6 +6814,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_view_preview))
             .on_action(cx.listener(Self::on_toggle_edit_preview))
             .on_action(cx.listener(Self::on_open_graph))
+            .on_action(cx.listener(Self::on_open_local_graph))
             .on_action(cx.listener(Self::on_duplicate_block))
             .on_action(cx.listener(Self::on_delete_line))
             .on_action(cx.listener(Self::on_toggle_comment))
