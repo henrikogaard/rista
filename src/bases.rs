@@ -6134,7 +6134,7 @@ impl Render for BaseView {
             // source. `.base` files only — inline fences have no writable
             // spec of their own.
             .when(
-                matches!(self.spec_src, SpecSrc::Doc(_)) && !computed.available.is_empty(),
+                matches!(self.spec_src, SpecSrc::Doc(_)),
                 |header| {
                     let this = this.clone();
                     let available = computed.available.clone();
@@ -6155,6 +6155,196 @@ impl Render for BaseView {
                                 window.open_dialog(cx, move |dialog, _window, _cx| {
                                     let theme = _cx.theme();
                                     let mut list = v_flex().w_full().py_1();
+                                    // "New formula…" — define a formula
+                                    // (name → expr dialogs), then add
+                                    // `formula.{name}` to the view.
+                                    let this_f = this.clone();
+                                    list = list.child(
+                                        div()
+                                            .id("new-formula")
+                                            .w_full()
+                                            .px_3()
+                                            .py_1p5()
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(theme.muted))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(theme.accent)
+                                                    .child("New formula…"),
+                                            )
+                                            .on_click(move |_, window, cx| {
+                                                window.close_dialog(cx);
+                                                let this = this_f.clone();
+                                                window.defer(cx, move |window, cx| {
+                                                let input =
+                                                    this.read(cx).rename_input.clone();
+                                                input.update(cx, |input, cx| {
+                                                    input.set_value("", window, cx);
+                                                });
+                                                let input2 = input.clone();
+                                                let input_focus = input.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let input = input.clone();
+                                                        dialog
+                                                            .title("New formula — name")
+                                                            .w(px(320.))
+                                                            .child(
+                                                                div().w_full().child(
+                                                                    Input::new(&input)
+                                                                        .appearance(true),
+                                                                ),
+                                                            )
+                                                            .on_ok({
+                                                                let this = this.clone();
+                                                                let input2 = input2.clone();
+                                                                move |_, window, cx| {
+                                                                    let name = input2
+                                                                        .read(cx)
+                                                                        .value()
+                                                                        .trim()
+                                                                        .to_string();
+                                                                    let valid = !name
+                                                                        .is_empty()
+                                                                        && name.chars().all(
+                                                                            |c| c
+                                                                                .is_alphanumeric()
+                                                                                || c == '_'
+                                                                                || c == '-',
+                                                                        );
+                                                                    if !valid {
+                                                                        return true;
+                                                                    }
+                                                                    // Second dialog: the
+                                                                    // expression itself.
+                                                                    let this = this.clone();
+                                                                    let input3 =
+                                                                        input2.clone();
+                                                                    let name2 = name.clone();
+                                                                    window.defer(
+                                                                        cx,
+                                                                        move |window, cx| {
+                                                                            input3.update(
+                                                                                cx,
+                                                                                |input, cx| {
+                                                                                    input.set_value(
+                                                                                        "",
+                                                                                        window,
+                                                                                        cx,
+                                                                                    );
+                                                                                },
+                                                                            );
+                                                                            let this =
+                                                                                this.clone();
+                                                                            let input4 =
+                                                                                input3.clone();
+                                                                            let input5 =
+                                                                                input3.clone();
+                                                                            let name3 =
+                                                                                name2.clone();
+                                                                            window.open_dialog(
+                                                                                cx,
+                                                                                move |dialog, _window, _cx| {
+                                                                                    let input = input4.clone();
+                                                                                    dialog
+                                                                                        .title(
+                                                                                            format!(
+                                                                                                "formula.{name3} — expression"
+                                                                                            ),
+                                                                                        )
+                                                                                        .w(px(360.))
+                                                                                        .child(
+                                                                                            div().w_full()
+                                                                                                .child(
+                                                                                                    Input::new(
+                                                                                                        &input,
+                                                                                                    )
+                                                                                                    .appearance(
+                                                                                                        true,
+                                                                                                    ),
+                                                                                                ),
+                                                                                        )
+                                                                                        .on_ok(
+                                                                                            {
+                                                                                                let this = this
+                                                                                                    .clone();
+                                                                                                let input5 = input5.clone();
+                                                                                                let name2 = name2.clone();
+                                                                                                move |_, window, cx| {
+                                                                                                    let expr = input5
+                                                                                                        .read(cx)
+                                                                                                        .value()
+                                                                                                        .trim()
+                                                                                                        .to_string();
+                                                                                                    this.update(
+                                                                                                        cx,
+                                                                                                        |view, cx| {
+                                                                                                            if let SpecSrc::Doc(
+                                                                                                                doc,
+                                                                                                            ) = &view
+                                                                                                                .spec_src
+                                                                                                            {
+                                                                                                                doc.update(
+                                                                                                                    cx,
+                                                                                                                    |doc, cx| {
+                                                                                                                        if !expr
+                                                                                                                            .is_empty()
+                                                                                                                        {
+                                                                                                                            doc.set_base_formula(
+                                                                                                                                &name2,
+                                                                                                                                Some(
+                                                                                                                                    &expr,
+                                                                                                                                ),
+                                                                                                                                window,
+                                                                                                                                cx,
+                                                                                                                            );
+                                                                                                                        }
+                                                                                                                        doc.add_base_column(
+                                                                                                                            view_ix,
+                                                                                                                            &format!(
+                                                                                                                                "formula.{name2}"
+                                                                                                                            ),
+                                                                                                                            window,
+                                                                                                                            cx,
+                                                                                                                        );
+                                                                                                                    },
+                                                                                                                );
+                                                                                                            }
+                                                                                                            view.doc_epoch += 1;
+                                                                                                            cx.notify();
+                                                                                                        },
+                                                                                                    );
+                                                                                                    true
+                                                                                                }
+                                                                                            },
+                                                                                        )
+                                                                                },
+                                                                            );
+                                                                            input3.update(
+                                                                                cx,
+                                                                                |input, cx| {
+                                                                                    input.focus(
+                                                                                        window, cx,
+                                                                                    );
+                                                                                },
+                                                                            );
+                                                                        },
+                                                                    );
+                                                                    true
+                                                                }
+                                                            })
+                                                    },
+                                                );
+                                                window.defer(cx, move |window, cx| {
+                                                    input_focus.update(cx, |input, cx| {
+                                                        input.focus(window, cx);
+                                                    });
+                                                });
+                                                });
+                                            }),
+                                    );
                                     for (ix, prop) in candidates.iter().enumerate() {
                                         let prop = prop.clone();
                                         let this = this.clone();
