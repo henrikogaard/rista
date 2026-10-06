@@ -210,6 +210,8 @@ enum Tok {
     Dot,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Comma,
 }
 
@@ -227,6 +229,14 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             }
             b')' => {
                 toks.push(Tok::RParen);
+                ix += 1;
+            }
+            b'[' => {
+                toks.push(Tok::LBracket);
+                ix += 1;
+            }
+            b']' => {
+                toks.push(Tok::RBracket);
                 ix += 1;
             }
             b',' => {
@@ -327,6 +337,8 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
 #[derive(Clone, Debug)]
 enum Expr {
     Lit(Lit),
+    /// `[expr, …]` literal — evaluates each item at eval time.
+    List(Vec<Expr>),
     /// `file.name`, `note.x`, `formula.x`, or a bare frontmatter key.
     Ref(Option<String>, String),
     Call(String, Vec<Expr>),
@@ -503,6 +515,24 @@ impl Parser {
                 let inner = self.expr()?;
                 self.expect(Tok::RParen)?;
                 Ok(inner)
+            }
+            // `[a, b, …]` — list literal (Obsidian uses them in
+            // `containsAny(["a","b"])` and formula args).
+            Some(Tok::LBracket) => {
+                let mut items = Vec::new();
+                if self.peek() == Some(&Tok::RBracket) {
+                    self.pos += 1;
+                    return Ok(Expr::List(items));
+                }
+                loop {
+                    items.push(self.expr()?);
+                    match self.next() {
+                        Some(Tok::Comma) => continue,
+                        Some(Tok::RBracket) => break,
+                        _ => return Err("expected ',' or ']'".into()),
+                    }
+                }
+                Ok(Expr::List(items))
             }
             other => Err(format!("unexpected token {:?}", other)),
         }
@@ -853,6 +883,12 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
     }
     match expr {
         Expr::Lit(l) => Ok(l.clone()),
+        Expr::List(items) => Ok(Lit::List(
+            items
+                .iter()
+                .map(|e| eval(e, env))
+                .collect::<Result<_, _>>()?,
+        )),
         Expr::Ref(ns, name) => match ns.as_deref() {
             None => Ok(if name == "values" {
                 env.values.clone().map(Lit::List).unwrap_or(Lit::Null)
@@ -1065,6 +1101,26 @@ fn apply_method(value: &Lit, name: &str, args: &[Lit]) -> Result<Lit, String> {
             }
             _ => Ok(Lit::Bool(false)),
         },
+        // Obsidian list predicates — all/any/none membership against a
+        // list argument.
+        "containsAll" => match (value, arg) {
+            (Lit::List(items), Some(Lit::List(needles))) => Ok(Lit::Bool(
+                needles.iter().all(|n| items.iter().any(|i| lit_eq(i, n))),
+            )),
+            _ => Ok(Lit::Bool(false)),
+        },
+        "containsAny" => match (value, arg) {
+            (Lit::List(items), Some(Lit::List(needles))) => Ok(Lit::Bool(
+                needles.iter().any(|n| items.iter().any(|i| lit_eq(i, n))),
+            )),
+            _ => Ok(Lit::Bool(false)),
+        },
+        "containsNone" => match (value, arg) {
+            (Lit::List(items), Some(Lit::List(needles))) => Ok(Lit::Bool(
+                !needles.iter().any(|n| items.iter().any(|i| lit_eq(i, n))),
+            )),
+            _ => Ok(Lit::Bool(true)),
+        },
         "startsWith" => {
             Ok(Lit::Bool(arg.is_some_and(|n| {
                 value.display().starts_with(&n.display())
@@ -1210,9 +1266,9 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
     match name {
         // Method-style functions also work in `fn(value, …)` form —
         // `contains(x, "a")`, `replace(s, "a", "b")`, `slice(l, 1, 2)`.
-        "contains" | "startsWith" | "endsWith" | "isEmpty" | "lower" | "upper" | "trim"
-        | "title" | "replace" | "split" | "slice" | "reverse" | "sort" | "last" | "indexOf"
-        | "unique" | "join" => {
+        "contains" | "containsAll" | "containsAny" | "containsNone" | "startsWith" | "endsWith"
+        | "isEmpty" | "lower" | "upper" | "trim" | "title" | "replace" | "split" | "slice"
+        | "reverse" | "sort" | "last" | "indexOf" | "unique" | "join" => {
             if args.is_empty() {
                 return Err(format!("{name} wants at least 1 arg"));
             }
@@ -4064,6 +4120,41 @@ mod tests {
             run(r#"rollup(related, "missing", "count")"#, &mut env),
             Lit::Num(0.0)
         );
+    }
+
+    #[test]
+    fn list_predicates() {
+        let p = [(
+            "tags",
+            Lit::List(vec![
+                Lit::Str("a".into()),
+                Lit::Str("b".into()),
+                Lit::Str("c".into()),
+            ]),
+        )];
+        assert_eq!(
+            evals(r#"tags.containsAll(["a", "b"])"#, &p),
+            Lit::Bool(true)
+        );
+        assert_eq!(
+            evals(r#"tags.containsAll(["a", "z"])"#, &p),
+            Lit::Bool(false)
+        );
+        assert_eq!(
+            evals(r#"tags.containsAny(["x", "b"])"#, &p),
+            Lit::Bool(true)
+        );
+        assert_eq!(
+            evals(r#"tags.containsAny(["x", "z"])"#, &p),
+            Lit::Bool(false)
+        );
+        assert_eq!(
+            evals(r#"tags.containsNone(["x", "z"])"#, &p),
+            Lit::Bool(true)
+        );
+        assert_eq!(evals(r#"tags.containsNone(["b"])"#, &p), Lit::Bool(false));
+        // function form
+        assert_eq!(evals(r#"containsAny(tags, ["c"])"#, &p), Lit::Bool(true));
     }
 
     #[test]
