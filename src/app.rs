@@ -4253,6 +4253,10 @@ impl Workspace {
                 h_flex()
                     .gap_1()
                     .items_center()
+                    // Inset the right edge — the platform titlebar only
+                    // pads the left (traffic lights), so icons here sat
+                    // flush against the window corner.
+                    .pr_3()
                     .child(
                         Button::new("palette")
                             .ghost()
@@ -6050,7 +6054,8 @@ impl Workspace {
             )
             .child(
                 div()
-                    .pr_2()
+                    // Same right inset as the titlebar cluster above.
+                    .pr_3()
                     // Image tabs have no source/preview modes; an open
                     // graph replaces the content area entirely.
                     .when(
