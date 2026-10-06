@@ -551,6 +551,32 @@ impl Document {
         true
     }
 
+    /// Insert `prop` into the `view_ix`-th view's `order:` next to
+    /// `anchor` (before when `after` is false, after otherwise) — the
+    /// header "Insert column left/right" write path. Falls back to
+    /// appending when the anchor isn't listed.
+    pub fn insert_base_column(
+        &mut self,
+        view_ix: usize,
+        prop: &str,
+        anchor: &str,
+        after: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) =
+            crate::bases::splice_order_at(&text, view_ix, prop, anchor, after)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Drop `prop` from the `order:` list of a `.base` spec's
     /// `view_ix`-th view — the header "Hide column" write path.
     /// `current_cols` is the displayed column set, needed when the

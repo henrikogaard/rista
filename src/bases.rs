@@ -3083,6 +3083,90 @@ pub fn splice_order(src: &str, view_ix: usize, prop: &str) -> Option<(usize, usi
     ))
 }
 
+/// Like `splice_order` but inserts `prop` before (`after: false`) or
+/// after `anchor`, an existing `order:` entry — the header
+/// "Insert column left/right" write path. Falls back to appending when
+/// the anchor isn't listed, and to creating `order:` when absent.
+pub fn splice_order_at(
+    src: &str,
+    view_ix: usize,
+    prop: &str,
+    anchor: &str,
+    after: bool,
+) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_item = |t: &str| t.starts_with("- ") || t == "-";
+
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if !t.starts_with("order:") || indent(lines[i]) != key_ind {
+            continue;
+        }
+        let tail = t["order:".len()..].trim();
+        if tail.starts_with('[') {
+            // Flow form — split the items, insert around the anchor.
+            let inner = tail
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches(',')
+                .trim();
+            let mut items: Vec<String> = if inner.is_empty() {
+                Vec::new()
+            } else {
+                inner.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            let pos = items
+                .iter()
+                .position(|it| unquote(it) == anchor)
+                .map(|p| if after { p + 1 } else { p })
+                .unwrap_or(items.len());
+            items.insert(pos, prop.to_string());
+            return Some((
+                offs[i],
+                offs[i + 1],
+                format!("{}order: [{}]\n", " ".repeat(key_ind), items.join(", ")),
+            ));
+        }
+        // Block list — find the anchor's `- ` line; insert before its
+        // offset or after it, appending when the anchor isn't listed.
+        let mut anchor_ln = None;
+        let mut last_entry = i;
+        for (j, line_j) in lines.iter().enumerate().take(end_ln).skip(i + 1) {
+            let t = line_j.trim_end();
+            if t.is_empty() {
+                continue;
+            }
+            if indent(line_j) > key_ind && is_item(t.trim_start()) {
+                last_entry = j;
+                if unquote(t.trim_start()["- ".len()..].trim()) == anchor {
+                    anchor_ln = Some(j);
+                }
+            } else {
+                break;
+            }
+        }
+        let at = match anchor_ln {
+            Some(l) if after => offs[l + 1],
+            Some(l) => offs[l],
+            None => offs[last_entry + 1],
+        };
+        return Some((at, at, format!("{}- {prop}\n", " ".repeat(key_ind + 2))));
+    }
+
+    // No `order:` — append one at the item's end.
+    let at = offs[end_ln];
+    Some((
+        at,
+        at,
+        format!(
+            "{}order:\n{}- {prop}\n",
+            " ".repeat(key_ind),
+            " ".repeat(key_ind + 2)
+        ),
+    ))
+}
+
 /// A YAML scalar with one level of matching quotes stripped — `order:`
 /// entries may be `- "my prop"` or `['a']`.
 fn unquote(s: &str) -> &str {
@@ -5034,6 +5118,7 @@ impl Render for BaseView {
                         let writable = matches!(self.spec_src, SpecSrc::Doc(_));
                         let col = computed.columns.get(ix).cloned().unwrap_or_default();
                         let h_name = h.clone();
+                        let available = computed.available.clone();
                         move |menu, _window, _cx| {
                             let menu = menu
                                 .item(
@@ -5075,6 +5160,80 @@ impl Render for BaseView {
                             if !writable || col == "file.name" {
                                 return menu;
                             }
+                            // Insert left/right opens the same property
+                            // chooser as "+", then splices the pick into
+                            // `order:` next to this column.
+                            let insert_item = |label: &'static str, after: bool| {
+                                let this = this.clone();
+                                let col = col.clone();
+                                let candidates = available.clone();
+                                PopupMenuItem::new(label)
+                                    .icon(assets::IconName::Plus)
+                                    .on_click(move |_, window, cx| {
+                                        let this2 = this.clone();
+                                        let col = col.clone();
+                                        let candidates = candidates.clone();
+                                        window.open_dialog(cx, move |dialog, _window, _cx| {
+                                            let theme = _cx.theme();
+                                            let mut list = v_flex().w_full().py_1();
+                                            for (nix, prop) in candidates.iter().enumerate() {
+                                                let prop = prop.clone();
+                                                let this = this2.clone();
+                                                let col = col.clone();
+                                                list = list.child(
+                                                    div()
+                                                        .id(("ins-col", nix))
+                                                        .w_full()
+                                                        .px_3()
+                                                        .py_1p5()
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.bg(theme.muted))
+                                                        .child(
+                                                            div()
+                                                                .text_sm()
+                                                                .text_color(theme.foreground)
+                                                                .child(prop.clone()),
+                                                        )
+                                                        .on_click(move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                let SpecSrc::Doc(doc) =
+                                                                    &view.spec_src
+                                                                else {
+                                                                    return;
+                                                                };
+                                                                let doc = doc.clone();
+                                                                if doc.update(cx, |doc, cx| {
+                                                                    doc.insert_base_column(
+                                                                        view.view_ix,
+                                                                        &prop,
+                                                                        &col,
+                                                                        after,
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                }) {
+                                                                    view.doc_epoch += 1;
+                                                                }
+                                                            });
+                                                            window.close_dialog(cx);
+                                                        }),
+                                                );
+                                            }
+                                            dialog
+                                                .title(label)
+                                                .w(px(320.))
+                                                .overlay_closable(true)
+                                                .child(
+                                                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                        list.max_h(px(320.)),
+                                                    ),
+                                                )
+                                        });
+                                    })
+                            };
+                            let menu = menu
+                                .item(insert_item("Insert column left", false))
+                                .item(insert_item("Insert column right", true));
                             let this = this.clone();
                             let col = col.clone();
                             menu.item(
@@ -6337,6 +6496,45 @@ views:
         assert!(out.contains("    order:\n      - status\n"));
         // A second view keeps the first untouched.
         assert!(super::splice_order(spec, 5, "x").is_none());
+    }
+
+    #[test]
+    fn splice_order_at() {
+        let spec = r#"views:
+  - type: table
+    name: All notes
+    order:
+      - file.name
+      - status
+      - file.mtime
+  - type: cards
+    name: Gallery
+    order: [file.name, cover]
+"#;
+        // Block list — before the anchor.
+        let (s, e, ins) = super::splice_order_at(spec, 0, "file.folder", "status", false).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("      - file.folder\n      - status\n"));
+        // Block list — after the anchor.
+        let (s, e, ins) = super::splice_order_at(spec, 0, "tags", "status", true).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("      - status\n      - tags\n      - file.mtime\n"));
+        // Block list — anchor missing appends after the last entry.
+        let (s, e, ins) = super::splice_order_at(spec, 0, "due", "nope", false).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("      - file.mtime\n      - due\n"));
+        // Flow list — before/after rewrite the one line positionally.
+        let (s, e, ins) = super::splice_order_at(spec, 1, "rating", "cover", false).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("order: [file.name, rating, cover]"));
+        let (s, e, ins) = super::splice_order_at(spec, 1, "rating", "file.name", true).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("order: [file.name, rating, cover]"));
+        // No `order:` — appended at the end of the view item.
+        let bare = "views:\n  - type: table\n    name: Bare\n";
+        let (s, e, ins) = super::splice_order_at(bare, 0, "status", "x", true).unwrap();
+        let out = format!("{}{}{}", &bare[..s], ins, &bare[e..]);
+        assert!(out.contains("    order:\n      - status\n"));
     }
 
     #[test]
