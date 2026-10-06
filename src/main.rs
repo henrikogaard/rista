@@ -7,6 +7,7 @@ mod app;
 mod bases;
 mod decorations;
 mod document;
+mod emoji;
 mod graph;
 mod history;
 mod http;

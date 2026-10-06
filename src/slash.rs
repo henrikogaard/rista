@@ -131,7 +131,7 @@ impl CompletionProvider for VaultCompletions {
         // allowed so a batched insert like `[[s` still triggers.
         new_text.chars().all(|c| {
             c.is_ascii_alphanumeric()
-                || matches!(c, '-' | '_' | ' ' | '/' | '[' | '!' | '.' | '#' | '^')
+                || matches!(c, '-' | '_' | ' ' | '/' | '[' | '!' | '.' | '#' | '^' | ':')
         })
     }
 
@@ -147,6 +147,9 @@ impl CompletionProvider for VaultCompletions {
             return Task::ready(Ok(resp));
         }
         if let Some(resp) = tag_items(text, offset, self.vault.as_ref(), cx) {
+            return Task::ready(Ok(resp));
+        }
+        if let Some(resp) = emoji_items(text, offset) {
             return Task::ready(Ok(resp));
         }
         Task::ready(Ok(slash_items(text, offset)))
@@ -446,6 +449,67 @@ fn tag_items(
             text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                 range,
                 new_text: tag,
+            })),
+            ..Default::default()
+        })
+        .collect();
+    if items.is_empty() {
+        None
+    } else {
+        Some(CompletionResponse::Array(items))
+    }
+}
+
+/// `:query` → emoji — Obsidian's emoji-picker core plugin. The `:`
+/// must start a token (whitespace or line start before it) so `https:`
+/// and `::` never fire; needs ≥2 query chars to keep the popup quiet.
+fn emoji_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {
+    let point = text.offset_to_point(offset);
+    let line = text.slice_line(point.row).to_string();
+    let line_start = text.line_start_offset(point.row);
+    let prefix = line.get(..point.column.min(line.len())).unwrap_or_default();
+
+    let colon = prefix.rfind(':')?;
+    if prefix[..colon]
+        .chars()
+        .last()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return None;
+    }
+    let query = &prefix[colon + 1..];
+    if query.len() < 2
+        || !query
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    let q = query.to_lowercase();
+    let range = Range {
+        start: text.offset_to_position(line_start + colon),
+        end: text.offset_to_position(offset),
+    };
+
+    let mut hits: Vec<&(&str, &str)> = crate::emoji::EMOJI
+        .iter()
+        .filter(|(name, _)| name.contains(q.as_str()))
+        .collect();
+    // Prefix matches float to the top; keep the menu short.
+    hits.sort_by(|(a, _), (b, _)| {
+        (!a.starts_with(q.as_str()), *a).cmp(&(!b.starts_with(q.as_str()), *b))
+    });
+    let items: Vec<CompletionItem> = hits
+        .into_iter()
+        .take(24)
+        .map(|(name, ch)| CompletionItem {
+            label: format!("{ch} :{name}:"),
+            detail: Some(name.replace('_', " ")),
+            kind: Some(CompletionItemKind::TEXT),
+            sort_text: Some((*name).to_string()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: (*ch).to_string(),
             })),
             ..Default::default()
         })
