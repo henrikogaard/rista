@@ -847,11 +847,14 @@ impl MarkdownPlugin for PropertiesPlugin {
             .map(|map| {
                 map.iter()
                     .filter_map(|(k, v)| {
+                        let key = k.as_str()?.to_string();
+                        let links = prop_links(v);
                         Some((
-                            k.as_str()?.to_string(),
+                            key.clone(),
                             prop_edit_text(v),
                             prop_display(v),
-                            prop_links(v),
+                            links.clone(),
+                            prop_kind(&key, v, links.is_some()),
                         ))
                     })
                     .collect::<Vec<_>>()
@@ -867,7 +870,16 @@ impl MarkdownPlugin for PropertiesPlugin {
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (entries, key) = node
-            .data::<(Vec<(String, String, String, Option<Vec<String>>)>, usize)>()
+            .data::<(
+                Vec<(
+                    String,
+                    String,
+                    String,
+                    Option<Vec<String>>,
+                    assets::IconName,
+                )>,
+                usize,
+            )>()
             .expect("properties node data");
         let theme = cx.theme();
         if entries.is_empty() {
@@ -885,14 +897,21 @@ impl MarkdownPlugin for PropertiesPlugin {
             .map(|ctx| ctx.workspace.clone());
         let mut rows = v_flex().w_full();
         if !folded {
-            for (ix, (k, edit, v, links)) in entries.iter().enumerate() {
-                let mut key_cell = div()
+            for (ix, (k, edit, v, links, kind)) in entries.iter().enumerate() {
+                let mut key_cell = h_flex()
                     .id(("property-key", ix))
                     .w(px(96.))
                     .flex_none()
+                    .gap_1()
+                    .items_center()
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .truncate()
+                    .child(
+                        Icon::new(*kind)
+                            .size(px(11.))
+                            .text_color(theme.muted_foreground),
+                    )
                     .child(k.clone());
                 let mut value_cell = div().flex_1().text_xs().truncate();
                 match links {
@@ -1197,6 +1216,42 @@ fn prop_links(v: &serde_yaml::Value) -> Option<Vec<String>> {
             items.iter().map(|i| i.as_str().and_then(target)).collect()
         }
         _ => None,
+    }
+}
+
+/// Lucide icon for a property's YAML type — Obsidian's Properties
+/// panel marks each row with its type glyph.
+fn prop_kind(key: &str, v: &serde_yaml::Value, has_links: bool) -> assets::IconName {
+    use assets::IconName as I;
+    if key == "tags" {
+        return I::Tags;
+    }
+    if has_links {
+        return I::Link;
+    }
+    match v {
+        serde_yaml::Value::Bool(_) => I::SquareCheck,
+        serde_yaml::Value::Number(_) => I::Hash,
+        serde_yaml::Value::Sequence(_) => I::List,
+        serde_yaml::Value::String(s) => {
+            let s = s.trim();
+            // `YYYY-MM-DD` alone → calendar; a datetime tail → clock.
+            let b = s.as_bytes();
+            let date = s.len() >= 10
+                && b[4] == b'-'
+                && b[7] == b'-'
+                && s[..4].bytes().all(|c| c.is_ascii_digit())
+                && s[5..7].bytes().all(|c| c.is_ascii_digit())
+                && s[8..10].bytes().all(|c| c.is_ascii_digit());
+            if !date {
+                I::Type
+            } else if s.len() == 10 {
+                I::Calendar
+            } else {
+                I::Clock
+            }
+        }
+        _ => I::Type,
     }
 }
 
