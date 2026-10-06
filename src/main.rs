@@ -18,6 +18,7 @@ mod settings;
 mod settings_panel;
 mod slash;
 mod theme;
+mod updater;
 mod vault;
 
 use crate::actions::*;
@@ -43,6 +44,7 @@ fn main() {
             cx.bind_keys(keymap());
             cx.set_menus(menus());
             cx.activate(true);
+            updater::start();
 
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             gpui_kit::open_window(
@@ -139,27 +141,40 @@ fn keymap() -> Vec<KeyBinding> {
 }
 
 fn menus() -> Vec<Menu> {
+    let mut app_items = vec![
+        MenuItem::separator(),
+        MenuItem::Action {
+            name: "About Rísta".into(),
+            action: Box::new(About),
+            os_action: None,
+            checked: false,
+            disabled: false,
+        },
+    ];
+    // Only builds that link Sparkle can actually check.
+    if crate::updater::AVAILABLE {
+        app_items.push(MenuItem::Action {
+            name: "Check for Updates…".into(),
+            action: Box::new(CheckForUpdates),
+            os_action: None,
+            checked: false,
+            disabled: false,
+        });
+    }
+    app_items.extend([
+        MenuItem::separator(),
+        MenuItem::os_submenu("Services", SystemMenuType::Services),
+        MenuItem::separator(),
+        MenuItem::Action {
+            name: "Quit Rísta".into(),
+            action: Box::new(Quit),
+            os_action: None,
+            checked: false,
+            disabled: false,
+        },
+    ]);
     vec![
-        Menu::new("Rísta").items([
-            MenuItem::separator(),
-            MenuItem::Action {
-                name: "About Rísta".into(),
-                action: Box::new(About),
-                os_action: None,
-                checked: false,
-                disabled: false,
-            },
-            MenuItem::separator(),
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
-            MenuItem::separator(),
-            MenuItem::Action {
-                name: "Quit Rísta".into(),
-                action: Box::new(Quit),
-                os_action: None,
-                checked: false,
-                disabled: false,
-            },
-        ]),
+        Menu::new("Rísta").items(app_items),
         Menu::new("File").items([
             MenuItem::Action {
                 name: "New File".into(),

@@ -2166,6 +2166,15 @@ impl Workspace {
         self.note_status("Rísta — a quiet place for words.", cx);
     }
 
+    fn on_check_for_updates(
+        &mut self,
+        _: &CheckForUpdates,
+        _w: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        crate::updater::check_for_updates();
+    }
+
     // ------------------------------------------------------------------
     // Command palette
     // ------------------------------------------------------------------
@@ -6911,6 +6920,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_about))
+            .on_action(cx.listener(Self::on_check_for_updates))
             .when(!self.zen, |this| {
                 this.child(self.render_title_bar(window, cx))
             })

@@ -47,6 +47,7 @@ actions!(
         OpenProjectSearch,
         OpenSettings,
         ToggleTheme,
+        CheckForUpdates,
         Quit,
         About,
     ]

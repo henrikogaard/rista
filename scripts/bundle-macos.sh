@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Build Rísta.app (release binary + Sparkle.framework) and a dist/ zip.
+#
+#   scripts/fetch-sparkle.sh   # once, or when bumping the pinned version
+#   scripts/bundle-macos.sh
+#
+# Env:
+#   VERSION            marketing version (default: Cargo.toml package version)
+#   CODESIGN_IDENTITY  signing identity (default: "-" ad-hoc)
+#   SPARKLE_PRIVATE_ED_KEY  base64 EdDSA seed; when set, also emits
+#                      dist/appcast.xml signed for the feed.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+APP_NAME="Rísta"
+EXEC_NAME="rista"
+VERSION="${VERSION:-$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')}"
+BUILD="${BUILD:-$VERSION}"
+IDENTITY="${CODESIGN_IDENTITY:--}"
+APP="dist/${APP_NAME}.app"
+
+test -d vendor/sparkle/Sparkle.framework || {
+  echo "Sparkle.framework missing — run scripts/fetch-sparkle.sh first" >&2
+  exit 1
+}
+
+cargo build --release --features sparkle
+
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
+cp "target/release/${EXEC_NAME}" "$APP/Contents/MacOS/${EXEC_NAME}"
+ditto vendor/sparkle/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
+# The framework loads its own helpers via @rpath — XPC services ride along
+# in the same copy; sign them inside-out below.
+sed "s/@VERSION@/${VERSION}/g; s/@BUILD@/${BUILD}/g" \
+  macos/Info.plist > "$APP/Contents/Info.plist"
+
+sips -s format icns public/icon.png --out "$APP/Contents/Resources/AppIcon.icns" >/dev/null
+
+# Inside-out: helpers first, then framework, then the bundle.
+find "$APP/Contents/Frameworks/Sparkle.framework" \
+  \( -name "*.xpc" -o -name "*.app" -o -name Autoupdate \) -prune -type d \
+  | while read -r helper; do
+      codesign --force --sign "$IDENTITY" --timestamp=none "$helper" 2>/dev/null || true
+    done
+codesign --force --sign "$IDENTITY" --timestamp=none \
+  "$APP/Contents/Frameworks/Sparkle.framework" 2>/dev/null || true
+codesign --force --deep --sign "$IDENTITY" "$APP"
+
+ditto -c -k --keepParent "$APP" "dist/${APP_NAME}-${VERSION}.zip"
+(cd dist && shasum -a 256 "${APP_NAME}-${VERSION}.zip" > SHA256SUMS)
+
+# Appcast: only when the EdDSA seed is present (CI secret or local export).
+if [[ -n "${SPARKLE_PRIVATE_ED_KEY:-}" ]]; then
+  printf '%s' "${SPARKLE_PRIVATE_ED_KEY}" \
+    | vendor/sparkle/bin/generate_appcast --ed-key-file - dist/
+  echo "wrote dist/appcast.xml"
+else
+  echo "SPARKLE_PRIVATE_ED_KEY unset — skipped appcast.xml" >&2
+fi
+
+echo "built ${APP} and dist/${APP_NAME}-${VERSION}.zip"

@@ -21,3 +21,7 @@ Thumbs.db
 
 # Rust
 target/
+# Vendored Sparkle.framework (restored by scripts/fetch-sparkle.sh)
+vendor/
+# Local .app packaging output
+*.app

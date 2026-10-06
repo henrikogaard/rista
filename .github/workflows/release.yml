@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Vendor Sparkle
+        run: scripts/fetch-sparkle.sh
+
+      - name: Build and bundle Rísta.app
+        env:
+          VERSION: ${{ github.ref_name }}
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: scripts/bundle-macos.sh
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "${VERSION}" \
+            --title "Rísta ${VERSION}" \
+            --generate-notes \
+            "dist/Rísta-${VERSION}.zip" \
+            dist/SHA256SUMS \
+            dist/appcast.xml

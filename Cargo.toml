@@ -24,6 +24,14 @@ base64 = "0.22"
 ureq = "3.4.2"
 lsp-types = { version = "0.97.0", features = ["proposed"] }
 
+[features]
+# Links vendor/sparkle/Sparkle.framework and enables the Sparkle updater
+# (macOS .app builds via scripts/bundle-macos.sh).
+sparkle = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

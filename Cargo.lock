@@ -5628,6 +5628,7 @@ dependencies = [
  "lsp-types",
  "markdown",
  "notify",
+ "objc2 0.6.4",
  "serde",
  "serde_json",
  "serde_yaml",
