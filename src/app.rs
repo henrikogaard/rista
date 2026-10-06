@@ -6183,7 +6183,7 @@ impl Workspace {
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let doc = self.active_doc();
-        let (rel_path, words, dirty, conflict, cursor) = doc
+        let (rel_path, words, dirty, conflict, cursor, selected) = doc
             .map(|doc| {
                 let doc = doc.read(cx);
                 let rel = self
@@ -6194,13 +6194,16 @@ impl Workspace {
                     .and_then(|r| doc.path.strip_prefix(r).ok())
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| doc.path.to_string_lossy().to_string());
-                let pos = doc.editor.read(cx).cursor_position();
+                let editor = doc.editor.read(cx);
+                let pos = editor.cursor_position();
+                let sel = editor.selected_range();
                 (
                     rel,
                     doc.stats.0,
                     doc.dirty,
                     doc.conflict,
                     Some((pos.line + 1, pos.character + 1)),
+                    (!sel.is_empty()).then(|| sel.end - sel.start),
                 )
             })
             .unwrap_or_default();
@@ -6249,6 +6252,14 @@ impl Workspace {
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!("Ln {line}, Col {col}")),
+                        )
+                    })
+                    .when_some(selected, |this, n| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("({n} selected)")),
                         )
                     })
                     .when(doc.is_some(), |this| {
