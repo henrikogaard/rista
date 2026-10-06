@@ -3872,6 +3872,8 @@ impl Render for BaseView {
                             let multi = computed.view_names.len() > 1;
                             let groupable = computed.groupable.clone();
                             let sort_spec = computed.sort_spec.clone();
+                            let is_cal = computed.view_kinds.get(ix).map(String::as_str)
+                                == Some("calendar");
                             move |menu, _window, cx| {
                                 if !matches!(this.read(cx).spec_src, SpecSrc::Doc(_)) {
                                     return menu;
@@ -4185,6 +4187,168 @@ impl Render for BaseView {
                                             }
                                         }),
                                 );
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Row limit…")
+                                        .icon(assets::IconName::ArrowDownWideNarrow)
+                                        .on_click({
+                                            let this = this.clone();
+                                            move |_, window, cx| {
+                                                let input =
+                                                    this.read(cx).rename_input.clone();
+                                                input.update(cx, |input, cx| {
+                                                    input.set_value("", window, cx);
+                                                });
+                                                let this = this.clone();
+                                                let input2 = input.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let input = input.clone();
+                                                        dialog
+                                                            .title("Row limit — blank clears")
+                                                            .w(px(320.))
+                                                            .child(
+                                                                div().w_full().child(
+                                                                    Input::new(&input)
+                                                                        .appearance(true),
+                                                                ),
+                                                            )
+                                                            .on_ok({
+                                                                let this = this.clone();
+                                                                move |_, window, cx| {
+                                                                    this.update(
+                                                                        cx,
+                                                                        |view, cx| {
+                                                                            let text = view
+                                                                                .rename_input
+                                                                                .read(cx)
+                                                                                .value()
+                                                                                .trim()
+                                                                                .to_string();
+                                                                            // NaN input: keep the
+                                                                            // spec untouched.
+                                                                            let val = if text
+                                                                                .is_empty()
+                                                                            {
+                                                                                None
+                                                                            } else if text
+                                                                                .parse::<usize>()
+                                                                                .is_ok()
+                                                                            {
+                                                                                Some(text)
+                                                                            } else {
+                                                                                return;
+                                                                            };
+                                                                            if let SpecSrc::Doc(
+                                                                                doc,
+                                                                            ) = &view.spec_src
+                                                                            {
+                                                                                doc.update(
+                                                                                    cx,
+                                                                                    |doc, cx| {
+                                                                                        doc.set_base_view_key(
+                                                                                            ix,
+                                                                                            "limit",
+                                                                                            val.as_deref(),
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    },
+                                                                                );
+                                                                            }
+                                                                            view.doc_epoch += 1;
+                                                                            cx.notify();
+                                                                        },
+                                                                    );
+                                                                    true
+                                                                }
+                                                            })
+                                                    },
+                                                );
+                                                window.defer(cx, move |window, cx| {
+                                                    input2.update(cx, |input, cx| {
+                                                        input.focus(window, cx);
+                                                    });
+                                                });
+                                            }
+                                        }),
+                                );
+                                let menu = if is_cal {
+                                    menu.item(
+                                        PopupMenuItem::new("Date property…")
+                                            .icon(assets::IconName::Calendar)
+                                            .on_click({
+                                                let this = this.clone();
+                                                let candidates = groupable.clone();
+                                                move |_, window, cx| {
+                                                    let candidates = candidates.clone();
+                                                    let this = this.clone();
+                                                    window.open_dialog(
+                                                        cx,
+                                                        move |dialog, _window, _cx| {
+                                                            let theme = _cx.theme();
+                                                            let mut list =
+                                                                v_flex().w_full().py_1();
+                                                            for (nix, prop) in
+                                                                candidates.iter().enumerate()
+                                                            {
+                                                                let prop = prop.clone();
+                                                                let this = this.clone();
+                                                                list = list.child(
+                                                                    div()
+                                                                        .id(("date-pick", nix))
+                                                                        .w_full()
+                                                                        .px_3()
+                                                                        .py_1p5()
+                                                                        .cursor_pointer()
+                                                                        .hover(|s| {
+                                                                            s.bg(theme.muted)
+                                                                        })
+                                                                        .child(
+                                                                            div()
+                                                                                .text_sm()
+                                                                                .text_color(theme.foreground)
+                                                                                .child(prop.clone()),
+                                                                        )
+                                                                        .on_click(move |_, window, cx| {
+                                                                            this.update(cx, |view, cx| {
+                                                                                if let SpecSrc::Doc(doc) =
+                                                                                    &view.spec_src
+                                                                                {
+                                                                                    doc.update(cx, |doc, cx| {
+                                                                                        doc.set_base_view_key(
+                                                                                            ix,
+                                                                                            "date",
+                                                                                            Some(&prop),
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    });
+                                                                                }
+                                                                                view.doc_epoch += 1;
+                                                                                cx.notify();
+                                                                            });
+                                                                            window.close_dialog(cx);
+                                                                        }),
+                                                                );
+                                                            }
+                                                            dialog
+                                                                .title("Date property")
+                                                                .w(px(320.))
+                                                                .overlay_closable(true)
+                                                                .child(
+                                                                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                        list.max_h(px(320.)),
+                                                                    ),
+                                                                )
+                                                        },
+                                                    );
+                                                }
+                                            }),
+                                    )
+                                } else {
+                                    menu
+                                };
                                 if !multi {
                                     return menu;
                                 }
