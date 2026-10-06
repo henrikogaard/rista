@@ -94,6 +94,8 @@ pub struct Workspace {
     /// Wikilink hover preview — target + anchor point, rendered as a
     /// floating card over the workspace (Obsidian's page preview).
     peek: Option<(PeekKind, gpui::Point<gpui::Pixels>)>,
+    /// Vault link graph — open as a full editor-area view (⌘G).
+    graph: Option<Entity<crate::graph::GraphView>>,
     needs_fs_check: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -222,6 +224,7 @@ enum PaletteCmd {
     Settings,
     ToggleTheme,
     Quit,
+    Graph,
 }
 
 impl PaletteCmd {
@@ -559,6 +562,11 @@ impl PaletteCmd {
             ),
             ToggleTheme => (assets::IconName::Moon, "Toggle theme", &["dark", "light"]),
             Quit => (assets::IconName::Close, "Quit Rísta", &["exit"]),
+            Graph => (
+                assets::IconName::Waypoints,
+                "Open graph view",
+                &["graph", "network", "map", "links", "wiki"],
+            ),
         }
     }
 }
@@ -619,6 +627,7 @@ impl Workspace {
                 )
             },
             peek: None,
+            graph: None,
             needs_fs_check: false,
             focus_handle,
             settings,
@@ -663,6 +672,7 @@ impl Workspace {
 
     fn open_vault_at(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.close_all_docs(cx);
+        self.graph = None;
         self.vault
             .update(cx, |vault, cx| vault.open(root.clone(), cx));
         self.settings.last_vault = Some(root);
@@ -674,6 +684,7 @@ impl Workspace {
     fn close_vault(&mut self, cx: &mut Context<Self>) {
         self.save_all(cx);
         self.close_all_docs(cx);
+        self.graph = None;
         self.vault.update(cx, |vault, cx| vault.close(cx));
         self.settings.last_vault = None;
         self.settings.save();
@@ -1063,6 +1074,33 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.nav_forward(window, cx);
+    }
+
+    /// ⌘G / palette / View menu — the vault link graph takes over the
+    /// editor area (Obsidian's Graph view); ⌘G again closes it.
+    fn on_open_graph(&mut self, _: &OpenGraph, window: &mut Window, cx: &mut Context<Self>) {
+        if self.graph.is_some() {
+            self.close_graph(window, cx);
+            return;
+        }
+        if self.vault.read(cx).root.is_none() {
+            self.note_status("Open a vault first", cx);
+            return;
+        }
+        let weak = cx.weak_entity();
+        let vault = self.vault.clone();
+        let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, window, cx));
+        graph.read(cx).focus_handle(cx).focus(window, cx);
+        self.graph = Some(graph);
+        cx.notify();
+    }
+
+    /// Close the graph pane and hand focus back to the editor surface.
+    pub(crate) fn close_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.graph.take().is_some() {
+            self.refocus(window, cx);
+            cx.notify();
+        }
     }
 
     fn close_all_docs(&mut self, cx: &mut Context<Self>) {
@@ -2059,6 +2097,7 @@ impl Workspace {
             PaletteCmd::ToggleSidebar,
             PaletteCmd::ToggleZen,
             PaletteCmd::ProjectSearch,
+            PaletteCmd::Graph,
             PaletteCmd::MoveLineUp,
             PaletteCmd::MoveLineDown,
             PaletteCmd::ToggleCheckbox,
@@ -2281,6 +2320,7 @@ impl Workspace {
                 window,
                 cx,
             ),
+            PaletteCmd::Graph => self.on_open_graph(&OpenGraph, window, cx),
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
             PaletteCmd::ToggleCheckbox => self.on_toggle_checkbox(&ToggleCheckbox, window, cx),
@@ -6731,6 +6771,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_view_split))
             .on_action(cx.listener(Self::on_view_preview))
             .on_action(cx.listener(Self::on_toggle_edit_preview))
+            .on_action(cx.listener(Self::on_open_graph))
             .on_action(cx.listener(Self::on_duplicate_block))
             .on_action(cx.listener(Self::on_delete_line))
             .on_action(cx.listener(Self::on_toggle_comment))
@@ -6770,21 +6811,25 @@ impl Render for Workspace {
                                     this.child(self.render_tab_bar(cx))
                                 })
                                 .child(div().flex_1().min_h_0().child({
-                                    let content = self.render_editor_area(cx);
-                                    if self.zen {
-                                        h_flex()
-                                            .size_full()
-                                            .justify_center()
-                                            .child(
-                                                div()
-                                                    .h_full()
-                                                    .w_full()
-                                                    .max_w(px(920.))
-                                                    .child(content),
-                                            )
-                                            .into_any_element()
+                                    if let Some(graph) = self.graph.clone() {
+                                        graph.into_any_element()
                                     } else {
-                                        content
+                                        let content = self.render_editor_area(cx);
+                                        if self.zen {
+                                            h_flex()
+                                                .size_full()
+                                                .justify_center()
+                                                .child(
+                                                    div()
+                                                        .h_full()
+                                                        .w_full()
+                                                        .max_w(px(920.))
+                                                        .child(content),
+                                                )
+                                                .into_any_element()
+                                        } else {
+                                            content
+                                        }
                                     }
                                 })),
                         ),

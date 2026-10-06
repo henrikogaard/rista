@@ -7,6 +7,7 @@ mod app;
 mod bases;
 mod decorations;
 mod document;
+mod graph;
 mod history;
 mod http;
 mod preview;
@@ -104,6 +105,10 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-=", ZoomIn, None),
         KeyBinding::new("cmd-minus", ZoomOut, None),
         KeyBinding::new("cmd-0", ZoomReset, None),
+        KeyBinding::new("cmd-g", OpenGraph, None),
+        // Esc only closes the graph when its pane is focused — the
+        // RistaGraph key context keeps dialogs/inputs unaffected.
+        KeyBinding::new("escape", CloseGraph, Some("RistaGraph")),
         // App
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
         // Obsidian muscle memory — same palette as ⌘K.
@@ -315,6 +320,14 @@ fn menus() -> Vec<Menu> {
             MenuItem::Action {
                 name: "Toggle Edit/Preview".into(),
                 action: Box::new(ToggleEditPreview),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::separator(),
+            MenuItem::Action {
+                name: "Graph View".into(),
+                action: Box::new(OpenGraph),
                 os_action: None,
                 checked: false,
                 disabled: false,

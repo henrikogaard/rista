@@ -39,6 +39,8 @@ actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        OpenGraph,
+        CloseGraph,
         // App
         OpenCommandPalette,
         OpenProjectSearch,
