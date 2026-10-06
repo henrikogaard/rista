@@ -70,6 +70,11 @@ pub struct Document {
     vault: Option<Entity<crate::vault::Vault>>,
     /// Notes linking here — refreshed on open and vault changes.
     pub linked_mentions: Vec<PathBuf>,
+    /// What this note links at — `[[wiki]]`, `![[embed]]`,
+    /// `[label](path)`; refreshed with the preview debounce.
+    pub outgoing_links: Vec<PathBuf>,
+    /// `[[targets]]` that don't resolve — shown dimmed.
+    pub outgoing_unresolved: Vec<String>,
     /// Whether the preview's linked-mentions footer is expanded.
     pub mentions_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -137,12 +142,15 @@ impl Document {
             status_cursor: None,
             vault,
             linked_mentions: Vec::new(),
+            outgoing_links: Vec::new(),
+            outgoing_unresolved: Vec::new(),
             mentions_open: false,
             _subscriptions: Vec::new(),
         };
 
         this.refresh_decorations(cx);
         this.refresh_linked_mentions(cx);
+        this.refresh_outgoing(cx);
         this._subscriptions = vec![
             cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -234,6 +242,25 @@ impl Document {
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));
         self.refresh_decorations(cx);
+        self.refresh_outgoing(cx);
+    }
+
+    /// Re-resolve this note's outgoing links (editor content → vault
+    /// paths) — runs on the preview debounce so typing updates the
+    /// sidebar pane without scanning on every keystroke.
+    fn refresh_outgoing(&mut self, cx: &mut Context<Self>) {
+        let Some(vault) = self.vault.clone() else {
+            return;
+        };
+        let (links, unresolved) = {
+            let raw = self.editor.read(cx).value().to_string();
+            vault.read(cx).outgoing_from(&raw, &self.doc_dir())
+        };
+        if self.outgoing_links != links || self.outgoing_unresolved != unresolved {
+            self.outgoing_links = links;
+            self.outgoing_unresolved = unresolved;
+            cx.emit(DocumentEvent::Changed);
+        }
     }
 
     /// Rebuild the live-emphasis decoration layer — markdown markers

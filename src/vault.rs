@@ -329,6 +329,80 @@ impl Vault {
         out
     }
 
+    /// Everything `text` links at: `[[wiki]]`, `![[embed]]` and
+    /// `[label](target)` forms. `(resolved, unresolved)` — resolved
+    /// paths deduped in order, unresolvable targets as display strings.
+    /// `from_dir` is the note's folder for relative md links.
+    pub fn outgoing_from(&self, text: &str, from_dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
+        let mut resolved: Vec<PathBuf> = Vec::new();
+        let mut unresolved: Vec<String> = Vec::new();
+        let mut cursor = 0;
+        while let Some(at) = text[cursor..].find("[[").map(|i| cursor + i) {
+            let Some(end) = text[at + 2..].find("]]").map(|i| at + 2 + i) else {
+                break;
+            };
+            let target = text[at + 2..end].split('|').next().unwrap_or("").trim();
+            match self.resolve_link_target(target) {
+                Some(p) => {
+                    if !resolved.contains(&p) {
+                        resolved.push(p);
+                    }
+                }
+                None => {
+                    if !target.is_empty() && !unresolved.contains(&target.to_string()) {
+                        unresolved.push(target.to_string());
+                    }
+                }
+            }
+            cursor = end + 2;
+        }
+        let mut cursor = 0;
+        while let Some(at) = text[cursor..].find("](").map(|i| cursor + i) {
+            let Some(end) = text[at + 2..].find(')').map(|i| at + 2 + i) else {
+                break;
+            };
+            if let Some(p) = self.md_link_path(&text[at + 2..end], from_dir) {
+                if !resolved.contains(&p) {
+                    resolved.push(p);
+                }
+            }
+            cursor = end + 1;
+        }
+        (resolved, unresolved)
+    }
+
+    /// Where a markdown link's inner `target` points: `<>`-unwrap,
+    /// `%`-decode, drop `#anchor`/`?query`; relative to `from_dir`
+    /// first, then the vault root. External URLs and pure anchors
+    /// return `None`.
+    fn md_link_path(&self, inner: &str, from_dir: &Path) -> Option<PathBuf> {
+        let inner = inner.trim();
+        let inner = inner
+            .strip_prefix('<')
+            .and_then(|s| s.strip_suffix('>'))
+            .unwrap_or(inner);
+        if inner.contains("://") || inner.starts_with('#') || inner.starts_with("mailto:") {
+            return None;
+        }
+        let raw = inner
+            .split('#')
+            .next()
+            .unwrap_or(inner)
+            .split('?')
+            .next()
+            .unwrap_or(inner);
+        if raw.is_empty() {
+            return None;
+        }
+        let decoded = percent_decode(raw);
+        let candidate = from_dir.join(&decoded);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        let candidate = self.root.as_deref()?.join(&decoded);
+        candidate.is_file().then_some(candidate)
+    }
+
     /// `resolve_wikilink` plus embedded-file targets (`![[image.png]]`),
     /// which resolve by basename against the image index.
     fn resolve_link_target(&self, target: &str) -> Option<PathBuf> {

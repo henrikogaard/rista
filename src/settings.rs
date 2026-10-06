@@ -102,6 +102,8 @@ pub struct SidebarPanes {
     #[serde(default = "default_true")]
     pub backlinks: bool,
     #[serde(default = "default_true")]
+    pub outgoing: bool,
+    #[serde(default = "default_true")]
     pub tasks: bool,
     #[serde(default = "default_true")]
     pub calendar: bool,
@@ -115,6 +117,7 @@ impl Default for SidebarPanes {
             starred: true,
             outline: true,
             backlinks: true,
+            outgoing: true,
             tasks: true,
             calendar: true,
             tags: true,

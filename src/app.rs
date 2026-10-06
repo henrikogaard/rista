@@ -87,6 +87,7 @@ pub struct Workspace {
     tasks_open: bool,
     outline_open: bool,
     backlinks_open: bool,
+    outgoing_open: bool,
     cal_open: bool,
     /// Month the sidebar calendar is showing (year, month 1-12).
     cal_month: (i32, u32),
@@ -602,6 +603,7 @@ impl Workspace {
             tasks_open: settings.panes.tasks,
             outline_open: settings.panes.outline,
             backlinks_open: settings.panes.backlinks,
+            outgoing_open: settings.panes.outgoing,
             cal_open: settings.panes.calendar,
             cal_month: {
                 let now = chrono::Local::now();
@@ -4487,6 +4489,144 @@ impl Workspace {
             })
     }
 
+    /// Links the active note points at — Obsidian's Outgoing Links
+    /// pane. Resolved rows open the note; unresolvable `[[targets]]`
+    /// list dimmed below. Refreshes on the preview debounce.
+    fn render_outgoing_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ws_entity = cx.entity().downgrade();
+        let theme = cx.theme();
+        let (links, unresolved) = self
+            .active_doc()
+            .map(|d| {
+                let d = d.read(cx);
+                (d.outgoing_links.clone(), d.outgoing_unresolved.clone())
+            })
+            .unwrap_or_default();
+        let root = self.vault.read(cx).root.clone().unwrap_or_default();
+
+        v_flex()
+            .w_full()
+            .border_t_1()
+            .border_color(theme.sidebar_border)
+            .child(
+                div()
+                    .id("outgoing-toggle")
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(if self.outgoing_open {
+                                    assets::IconName::ChevronDown
+                                } else {
+                                    assets::IconName::ChevronRight
+                                })
+                                .size_4()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                format!("Outgoing links · {}", links.len() + unresolved.len()),
+                            )),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.outgoing_open = !this.outgoing_open;
+                        this.settings.panes.outgoing = this.outgoing_open;
+                        this.settings.save();
+                        cx.notify();
+                    })),
+            )
+            .when(self.outgoing_open, |this| {
+                let mut rows = v_flex().w_full();
+                if links.is_empty() && unresolved.is_empty() {
+                    return this.child(
+                        div().w_full().px_2().pb_1().child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("This note doesn't link anywhere"),
+                        ),
+                    );
+                }
+                for (ix, path) in links.iter().enumerate() {
+                    let rel = path
+                        .strip_prefix(&root)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    let open = path.clone();
+                    rows = rows.child(
+                        div()
+                            .id(("outgoing-side", ix))
+                            .w_full()
+                            .px_2()
+                            .py_0p5()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                            .child(div().text_sm().truncate().child(rel))
+                            .on_click(cx.listener(
+                                move |this, ev: &gpui::ClickEvent, window, cx| {
+                                    if ev.modifiers().platform {
+                                        this.open_document_new_tab(open.clone(), window, cx);
+                                    } else {
+                                        this.open_document_pub(open.clone(), window, cx);
+                                    }
+                                },
+                            ))
+                            .on_mouse_move({
+                                let ws = ws_entity.clone();
+                                let path = path.clone();
+                                move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                    let _ = ws.update(cx, |ws, cx| {
+                                        ws.peek_at(
+                                            crate::app::PeekKind::Note(path.clone()),
+                                            ev.position,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            })
+                            .on_hover({
+                                let ws = ws_entity.clone();
+                                let path = path.clone();
+                                move |hovered: &bool, _window, cx| {
+                                    if !*hovered {
+                                        let _ = ws.update(cx, |ws, cx| {
+                                            ws.hide_peek(
+                                                &crate::app::PeekKind::Note(path.clone()),
+                                                cx,
+                                            )
+                                        });
+                                    }
+                                }
+                            }),
+                    );
+                }
+                for (ix, target) in unresolved.iter().enumerate() {
+                    rows = rows.child(
+                        div()
+                            .id(("outgoing-miss", ix))
+                            .w_full()
+                            .px_2()
+                            .py_0p5()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .truncate()
+                                    .text_color(theme.muted_foreground)
+                                    .child(target.clone()),
+                            ),
+                    );
+                }
+                this.child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        rows.max_h(px(160.)),
+                    ),
+                )
+            })
+    }
+
     /// Month-grid mini-calendar — Obsidian's Calendar plugin. Days
     /// with a `YYYY-MM-DD.md` daily note render accent+bold; today is
     /// ringed; click opens (or templates) that day's note.
@@ -5376,6 +5516,7 @@ impl Workspace {
             )
             .child(self.render_outline(cx))
             .child(self.render_backlinks_pane(cx))
+            .child(self.render_outgoing_pane(cx))
             .child(self.render_tasks(cx))
             .child(self.render_calendar_pane(cx))
             .child(self.render_tags(cx))
