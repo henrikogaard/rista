@@ -2054,6 +2054,36 @@ impl Document {
         self.pair_edit(pair, false, window, cx);
     }
 
+    /// Backspace with the caret inside an empty pair `( | )`/`" | "` deletes
+    /// both chars — Obsidian's pair-delete. Returns false when the caret
+    /// isn't between a pair so the editor's own Backspace runs.
+    pub fn delete_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            if sel.start != sel.end {
+                return false;
+            }
+            let text = editor.value().to_string();
+            let pos = sel.start;
+            let (Some(prev), Some(next)) =
+                (text[..pos].chars().next_back(), text[pos..].chars().next())
+            else {
+                return false;
+            };
+            let paired = matches!(
+                (prev, next),
+                ('(', ')') | ('[', ']') | ('{', '}') | ('<', '>')
+            ) || (prev == next
+                && matches!(prev, '"' | '\'' | '`' | '~' | '=' | '%' | '$' | '*' | '_'));
+            if !paired {
+                return false;
+            }
+            editor.set_selected_range(pos - prev.len_utf8()..pos + next.len_utf8(), cx);
+            editor.replace("", window, cx);
+            true
+        })
+    }
+
     fn pair_edit(
         &mut self,
         pair: &'static str,

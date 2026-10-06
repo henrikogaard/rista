@@ -6245,6 +6245,18 @@ impl Workspace {
                     cx.stop_propagation();
                 }
             }))
+            // Pair-delete — backspace inside `( | )`/`" | "` removes both
+            // chars; elsewhere the editor's own Backspace runs.
+            .capture_action::<input::Backspace>(cx.listener(|this, _a, window, cx| {
+                let handled = this
+                    .active_doc()
+                    .cloned()
+                    .map(|doc| doc.update(cx, |doc, cx| doc.delete_pair(window, cx)))
+                    .unwrap_or(false);
+                if handled {
+                    cx.stop_propagation();
+                }
+            }))
             .capture_action::<input::IndentInline>(cx.listener(|this, _a, window, cx| {
                 let handled = this
                     .active_doc()
