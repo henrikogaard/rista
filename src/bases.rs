@@ -1686,19 +1686,31 @@ struct Row {
 
 /// ☐/☑ glyph for boolean cells — Obsidian renders booleans as
 /// checkboxes rather than "true"/"false" text.
-fn bool_icon(checked: bool, theme: &component::theme::Theme) -> AnyElement {
+fn bool_icon(checked: bool, muted: Hsla, accent: Hsla) -> AnyElement {
     Icon::new(if checked {
         assets::IconName::SquareCheck
     } else {
         assets::IconName::Square
     })
     .size(px(13.))
-    .text_color(if checked {
-        theme.accent
-    } else {
-        theme.muted_foreground
-    })
+    .text_color(if checked { accent } else { muted })
     .into_any_element()
+}
+
+/// "name: value" property cell for cards/list views — bools render
+/// `name: ☐` with the checkbox glyph.
+fn prop_cell(header: &str, cell: &Cell, muted: Hsla, accent: Hsla) -> Div {
+    h_flex()
+        .gap_1()
+        .items_center()
+        .text_xs()
+        .text_color(muted)
+        .truncate()
+        .child(format!("{header}:"))
+        .child(match &cell.lit {
+            Lit::Bool(b) => bool_icon(*b, muted, accent),
+            _ => cell.text.clone().into_any_element(),
+        })
 }
 
 /// Date cell text → day for the calendar grid. ISO `YYYY-MM-DD` (with
@@ -3378,17 +3390,12 @@ impl Render for BaseView {
                                 .child(cell.text.clone()),
                         );
                     } else if cix <= 3 && !cell.text.trim().is_empty() {
-                        body = body.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .truncate()
-                                .child(format!(
-                                    "{}: {}",
-                                    computed.headers.get(cix).cloned().unwrap_or_default(),
-                                    cell.text
-                                )),
-                        );
+                        body = body.child(prop_cell(
+                            &computed.headers[cix],
+                            cell,
+                            theme.muted_foreground,
+                            theme.accent,
+                        ));
                     }
                 }
                 grid = grid.child(card.child(body));
@@ -3532,16 +3539,13 @@ impl Render for BaseView {
                     }
                     shown += 1;
                     line = line.child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(format!(
-                                "{}: {}",
-                                computed.headers.get(cix).cloned().unwrap_or_default(),
-                                cell.text
-                            )),
+                        prop_cell(
+                            &computed.headers[cix],
+                            cell,
+                            theme.muted_foreground,
+                            theme.accent,
+                        )
+                        .flex_1(),
                     );
                 }
                 items = items.child(line);
@@ -3713,7 +3717,9 @@ impl Render for BaseView {
                                             });
                                         })
                                         .child(match &cell.lit {
-                                            Lit::Bool(b) => bool_icon(*b, theme),
+                                            Lit::Bool(b) => {
+                                                bool_icon(*b, theme.muted_foreground, theme.accent)
+                                            }
                                             _ => cell.text.clone().into_any_element(),
                                         })
                                         .into_any_element()
@@ -3725,7 +3731,9 @@ impl Render for BaseView {
                                         .truncate()
                                         .text_color(theme.foreground)
                                         .child(match &cell.lit {
-                                            Lit::Bool(b) => bool_icon(*b, theme),
+                                            Lit::Bool(b) => {
+                                                bool_icon(*b, theme.muted_foreground, theme.accent)
+                                            }
                                             _ => cell.text.clone().into_any_element(),
                                         })
                                         .into_any_element()
