@@ -1565,6 +1565,12 @@ struct ViewSpec {
     /// `image: note.cover` (bare `cover` also accepted). Empty → the
     /// usual cover/banner/image key list applies.
     image_prop: Option<String>,
+    /// Cards: `imageFit:`/`image_fit` — `cover` (default crop) or
+    /// `contain` (letterbox the whole image).
+    image_fit: Option<String>,
+    /// Cards: `imageAspectRatio:`/`image_aspect_ratio` — the cover
+    /// area's width/height ratio instead of the fixed strip height.
+    image_aspect: Option<f64>,
     columns: Vec<String>,
     sort: Vec<SortKey>,
     limit: Option<usize>,
@@ -1771,6 +1777,12 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 image_prop: ["image", "imageProperty", "image_property"]
                     .iter()
                     .find_map(|k| getv(k).and_then(|v| v.as_str()).map(str::to_string)),
+                image_fit: ["imageFit", "image_fit"]
+                    .iter()
+                    .find_map(|k| getv(k).and_then(|v| v.as_str()).map(str::to_string)),
+                image_aspect: ["imageAspectRatio", "image_aspect_ratio"]
+                    .iter()
+                    .find_map(|k| getv(k).and_then(|v| v.as_f64())),
             });
         }
     }
@@ -1788,6 +1800,8 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             limit: None,
             filters: None,
             image_prop: None,
+            image_fit: None,
+            image_aspect: None,
             summaries: Vec::new(),
         });
     }
@@ -1986,6 +2000,10 @@ struct Computed {
     /// Column-chooser candidates: every property/formula/file.* in the
     /// vault not already on show — offered by the header `+` cell.
     available: Vec<String>,
+    /// Selected view's `imageFit:` (`cover`/`contain`) for card art.
+    image_fit: Option<String>,
+    /// Selected view's `imageAspectRatio:` for card art.
+    image_aspect: Option<f64>,
     error: Option<String>,
 }
 
@@ -2552,6 +2570,8 @@ fn compute(
         prefill: prefill_pairs(spec, view),
         summaries,
         available,
+        image_fit: view.image_fit.clone(),
+        image_aspect: view.image_aspect,
         error,
     }
 }
@@ -3380,6 +3400,8 @@ impl BaseView {
                 prefill: Vec::new(),
                 available: Vec::new(),
                 summaries: Vec::new(),
+                image_fit: None,
+                image_aspect: None,
                 error: Some(
                     spec.error
                         .clone()
@@ -4446,13 +4468,20 @@ impl Render for BaseView {
                             .strip_prefix("file://")
                             .map(|p| std::path::PathBuf::from(p).into())
                             .unwrap_or_else(|| cover.clone().into());
-                        card = card.child(
-                            img(source)
-                                .w_full()
-                                .h(px(64.))
-                                .rounded(theme.radius)
-                                .object_fit(ObjectFit::Cover),
-                        );
+                        // `imageFit: contain` letterboxes instead of
+                        // cropping; `imageAspectRatio: r` replaces the
+                        // fixed strip height (Obsidian view keys).
+                        let fit = if computed.image_fit.as_deref() == Some("contain") {
+                            ObjectFit::Contain
+                        } else {
+                            ObjectFit::Cover
+                        };
+                        let mut art = img(source).w_full().rounded(theme.radius);
+                        art = match computed.image_aspect {
+                            Some(r) if r > 0.0 => art.h(px(220. / r as f32)),
+                            _ => art.h(px(64.)),
+                        };
+                        card = card.child(art.object_fit(fit));
                     }
                     card = card.child(
                         div()
@@ -4607,12 +4636,19 @@ impl Render for BaseView {
                         .strip_prefix("file://")
                         .map(|p| std::path::PathBuf::from(p).into())
                         .unwrap_or_else(|| cover.clone().into());
-                    card = card.child(
-                        img(source)
-                            .w_full()
-                            .h(px(110.))
-                            .object_fit(ObjectFit::Cover),
-                    );
+                    // `imageFit:`/`imageAspectRatio:` — same Obsidian
+                    // keys as kanban card art.
+                    let fit = if computed.image_fit.as_deref() == Some("contain") {
+                        ObjectFit::Contain
+                    } else {
+                        ObjectFit::Cover
+                    };
+                    let mut art = img(source).w_full();
+                    art = match computed.image_aspect {
+                        Some(r) if r > 0.0 => art.h(px(210. / r as f32)),
+                        _ => art.h(px(110.)),
+                    };
+                    card = card.child(art.object_fit(fit));
                 }
                 let mut body = v_flex().p_2().gap_0p5();
                 for (cix, cell) in row.cells.iter().enumerate() {
