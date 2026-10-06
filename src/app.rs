@@ -5928,7 +5928,27 @@ impl Workspace {
                 this.insert_tree_link(path, window, cx);
             }))
             .child({
-                let editor = Editor::new(&doc.read(cx).editor).h_full();
+                // Right-click menu — clipboard row plus the markdown actions
+                // the palette already exposes (Obsidian's edit context menu).
+                let editor = Editor::new(&doc.read(cx).editor).h_full().context_menu(
+                    |menu, _window, _cx| {
+                        menu.menu("Cut", Box::new(input::Cut))
+                            .menu("Copy", Box::new(input::Copy))
+                            .menu("Paste", Box::new(input::Paste))
+                            .menu("Select All", Box::new(input::SelectAll))
+                            .separator()
+                            .menu("Italic", Box::new(ToggleItalic))
+                            .menu("Task checkbox", Box::new(ToggleCheckbox))
+                            .menu("Toggle comment", Box::new(ToggleComment))
+                            .separator()
+                            .menu("Move line up", Box::new(MoveLineUp))
+                            .menu("Move line down", Box::new(MoveLineDown))
+                            .menu("Duplicate line", Box::new(DuplicateBlock))
+                            .menu("Delete line", Box::new(DeleteLine))
+                            .separator()
+                            .menu("Open link under cursor", Box::new(FollowLink))
+                    },
+                );
                 // `cssclasses:` per-note override — `wide` lifts the
                 // readable-width cap for this note, `narrow`/`readable`
                 // forces it on (Obsidian's per-note styling hook).
