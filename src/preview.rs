@@ -915,11 +915,35 @@ impl MarkdownPlugin for PropertiesPlugin {
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .truncate()
-                    .child(
-                        Icon::new(*kind)
-                            .size(px(11.))
-                            .text_color(theme.muted_foreground),
-                    )
+                    .child({
+                        // Click the type glyph → type picker (Obsidian);
+                        // stop_propagation keeps the row's edit click.
+                        let mut icon_cell = div().id(("property-type", ix)).child(
+                            Icon::new(*kind)
+                                .size(px(11.))
+                                .text_color(theme.muted_foreground),
+                        );
+                        if let Some(workspace) = edit_ctx.clone() {
+                            let k = k.clone();
+                            let edit = edit.clone();
+                            icon_cell =
+                                icon_cell.cursor_pointer().on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    let Some(ws) = workspace.upgrade() else {
+                                        return;
+                                    };
+                                    ws.update(cx, |ws, cx| {
+                                        ws.show_property_type_picker(
+                                            k.clone(),
+                                            edit.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                });
+                        }
+                        icon_cell
+                    })
                     .child(k.clone());
                 let mut value_cell = div().flex_1().text_xs().truncate();
                 match links {

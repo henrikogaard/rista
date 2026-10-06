@@ -3148,6 +3148,77 @@ impl Workspace {
         self.set_note_property(path, &name, value, window, cx);
     }
 
+    /// Click a Properties row's type glyph — Obsidian's property type
+    /// picker: coerce the value to the chosen type and write it back.
+    pub fn show_property_type_picker(
+        &mut self,
+        key: String,
+        edit: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_doc().is_none() {
+            return;
+        }
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let theme = _cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            for (tix, (label, kind, icon)) in [
+                ("Text", "text", assets::IconName::Type),
+                ("List", "list", assets::IconName::List),
+                ("Number", "number", assets::IconName::Hash),
+                ("Checkbox", "checkbox", assets::IconName::SquareCheck),
+                ("Date", "date", assets::IconName::Calendar),
+                ("Time", "time", assets::IconName::Clock),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let view = view.clone();
+                let key = key.clone();
+                let edit = edit.clone();
+                list = list.child(
+                    div()
+                        .id(("prop-type", tix))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.muted))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Icon::new(icon)
+                                        .size(px(13.))
+                                        .text_color(theme.muted_foreground),
+                                )
+                                .child(div().text_sm().text_color(theme.foreground).child(label)),
+                        )
+                        .on_click(move |_, window, cx| {
+                            let value = coerce_property_value(&edit, kind);
+                            view.update(cx, |this, cx| {
+                                if let Some(path) =
+                                    this.active_doc().map(|d| d.read(cx).path.clone())
+                                {
+                                    this.set_note_property(path, &key, value, window, cx);
+                                }
+                                this.refocus(window, cx);
+                            });
+                            window.close_dialog(cx);
+                        }),
+                );
+            }
+            dialog
+                .title(format!("{key} — type"))
+                .w(px(260.))
+                .overlay_closable(true)
+                .child(list)
+        });
+    }
+
     fn show_delete_confirm(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.entity();
         let title = path
@@ -7018,5 +7089,81 @@ impl Render for TreeDragPreview {
             .border_color(cx.theme().border)
             .text_sm()
             .child(self.label.clone())
+    }
+}
+
+/// The Properties strip type picker's coercion — Obsidian writes a
+/// typed YAML value when a property's type changes.
+fn coerce_property_value(edit: &str, kind: &str) -> serde_yaml::Value {
+    use serde_yaml::Value as V;
+    let v = serde_yaml::from_str::<V>(edit).unwrap_or_else(|_| V::String(edit.to_string()));
+    fn text_of(v: &V) -> String {
+        match v {
+            V::String(s) => s.clone(),
+            V::Number(n) => n.to_string(),
+            V::Bool(b) => b.to_string(),
+            V::Sequence(items) => items.iter().map(text_of).collect::<Vec<_>>().join(", "),
+            V::Null => String::new(),
+            other => serde_yaml::to_string(other)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default(),
+        }
+    }
+    // `YYYY-MM-DD` at a position — the date shape the strip's calendar
+    // icon and `.base` `file.day` already speak.
+    let date_at = |s: &str, at: usize| -> bool {
+        let b = s.as_bytes();
+        s.len() >= at + 10
+            && b[at + 4] == b'-'
+            && b[at + 7] == b'-'
+            && b[at..at + 4].iter().all(|c| c.is_ascii_digit())
+            && b[at + 5..at + 7].iter().all(|c| c.is_ascii_digit())
+            && b[at + 8..at + 10].iter().all(|c| c.is_ascii_digit())
+    };
+    let time_at = |s: &str, at: usize| -> bool {
+        let b = s.as_bytes();
+        s.len() >= at + 5
+            && b[at + 2] == b':'
+            && b[at..at + 2].iter().all(|c| c.is_ascii_digit())
+            && b[at + 3..at + 5].iter().all(|c| c.is_ascii_digit())
+    };
+    match kind {
+        "list" => match v {
+            V::Sequence(_) => v,
+            V::Null => V::Sequence(Vec::new()),
+            other => V::Sequence(vec![other]),
+        },
+        "number" => match &v {
+            V::Number(_) => v,
+            V::String(s) => s
+                .trim()
+                .parse::<f64>()
+                .map(serde_yaml::Value::from)
+                .unwrap_or_else(|_| V::from(0)),
+            _ => V::from(0),
+        },
+        "checkbox" => match &v {
+            V::Bool(_) => v,
+            V::String(s) => V::Bool(matches!(s.trim(), "true" | "yes" | "1" | "on")),
+            _ => V::Bool(false),
+        },
+        "date" => match &v {
+            V::String(s) if date_at(s, 0) => V::String(s[..10].to_string()),
+            _ => V::String(chrono::Local::now().format("%Y-%m-%d").to_string()),
+        },
+        "time" => match &v {
+            V::String(s) if time_at(s, 0) => V::String(s[..5].to_string()),
+            V::String(s)
+                if s.len() >= 16 && (s.as_bytes()[10] == b'T' || s.as_bytes()[10] == b' ') =>
+            {
+                if time_at(s, 11) {
+                    V::String(s[11..16].to_string())
+                } else {
+                    V::String(chrono::Local::now().format("%H:%M").to_string())
+                }
+            }
+            _ => V::String(chrono::Local::now().format("%H:%M").to_string()),
+        },
+        _ => V::String(text_of(&v)),
     }
 }
