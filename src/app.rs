@@ -5831,7 +5831,7 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let (state, banner, folds, embeds, mentions, mentions_open, has_frontmatter) = {
+        let (state, banner, folds, embeds, mentions, mentions_open, has_frontmatter, doc_path) = {
             let doc = doc.read(cx);
             (
                 doc.preview.clone(),
@@ -5841,12 +5841,14 @@ impl Workspace {
                 doc.linked_mentions.clone(),
                 doc.mentions_open,
                 crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref()).is_some(),
+                doc.path.clone(),
             )
         };
         let base_ctx = preview::PreviewCtx {
             vault: self.vault.clone(),
             workspace: view.downgrade(),
             views: embeds,
+            doc_path: Some(doc_path),
             depth: 0,
         };
         let theme = cx.theme();

@@ -35,6 +35,9 @@ pub struct PreviewCtx {
     pub vault: Entity<crate::vault::Vault>,
     pub workspace: WeakEntity<crate::app::Workspace>,
     pub views: EmbedViews,
+    /// The note being rendered — bound as `this` in ```` ```base ````
+    /// embeds (Obsidian). Transclusions re-bind it to the embedded file.
+    pub doc_path: Option<PathBuf>,
     pub depth: usize,
 }
 
@@ -1896,6 +1899,9 @@ impl MarkdownPlugin for BaseEmbedPlugin {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             embed.spec.hash(&mut hasher);
+            // `this` differs per host — identical specs in different
+            // notes must not share the cached view entity.
+            self.ctx.doc_path.hash(&mut hasher);
             hasher.finish()
         };
         let view = {
@@ -1908,6 +1914,7 @@ impl MarkdownPlugin for BaseEmbedPlugin {
                             embed.spec.clone(),
                             self.ctx.vault.clone(),
                             self.ctx.workspace.clone(),
+                            self.ctx.doc_path.clone(),
                             window,
                             cx,
                         )
@@ -2343,6 +2350,7 @@ impl MarkdownPlugin for TranscludePlugin {
                     use std::hash::{Hash, Hasher};
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
                     spec.hash(&mut hasher);
+                    self.ctx.doc_path.hash(&mut hasher);
                     anchor.hash(&mut hasher);
                     hasher.finish()
                 };
@@ -2356,6 +2364,7 @@ impl MarkdownPlugin for TranscludePlugin {
                                     spec.clone(),
                                     self.ctx.vault.clone(),
                                     self.ctx.workspace.clone(),
+                                    self.ctx.doc_path.clone(),
                                     window,
                                     cx,
                                 )
@@ -2400,6 +2409,9 @@ impl MarkdownPlugin for TranscludePlugin {
             (true, Some(content)) => {
                 let mut nested = self.ctx.clone();
                 nested.depth += 1;
+                // `this` inside the transcluded note's embeds is the
+                // transcluded file, not the page hosting it.
+                nested.doc_path = resolved.clone();
                 div()
                     .w_full()
                     .my_2()

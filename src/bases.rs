@@ -776,6 +776,9 @@ struct Env<'a> {
     /// The `values` list a named summary formula aggregates over —
     /// only bound inside `summaries:` evaluation.
     values: Option<Vec<Lit>>,
+    /// In an embedded ```` ```base ```` fence, `this` binds to the note
+    /// hosting the embed (Obsidian semantics). None in `.base` files.
+    this_row: Option<&'a RowData>,
     resolve: &'a dyn Fn(&str) -> Option<PathBuf>,
     depth: usize,
 }
@@ -921,6 +924,12 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
         Expr::Ref(ns, name) => match ns.as_deref() {
             None => Ok(if name == "values" {
                 env.values.clone().map(Lit::List).unwrap_or(Lit::Null)
+            } else if name == "this" {
+                // Bare `this` — the hosting note's rel path, so it
+                // compares equal to `file.links`/`file.backlinks` items.
+                env.this_row
+                    .and_then(|r| r.file_meta.get("path").cloned())
+                    .unwrap_or(Lit::Null)
             } else {
                 env.row
                     .props
@@ -931,6 +940,25 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
                     .unwrap_or(Lit::Null)
             }),
             Some("file") => Ok(env.row.file_meta.get(name).cloned().unwrap_or(Lit::Null)),
+            // `this` — the file hosting the embed. `this` alone is the
+            // vault-relative path (compares equal to link-graph items);
+            // `this.<x>` reads its file metadata then its properties,
+            // and `this.file` is the same path again so
+            // `this.file.name`-style chains resolve below in Method.
+            Some("this") => Ok(env
+                .this_row
+                .map(|r| {
+                    if name == "file" {
+                        r.file_meta.get("path").cloned().unwrap_or(Lit::Null)
+                    } else {
+                        r.file_meta
+                            .get(name)
+                            .cloned()
+                            .or_else(|| r.props.get(name).cloned())
+                            .unwrap_or(Lit::Null)
+                    }
+                })
+                .unwrap_or(Lit::Null)),
             Some("note") => Ok(env.row.props.get(name).cloned().unwrap_or(Lit::Null)),
             Some("formula") => {
                 let expr = env
@@ -989,6 +1017,17 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
             }
         }
         Expr::Method(target, name, args) => {
+            // `this.file.name` — the third segment of the Obsidian
+            // `this.file.<prop>` chain (parses as a no-arg method on
+            // `Ref(Some("this"), "file")`).
+            if let Expr::Ref(Some(ns), field) = target.as_ref() {
+                if ns == "this" && field == "file" {
+                    return Ok(env
+                        .this_row
+                        .and_then(|r| r.file_meta.get(name).cloned())
+                        .unwrap_or(Lit::Null));
+                }
+            }
             // `file.hasTag("x")` / `file.inFolder("dir")` — Obsidian
             // file-object methods, evaluated against file_meta before
             // the generic method dispatch.
@@ -2040,6 +2079,7 @@ fn compute(
     root: &Path,
     images: &std::collections::HashMap<String, PathBuf>,
     starred: &std::collections::BTreeSet<String>,
+    this_path: Option<&Path>,
 ) -> Computed {
     // Link index: vault-relative path, file name, and bare stem all
     // resolve — `[[a]]` finds notes/a.md, `[[notes/a.md]]` hits directly.
@@ -2138,6 +2178,9 @@ fn compute(
     let mut columns = view.columns.clone();
     let mut error = spec.error.clone();
 
+    // `this` — the note hosting an embedded base — looks itself up in
+    // the row set so `this.*` reads the same row any other note sees.
+    let this_row = this_path.and_then(|p| all_rows.iter().find(|r| r.path == *p));
     let mut rows_ix = Vec::new();
     for (i, row) in all_rows.iter().enumerate() {
         let mut env = Env {
@@ -2145,6 +2188,7 @@ fn compute(
             rows: &all_rows,
             formulas: &spec.formulas,
             values: None,
+            this_row,
             resolve: &resolve,
             depth: 0,
         };
@@ -2223,6 +2267,7 @@ fn compute(
             rows: &all_rows,
             formulas: &spec.formulas,
             values: None,
+            this_row,
             resolve: &resolve,
             depth: 0,
         };
@@ -2285,6 +2330,7 @@ fn compute(
                     rows: &all_rows,
                     formulas: &spec.formulas,
                     values: None,
+                    this_row,
                     resolve: &resolve,
                     depth: 0,
                 };
@@ -2298,6 +2344,7 @@ fn compute(
                     rows: &all_rows,
                     formulas: &spec.formulas,
                     values: Some(vals.clone()),
+                    this_row,
                     resolve: &resolve,
                     depth: 0,
                 };
@@ -2587,6 +2634,9 @@ pub struct BaseView {
     workspace: WeakEntity<Workspace>,
     vault: Entity<Vault>,
     view_ix: usize,
+    /// ```` ```base ```` embeds only: the note hosting the fence —
+    /// bound as `this` in filters/formulas (Obsidian semantics).
+    this_path: Option<PathBuf>,
     /// Calendar view: months offset from the current month.
     cal_offset: i32,
     /// Interactive header sort: (column index, descending).
@@ -2649,10 +2699,13 @@ impl BaseView {
         spec: String,
         vault: Entity<Vault>,
         workspace: WeakEntity<Workspace>,
+        this_path: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::init(SpecSrc::Inline(spec), vault, workspace, window, cx)
+        let mut view = Self::init(SpecSrc::Inline(spec), vault, workspace, window, cx);
+        view.this_path = this_path;
+        view
     }
 
     fn init(
@@ -2677,6 +2730,7 @@ impl BaseView {
             workspace,
             vault,
             view_ix: 0,
+            this_path: None,
             cal_offset: 0,
             sort: None,
             search,
@@ -2792,6 +2846,7 @@ impl BaseView {
             &root,
             &images.borrow(),
             &starred,
+            self.this_path.as_deref(),
         ));
         self.cache_key = Some(key);
         self.cached = Some(computed.clone());
@@ -4034,6 +4089,7 @@ mod tests {
             rows: &rows,
             formulas: &formulas,
             values: None,
+            this_row: None,
             resolve: &no_resolve,
             depth: 0,
         };
@@ -4149,11 +4205,13 @@ mod tests {
             },
         ];
         let formulas = BTreeMap::new();
+        let this_row = None;
         let mut env = Env {
             row: &rows[0],
             rows: &rows,
             formulas: &formulas,
             values: None,
+            this_row,
             resolve: &resolve,
             depth: 0,
         };
@@ -4217,6 +4275,7 @@ mod tests {
             rows: &rows,
             formulas: &formulas,
             values: None,
+            this_row: None,
             resolve: &no_resolve,
             depth: 0,
         };
