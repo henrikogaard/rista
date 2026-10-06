@@ -2559,6 +2559,9 @@ struct KanbanDrag {
     label: SharedString,
 }
 
+/// Drag payload for header reorder — the dragged column's index.
+struct ColDrag(usize);
+
 impl Render for KanbanDrag {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -2883,6 +2886,48 @@ pub fn drop_order(
     }
     let at = offs[end_ln];
     Some((at, at, insert))
+}
+
+/// Text-splice a full column sequence into the `view_ix`-th view's
+/// `order:` — the header drag-reorder write path. An existing key's
+/// span (block entries or the one flow line) is replaced with a
+/// canonical block list; a view with no `order:` gains one at its end.
+pub fn reorder_order(src: &str, view_ix: usize, cols: &[String]) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_item = |t: &str| t.starts_with("- ") || t == "-";
+    let block = || {
+        let mut s = format!("{}order:\n", " ".repeat(key_ind));
+        for c in cols {
+            s.push_str(&format!("{}- {c}\n", " ".repeat(key_ind + 2)));
+        }
+        s
+    };
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if !t.starts_with("order:") || indent(lines[i]) != key_ind {
+            continue;
+        }
+        let after = t["order:".len()..].trim();
+        if after.starts_with('[') {
+            return Some((offs[i], offs[i + 1], block()));
+        }
+        let mut last = i;
+        for (j, line_j) in lines.iter().enumerate().take(end_ln).skip(i + 1) {
+            let t = line_j.trim_end();
+            if t.is_empty() {
+                continue;
+            }
+            if indent(line_j) > key_ind && is_item(t.trim_start()) {
+                last = j;
+            } else {
+                break;
+            }
+        }
+        return Some((offs[i], offs[last + 1], block()));
+    }
+    let at = offs[end_ln];
+    Some((at, at, block()))
 }
 
 // ------------------------------------------------------------------
@@ -3456,6 +3501,7 @@ impl Render for BaseView {
             .children(computed.headers.iter().enumerate().map(|(ix, h)| {
                 let this = this.clone();
                 let this_menu = this.clone();
+                let this_drag = this.clone();
                 let sorted = self.sort.filter(|(c, _)| *c == ix);
                 div()
                     .id(("base-h", ix))
@@ -3498,6 +3544,44 @@ impl Render for BaseView {
                                 cx.notify();
                             });
                         }
+                    })
+                    // Drag a header onto another → the column takes that
+                    // slot; the new sequence is written to `order:` in
+                    // the spec. `.base` files only — inline fences have
+                    // no writable spec of their own.
+                    .when(matches!(self.spec_src, SpecSrc::Doc(_)), |d| {
+                        let this = this_drag.clone();
+                        d.on_drag(ColDrag(ix), {
+                            let label: SharedString = h.clone().into();
+                            move |_, _, _, cx| {
+                                cx.new(|_| KanbanDrag {
+                                    label: label.clone(),
+                                })
+                            }
+                        })
+                        .drag_over::<ColDrag>(|style, _, _, cx| {
+                            style.border_color(cx.theme().accent)
+                        })
+                        .on_drop::<ColDrag>(move |src: &ColDrag, window, cx| {
+                            let _ = this.update(cx, |view, cx| {
+                                let SpecSrc::Doc(doc) = &view.spec_src else {
+                                    return;
+                                };
+                                let doc = doc.clone();
+                                let mut cols = view.computed(cx).columns.clone();
+                                let (from, to) = (src.0, ix);
+                                if from >= cols.len() || from == to {
+                                    return;
+                                }
+                                let col = cols.remove(from);
+                                cols.insert(to, col);
+                                if doc.update(cx, |doc, cx| {
+                                    doc.reorder_base_columns(view.view_ix, &cols, window, cx)
+                                }) {
+                                    view.doc_epoch += 1;
+                                }
+                            });
+                        })
                     })
                     // Right-click a header → hide that column (splices it
                     // out of `order:`). `file.name` is the row key and
@@ -4770,5 +4854,47 @@ views:
         ];
         let out = apply(bare, super::drop_order(bare, 0, "status", &cols).unwrap());
         assert!(out.contains("    order:\n      - file.name\n      - tags\n"));
+    }
+
+    #[test]
+    fn reorder_order() {
+        let spec = r#"views:
+  - type: table
+    name: All notes
+    order:
+      - file.name
+      - file.folder
+      - cover
+    limit: 10
+  - type: cards
+    name: Gallery
+    order: [file.name, cover]
+"#;
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        let cols = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Block — the whole key span is rewritten in the new sequence,
+        // and sibling keys (`limit:`) stay put.
+        let out = apply(
+            spec,
+            super::reorder_order(spec, 0, &cols(&["cover", "file.name", "file.folder"])).unwrap(),
+        );
+        assert!(out.contains(
+            "    order:\n      - cover\n      - file.name\n      - file.folder\n    limit: 10\n"
+        ));
+        // Flow — rewritten as a canonical block list.
+        let out = apply(
+            spec,
+            super::reorder_order(spec, 1, &cols(&["cover", "file.name"])).unwrap(),
+        );
+        assert!(out.contains("    order:\n      - cover\n      - file.name\n"));
+        assert!(!out.contains("order: [file.name, cover]"));
+        // No `order:` — appended at the item's end.
+        let bare = "views:\n  - type: table\n    name: Bare\n";
+        let out = apply(
+            bare,
+            super::reorder_order(bare, 0, &cols(&["file.name", "status"])).unwrap(),
+        );
+        assert!(out.contains("    order:\n      - file.name\n      - status\n"));
     }
 }

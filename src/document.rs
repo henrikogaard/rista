@@ -560,6 +560,27 @@ impl Document {
         true
     }
 
+    /// Rewrite the `view_ix`-th view's `order:` with `cols` — the
+    /// header drag-reorder write path. Returns false when the view
+    /// can't be located.
+    pub fn reorder_base_columns(
+        &mut self,
+        view_ix: usize,
+        cols: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::reorder_order(&text, view_ix, cols) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Flip the task-list marker (`[ ]`/`[x]`) on `line` (1-based) —
     /// the preview's interactive checkbox writes back into source.
     /// Line numbers survive `preprocess` rewriting; byte offsets don't.
