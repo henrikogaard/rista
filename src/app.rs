@@ -193,6 +193,7 @@ enum PaletteCmd {
     InsertTime,
     InsertImage,
     InsertTable,
+    FormatTable,
     InsertFootnote,
     DeleteLine,
     PageHistory,
@@ -420,6 +421,11 @@ impl PaletteCmd {
                 assets::IconName::Table,
                 "Insert table",
                 &["grid", "cells", "columns"],
+            ),
+            FormatTable => (
+                assets::IconName::Table,
+                "Format table",
+                &["align", "pipes", "columns", "pretty"],
             ),
             InsertFootnote => (
                 assets::IconName::Superscript,
@@ -2064,6 +2070,7 @@ impl Workspace {
             PaletteCmd::InsertTime,
             PaletteCmd::InsertImage,
             PaletteCmd::InsertTable,
+            PaletteCmd::FormatTable,
             PaletteCmd::InsertFootnote,
             PaletteCmd::DeleteLine,
             PaletteCmd::PageHistory,
@@ -2349,6 +2356,14 @@ impl Workspace {
             PaletteCmd::InsertTable => {
                 if let Some(doc) = self.active_doc().cloned() {
                     doc.update(cx, |doc, cx| doc.insert_table(window, cx));
+                }
+            }
+            PaletteCmd::FormatTable => {
+                if let Some(doc) = self.active_doc().cloned() {
+                    let done = doc.update(cx, |doc, cx| doc.format_table(window, cx));
+                    if !done {
+                        self.note_status("No table at the caret", cx);
+                    }
                 }
             }
             PaletteCmd::InsertFootnote => {

@@ -409,6 +409,23 @@ impl Document {
         });
     }
 
+    /// Align the markdown table around the caret — pads every cell to
+    /// its column's width and normalizes the `|---|` separator
+    /// (Advanced Tables style). Returns false when the caret isn't in
+    /// a table.
+    pub fn format_table(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let caret = editor.selected_range().start.min(text.len());
+            let Some((start, end, out)) = format_table_md(&text, caret) else {
+                return false;
+            };
+            editor.set_selected_range(start..end, cx);
+            editor.replace(out, window, cx);
+            true
+        })
+    }
+
     /// Write the buffer to disk. Returns the io result for callers that care.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
@@ -1973,4 +1990,125 @@ fn pipe_segments(line: &str) -> Vec<std::ops::Range<usize>> {
         segs.push(last + 1..line.len());
     }
     segs
+}
+
+/// `(byte_start, byte_end, replacement)` realigning the pipe table
+/// covering `caret`, or None when the caret isn't on a table row.
+/// Cells pad to their column's widest content; `:` alignment
+/// markers on the separator row are preserved.
+fn format_table_md(src: &str, caret: usize) -> Option<(usize, usize, String)> {
+    let lines: Vec<&str> = src.split_inclusive('\n').collect();
+    let mut offs = Vec::with_capacity(lines.len());
+    let mut at = 0usize;
+    for l in &lines {
+        offs.push(at);
+        at += l.len();
+    }
+    let is_row = |l: &str| {
+        let t = l.trim_end_matches('\n').trim_start();
+        t.starts_with('|') && t.matches('|').count() >= 2
+    };
+    let is_sep = |l: &str| {
+        let t = l.trim_end_matches('\n');
+        is_row(t)
+            && t.chars()
+                .filter(|&c| c != '|' && c != ' ')
+                .all(|c| c == '-' || c == ':')
+    };
+    let ln = (0..lines.len())
+        .find(|i| caret >= offs[*i] && caret < offs[*i] + lines[*i].len())
+        .unwrap_or_else(|| lines.len().saturating_sub(1));
+    if lines.is_empty() || !is_row(lines[ln]) {
+        return None;
+    }
+    let mut s = ln;
+    while s > 0 && is_row(lines[s - 1]) {
+        s -= 1;
+    }
+    let mut e = ln;
+    while e + 1 < lines.len() && is_row(lines[e + 1]) {
+        e += 1;
+    }
+    if e - s + 1 < 2 || !is_sep(lines[s + 1]) {
+        return None;
+    }
+    fn text_line(l: &str) -> &str {
+        l.trim_end_matches('\n')
+    }
+    let cells_of = |l: &str| {
+        pipe_segments(text_line(l))
+            .into_iter()
+            .map(|r| text_line(l)[r].trim().to_string())
+            .collect::<Vec<String>>()
+    };
+    let cols = (s..=e)
+        .filter(|i| !is_sep(lines[*i]))
+        .map(|i| cells_of(lines[i]).len())
+        .max()?;
+    if cols == 0 {
+        return None;
+    }
+    let mut w = vec![0usize; cols];
+    for l in &lines[s..=e] {
+        if is_sep(l) {
+            continue;
+        }
+        for (i2, c) in cells_of(l).iter().enumerate() {
+            w[i2] = w[i2].max(c.chars().count());
+        }
+    }
+    let mut out = String::new();
+    for l in &lines[s..=e] {
+        if is_sep(l) {
+            let marks = cells_of(l);
+            out.push('|');
+            for (i2, width) in w.iter().enumerate() {
+                let m = marks.get(i2).map(|s| s.as_str()).unwrap_or("---");
+                let l = m.starts_with(':');
+                let r = m.ends_with(':');
+                let dashes = (*width).max(3).saturating_sub(l as usize + r as usize);
+                out.push(' ');
+                if l {
+                    out.push(':');
+                }
+                out.push_str(&"-".repeat(dashes));
+                if r {
+                    out.push(':');
+                }
+                out.push_str(" |");
+            }
+        } else {
+            let cs = cells_of(l);
+            out.push('|');
+            for (i2, width) in w.iter().enumerate() {
+                let c = cs.get(i2).map(|s| s.as_str()).unwrap_or_default();
+                out.push(' ');
+                out.push_str(c);
+                out.push_str(&" ".repeat(width.saturating_sub(c.chars().count())));
+                out.push_str(" |");
+            }
+        }
+        out.push('\n');
+    }
+    if !lines[e].ends_with('\n') {
+        out.pop();
+    }
+    Some((offs[s], offs[e] + lines[e].len(), out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_table_md;
+
+    #[test]
+    fn formats_ragged_table() {
+        let src = "# Format test\n\n| Name | Status | Age |\n|---|---|---|\n| alpha |done |5|\n| beta-longer | todo | 42 |\n\nafter\n";
+        let caret = src.find("alpha").unwrap();
+        let (s, e, out) = format_table_md(src, caret).expect("table at caret");
+        assert_eq!(
+            &src[s..e],
+            "| Name | Status | Age |\n|---|---|---|\n| alpha |done |5|\n| beta-longer | todo | 42 |\n"
+        );
+        println!("{}", out);
+    }
 }
