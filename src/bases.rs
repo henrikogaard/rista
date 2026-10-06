@@ -2637,6 +2637,32 @@ impl BaseView {
             SpecSrc::Inline(spec) => (spec.clone(), None),
         };
         let spec = parse_spec(&yaml);
+        // A mid-reload or invalid spec can leave no views at all —
+        // render the error state instead of indexing `len() - 1`.
+        if spec.views.is_empty() {
+            let computed = std::rc::Rc::new(Computed {
+                headers: Vec::new(),
+                columns: Vec::new(),
+                rows: Vec::new(),
+                view_names: Vec::new(),
+                view_kinds: Vec::new(),
+                kind: "table".into(),
+                group_ix: None,
+                grouped: false,
+                group_desc: false,
+                group_prop: None,
+                prefill: Vec::new(),
+                summaries: Vec::new(),
+                error: Some(
+                    spec.error
+                        .clone()
+                        .unwrap_or_else(|| "no views defined".into()),
+                ),
+            });
+            self.cache_key = Some(key);
+            self.cached = Some(computed.clone());
+            return computed;
+        }
         let view = &spec.views[self.view_ix.min(spec.views.len() - 1)];
         let (notes, root, images, starred) = {
             let vault = self.vault.read(cx);
