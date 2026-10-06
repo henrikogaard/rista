@@ -1146,6 +1146,17 @@ impl Workspace {
             self.note_status("No note open", cx);
             return;
         };
+        self.open_local_graph_for(path, window, cx);
+    }
+
+    /// Local graph centered on `path` — the tree's context-menu entry
+    /// and the `OpenLocalGraph` action share it.
+    fn open_local_graph_for(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let weak = cx.weak_entity();
         let vault = self.vault.clone();
         let graph = cx.new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, window, cx));
@@ -5669,6 +5680,29 @@ impl Workspace {
                                         }),
                                 )
                             })
+                            .when(
+                                !entry.is_folder()
+                                    && path.extension().map(|e| e == "md").unwrap_or(false),
+                                |menu| {
+                                    menu.item(
+                                        PopupMenuItem::new("Open local graph")
+                                            .icon(assets::IconName::Waypoints)
+                                            .on_click({
+                                                let path = path.clone();
+                                                let view = view.clone();
+                                                move |_, window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        this.open_local_graph_for(
+                                                            path.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                },
+                            )
                             .item(
                                 PopupMenuItem::new("Copy path")
                                     .icon(assets::IconName::Link)
