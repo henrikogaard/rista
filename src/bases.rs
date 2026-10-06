@@ -7153,6 +7153,7 @@ impl Render for BaseView {
                                             );
                                         });
                                     })
+                                    .when(matches!(cell.lit, Lit::Num(_)), |d| d.text_right())
                                     .child(match &cell.lit {
                                         Lit::Bool(b) => {
                                             bool_icon(*b, theme.muted_foreground, theme.accent)
@@ -7165,6 +7166,7 @@ impl Render for BaseView {
                                         .text_sm()
                                         .truncate()
                                         .text_color(theme.foreground)
+                                        .when(matches!(cell.lit, Lit::Num(_)), |d| d.text_right())
                                         .child(match &cell.lit {
                                             Lit::Bool(b) => {
                                                 bool_icon(*b, theme.muted_foreground, theme.accent)
@@ -7227,6 +7229,9 @@ impl Render for BaseView {
                         sized_cell(div(), &eff_sizes, ix)
                             .text_xs()
                             .truncate()
+                            // Summary values are aggregates — always
+                            // numeric and right-aligned like Obsidian.
+                            .text_right()
                             .text_color(theme.muted_foreground)
                             .child(
                                 cell.map(|(_, name, val)| format!("{name}: {val}"))
