@@ -719,11 +719,20 @@ impl Workspace {
     /// Put keyboard focus back where it belongs after a dialog or sheet
     /// closes: the active editor when a note is open, else the workspace.
     fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(doc) = self.active_doc() {
-            let doc = doc.clone();
-            doc.update(cx, |doc, cx| {
-                doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-            });
+        // In Preview (and on image docs) no editor is mounted — its
+        // focus handle is dead weight and ⌘ bindings go nowhere, so
+        // the workspace itself takes focus.
+        let editor_alive =
+            self.settings.view_mode != ViewMode::Preview && !self.active_doc_is_image(cx);
+        if editor_alive {
+            if let Some(doc) = self.active_doc() {
+                let doc = doc.clone();
+                doc.update(cx, |doc, cx| {
+                    doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
+                });
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
         } else {
             self.focus_handle.focus(window, cx);
         }
@@ -1007,15 +1016,20 @@ impl Workspace {
         self.reveal_active_file(cx);
         cx.notify();
 
-        // Focus the editor once the frame settles (image docs have no
-        // visible editor to focus).
+        // Focus the editor once the frame settles. Preview mode and
+        // image docs mount no editor — the workspace takes focus so
+        // ⌘ bindings keep working (same dead-handle fix as refocus).
+        let focus_editor = !doc.read(cx).is_image && self.settings.view_mode != ViewMode::Preview;
+        let view = cx.entity();
         let doc = doc.clone();
         window.defer(cx, move |window, cx| {
-            doc.update(cx, |doc, cx| {
-                if !doc.is_image {
+            if focus_editor {
+                doc.update(cx, |doc, cx| {
                     doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-                }
-            });
+                });
+            } else {
+                view.update(cx, |ws, cx2| ws.focus_handle.focus(window, cx2));
+            }
         });
     }
 

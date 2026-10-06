@@ -742,22 +742,32 @@ impl Render for GraphView {
             .on_mouse_up(gpui::MouseButton::Left, {
                 let this = this.clone();
                 move |_ev: &gpui::MouseUpEvent, window, cx| {
-                    this.update(cx, |view, cx| {
+                    // Resolve the clicked node's path inside the
+                    // update, then open+close AFTER it returns —
+                    // open_document runs persist_tabs →
+                    // sync_graph_active, which would re-enter this
+                    // same entity update and panic.
+                    let open = this.update(cx, |view, _cx| {
                         let drag = view.drag.take();
-                        if let Some(Drag::Node { ix, moved: false }) = drag {
-                            if let Some(path) = view.nodes.get(ix).and_then(|n| n.path.clone()) {
-                                if let Some(ws) = view.workspace.upgrade() {
-                                    ws.update(cx, |ws, cx| {
-                                        // Click = jump to the note (Obsidian
-                                        // local-graph semantics) — the graph
-                                        // hands the editor back afterwards.
-                                        ws.open_document_pub(path, window, cx);
-                                        ws.close_graph(window, cx);
-                                    });
-                                }
+                        match drag {
+                            Some(Drag::Node { ix, moved: false }) => {
+                                view.nodes.get(ix).and_then(|n| n.path.clone())
                             }
+                            _ => None,
                         }
                     });
+                    if let Some(path) = open {
+                        let ws = this.read(cx).workspace.upgrade();
+                        if let Some(ws) = ws {
+                            ws.update(cx, |ws, cx| {
+                                // Click = jump to the note (Obsidian
+                                // local-graph semantics) — the graph
+                                // hands the editor back afterwards.
+                                ws.open_document_pub(path, window, cx);
+                                ws.close_graph(window, cx);
+                            });
+                        }
+                    }
                 }
             })
             .on_scroll_wheel({
