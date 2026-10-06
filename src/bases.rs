@@ -592,6 +592,33 @@ fn link_targets(text: &str) -> Vec<String> {
     out
 }
 
+/// `![[x]]` embed targets only — `file.embeds`, like `file.links`
+/// but embed forms exclusively.
+fn embed_targets(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("![[") {
+        rest = &rest[open + 3..];
+        let Some(close) = rest.find("]]") else {
+            break;
+        };
+        let inner = &rest[..close];
+        rest = &rest[close + 2..];
+        let target = inner
+            .split('|')
+            .next()
+            .unwrap_or("")
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim();
+        if !target.is_empty() {
+            out.push(target.to_string());
+        }
+    }
+    out
+}
+
 fn prop_had_links(v: &Value) -> bool {
     match v {
         Value::String(s) => s.contains("[["),
@@ -645,7 +672,7 @@ fn row_data(
     root: &Path,
     path: &Path,
     resolve: &dyn Fn(&str) -> Option<PathBuf>,
-) -> (RowData, Vec<String>) {
+) -> (RowData, Vec<String>, Vec<String>) {
     let rel = path
         .strip_prefix(root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -717,6 +744,7 @@ fn row_data(
         ),
     );
     let targets = link_targets(&text);
+    let embeds = embed_targets(&text);
     let mut link_props = std::collections::BTreeSet::new();
     let props = properties::properties(&text)
         .into_iter()
@@ -735,6 +763,7 @@ fn row_data(
             file_meta,
         },
         targets,
+        embeds,
     )
 }
 
@@ -2050,8 +2079,9 @@ fn compute(
     // First pass: every note's row + resolved outgoing links.
     let mut all_rows: Vec<RowData> = Vec::new();
     let mut resolved_targets: Vec<Vec<PathBuf>> = Vec::new();
+    let mut resolved_embeds: Vec<Vec<PathBuf>> = Vec::new();
     for note in notes {
-        let (mut row, targets) = row_data(root, note, &resolve);
+        let (mut row, targets, embeds) = row_data(root, note, &resolve);
         // `file.starred` — absolute-path membership in the vault's
         // starred set (Obsidian's starred/bookmarked file property).
         row.file_meta.insert(
@@ -2059,6 +2089,14 @@ fn compute(
             Lit::Bool(starred.contains(&note.to_string_lossy().to_string())),
         );
         resolved_targets.push(targets.iter().filter_map(|t| resolve(t)).collect());
+        // `file.embeds` — `![[x]]` targets resolve against notes AND
+        // the image index (`![[img.png]]` is the common case).
+        resolved_embeds.push(
+            embeds
+                .iter()
+                .filter_map(|t| resolve(t).or_else(|| images.get(&t.to_lowercase()).cloned()))
+                .collect(),
+        );
         all_rows.push(row);
     }
     // Link graph: file.links (outgoing, deduped) + file.backlinks (inbound).
@@ -2079,6 +2117,13 @@ fn compute(
         row.file_meta.insert(
             "links".into(),
             Lit::List(links.into_iter().map(Lit::Str).collect()),
+        );
+        let mut embs: Vec<String> = resolved_embeds[i].iter().map(|p| rel_of(p)).collect();
+        embs.sort();
+        embs.dedup();
+        row.file_meta.insert(
+            "embeds".into(),
+            Lit::List(embs.into_iter().map(Lit::Str).collect()),
         );
         let mut backs = backlinks.get(&row.path).cloned().unwrap_or_default();
         backs.sort();
@@ -2298,7 +2343,12 @@ fn compute(
                         data.link_props.contains(prop)
                             || matches!(
                                 col.as_str(),
-                                "file.links" | "file.backlinks" | "links" | "backlinks"
+                                "file.links"
+                                    | "file.backlinks"
+                                    | "file.embeds"
+                                    | "links"
+                                    | "backlinks"
+                                    | "embeds"
                             )
                     };
                     match (cell, link_col) {
@@ -2343,6 +2393,7 @@ fn compute(
                     "file.size" => "Size".into(),
                     "file.links" => "Links".into(),
                     "file.backlinks" => "Backlinks".into(),
+                    "file.embeds" => "Embeds".into(),
                     "file.mtime" => "Modified".into(),
                     "file.ctime" => "Created".into(),
                     "file.starred" => "Starred".into(),
