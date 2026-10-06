@@ -1684,6 +1684,23 @@ struct Row {
     cover: Option<String>,
 }
 
+/// ☐/☑ glyph for boolean cells — Obsidian renders booleans as
+/// checkboxes rather than "true"/"false" text.
+fn bool_icon(checked: bool, theme: &component::theme::Theme) -> AnyElement {
+    Icon::new(if checked {
+        assets::IconName::SquareCheck
+    } else {
+        assets::IconName::Square
+    })
+    .size(px(13.))
+    .text_color(if checked {
+        theme.accent
+    } else {
+        theme.muted_foreground
+    })
+    .into_any_element()
+}
+
 /// Date cell text → day for the calendar grid. ISO `YYYY-MM-DD` (with
 /// optional time), `YYYY/MM/DD`, and `DD.MM.YYYY` all parse.
 fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
@@ -3695,7 +3712,10 @@ impl Render for BaseView {
                                                 );
                                             });
                                         })
-                                        .child(cell.text.clone())
+                                        .child(match &cell.lit {
+                                            Lit::Bool(b) => bool_icon(*b, theme),
+                                            _ => cell.text.clone().into_any_element(),
+                                        })
                                         .into_any_element()
                                 } else {
                                     div()
@@ -3704,7 +3724,10 @@ impl Render for BaseView {
                                         .text_sm()
                                         .truncate()
                                         .text_color(theme.foreground)
-                                        .child(cell.text.clone())
+                                        .child(match &cell.lit {
+                                            Lit::Bool(b) => bool_icon(*b, theme),
+                                            _ => cell.text.clone().into_any_element(),
+                                        })
                                         .into_any_element()
                                 }
                             },
