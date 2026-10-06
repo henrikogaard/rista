@@ -2306,10 +2306,20 @@ fn filter_terms(node: &Value) -> Vec<String> {
         Value::String(s) => vec![s.clone()],
         Value::Sequence(items) => items.iter().flat_map(filter_terms).collect(),
         Value::Mapping(map) => map
-            .values()
-            .flat_map(|v| match v {
-                Value::Sequence(items) => items.iter().flat_map(filter_terms).collect(),
-                other => filter_terms(other),
+            .iter()
+            .flat_map(|(k, v)| {
+                let inner = match v {
+                    Value::Sequence(items) => items.iter().flat_map(filter_terms).collect(),
+                    other => filter_terms(other),
+                };
+                // `or:`/`not:` terms keep their group context so a chip
+                // doesn't read as a plain positive condition. Indexes
+                // are unchanged — one string per flattened term.
+                match k.as_str() {
+                    Some("or") => inner.iter().map(|t| format!("or {t}")).collect(),
+                    Some("not") => inner.iter().map(|t| format!("not {t}")).collect(),
+                    _ => inner,
+                }
             })
             .collect(),
         _ => Vec::new(),
