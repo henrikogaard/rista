@@ -7,7 +7,7 @@
 //!   `prop == "x"` `!=` `>` `>=` `<` `<=`, arithmetic `+ - * / %`,
 //!   `prop.contains("x")`, `startsWith`, `endsWith`, `isEmpty`,
 //!   `file.name/path/ext/folder/mtime/ctime/size/tags`, `note.prop`,
-//!   `file.hasTag("x")`/`file.inFolder("dir")`, `formula.x`,
+//!   `file.hasTag("x")`/`file.inFolder("dir")`/`file.hasLink("x")`, `formula.x`,
 //!   functions `contains(a,b)`/`startsWith`/`endsWith`/
 //!   `isEmpty`/`now()`/`date("YYYY-MM-DD")`.
 //! - `formulas:` — name → expression, referenced as `formula.name`.
@@ -961,6 +961,33 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
                         return Ok(Lit::Bool(
                             folder == arg || folder.starts_with(&format!("{arg}/")),
                         ));
+                    }
+                    "hasLink" => {
+                        // `file.hasLink("note")` — outgoing-link membership,
+                        // like `file.links.contains(link("note"))`. Both the
+                        // argument and the stored links resolve through the
+                        // same index so `link()` values (absolute paths) and
+                        // bare names compare equal.
+                        let raw = args
+                            .first()
+                            .map(|a| eval(a, env))
+                            .transpose()?
+                            .map(|v| v.display())
+                            .unwrap_or_default();
+                        let target = (env.resolve)(&raw).or_else(|| {
+                            let p = PathBuf::from(&raw);
+                            p.exists().then_some(p)
+                        });
+                        let links = match env.row.file_meta.get("links") {
+                            Some(Lit::List(items)) => items.clone(),
+                            _ => Vec::new(),
+                        };
+                        return Ok(Lit::Bool(match target {
+                            Some(t) => links
+                                .iter()
+                                .any(|l| (env.resolve)(&l.display()).as_ref() == Some(&t)),
+                            None => links.iter().any(|l| l.display() == raw),
+                        }));
                     }
                     _ => {}
                 }
