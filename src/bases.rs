@@ -2027,6 +2027,9 @@ struct Computed {
     /// Group-chooser candidates: every property/formula/file.* in the
     /// vault — the view-tab "Group by…" pick list.
     groupable: Vec<String>,
+    /// Selected view's spec `sort:` — first `(prop, desc)` key, for
+    /// the view-tab "Sort by…" direction toggle.
+    sort_spec: Option<(String, bool)>,
     /// Selected view's `imageFit:` (`cover`/`contain`) for card art.
     image_fit: Option<String>,
     /// Selected view's `imageAspectRatio:` for card art.
@@ -2616,6 +2619,7 @@ fn compute(
         summaries,
         available,
         groupable,
+        sort_spec: view.sort.first().map(|k| (k.prop.clone(), k.desc)),
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
         col_size,
@@ -2877,13 +2881,19 @@ pub fn splice_view_key(
     for i in start_ln..end_ln {
         let t = lines[i].trim_start();
         if indent(lines[i]) == key_ind && t.starts_with(&head) {
+            // A block value (`sort:\n  - property: …`) leaves its
+            // nested lines orphaned unless they leave with the key.
+            let mut last = i + 1;
+            while last < end_ln && !lines[last].trim().is_empty() && indent(lines[last]) > key_ind {
+                last += 1;
+            }
             return Some(match value {
                 Some(v) => (
                     offs[i],
-                    offs[i + 1],
+                    offs[last],
                     format!("{}{head} {}\n", " ".repeat(key_ind), yaml_name(v)),
                 ),
-                None => (offs[i], offs[i + 1], String::new()),
+                None => (offs[i], offs[last], String::new()),
             });
         }
     }
@@ -3483,6 +3493,7 @@ impl BaseView {
                 prefill: Vec::new(),
                 available: Vec::new(),
                 groupable: Vec::new(),
+                sort_spec: None,
                 summaries: Vec::new(),
                 image_fit: None,
                 image_aspect: None,
@@ -3860,6 +3871,7 @@ impl Render for BaseView {
                             let names = computed.view_names.clone();
                             let multi = computed.view_names.len() > 1;
                             let groupable = computed.groupable.clone();
+                            let sort_spec = computed.sort_spec.clone();
                             move |menu, _window, cx| {
                                 if !matches!(this.read(cx).spec_src, SpecSrc::Doc(_)) {
                                     return menu;
@@ -4060,6 +4072,107 @@ impl Render for BaseView {
                                                         }
                                                         dialog
                                                             .title("Group by")
+                                                            .w(px(320.))
+                                                            .overlay_closable(true)
+                                                            .child(
+                                                                gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                    list.max_h(px(320.)),
+                                                                ),
+                                                            )
+                                                    },
+                                                );
+                                            }
+                                        }),
+                                );
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Sort by…")
+                                        .icon(assets::IconName::ArrowDownAZ)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let candidates = groupable.clone();
+                                            let sort_spec = sort_spec.clone();
+                                            move |_, window, cx| {
+                                                let candidates = candidates.clone();
+                                                let sort_spec = sort_spec.clone();
+                                                let this = this.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let theme = _cx.theme();
+                                                        let mut list =
+                                                            v_flex().w_full().py_1();
+                                                        let this2 = this.clone();
+                                                        let row = |label: String,
+                                                                   row_ix: usize,
+                                                                   value: Option<String>,
+                                                                   theme: &gpui_kit::component::theme::Theme| {
+                                                            let this = this2.clone();
+                                                            div()
+                                                                .id(("sort-pick", row_ix))
+                                                                .w_full()
+                                                                .px_3()
+                                                                .py_1p5()
+                                                                .cursor_pointer()
+                                                                .hover(|s| s.bg(theme.muted))
+                                                                .child(
+                                                                    div()
+                                                                        .text_sm()
+                                                                        .text_color(theme.foreground)
+                                                                        .child(label),
+                                                                )
+                                                                .on_click(move |_, window, cx| {
+                                                                    this.update(cx, |view, cx| {
+                                                                        if let SpecSrc::Doc(doc) =
+                                                                            &view.spec_src
+                                                                        {
+                                                                            doc.update(cx, |doc, cx| {
+                                                                                doc.set_base_view_key(
+                                                                                    ix,
+                                                                                    "sort",
+                                                                                    value.as_deref(),
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            });
+                                                                        }
+                                                                        view.doc_epoch += 1;
+                                                                        cx.notify();
+                                                                    });
+                                                                    window.close_dialog(cx);
+                                                                })
+                                                        };
+                                                        list = list.child(row(
+                                                            "No sorting".to_string(),
+                                                            0,
+                                                            None,
+                                                            theme,
+                                                        ));
+                                                        for (nix, prop) in
+                                                            candidates.iter().enumerate()
+                                                        {
+                                                            // Clicking the prop the
+                                                            // view already sorts on
+                                                            // flips its direction.
+                                                            let desc = sort_spec
+                                                                .as_ref()
+                                                                .map(|(p, d)| {
+                                                                    p == prop && !*d
+                                                                })
+                                                                .unwrap_or(false);
+                                                            let val = if desc {
+                                                                format!("-{prop}")
+                                                            } else {
+                                                                prop.clone()
+                                                            };
+                                                            list = list.child(row(
+                                                                prop.clone(),
+                                                                nix + 1,
+                                                                Some(val),
+                                                                theme,
+                                                            ));
+                                                        }
+                                                        dialog
+                                                            .title("Sort by")
                                                             .w(px(320.))
                                                             .overlay_closable(true)
                                                             .child(
@@ -5751,5 +5864,13 @@ views:
         assert!(out.contains("  - type: cards\n    group_by: status\n    name: B\n"));
         // Clearing a missing key → nothing.
         assert!(super::splice_view_key(spec, 1, "group_by", None).is_none());
+        // A block value leaves with its key line — no orphans.
+        let spec = "views:\n  - type: table\n    name: A\n    sort:\n      - property: x\n        direction: DESC\n    order: [file.name]\n";
+        let out = apply(
+            spec,
+            super::splice_view_key(spec, 0, "sort", Some("file.mtime")).unwrap(),
+        );
+        assert!(out.contains("    sort: file.mtime\n    order: [file.name]"));
+        assert!(!out.contains("property: x"));
     }
 }
