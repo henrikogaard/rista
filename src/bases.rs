@@ -31,7 +31,7 @@ use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_yaml::Value;
@@ -1958,6 +1958,9 @@ struct Computed {
     /// `summaries:` results — `(column ix, summary name, display)`
     /// rendered as a footer row under table views.
     summaries: Vec<(usize, String, String)>,
+    /// Column-chooser candidates: every property/formula/file.* in the
+    /// vault not already on show — offered by the header `+` cell.
+    available: Vec<String>,
     error: Option<String>,
 }
 
@@ -2481,6 +2484,7 @@ fn compute(
     };
     let group_ix = group_col.and_then(|g| columns.iter().position(|c| *c == g));
 
+    let available = available_columns(&all_rows, &spec.formulas, &columns);
     Computed {
         headers,
         columns,
@@ -2498,8 +2502,43 @@ fn compute(
             .filter(|g| !g.is_empty() && !g.starts_with("formula.") && !g.starts_with("file.")),
         prefill: prefill_pairs(spec, view),
         summaries,
+        available,
         error,
     }
+}
+
+/// Column-chooser candidates: every property/formula/`file.*` in the
+/// vault not already displayed in `columns`.
+fn available_columns(
+    all_rows: &[RowData],
+    formulas: &BTreeMap<String, Expr>,
+    columns: &[String],
+) -> Vec<String> {
+    let mut cand = std::collections::BTreeSet::new();
+    for row in all_rows {
+        cand.extend(row.props.keys().cloned());
+    }
+    for f in formulas.keys() {
+        cand.insert(format!("formula.{f}"));
+    }
+    for f in [
+        "file.name",
+        "file.folder",
+        "file.path",
+        "file.ext",
+        "file.size",
+        "file.mtime",
+        "file.ctime",
+        "file.day",
+        "file.starred",
+        "file.tags",
+        "file.links",
+        "file.backlinks",
+        "file.embeds",
+    ] {
+        cand.insert(f.to_string());
+    }
+    cand.into_iter().filter(|c| !columns.contains(c)).collect()
 }
 
 /// Render a literal as a YAML scalar for a frontmatter value.
@@ -2616,6 +2655,118 @@ fn prefill_pairs(spec: &BaseSpec, view: &ViewSpec) -> Vec<(String, String)> {
         }
     }
     pairs.into_iter().collect()
+}
+
+/// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
+/// a `.base` spec — the column-chooser write path. Returns
+/// `(byte_start, byte_end, replacement)` for select-and-replace, or None
+/// when the view can't be located. Text-level (not serde) so comments
+/// and formatting elsewhere in the spec survive.
+pub fn splice_order(src: &str, view_ix: usize, prop: &str) -> Option<(usize, usize, String)> {
+    let lines: Vec<&str> = src.split_inclusive('\n').collect();
+    let mut offs = Vec::with_capacity(lines.len() + 1);
+    offs.push(0usize);
+    for l in &lines {
+        offs.push(offs.last().unwrap() + l.len());
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_item = |t: &str| t.starts_with("- ") || t == "-";
+
+    // The `views:` key, then its direct list items (deeper, same indent).
+    let views_ln = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("views:"))?;
+    let views_ind = indent(lines[views_ln]);
+    let mut items: Vec<usize> = Vec::new();
+    let mut item_ind = None;
+    for (i, line) in lines.iter().enumerate().skip(views_ln + 1) {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() || trimmed.trim_start().starts_with('#') {
+            continue;
+        }
+        let ind = indent(line);
+        if ind <= views_ind {
+            break;
+        }
+        let text = trimmed.trim_start();
+        match item_ind {
+            // Nested lists (`filters:`/`order:`) sit deeper than the
+            // view items, so the first `- ` depth becomes canonical.
+            None if is_item(text) => {
+                item_ind = Some(ind);
+                items.push(i);
+            }
+            Some(item_ind) if ind == item_ind && is_item(text) => items.push(i),
+            _ => {}
+        }
+    }
+    let &start_ln = items.get(view_ix)?;
+    let end_ln = items
+        .get(view_ix + 1)
+        .copied()
+        .or_else(|| {
+            (start_ln..lines.len())
+                .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) <= views_ind)
+        })
+        .unwrap_or(lines.len());
+    let item_ind = item_ind?;
+    let key_ind = item_ind + 2;
+
+    // An existing `order:` key inside this view item — block list or
+    // flow form — wins over appending a fresh key at the item's end.
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if !t.starts_with("order:") || indent(lines[i]) != key_ind {
+            continue;
+        }
+        let after = t["order:".len()..].trim();
+        if after.starts_with('[') {
+            // Flow: rewrite the one line with the prop appended.
+            let inner = after
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches(',')
+                .trim();
+            let items_str = if inner.is_empty() {
+                prop.to_string()
+            } else {
+                format!("{inner}, {prop}")
+            };
+            return Some((
+                offs[i],
+                offs[i + 1],
+                format!("{}order: [{items_str}]\n", " ".repeat(key_ind)),
+            ));
+        }
+        // Block list: entries are `- ` lines indented under the key.
+        let mut last_entry = i;
+        for (j, line_j) in lines.iter().enumerate().take(end_ln).skip(i + 1) {
+            let t = line_j.trim_end();
+            if t.is_empty() {
+                continue;
+            }
+            let ind = indent(line_j);
+            if ind > key_ind && is_item(t.trim_start()) {
+                last_entry = j;
+            } else {
+                break;
+            }
+        }
+        let at = offs[last_entry + 1];
+        return Some((at, at, format!("{}- {prop}\n", " ".repeat(key_ind + 2))));
+    }
+
+    // No `order:` — append one at the item's end (still its own keys).
+    let at = offs[end_ln];
+    Some((
+        at,
+        at,
+        format!(
+            "{}order:\n{}- {prop}\n",
+            " ".repeat(key_ind),
+            " ".repeat(key_ind + 2)
+        ),
+    ))
 }
 
 // ------------------------------------------------------------------
@@ -2813,6 +2964,7 @@ impl BaseView {
                 group_desc: false,
                 group_prop: None,
                 prefill: Vec::new(),
+                available: Vec::new(),
                 summaries: Vec::new(),
                 error: Some(
                     spec.error
@@ -3230,7 +3382,80 @@ impl Render for BaseView {
                             });
                         }
                     })
-            }));
+            }))
+            // Column chooser — the `+` cell lists vault properties not on
+            // show; picking one splices it into the view's `order:` in
+            // source. `.base` files only — inline fences have no writable
+            // spec of their own.
+            .when(
+                matches!(self.spec_src, SpecSrc::Doc(_)) && !computed.available.is_empty(),
+                |header| {
+                    let this = this.clone();
+                    let available = computed.available.clone();
+                    header.child(
+                        div()
+                            .id("base-add-col")
+                            .w(px(28.))
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme.accent))
+                            .child("+")
+                            .on_click(move |_, window, cx| {
+                                let view_ix = this.read(cx).view_ix;
+                                let candidates = available.clone();
+                                let this = this.clone();
+                                window.open_dialog(cx, move |dialog, _window, _cx| {
+                                    let theme = _cx.theme();
+                                    let mut list = v_flex().w_full().py_1();
+                                    for (ix, prop) in candidates.iter().enumerate() {
+                                        let prop = prop.clone();
+                                        let this = this.clone();
+                                        list = list.child(
+                                            div()
+                                                .id(("col-pick", ix))
+                                                .w_full()
+                                                .px_3()
+                                                .py_1p5()
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(theme.muted))
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(theme.foreground)
+                                                        .child(prop.clone()),
+                                                )
+                                                .on_click(move |_, window, cx| {
+                                                    this.update(cx, |view, cx| {
+                                                        if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                            doc.update(cx, |doc, cx| {
+                                                                doc.add_base_column(
+                                                                    view_ix, &prop, window, cx,
+                                                                );
+                                                            });
+                                                        }
+                                                        view.doc_epoch += 1;
+                                                        cx.notify();
+                                                    });
+                                                    window.close_dialog(cx);
+                                                }),
+                                        );
+                                    }
+                                    dialog
+                                        .title("Add column")
+                                        .w(px(320.))
+                                        .overlay_closable(true)
+                                        .child(
+                                            gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                list.max_h(px(320.)),
+                                            ),
+                                        )
+                                });
+                            }),
+                    )
+                },
+            );
 
         // A column is editable when it reads one frontmatter property —
         // `status` / `note.status`, not `file.*`/`formula.*`/expressions.
@@ -4316,5 +4541,38 @@ views:
                 ("status".to_string(), "\"draft\"".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn splice_order() {
+        let spec = r#"views:
+  - type: table
+    name: All notes
+    group_by: file.folder
+    order:
+      - file.name
+      - status
+    sort: file.name
+  - type: cards
+    name: Gallery
+    order: [file.name, cover]
+"#;
+        // Block list — append under the first view's `order:`.
+        let (s, e, ins) = super::splice_order(spec, 0, "tags").unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("      - status\n      - tags\n"));
+        assert!(out.contains("order: [file.name, cover]"));
+        // Flow list — the second view's `order:` line is rewritten.
+        let (s, e, ins) = super::splice_order(spec, 1, "rating").unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("order: [file.name, cover, rating]"));
+        assert!(out.contains("      - status\n"));
+        // No `order:` at all — appended at the end of the view item.
+        let bare = "views:\n  - type: table\n    name: Bare\n";
+        let (s, e, ins) = super::splice_order(bare, 0, "status").unwrap();
+        let out = format!("{}{}{}", &bare[..s], ins, &bare[e..]);
+        assert!(out.contains("    order:\n      - status\n"));
+        // A second view keeps the first untouched.
+        assert!(super::splice_order(spec, 5, "x").is_none());
     }
 }
