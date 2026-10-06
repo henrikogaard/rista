@@ -3877,6 +3877,10 @@ impl Render for BaseView {
                             let sort_spec = computed.sort_spec.clone();
                             let is_cal = computed.view_kinds.get(ix).map(String::as_str)
                                 == Some("calendar");
+                            let has_art = matches!(
+                                computed.view_kinds.get(ix).map(String::as_str),
+                                Some("cards") | Some("kanban")
+                            );
                             move |menu, _window, cx| {
                                 if !matches!(this.read(cx).spec_src, SpecSrc::Doc(_)) {
                                     return menu;
@@ -4337,6 +4341,96 @@ impl Render for BaseView {
                                                             }
                                                             dialog
                                                                 .title("Date property")
+                                                                .w(px(320.))
+                                                                .overlay_closable(true)
+                                                                .child(
+                                                                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                                        list.max_h(px(320.)),
+                                                                    ),
+                                                                )
+                                                        },
+                                                    );
+                                                }
+                                            }),
+                                    )
+                                } else {
+                                    menu
+                                };
+                                let menu = if has_art {
+                                    menu.item(
+                                        PopupMenuItem::new("Card image…")
+                                            .icon(assets::IconName::Image)
+                                            .on_click({
+                                                let this = this.clone();
+                                                let candidates = groupable.clone();
+                                                move |_, window, cx| {
+                                                    let candidates = candidates.clone();
+                                                    let this = this.clone();
+                                                    window.open_dialog(
+                                                        cx,
+                                                        move |dialog, _window, _cx| {
+                                                            let theme = _cx.theme();
+                                                            let mut list =
+                                                                v_flex().w_full().py_1();
+                                                            // "Default" clears image: so the
+                                                            // cover/banner/image fallback list
+                                                            // applies again.
+                                                            for (nix, (label, prop)) in
+                                                                [("Default", None)]
+                                                                    .into_iter()
+                                                                    .chain(candidates.iter().map(
+                                                                        |p| {
+                                                                            (
+                                                                                p.as_str(),
+                                                                                Some(p.clone()),
+                                                                            )
+                                                                        },
+                                                                    ))
+                                                                    .enumerate()
+                                                            {
+                                                                let prop = prop.clone();
+                                                                let label = label.to_string();
+                                                                let this = this.clone();
+                                                                list = list.child(
+                                                                    div()
+                                                                        .id(("img-pick", nix))
+                                                                        .w_full()
+                                                                        .px_3()
+                                                                        .py_1p5()
+                                                                        .cursor_pointer()
+                                                                        .hover(|s| {
+                                                                            s.bg(theme.muted)
+                                                                        })
+                                                                        .child(
+                                                                            div()
+                                                                                .text_sm()
+                                                                                .text_color(theme.foreground)
+                                                                                .child(label),
+                                                                        )
+                                                                        .on_click(move |_, window, cx| {
+                                                                            this.update(cx, |view, cx| {
+                                                                                if let SpecSrc::Doc(doc) =
+                                                                                    &view.spec_src
+                                                                                {
+                                                                                    doc.update(cx, |doc, cx| {
+                                                                                        doc.set_base_view_key(
+                                                                                            ix,
+                                                                                            "image",
+                                                                                            prop.as_deref(),
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    });
+                                                                                }
+                                                                                view.doc_epoch += 1;
+                                                                                cx.notify();
+                                                                            });
+                                                                            window.close_dialog(cx);
+                                                                        }),
+                                                                );
+                                                            }
+                                                            dialog
+                                                                .title("Card image property")
                                                                 .w(px(320.))
                                                                 .overlay_closable(true)
                                                                 .child(
