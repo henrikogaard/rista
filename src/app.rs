@@ -4303,8 +4303,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_b_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("starred-toggle")
@@ -4400,8 +4398,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("outline-toggle")
@@ -4494,8 +4490,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("backlinks-toggle")
@@ -4748,8 +4742,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("outgoing-toggle")
@@ -4975,8 +4967,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("cal-toggle")
@@ -5045,8 +5035,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("tasks-toggle")
@@ -5191,8 +5179,6 @@ impl Workspace {
 
         v_flex()
             .w_full()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
             .child(
                 div()
                     .id("tags-toggle")
@@ -5397,8 +5383,6 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .px_2()
-                    .border_b_1()
-                    .border_color(cx.theme().sidebar_border)
                     // Drop zone for "move to vault root" — the header is
                     // the only always-visible non-folder target.
                     .drag_over::<PathBuf>(|style, _, _, cx| {
@@ -5436,6 +5420,16 @@ impl Workspace {
                                     })),
                             )
                             .child(
+                                Button::new("new-folder")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::FolderPlus)
+                                    .tooltip("New folder")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_new_folder(&NewFolder, window, cx);
+                                    })),
+                            )
+                            .child(
                                 Button::new("sort-files")
                                     .ghost()
                                     .xsmall()
@@ -5449,16 +5443,6 @@ impl Workspace {
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_tree_sort(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("new-folder")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(assets::IconName::FolderPlus)
-                                    .tooltip("New folder")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_new_folder(&NewFolder, window, cx);
                                     })),
                             ),
                     ),
@@ -5938,8 +5922,6 @@ impl Workspace {
             .id("tab-strip")
             .w_full()
             .items_center()
-            .border_b_1()
-            .border_color(cx.theme().border)
             // Drop a file from the tree onto the strip to open it as a tab.
             .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
             .on_drop::<PathBuf>({
@@ -5981,7 +5963,6 @@ impl Workspace {
                     .min_w_0()
                     .child(
                         TabBar::new("doc-tabs")
-                            .underline()
                             .selected_index(self.active.unwrap_or(0))
                             .children(tabs)
                             .on_click(cx.listener(|this, &ix, _window, cx| {
@@ -6137,7 +6118,7 @@ impl Workspace {
             depth: 0,
         };
         let theme = cx.theme();
-        let footer_colors = (theme.border, theme.foreground, theme.muted_foreground);
+        let footer_colors = (theme.foreground, theme.muted_foreground);
         v_flex()
             .size_full()
             .overflow_hidden()
@@ -6356,9 +6337,7 @@ impl Workspace {
             .gap_1()
             .items_center()
             .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .border_b_1()
-            .border_color(cx.theme().border);
+            .text_color(cx.theme().muted_foreground);
         let mut acc = String::new();
         for (ix, seg) in segs.iter().enumerate() {
             if ix > 0 {
@@ -7121,11 +7100,11 @@ fn render_linked_mentions(
     doc: Entity<Document>,
     mentions: Vec<PathBuf>,
     open: bool,
-    colors: (gpui::Hsla, gpui::Hsla, gpui::Hsla),
+    colors: (gpui::Hsla, gpui::Hsla),
     root: PathBuf,
     view: Entity<Workspace>,
 ) -> impl IntoElement {
-    let (border, fg, muted) = colors;
+    let (fg, muted) = colors;
     let count = mentions.len();
     let chevron = if open {
         assets::IconName::ChevronDown
@@ -7135,8 +7114,6 @@ fn render_linked_mentions(
     v_flex()
         .w_full()
         .flex_none()
-        .border_t_1()
-        .border_color(border)
         .child(
             div()
                 .id("mentions-toggle")
