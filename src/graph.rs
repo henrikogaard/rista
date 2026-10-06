@@ -181,6 +181,7 @@ impl GraphView {
         for _ in 0..STEPS_INIT.min(view.steps) {
             view.step();
         }
+        view.recenter();
         view.kick(window, cx);
         view
     }
@@ -268,6 +269,7 @@ impl GraphView {
         for _ in 0..self.steps {
             self.step();
         }
+        self.recenter();
         cx.notify();
     }
 
@@ -306,8 +308,8 @@ impl GraphView {
         }
         // Gentle pull to center keeps stray clusters on screen.
         for (node, dvec) in self.nodes.iter().zip(disp.iter_mut()) {
-            dvec.x -= node.pos.x * 0.02;
-            dvec.y -= node.pos.y * 0.02;
+            dvec.x -= node.pos.x * 0.04;
+            dvec.y -= node.pos.y * 0.04;
         }
         // Cool the temperature; cap displacement by it.
         let t = (STEPS_LIVE as f32 * 0.5) * (self.steps as f32 / STEPS_LIVE as f32) + 1.0;
@@ -327,6 +329,27 @@ impl GraphView {
         }
         if max_move < 0.4 {
             self.steps = 0;
+        }
+    }
+
+    /// Shift the whole map so its centroid sits at the origin —
+    /// keeps the settled layout centred in the pane. Local graphs
+    /// keep their pinned centre at the origin instead.
+    fn recenter(&mut self) {
+        if self.nodes.is_empty() || self.local.is_some() {
+            return;
+        }
+        let mut sx = 0f32;
+        let mut sy = 0f32;
+        for n in &self.nodes {
+            sx += n.pos.x;
+            sy += n.pos.y;
+        }
+        let n = self.nodes.len() as f32;
+        let mean = point(sx / n, sy / n);
+        for node in &mut self.nodes {
+            node.pos.x -= mean.x;
+            node.pos.y -= mean.y;
         }
     }
 
