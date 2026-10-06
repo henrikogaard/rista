@@ -763,13 +763,16 @@ impl Document {
         true
     }
 
-    /// Append `'prop == "value"'` to the `view_ix`-th view's `filters:`
-    /// — the tab "Filter by…" write path. Returns false when the view
-    /// can't be located.
+    /// Append a filter expression to the `view_ix`-th view's `filters:`
+    /// — the tab "Filter by…" write path. `op` is one of the picker
+    /// ids (`is`, `is not`, `contains`, `does not contain`, `>` `<`
+    /// `>=` `<=`, `is empty`, `is not empty`); the empty operators
+    /// ignore `value`. Returns false when the view can't be located.
     pub fn add_base_view_filter(
         &mut self,
         view_ix: usize,
         prop: &str,
+        op: &str,
         value: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -777,10 +780,20 @@ impl Document {
         // Numbers and booleans write unquoted so they compare against
         // typed frontmatter — everything else is a string literal.
         let bare = value.parse::<f64>().is_ok() || value == "true" || value == "false";
-        let expr = if bare {
-            format!("{prop} == {value}")
+        let lit = if bare {
+            value.to_string()
         } else {
-            format!("{prop} == \"{value}\"")
+            format!("\"{value}\"")
+        };
+        let expr = match op {
+            "is" => format!("{prop} == {lit}"),
+            "is not" => format!("{prop} != {lit}"),
+            "contains" => format!("{prop}.contains({lit})"),
+            "does not contain" => format!("!{prop}.contains({lit})"),
+            ">" | "<" | ">=" | "<=" => format!("{prop} {op} {lit}"),
+            "is empty" => format!("{prop}.isEmpty()"),
+            "is not empty" => format!("!{prop}.isEmpty()"),
+            _ => format!("{prop} == {lit}"),
         };
         let text = self.editor.read(cx).value().to_string();
         let Some((start, end, insert)) = crate::bases::splice_view_filter(&text, view_ix, &expr)

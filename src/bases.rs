@@ -4798,86 +4798,168 @@ impl Render for BaseView {
                                                                     )
                                                                     .on_click(move |_, window, cx| {
                                                                         // Property picked —
-                                                                        // ask for the value
-                                                                        // it should equal.
+                                                                        // pick the operator
+                                                                        // (Obsidian's filter ops).
                                                                         window.close_dialog(cx);
                                                                         let this = this.clone();
                                                                         let prop = prop.clone();
                                                                         window.defer(
                                                                             cx,
                                                                             move |window, cx| {
-                                                                                let input = this
-                                                                                    .read(cx)
-                                                                                    .rename_input
-                                                                                    .clone();
-                                                                                input.update(
-                                                                                    cx,
-                                                                                    |input, cx| {
-                                                                                        input.set_value(
-                                                                                            "",
-                                                                                            window,
-                                                                                            cx,
-                                                                                        );
-                                                                                    },
-                                                                                );
                                                                                 let this = this.clone();
                                                                                 let prop = prop.clone();
-                                                                                let input2 = input.clone();
                                                                                 window.open_dialog(
                                                                                     cx,
                                                                                     move |dialog, _window, _cx| {
-                                                                                        let input = input.clone();
-                                                                                        dialog
-                                                                                            .title(format!("{prop} equals"))
-                                                                                            .w(px(320.))
-                                                                                            .child(
-                                                                                                div().w_full().child(
-                                                                                                    Input::new(&input)
-                                                                                                        .appearance(true),
-                                                                                                ),
-                                                                                            )
-                                                                                            .on_ok({
-                                                                                                let this = this.clone();
-                                                                                                let prop = prop.clone();
-                                                                                                move |_, window, cx| {
-                                                                                                    this.update(
-                                                                                                        cx,
-                                                                                                        |view, cx| {
-                                                                                                            let value = view
-                                                                                                                .rename_input
-                                                                                                                .read(cx)
-                                                                                                                .value()
-                                                                                                                .trim()
-                                                                                                                .to_string();
-                                                                                                            if let SpecSrc::Doc(doc) =
-                                                                                                                &view.spec_src
-                                                                                                            {
-                                                                                                                doc.update(
-                                                                                                                    cx,
-                                                                                                                    |doc, cx| {
+                                                                                        let theme =
+                                                                                            _cx.theme();
+                                                                                        let mut ops =
+                                                                                            v_flex()
+                                                                                                .w_full()
+                                                                                                .py_1();
+                                                                                        for (oix, op) in
+                                                                                            [
+                                                                                                "is",
+                                                                                                "is not",
+                                                                                                "contains",
+                                                                                                "does not contain",
+                                                                                                ">",
+                                                                                                "<",
+                                                                                                ">=",
+                                                                                                "<=",
+                                                                                                "is empty",
+                                                                                                "is not empty",
+                                                                                            ]
+                                                                                            .iter()
+                                                                                            .enumerate()
+                                                                                        {
+                                                                                            let op = op.to_string();
+                                                                                            let this = this.clone();
+                                                                                            let prop = prop.clone();
+                                                                                            ops = ops.child(
+                                                                                                div()
+                                                                                                    .id(("filter-op", oix))
+                                                                                                    .w_full()
+                                                                                                    .px_3()
+                                                                                                    .py_1p5()
+                                                                                                    .cursor_pointer()
+                                                                                                    .hover(|s| {
+                                                                                                        s.bg(theme.muted)
+                                                                                                    })
+                                                                                                    .child(
+                                                                                                        div()
+                                                                                                            .text_sm()
+                                                                                                            .text_color(theme.foreground)
+                                                                                                            .child(op.clone()),
+                                                                                                    )
+                                                                                                    .on_click(move |_, window, cx| {
+                                                                                                        window.close_dialog(cx);
+                                                                                                        let this = this.clone();
+                                                                                                        let prop = prop.clone();
+                                                                                                        let op = op.clone();
+                                                                                                        // Empty-cell operators
+                                                                                                        // need no value —
+                                                                                                        // write now.
+                                                                                                        if op
+                                                                                                            .starts_with("is ")
+                                                                                                            && op.ends_with("empty")
+                                                                                                        {
+                                                                                                            this.update(cx, |view, cx| {
+                                                                                                                if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                                                                                    doc.update(cx, |doc, cx| {
                                                                                                                         doc.add_base_view_filter(
                                                                                                                             ix,
                                                                                                                             &prop,
-                                                                                                                            &value,
+                                                                                                                            &op,
+                                                                                                                            "",
+                                                                                                                            window,
+                                                                                                                            cx,
+                                                                                                                        );
+                                                                                                                    });
+                                                                                                                }
+                                                                                                                view.doc_epoch += 1;
+                                                                                                                cx.notify();
+                                                                                                            });
+                                                                                                            return;
+                                                                                                        }
+                                                                                                        window.defer(
+                                                                                                            cx,
+                                                                                                            move |window, cx| {
+                                                                                                                let input = this
+                                                                                                                    .read(cx)
+                                                                                                                    .rename_input
+                                                                                                                    .clone();
+                                                                                                                input.update(
+                                                                                                                    cx,
+                                                                                                                    |input, cx| {
+                                                                                                                        input.set_value(
+                                                                                                                            "",
                                                                                                                             window,
                                                                                                                             cx,
                                                                                                                         );
                                                                                                                     },
                                                                                                                 );
-                                                                                                            }
-                                                                                                            view.doc_epoch += 1;
-                                                                                                            cx.notify();
-                                                                                                        },
-                                                                                                    );
-                                                                                                    true
-                                                                                                }
-                                                                                            })
-                                                                                    },
-                                                                                );
-                                                                                window.defer(
-                                                                                    cx,
-                                                                                    move |window, cx| {
-                                                                                        input2.update(
+                                                                                                                let this = this.clone();
+                                                                                                                let prop = prop.clone();
+                                                                                                                let op = op.clone();
+                                                                                                                let input2 = input.clone();
+                                                                                                                window.open_dialog(
+                                                                                                                    cx,
+                                                                                                                    move |dialog, _window, _cx| {
+                                                                                                                        let input = input.clone();
+                                                                                                                        dialog
+                                                                                                                            .title(format!("{prop} {op}"))
+                                                                                                                            .w(px(320.))
+                                                                                                                            .child(
+                                                                                                                                div().w_full().child(
+                                                                                                                                    Input::new(&input)
+                                                                                                                                        .appearance(true),
+                                                                                                                                ),
+                                                                                                                            )
+                                                                                                                            .on_ok({
+                                                                                                                                let this = this.clone();
+                                                                                                                                let prop = prop.clone();
+                                                                                                                                let op = op.clone();
+                                                                                                                                move |_, window, cx| {
+                                                                                                                                    this.update(
+                                                                                                                                        cx,
+                                                                                                                                        |view, cx| {
+                                                                                                                                            let value = view
+                                                                                                                                                .rename_input
+                                                                                                                                                .read(cx)
+                                                                                                                                                .value()
+                                                                                                                                                .trim()
+                                                                                                                                                .to_string();
+                                                                                                                                            if let SpecSrc::Doc(doc) =
+                                                                                                                                                &view.spec_src
+                                                                                                                                            {
+                                                                                                                                                doc.update(
+                                                                                                                                                    cx,
+                                                                                                                                                    |doc, cx| {
+                                                                                                                                                        doc.add_base_view_filter(
+                                                                                                                                                            ix,
+                                                                                                                                                            &prop,
+                                                                                                                                                            &op,
+                                                                                                                                                            &value,
+                                                                                                                                                            window,
+                                                                                                                                                            cx,
+                                                                                                                                                        );
+                                                                                                                                                    },
+                                                                                                                                                );
+                                                                                                                                            }
+                                                                                                                                            view.doc_epoch += 1;
+                                                                                                                                            cx.notify();
+                                                                                                                                        },
+                                                                                                                                    );
+                                                                                                                                    true
+                                                                                                                                }
+                                                                                                                            })
+                                                                                                                    },
+                                                                                                                );
+                                                                                                                window.defer(
+                                                                                                                    cx,
+                                                                                                                    move |window, cx| {
+                                                                                                                        input2.update(
                                                                                             cx,
                                                                                             |input, cx| {
                                                                                                 input.focus(window, cx);
@@ -4885,6 +4967,18 @@ impl Render for BaseView {
                                                                                         );
                                                                                     },
                                                                                 );
+                                                                            },
+                                                                        );
+                                                                    }),
+                                                            );
+                                                        }
+                                                        dialog
+                                                            .title(format!("{prop} — filter"))
+                                                            .w(px(320.))
+                                                            .overlay_closable(true)
+                                                            .child(ops)
+                                                    },
+                                                );
                                                                             },
                                                                         );
                                                                     }),
