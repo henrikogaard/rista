@@ -5251,10 +5251,12 @@ impl Workspace {
             .child(
                 h_flex()
                     .w_full()
+                    // Same 36px as the doc tab strip so the bottom rules
+                    // meet at the divider instead of stepping.
+                    .h_9()
                     .items_center()
                     .justify_between()
                     .px_2()
-                    .py_1p5()
                     .border_b_1()
                     .border_color(cx.theme().sidebar_border)
                     // Drop zone for "move to vault root" — the header is
@@ -6168,7 +6170,8 @@ impl Workspace {
         let mut row = h_flex()
             .h(px(24.))
             .w_full()
-            .px_3()
+            // Same left edge as the preview text column (px_6).
+            .px_6()
             .gap_1()
             .items_center()
             .text_xs()
@@ -6783,12 +6786,16 @@ impl Render for Workspace {
                                     } else {
                                         content
                                     }
-                                }))
-                                .when(!self.zen, |this| this.child(self.render_status_bar(cx))),
+                                })),
                         ),
                     )
                     .into_any_element()
             }))
+            // Full-width status bar (Obsidian-style): its top rule runs
+            // edge-to-edge and the sidebar divider lands on it.
+            .when(!self.zen && vault_open, |this| {
+                this.child(self.render_status_bar(cx))
+            })
             .when_some(self.peek.clone(), |this, (kind, pos)| {
                 this.child(self.render_peek_card(&kind, pos, window, cx))
             })
