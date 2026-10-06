@@ -1135,6 +1135,17 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Point an open graph's halo at the currently active doc.
+    fn sync_graph_active(&mut self, cx: &mut Context<Self>) {
+        if let Some(graph) = self.graph.clone() {
+            let path = self
+                .active
+                .and_then(|i| self.docs.get(i))
+                .map(|d| d.entity.read(cx).path.clone());
+            graph.update(cx, |g, _cx| g.active = path);
+        }
+    }
+
     /// Close the graph pane and hand focus back to the editor surface.
     pub(crate) fn close_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.graph.take().is_some() {
@@ -1150,8 +1161,10 @@ impl Workspace {
     }
 
     /// Snapshot open doc paths + the active one into settings — the
-    /// restore-on-launch list.
+    /// restore-on-launch list. Also keeps an open graph's active-note
+    /// halo in step — this runs after every tab mutation.
     fn persist_tabs(&mut self, cx: &mut Context<Self>) {
+        self.sync_graph_active(cx);
         self.settings.open_tabs = self
             .docs
             .iter()
@@ -5973,10 +5986,12 @@ impl Workspace {
             .child(
                 div()
                     .pr_2()
-                    // Image tabs have no source/preview modes.
-                    .when(!self.active_doc_is_image(cx), |this| {
-                        this.child(self.render_view_mode_tabs(cx))
-                    }),
+                    // Image tabs have no source/preview modes; an open
+                    // graph replaces the content area entirely.
+                    .when(
+                        !self.active_doc_is_image(cx) && self.graph.is_none(),
+                        |this| this.child(self.render_view_mode_tabs(cx)),
+                    ),
             )
     }
 
