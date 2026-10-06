@@ -3016,6 +3016,126 @@ pub fn splice_view_key(
     ))
 }
 
+/// Set or delete `entry: value` inside the view's `{map_key}: …`
+/// nested mapping (`summaries:`/`columnSize:` write paths). Creates
+/// the mapping after the `- ` line when absent, converts a flow
+/// `{k: v}` map to block form on write, and removes the map key when
+/// its last entry is deleted. `None` value deletes the entry.
+pub fn splice_view_map_entry(
+    src: &str,
+    view_ix: usize,
+    map_key: &str,
+    entry_key: &str,
+    value: Option<&str>,
+) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let entry_ind = key_ind + 2;
+    let head = format!("{map_key}:");
+    let ehead = format!("{entry_key}:");
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if indent(lines[i]) != key_ind || !t.starts_with(&head) {
+            continue;
+        }
+        let tail = t[head.len()..].trim();
+        // The map's own lines run to the first line at ≤ key_ind.
+        let mut map_end = i + 1;
+        while map_end < end_ln
+            && !lines[map_end].trim().is_empty()
+            && indent(lines[map_end]) > key_ind
+        {
+            map_end += 1;
+        }
+        if !tail.is_empty() && !tail.starts_with('{') {
+            // `summaries: foo` — a scalar, not a mapping; can't splice.
+            return None;
+        }
+        if tail.starts_with('{') {
+            // Flow `{a: f, b: g}` — rewrite as block form, upserting.
+            let inner = tail.trim_start_matches('{').trim_end_matches('}');
+            let mut entries: Vec<String> = Vec::new();
+            let mut replaced = false;
+            for part in inner.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                if let Some((k, _)) = part.split_once(':') {
+                    if k.trim() == entry_key {
+                        if let Some(v) = value {
+                            entries.push(format!("{entry_key}: {}", yaml_name(v)));
+                        }
+                        replaced = true;
+                        continue;
+                    }
+                }
+                entries.push(part.to_string());
+            }
+            if let Some(v) = value.filter(|_| !replaced) {
+                entries.push(format!("{entry_key}: {}", yaml_name(v)));
+            }
+            if entries.is_empty() {
+                return Some((offs[i], offs[map_end], String::new()));
+            }
+            let body: String = entries
+                .iter()
+                .map(|e| format!("{}{e}\n", " ".repeat(entry_ind)))
+                .collect();
+            return Some((
+                offs[i],
+                offs[map_end],
+                format!("{}{head}\n{body}", " ".repeat(key_ind)),
+            ));
+        }
+        // Block form — find the entry line.
+        for j in (i + 1)..map_end {
+            let e = lines[j].trim_start();
+            if indent(lines[j]) == entry_ind && e.starts_with(&ehead) {
+                return match value {
+                    Some(v) => Some((
+                        offs[j],
+                        offs[j + 1],
+                        format!("{}{ehead} {}\n", " ".repeat(entry_ind), yaml_name(v)),
+                    )),
+                    None => {
+                        // Deleting the last entry removes the map key too.
+                        let entries = (i + 1..map_end)
+                            .filter(|&k| {
+                                !lines[k].trim().is_empty() && indent(lines[k]) == entry_ind
+                            })
+                            .count();
+                        if entries <= 1 {
+                            Some((offs[i], offs[map_end], String::new()))
+                        } else {
+                            Some((offs[j], offs[j + 1], String::new()))
+                        }
+                    }
+                };
+            }
+        }
+        // Entry missing — append at the map's end.
+        let v = value?;
+        return Some((
+            offs[map_end],
+            offs[map_end],
+            format!("{}{ehead} {}\n", " ".repeat(entry_ind), yaml_name(v)),
+        ));
+    }
+    // No map key — insert `map_key:` + first entry after the `- ` line.
+    let v = value?;
+    Some((
+        offs[start_ln + 1],
+        offs[start_ln + 1],
+        format!(
+            "{}{head}\n{}{ehead} {}\n",
+            " ".repeat(key_ind),
+            " ".repeat(entry_ind),
+            yaml_name(v)
+        ),
+    ))
+}
+
 /// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
 /// a `.base` spec — the column-chooser write path. Returns
 /// `(byte_start, byte_end, replacement)` for select-and-replace, or None
@@ -5411,6 +5531,93 @@ impl Render for BaseView {
                             let menu = menu
                                 .item(insert_item("Insert column left", false))
                                 .item(insert_item("Insert column right", true));
+                            // Summarize… — `summaries: {col: fn}` under
+                            // the view, picked from Obsidian's built-in
+                            // set; None deletes the entry.
+                            let menu = menu.item({
+                                let this = this.clone();
+                                let col = col.clone();
+                                PopupMenuItem::new(format!("Summarize {col}…"))
+                                    .icon(assets::IconName::Sigma)
+                                    .on_click(move |_, window, cx| {
+                                        let this2 = this.clone();
+                                        let col = col.clone();
+                                        window.open_dialog(cx, move |dialog, _window, _cx| {
+                                            let theme = _cx.theme();
+                                            let mut list = v_flex().w_full().py_1();
+                                            for (nix, (label, val)) in [
+                                                ("None", None),
+                                                ("Sum", Some("sum")),
+                                                ("Average", Some("average")),
+                                                ("Median", Some("median")),
+                                                ("Min", Some("min")),
+                                                ("Max", Some("max")),
+                                                ("Range", Some("range")),
+                                                ("Count", Some("count")),
+                                                ("Unique", Some("unique")),
+                                                ("Filled", Some("filled")),
+                                                ("Empty", Some("empty")),
+                                                ("Checked", Some("checked")),
+                                                ("Unchecked", Some("unchecked")),
+                                                ("Earliest", Some("earliest")),
+                                                ("Latest", Some("latest")),
+                                            ]
+                                            .into_iter()
+                                            .enumerate()
+                                            {
+                                                let this = this2.clone();
+                                                let col = col.clone();
+                                                list = list.child(
+                                                    div()
+                                                        .id(("sum-pick", nix))
+                                                        .w_full()
+                                                        .px_3()
+                                                        .py_1p5()
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.bg(theme.muted))
+                                                        .child(
+                                                            div()
+                                                                .text_sm()
+                                                                .text_color(theme.foreground)
+                                                                .child(label),
+                                                        )
+                                                        .on_click(move |_, window, cx| {
+                                                            this.update(cx, |view, cx| {
+                                                                let SpecSrc::Doc(doc) =
+                                                                    &view.spec_src
+                                                                else {
+                                                                    return;
+                                                                };
+                                                                let doc = doc.clone();
+                                                                if doc.update(cx, |doc, cx| {
+                                                                    doc.set_base_view_map_entry(
+                                                                        view.view_ix,
+                                                                        "summaries",
+                                                                        &col,
+                                                                        val,
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                }) {
+                                                                    view.doc_epoch += 1;
+                                                                }
+                                                            });
+                                                            window.close_dialog(cx);
+                                                        }),
+                                                );
+                                            }
+                                            dialog
+                                                .title(format!("Summarize {col}"))
+                                                .w(px(240.))
+                                                .overlay_closable(true)
+                                                .child(
+                                                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                                                        list.max_h(px(320.)),
+                                                    ),
+                                                )
+                                        });
+                                    })
+                            });
                             let this = this.clone();
                             let col = col.clone();
                             menu.item(
@@ -6712,6 +6919,65 @@ views:
         let (s, e, ins) = super::splice_order_at(bare, 0, "status", "x", true).unwrap();
         let out = format!("{}{}{}", &bare[..s], ins, &bare[e..]);
         assert!(out.contains("    order:\n      - status\n"));
+    }
+
+    #[test]
+    fn splice_view_map_entry() {
+        let spec = r#"views:
+  - type: table
+    name: All notes
+    summaries:
+      words: average
+    order: [file.name]
+  - type: table
+    name: Flow
+    summaries: {size: sum}
+  - type: cards
+    name: Bare
+"#;
+        // Block map — a new entry appends at the map's end.
+        let (s, e, ins) =
+            super::splice_view_map_entry(spec, 0, "summaries", "size", Some("sum")).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("      words: average\n      size: sum\n    order:"));
+        // Same view, second entry — appends under the map.
+        let (s, e, ins) =
+            super::splice_view_map_entry(&out, 0, "summaries", "count", Some("unique")).unwrap();
+        let out2 = format!("{}{}{}", &out[..s], ins, &out[e..]);
+        assert!(out2.contains("      size: sum\n      count: unique\n"));
+        // Rewrite an entry in place.
+        let (s, e, ins) =
+            super::splice_view_map_entry(&out2, 0, "summaries", "size", Some("max")).unwrap();
+        let out3 = format!("{}{}{}", &out2[..s], ins, &out2[e..]);
+        assert!(out3.contains("      words: average\n      size: max\n      count: unique\n"));
+        // Delete one of three — the map key survives.
+        let (s, e, ins) =
+            super::splice_view_map_entry(&out3, 0, "summaries", "size", None).unwrap();
+        let out4 = format!("{}{}{}", &out3[..s], ins, &out3[e..]);
+        assert!(out4.contains("    summaries:\n      words: average\n"));
+        // Down to one entry — the map key still survives.
+        let (s, e, ins) =
+            super::splice_view_map_entry(&out4, 0, "summaries", "words", None).unwrap();
+        let out5 = format!("{}{}{}", &out4[..s], ins, &out4[e..]);
+        assert!(out5.contains("    summaries:\n      count: unique\n"));
+        // Delete the last — the whole `summaries:` block leaves.
+        let (s, e, ins) =
+            super::splice_view_map_entry(&out5, 0, "summaries", "count", None).unwrap();
+        let out6 = format!("{}{}{}", &out5[..s], ins, &out5[e..]);
+        assert!(!out6.contains("    summaries:\n"));
+        assert!(out6.contains("summaries: {size: sum}"));
+        // Flow map — converts to block with the entry upserted.
+        let (s, e, ins) =
+            super::splice_view_map_entry(spec, 1, "summaries", "count", Some("unique")).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("    summaries:\n      size: sum\n      count: unique\n"));
+        // No `summaries:` — created right after the `- ` line.
+        let (s, e, ins) =
+            super::splice_view_map_entry(spec, 2, "summaries", "size", Some("sum")).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("  - type: cards\n    summaries:\n      size: sum\n    name: Bare\n"));
+        // Nothing to delete when the key is absent.
+        assert!(super::splice_view_map_entry(spec, 2, "summaries", "size", None).is_none());
     }
 
     #[test]

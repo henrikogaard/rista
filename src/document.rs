@@ -577,6 +577,33 @@ impl Document {
         true
     }
 
+    /// Set/delete `entry: value` inside the `view_ix`-th view's
+    /// `{map_key}:` nested mapping — the header "Summarize…" write path
+    /// (`summaries:`). `None` deletes the entry, dropping the map key
+    /// when it was the last one. Returns false when the view or map
+    /// can't be located.
+    pub fn set_base_view_map_entry(
+        &mut self,
+        view_ix: usize,
+        map_key: &str,
+        entry_key: &str,
+        value: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) =
+            crate::bases::splice_view_map_entry(&text, view_ix, map_key, entry_key, value)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Drop `prop` from the `order:` list of a `.base` spec's
     /// `view_ix`-th view — the header "Hide column" write path.
     /// `current_cols` is the displayed column set, needed when the
