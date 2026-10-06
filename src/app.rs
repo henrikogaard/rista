@@ -102,6 +102,7 @@ pub struct Workspace {
     /// Set while back/forward itself activates a doc — that traversal
     /// must not append a new history entry.
     nav_suppress: bool,
+    sidebar_details_scroll: ScrollHandle,
     /// Whether the sidebar's Starred group is expanded.
     starred_open: bool,
     /// Whether the sidebar's Tags group is expanded.
@@ -642,6 +643,7 @@ impl Workspace {
             nav_stack: Vec::new(),
             nav_pos: 0,
             nav_suppress: false,
+            sidebar_details_scroll: ScrollHandle::new(),
             starred_open: settings.panes.starred,
             tags_open: settings.panes.tags,
             tags_expanded: Default::default(),
@@ -5824,21 +5826,28 @@ impl Workspace {
                 ),
             )
             .child(
-                v_flex()
+                div()
                     .id("sidebar-details")
                     .w_full()
                     .max_h(relative(0.45))
                     .min_h_0()
                     .flex_shrink_0()
-                    .px_1()
-                    .py_2()
-                    .overflow_y_scrollbar()
-                    .child(self.render_outline(cx))
-                    .child(self.render_backlinks_pane(cx))
-                    .child(self.render_outgoing_pane(cx))
-                    .child(self.render_tasks(cx))
-                    .child(self.render_calendar_pane(cx))
-                    .child(self.render_tags(cx)),
+                    .relative()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.sidebar_details_scroll)
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .px_1()
+                            .py_2()
+                            .child(self.render_outline(cx))
+                            .child(self.render_backlinks_pane(cx))
+                            .child(self.render_outgoing_pane(cx))
+                            .child(self.render_tasks(cx))
+                            .child(self.render_calendar_pane(cx))
+                            .child(self.render_tags(cx)),
+                    )
+                    .vertical_scrollbar(&self.sidebar_details_scroll),
             )
     }
 
