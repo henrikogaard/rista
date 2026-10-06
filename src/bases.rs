@@ -2611,6 +2611,9 @@ struct KanbanDrag {
 /// Drag payload for header reorder — the dragged column's index.
 struct ColDrag(usize);
 
+/// Drag payload for view-tab reorder — the dragged view's index.
+struct ViewDrag(usize);
+
 impl Render for KanbanDrag {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -2709,14 +2712,11 @@ fn prefill_pairs(spec: &BaseSpec, view: &ViewSpec) -> Vec<(String, String)> {
     pairs.into_iter().collect()
 }
 
-/// Shared front half of the `order:` splices: split `src` into lines
-/// with byte offsets and locate the `view_ix`-th `views:` item.
-/// Returns `(lines, offs, item_start_ln, item_end_ln, key_indent)` —
-/// `key_indent` is the indent a view's own keys sit at.
-fn view_item<'a>(
-    src: &'a str,
-    view_ix: usize,
-) -> Option<(Vec<&'a str>, Vec<usize>, usize, usize, usize)> {
+/// Shared front half of the `order:`/`views:` splices: split `src`
+/// into lines with byte offsets and collect the `views:` list's
+/// direct item start-lines. Returns `(lines, offs, item_starts,
+/// item_indent)` — `item_indent` is the depth the `- ` markers sit at.
+fn view_items<'a>(src: &'a str) -> Option<(Vec<&'a str>, Vec<usize>, Vec<usize>, usize)> {
     let lines: Vec<&str> = src.split_inclusive('\n').collect();
     let mut offs = Vec::with_capacity(lines.len() + 1);
     offs.push(0usize);
@@ -2754,16 +2754,43 @@ fn view_item<'a>(
             _ => {}
         }
     }
-    let &start_ln = items.get(view_ix)?;
+    Some((lines, offs, items, item_ind?))
+}
+
+/// Line-span of a `views:` item: from its `- ` line to the next item
+/// (or the first line dedented to/above `views:`).
+fn view_span(lines: &[&str], items: &[usize], ix: usize, views_ind: usize) -> (usize, usize) {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let start_ln = items[ix];
     let end_ln = items
-        .get(view_ix + 1)
+        .get(ix + 1)
         .copied()
         .or_else(|| {
             (start_ln..lines.len())
                 .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) <= views_ind)
         })
         .unwrap_or(lines.len());
-    Some((lines, offs, start_ln, end_ln, item_ind? + 2))
+    (start_ln, end_ln)
+}
+
+/// Shared front half of the `order:` splices: split `src` into lines
+/// with byte offsets and locate the `view_ix`-th `views:` item.
+/// Returns `(lines, offs, item_start_ln, item_end_ln, key_indent)` —
+/// `key_indent` is the indent a view's own keys sit at.
+fn view_item<'a>(
+    src: &'a str,
+    view_ix: usize,
+) -> Option<(Vec<&'a str>, Vec<usize>, usize, usize, usize)> {
+    let (lines, offs, items, item_ind) = view_items(src)?;
+    let views_ind = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("views:"))
+        .map(|i| lines[i].len() - lines[i].trim_start().len())?;
+    if items.len() <= view_ix {
+        return None;
+    }
+    let (start_ln, end_ln) = view_span(&lines, &items, view_ix, views_ind);
+    Some((lines, offs, start_ln, end_ln, item_ind + 2))
 }
 
 /// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
@@ -3085,6 +3112,32 @@ pub fn splice_name(src: &str, view_ix: usize, name: &str) -> Option<(usize, usiz
 pub fn drop_view(src: &str, view_ix: usize) -> Option<(usize, usize, String)> {
     let (lines, offs, start_ln, end_ln, _) = view_item(src, view_ix)?;
     Some((offs[start_ln], offs[end_ln], String::new()))
+}
+
+/// Move the `from`-th view item to position `to` — the tab
+/// drag-reorder write path. The item's whole text span travels,
+/// comments and formatting included; content outside the `views:`
+/// list is untouched.
+pub fn reorder_views(src: &str, from: usize, to: usize) -> Option<(usize, usize, String)> {
+    let (lines, offs, items, _) = view_items(src)?;
+    if from == to || from >= items.len() || to >= items.len() {
+        return None;
+    }
+    let views_ind = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("views:"))
+        .map(|i| lines[i].len() - lines[i].trim_start().len())?;
+    let spans: Vec<(usize, usize)> = (0..items.len())
+        .map(|i| view_span(&lines, &items, i, views_ind))
+        .collect();
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    let v = order.remove(from);
+    order.insert(to, v);
+    let mut mid = String::new();
+    for &i in &order {
+        mid.push_str(&src[offs[spans[i].0]..offs[spans[i].1]]);
+    }
+    Some((offs[spans[0].0], offs[spans[items.len() - 1].1], mid))
 }
 
 // ------------------------------------------------------------------
@@ -3597,6 +3650,59 @@ impl Render for BaseView {
                                     cx.notify();
                                 });
                             }
+                        })
+                        // Drag a tab onto another → the view takes that
+                        // slot; the item's whole span moves in `views:`.
+                        // `.base` files only — inline fences are read-only.
+                        .when(matches!(self.spec_src, SpecSrc::Doc(_)), |d| {
+                            let this = this.clone();
+                            d.on_drag(ViewDrag(ix), {
+                                let label: SharedString = name.clone().into();
+                                move |_, _, _, cx| {
+                                    cx.new(|_| KanbanDrag {
+                                        label: label.clone(),
+                                    })
+                                }
+                            })
+                            .drag_over::<ViewDrag>(|style, _, _, cx| {
+                                style.border_color(cx.theme().accent)
+                            })
+                            .on_drop::<ViewDrag>(move |src: &ViewDrag, window, cx| {
+                                let _ = this.update(cx, |view, cx| {
+                                    let SpecSrc::Doc(doc) = &view.spec_src else {
+                                        return;
+                                    };
+                                    let doc = doc.clone();
+                                    let (from, to) = (src.0, ix);
+                                    if from == to {
+                                        return;
+                                    }
+                                    // Remap the selection across the move.
+                                    let sel = view.view_ix;
+                                    let new_sel = if sel == from {
+                                        to
+                                    } else if from < sel && sel <= to {
+                                        sel - 1
+                                    } else if to <= sel && sel < from {
+                                        sel + 1
+                                    } else {
+                                        sel
+                                    };
+                                    let key =
+                                        doc.read(cx).path.to_string_lossy().to_string();
+                                    if doc.update(cx, |doc, cx| {
+                                        doc.reorder_base_views(from, to, window, cx)
+                                    }) {
+                                        view.view_ix = new_sel;
+                                        if let Some(ws) = view.workspace.upgrade() {
+                                            ws.update(cx, |ws, _cx| {
+                                                ws.remember_base_view(key, new_sel);
+                                            });
+                                        }
+                                        view.doc_epoch += 1;
+                                    }
+                                });
+                            })
                         })
                         // Right-click a tab → rename/delete the view it
                         // names (Obsidian's view menu). Inline ```base
@@ -5301,5 +5407,23 @@ views:
         let empty = "views:\n";
         let out = apply(empty, super::splice_view(empty, "Cards", "cards").unwrap());
         assert!(out.contains("  - type: cards\n    name: Cards\n"));
+    }
+
+    #[test]
+    fn reorder_views() {
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        let spec = "views:\n  - type: table\n    name: A\n  - type: cards\n    name: B\n    order: [file.name]\n  - type: list\n    name: C\nfilters: x\n";
+        // First → last: B and C keep their text, `filters:` untouched.
+        let out = apply(spec, super::reorder_views(spec, 0, 2).unwrap());
+        assert!(out.contains(
+            "  - type: cards\n    name: B\n    order: [file.name]\n  - type: list\n    name: C\n  - type: table\n    name: A\nfilters: x\n"
+        ));
+        // Last → first.
+        let out = apply(spec, super::reorder_views(spec, 2, 0).unwrap());
+        assert!(out.contains("  - type: list\n    name: C\n  - type: table\n    name: A\n"));
+        // Same index / out of range → nothing.
+        assert!(super::reorder_views(spec, 1, 1).is_none());
+        assert!(super::reorder_views(spec, 0, 5).is_none());
     }
 }

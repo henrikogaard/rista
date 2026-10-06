@@ -642,6 +642,27 @@ impl Document {
         true
     }
 
+    /// Move the `from`-th view item to position `to` in the spec —
+    /// the tab drag-reorder write path. Returns false when the views
+    /// can't be located.
+    pub fn reorder_base_views(
+        &mut self,
+        from: usize,
+        to: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::reorder_views(&text, from, to) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Flip the task-list marker (`[ ]`/`[x]`) on `line` (1-based) —
     /// the preview's interactive checkbox writes back into source.
     /// Line numbers survive `preprocess` rewriting; byte offsets don't.
