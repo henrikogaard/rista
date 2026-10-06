@@ -604,6 +604,29 @@ impl Document {
         true
     }
 
+    /// Set/delete `properties: {prop: {displayName: v}}` at spec root —
+    /// the header "Rename column" write path. `None` removes the
+    /// displayName (header falls back to the prop name). Returns false
+    /// when the spec can't be edited.
+    pub fn set_base_display_name(
+        &mut self,
+        prop: &str,
+        value: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::splice_root_display_name(&text, prop, value)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Drop `prop` from the `order:` list of a `.base` spec's
     /// `view_ix`-th view — the header "Hide column" write path.
     /// `current_cols` is the displayed column set, needed when the

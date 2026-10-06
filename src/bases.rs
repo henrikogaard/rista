@@ -3136,6 +3136,127 @@ pub fn splice_view_map_entry(
     ))
 }
 
+/// Text-splice `properties: {prop: {displayName: v}}` at spec root —
+/// the header "Rename column" write path. Creates `properties:` (and
+/// the entry) before `views:` when absent; `None` deletes the
+/// displayName line, the entry when it's left empty, and `properties:`
+/// when it was the last entry. Returns `(byte_start, byte_end,
+/// replacement)` or None.
+pub fn splice_root_display_name(
+    src: &str,
+    prop: &str,
+    value: Option<&str>,
+) -> Option<(usize, usize, String)> {
+    let lines: Vec<&str> = src.split_inclusive('\n').collect();
+    let mut offs = Vec::with_capacity(lines.len() + 1);
+    offs.push(0usize);
+    for l in &lines {
+        offs.push(offs.last().unwrap() + l.len());
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let at = |i: usize| offs.get(i).copied().unwrap_or(src.len());
+    let ehead = format!("{}:", yaml_name(prop));
+
+    // Find the top-level `properties:` key.
+    let props_ln = lines
+        .iter()
+        .position(|l| indent(l) == 0 && l.trim_start().starts_with("properties:"));
+    let Some(props_ln) = props_ln else {
+        // No `properties:` — create it before `views:` (or at EOF).
+        let v = value?;
+        let views_ln = lines
+            .iter()
+            .position(|l| indent(l) == 0 && l.trim_start().starts_with("views:"));
+        let at = views_ln.map(at).unwrap_or(src.len());
+        return Some((
+            at,
+            at,
+            format!(
+                "properties:\n  {ehead}\n    displayName: {}\n",
+                yaml_name(v)
+            ),
+        ));
+    };
+
+    // The map's entries sit one level deeper than the key; detect the
+    // first entry's indent so non-2-space YAML still splices cleanly.
+    let map_end = (props_ln + 1..lines.len())
+        .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) == 0)
+        .unwrap_or(lines.len());
+    let entry_ind = (props_ln + 1..map_end)
+        .filter(|&i| !lines[i].trim().is_empty())
+        .map(|i| indent(lines[i]))
+        .next()
+        .unwrap_or(2);
+    let disp_ind = entry_ind + 2;
+
+    // Locate the `{prop}:` entry inside the map.
+    let entry_ln = (props_ln + 1..map_end)
+        .find(|&i| indent(lines[i]) == entry_ind && lines[i].trim_start().starts_with(&ehead));
+    let Some(entry_ln) = entry_ln else {
+        // Entry missing — append `{prop}:\n  displayName:` at map end.
+        let v = value?;
+        return Some((
+            at(map_end),
+            at(map_end),
+            format!(
+                "{}{ehead}\n{}displayName: {}\n",
+                " ".repeat(entry_ind),
+                " ".repeat(disp_ind),
+                yaml_name(v)
+            ),
+        ));
+    };
+
+    // The entry's own block ends at the next line at ≤ entry_ind.
+    let block_end = (entry_ln + 1..map_end)
+        .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) <= entry_ind)
+        .unwrap_or(map_end);
+    // Does the entry already carry a `displayName:` line?
+    let disp_ln = (entry_ln + 1..block_end).find(|&i| {
+        indent(lines[i]) == disp_ind && lines[i].trim_start().starts_with("displayName:")
+    });
+    // Entry lines besides the key line itself.
+    let siblings = (entry_ln + 1..block_end)
+        .filter(|&i| {
+            !lines[i].trim().is_empty() && indent(lines[i]) == disp_ind && Some(i) != disp_ln
+        })
+        .count();
+
+    match (disp_ln, value) {
+        // Rewrite the displayName in place.
+        (Some(d), Some(v)) => Some((
+            offs[d],
+            offs[d + 1],
+            format!("{}displayName: {}\n", " ".repeat(disp_ind), yaml_name(v)),
+        )),
+        // Clear it — drop the entry too when displayName was its only
+        // key, and `properties:` when it was the last entry.
+        (Some(d), None) => {
+            if siblings > 0 {
+                return Some((offs[d], offs[d + 1], String::new()));
+            }
+            let other_entries = (props_ln + 1..map_end)
+                .filter(|&i| {
+                    !lines[i].trim().is_empty() && indent(lines[i]) == entry_ind && i != entry_ln
+                })
+                .count();
+            if other_entries > 0 {
+                Some((offs[entry_ln], offs[block_end], String::new()))
+            } else {
+                Some((offs[props_ln], offs[map_end], String::new()))
+            }
+        }
+        // Entry exists but lacks displayName — insert under it.
+        (None, Some(v)) => Some((
+            offs[entry_ln + 1],
+            offs[entry_ln + 1],
+            format!("{}displayName: {}\n", " ".repeat(disp_ind), yaml_name(v)),
+        )),
+        (None, None) => None,
+    }
+}
+
 /// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
 /// a `.base` spec — the column-chooser write path. Returns
 /// `(byte_start, byte_end, replacement)` for select-and-replace, or None
@@ -5454,6 +5575,93 @@ impl Render for BaseView {
                                             }
                                         }),
                                 );
+                            // Rename {col}… — `properties: {col:
+                            // {displayName:}}` at spec root; blank
+                            // clears it back to the prop name. Applies
+                            // to file.name too, so it sits above the
+                            // file.name early return.
+                            let menu = if writable {
+                                let this = this.clone();
+                                let col = col.clone();
+                                let h_name = h_name.clone();
+                                menu.item(
+                                    PopupMenuItem::new(format!("Rename {col}…"))
+                                        .icon(assets::IconName::SquarePen)
+                                        .on_click(move |_, window, cx| {
+                                            let input =
+                                                this.read(cx).rename_input.clone();
+                                            input.update(cx, |input, cx| {
+                                                input.set_value(&h_name, window, cx);
+                                            });
+                                            let this = this.clone();
+                                            let col = col.clone();
+                                            let input2 = input.clone();
+                                            window.open_dialog(
+                                                cx,
+                                                move |dialog, _window, _cx| {
+                                                    let input = input.clone();
+                                                    dialog
+                                                        .title(format!("Rename {col}"))
+                                                        .w(px(320.))
+                                                        .child(
+                                                            div().w_full().child(
+                                                                Input::new(&input)
+                                                                    .appearance(true),
+                                                            ),
+                                                        )
+                                                        .on_ok({
+                                                            let this = this.clone();
+                                                            let col = col.clone();
+                                                            move |_, window, cx| {
+                                                                this.update(
+                                                                    cx,
+                                                                    |view, cx| {
+                                                                        let text = view
+                                                                            .rename_input
+                                                                            .read(cx)
+                                                                            .value()
+                                                                            .trim()
+                                                                            .to_string();
+                                                                        let val =
+                                                                            (!text.is_empty())
+                                                                                .then_some(
+                                                                                    text.as_str(),
+                                                                                );
+                                                                        if let SpecSrc::Doc(
+                                                                            doc,
+                                                                        ) = &view.spec_src
+                                                                        {
+                                                                            doc.update(
+                                                                                cx,
+                                                                                |doc, cx| {
+                                                                                    doc.set_base_display_name(
+                                                                                        &col,
+                                                                                        val,
+                                                                                        window,
+                                                                                        cx,
+                                                                                    );
+                                                                                },
+                                                                            );
+                                                                        }
+                                                                        view.doc_epoch += 1;
+                                                                        cx.notify();
+                                                                    },
+                                                                );
+                                                                true
+                                                            }
+                                                        })
+                                                },
+                                            );
+                                            window.defer(cx, move |window, cx| {
+                                                input2.update(cx, |input, cx| {
+                                                    input.focus(window, cx);
+                                                });
+                                            });
+                                        }),
+                                )
+                            } else {
+                                menu
+                            };
                             if !writable || col == "file.name" {
                                 return menu;
                             }
@@ -7068,6 +7276,49 @@ views:
         assert!(out.contains("  - type: cards\n    summaries:\n      size: sum\n    name: Bare\n"));
         // Nothing to delete when the key is absent.
         assert!(super::splice_view_map_entry(spec, 2, "summaries", "size", None).is_none());
+    }
+
+    #[test]
+    fn splice_root_display_name() {
+        let spec = r#"filters:
+  and:
+    - 'file.ext == "md"'
+properties:
+  status:
+    displayName: Status
+  count:
+    displayName: Count
+views:
+  - type: table
+    name: All notes
+"#;
+        // Rewrite an existing displayName in place.
+        let (s, e, ins) = super::splice_root_display_name(spec, "status", Some("State")).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("displayName: State"));
+        assert!(out.contains("displayName: Count"));
+        // New entry — appended at the map's end before views:.
+        let (s, e, ins) =
+            super::splice_root_display_name(spec, "file.mtime", Some("Modified")).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(out.contains("  file.mtime:\n    displayName: Modified\nviews:\n"));
+        // Clear one of two — the entry line and properties: survive.
+        let (s, e, ins) = super::splice_root_display_name(spec, "status", None).unwrap();
+        let out = format!("{}{}{}", &spec[..s], ins, &spec[e..]);
+        assert!(!out.contains("displayName: Status"));
+        assert!(out.contains("properties:\n  count:\n    displayName: Count\n"));
+        // Clear the last — the whole properties: block leaves.
+        let (s, e, ins) = super::splice_root_display_name(&out, "count", None).unwrap();
+        let out2 = format!("{}{}{}", &out[..s], ins, &out[e..]);
+        assert!(!out2.contains("properties:"));
+        assert!(out2.contains("views:"));
+        // No properties: — created before views:.
+        let bare = "views:\n  - type: table\n    name: T\n";
+        let (s, e, ins) = super::splice_root_display_name(bare, "status", Some("State")).unwrap();
+        let out = format!("{}{}{}", &bare[..s], ins, &bare[e..]);
+        assert!(out.starts_with("properties:\n  status:\n    displayName: State\nviews:\n"));
+        // Nothing to delete when properties: is absent.
+        assert!(super::splice_root_display_name(bare, "status", None).is_none());
     }
 
     #[test]
