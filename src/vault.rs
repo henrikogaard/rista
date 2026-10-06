@@ -29,7 +29,7 @@ pub struct Vault {
     /// Flattened list of every `.md` and `.base` file in the vault,
     /// sorted.
     pub notes: Vec<PathBuf>,
-    /// Image files indexed by lowercase file name — Obsidian resolves
+    /// Image files indexed by lowercase file name — the reference editor resolves
     /// `![[name.png]]` vault-wide, so basename is the key.
     /// Shared behind one `Rc`: resolvers handed out to documents stay live
     /// and see files added later (paste/drop, watcher refreshes).
@@ -41,7 +41,7 @@ pub struct Vault {
     /// Rebuilt with the note index.
     pub tasks: Vec<crate::properties::VaultTask>,
     /// Lowercase `aliases:` frontmatter values → the note declaring them,
-    /// so `[[Alias]]` resolves like Obsidian. Rebuilt with the index.
+    /// so `[[Alias]]` resolves. Rebuilt with the index.
     pub aliases: std::collections::HashMap<String, PathBuf>,
     /// Starred notes (absolute path strings) — mirrors
     /// `Settings::starred` so `.base` `file.starred` can read it
@@ -291,7 +291,7 @@ impl Vault {
     }
 
     /// Notes whose body mentions the target's file stem as plain
-    /// text outside `[[...]]` — Obsidian's "unlinked mentions".
+    /// text outside `[[...]]` — the "unlinked mentions".
     /// Whole-phrase, case-insensitive; linked mentions don't count.
     pub fn unlinked_mentions(&self, target: &Path) -> Vec<PathBuf> {
         let Some(stem) = target.file_stem().and_then(|s| s.to_str()) else {

@@ -1,5 +1,5 @@
-//! Obsidian Bases — `.base` files are YAML queries over vault
-//! frontmatter. We adopt Obsidian's own spec (filters / formulas /
+//! the reference editor Bases — `.base` files are YAML queries over vault
+//! frontmatter. We adopt the own spec (filters / formulas /
 //! views / properties) so a vault reads identically in both apps.
 //!
 //! Supported subset:
@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 // Literal value space — frontmatter YAML + file metadata + formulas.
 // ------------------------------------------------------------------
 
-/// Right-click menu on any row/card — Obsidian's base row menu:
+/// Right-click menu on any row/card — the base row menu:
 /// open, open in a new tab, reveal in the tree, copy a wikilink.
 fn row_context_menu(menu: PopupMenu, path: PathBuf, workspace: WeakEntity<Workspace>) -> PopupMenu {
     let stem = path
@@ -93,7 +93,7 @@ fn row_context_menu(menu: PopupMenu, path: PathBuf, workspace: WeakEntity<Worksp
 }
 
 /// Row/card click → open the note. ⌘+click (platform modifier) opens
-/// in a new tab, matching Obsidian.
+/// in a new tab, matching the reference editor.
 fn open_path_click(
     workspace: &WeakEntity<Workspace>,
     path: PathBuf,
@@ -516,8 +516,7 @@ impl Parser {
                 self.expect(Tok::RParen)?;
                 Ok(inner)
             }
-            // `[a, b, …]` — list literal (Obsidian uses them in
-            // `containsAny(["a","b"])` and formula args).
+            // `[a, b, …]` — list literal` and formula args).
             Some(Tok::LBracket) => {
                 let mut items = Vec::new();
                 if self.peek() == Some(&Tok::RBracket) {
@@ -722,7 +721,7 @@ fn row_data(
         Lit::Num(meta.as_ref().map(|m| epoch_of(m.created())).unwrap_or(0.0)),
     );
     // `file.day` — date parsed from a `YYYY-MM-DD` stem (daily notes),
-    // like Obsidian. Absent when the name isn't date-shaped.
+    //. Absent when the name isn't date-shaped.
     if let Some(day) = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -732,7 +731,7 @@ fn row_data(
         file_meta.insert("day".into(), Lit::Num(day.and_utc().timestamp() as f64));
     }
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    // `file.tags` — Obsidian's `#name`-shaped tag list (frontmatter +
+    // `file.tags` — the `#name`-shaped tag list (frontmatter +
     // inline `#tag`s, code-span and fence safe).
     file_meta.insert(
         "tags".into(),
@@ -777,7 +776,7 @@ struct Env<'a> {
     /// only bound inside `summaries:` evaluation.
     values: Option<Vec<Lit>>,
     /// In an embedded ```` ```base ```` fence, `this` binds to the note
-    /// hosting the embed (Obsidian semantics). None in `.base` files.
+    /// hosting the embed. None in `.base` files.
     this_row: Option<&'a RowData>,
     resolve: &'a dyn Fn(&str) -> Option<PathBuf>,
     depth: usize,
@@ -821,7 +820,7 @@ fn aggregate(agg: &str, vals: Vec<Lit>) -> Result<Lit, String> {
     }
 }
 
-/// Built-in `.base` summary names (Obsidian's set) over a column's
+/// Built-in `.base` summary names (the set) over a column's
 /// values across the filtered row set. Returns `None` for names that
 /// aren't built-ins — the caller then tries `summaries:` formulas.
 fn summarize_builtin(name: &str, vals: &[Lit]) -> Option<Lit> {
@@ -1017,7 +1016,7 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
             }
         }
         Expr::Method(target, name, args) => {
-            // `this.file.name` — the third segment of the Obsidian
+            // `this.file.name` — the third segment of the the reference editor
             // `this.file.<prop>` chain (parses as a no-arg method on
             // `Ref(Some("this"), "file")`).
             if let Expr::Ref(Some(ns), field) = target.as_ref() {
@@ -1028,7 +1027,7 @@ fn eval(expr: &Expr, env: &mut Env) -> Result<Lit, String> {
                         .unwrap_or(Lit::Null));
                 }
             }
-            // `file.hasTag("x")` / `file.inFolder("dir")` — Obsidian
+            // `file.hasTag("x")` / `file.inFolder("dir")` — the reference editor
             // file-object methods, evaluated against file_meta before
             // the generic method dispatch.
             if matches!(target.as_ref(), Expr::Ref(None, n) if n == "file") {
@@ -1169,7 +1168,7 @@ fn apply_method(value: &Lit, name: &str, args: &[Lit]) -> Result<Lit, String> {
             }
             _ => Ok(Lit::Bool(false)),
         },
-        // Obsidian list predicates — all/any/none membership against a
+        // the reference editor list predicates — all/any/none membership against a
         // list argument.
         "containsAll" => match (value, arg) {
             (Lit::List(items), Some(Lit::List(needles))) => Ok(Lit::Bool(
@@ -1305,7 +1304,7 @@ fn apply_method(value: &Lit, name: &str, args: &[Lit]) -> Result<Lit, String> {
             Lit::List(items) => aggregate(name, items.clone()),
             _ => Err(format!("{name} needs a list")),
         },
-        // `values.mean().round(3)` — Obsidian summary formulas round
+        // `values.mean().round(3)` — the reference editor summary formulas round
         // to decimal places, not just integers.
         "round" | "floor" | "ceil" | "abs" => match value {
             Lit::Num(n) => {
@@ -1478,7 +1477,7 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
 
 /// Moment.js pattern → chrono strftime. Covers the common tokens:
 /// `YYYY MM DD HH mm ss`, ordinals `Do`, names `dddd/ddd/MMMM/MMM`,
-/// `A/a` meridian — Obsidian `.base` `format(date, pattern)`.
+/// `A/a` meridian — the reference editor `.base` `format(date, pattern)`.
 pub(crate) fn moment_to_chrono(pattern: &str) -> String {
     const TOKENS: &[(&str, &str)] = &[
         // Longest first — `find` returns the first prefix match.
@@ -1561,8 +1560,7 @@ struct ViewSpec {
     /// Calendar: property the month grid buckets on
     /// (`date:`/`dateProperty:`/`date_property:`/`property:`).
     date_prop: Option<String>,
-    /// Cards: the property supplying the card image — Obsidian's
-    /// `image: note.cover` (bare `cover` also accepted). Empty → the
+    /// Cards: the property supplying the card image — the `image: note.cover` (bare `cover` also accepted). Empty → the
     /// usual cover/banner/image key list applies.
     image_prop: Option<String>,
     /// Cards: `imageFit:`/`image_fit` — `cover` (default crop) or
@@ -1572,7 +1570,7 @@ struct ViewSpec {
     /// area's width/height ratio instead of the fixed strip height.
     image_aspect: Option<f64>,
     /// Tables: `columnSize: {prop: px}` — per-column pixel widths
-    /// overriding the grid default (Obsidian view key).
+    /// overriding the grid default.
     col_size: BTreeMap<String, f64>,
     columns: Vec<String>,
     sort: Vec<SortKey>,
@@ -1684,7 +1682,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 .iter()
                 .find_map(|k| match getv(k) {
                     Some(Value::String(s)) => Some((Some(s.clone()), false)),
-                    // Obsidian: `groupBy: {property: note.age, direction: DESC}`.
+                    // Spec: `groupBy: {property: note.age, direction: DESC}`.
                     Some(Value::Mapping(m)) => {
                         let prop = m
                             .get("property")
@@ -1849,7 +1847,7 @@ struct Row {
     cover: Option<String>,
 }
 
-/// ☐/☑ glyph for boolean cells — Obsidian renders booleans as
+/// ☐/☑ glyph for boolean cells — the reference editor renders booleans as
 /// checkboxes rather than "true"/"false" text.
 fn bool_icon(checked: bool, muted: Hsla, accent: Hsla) -> AnyElement {
     Icon::new(if checked {
@@ -1862,7 +1860,7 @@ fn bool_icon(checked: bool, muted: Hsla, accent: Hsla) -> AnyElement {
     .into_any_element()
 }
 
-/// Table column width — `columnSize: {prop: px}` (Obsidian) pins a
+/// Table column width — `columnSize: {prop: px}` pins a
 /// column; otherwise the first column flexes and the rest hold 140px.
 /// `sizes` is `col_size` overlaid with any in-progress drag-resize.
 fn sized_cell<T: gpui::Styled>(d: T, sizes: &[Option<f32>], cix: usize) -> T {
@@ -1914,7 +1912,7 @@ fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
     None
 }
 
-/// `file.size` cell text — human-readable bytes like Obsidian
+/// `file.size` cell text — human-readable bytes
 /// ("12.3 KB" instead of raw "12600").
 fn human_size(bytes: f64) -> String {
     let units = ["B", "KB", "MB", "GB"];
@@ -2068,8 +2066,7 @@ fn cover_of(
     images: &std::collections::HashMap<String, PathBuf>,
     image_prop: Option<String>,
 ) -> Option<String> {
-    // The view's `image:` key names the cover property (Obsidian's
-    // `image: note.cover`); without it the usual cover keys are probed.
+    // The view's `image:` key names the cover property (the `image: note.cover`); without it the usual cover keys are probed.
     let custom = image_prop
         .as_deref()
         .map(|p| p.trim().trim_start_matches("note.").to_string())
@@ -2435,7 +2432,7 @@ fn compute(
     for note in notes {
         let (mut row, targets, embeds) = row_data(root, note, &resolve);
         // `file.starred` — absolute-path membership in the vault's
-        // starred set (Obsidian's starred/bookmarked file property).
+        // starred set (the starred/bookmarked file property).
         row.file_meta.insert(
             "starred".into(),
             Lit::Bool(starred.contains(&note.to_string_lossy().to_string())),
@@ -2540,7 +2537,7 @@ fn compute(
         columns.extend(spec.formulas.keys().map(|f| format!("formula.{f}")));
     }
 
-    // Grouping may target a property not listed in `order` — Obsidian
+    // Grouping may target a property not listed in `order` — the reference editor
     // groups by any property, so it joins the columns silently. For the
     // table view that also surfaces the group prop as a trailing column.
     if matches!(
@@ -4161,7 +4158,7 @@ pub struct BaseView {
     vault: Entity<Vault>,
     view_ix: usize,
     /// ```` ```base ```` embeds only: the note hosting the fence —
-    /// bound as `this` in filters/formulas (Obsidian semantics).
+    /// bound as `this` in filters/formulas.
     this_path: Option<PathBuf>,
     /// Calendar view: months offset from the current month.
     cal_offset: i32,
@@ -4169,7 +4166,7 @@ pub struct BaseView {
     collapsed_groups: std::collections::HashSet<(usize, String)>,
     /// Interactive header sort: (column index, descending).
     sort: Option<(usize, bool)>,
-    /// Per-view search box — Obsidian's base search; filters rows live
+    /// Per-view search box — the base search; filters rows live
     /// on note name + every displayed cell.
     search: Entity<InputState>,
     /// View-tab "Rename view…" dialog input.
@@ -4291,7 +4288,7 @@ impl BaseView {
     }
 
     /// ⌘F on a rendered `.base` view focuses its row filter box
-    /// (Obsidian: Cmd+F filters the base).
+    ///.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search
             .update(cx, |search, cx| search.focus(window, cx));
@@ -4598,7 +4595,7 @@ impl BaseView {
                     );
                 }
                 // Empty-cell click → create/open that day's note
-                // (`YYYY-MM-DD.md`), like Obsidian's calendar.
+                // (`YYYY-MM-DD.md`), like the calendar.
                 let workspace = self.workspace.clone();
                 let root = root.clone();
                 cell = cell.cursor_pointer().on_click(move |_, window, cx| {
@@ -4638,7 +4635,7 @@ impl Render for BaseView {
         // calendar all iterate `visible`). `prop=value`, `prop!=value`,
         // `prop~text` and bare `prop=` (empty cell) match a named
         // column; any other term contains-matches the file stem + every
-        // cell, like Obsidian's quick filter.
+        // cell, like the quick filter.
         let query = self.search.read(cx).value().trim().to_lowercase();
         let visible: Vec<&Row> = computed
             .rows
@@ -4755,7 +4752,7 @@ impl Render for BaseView {
                             })
                         })
                         // Right-click a tab → rename/delete the view it
-                        // names (Obsidian's view menu). Inline ```base
+                        // names (the view menu). Inline ```base
                         // embeds are read-only and get an empty menu.
                         .context_menu({
                             let this = this.clone();
@@ -5564,7 +5561,7 @@ impl Render for BaseView {
                                                 }
                                             }),
                                     )
-                                    // Obsidian's card-art knobs —
+                                    // the card-art knobs —
                                     // `imageFit:` cover/contain and a
                                     // numeric `imageAspectRatio:`.
                                     .item(
@@ -5778,8 +5775,7 @@ impl Render for BaseView {
                         }),
                 );
             }
-            // `+` tab — append a fresh view to the spec (Obsidian's
-            // "New view" affordance), then select it.
+            // `+` tab — append a fresh view to the spec (the "New view" affordance), then select it.
             if matches!(self.spec_src, SpecSrc::Doc(_)) {
                 let this = this.clone();
                 let names = computed.view_names.clone();
@@ -5966,8 +5962,7 @@ impl Render for BaseView {
                     // Drag-resize handle on the cell's right edge —
                     // live width overlays `eff_sizes` while dragging,
                     // `columnSize:` writes on release. Column 0 flexes,
-                    // so only sized columns offer it (Obsidian parity
-                    // for every column would need layout measurement).
+                    // so only sized columns offer it.
                     .when(
                         writable && (ix != 0 || eff_sizes[ix].is_some()),
                         |d| {
@@ -6263,7 +6258,7 @@ impl Render for BaseView {
                                 .item(insert_item("Insert column left", false))
                                 .item(insert_item("Insert column right", true));
                             // Summarize… — `summaries: {col: fn}` under
-                            // the view, picked from Obsidian's built-in
+                            // the view, picked from the built-in
                             // set; None deletes the entry.
                             let menu = menu.item({
                                 let this = this.clone();
@@ -6993,7 +6988,7 @@ impl Render for BaseView {
                             .unwrap_or_else(|| cover.clone().into());
                         // `imageFit: contain` letterboxes instead of
                         // cropping; `imageAspectRatio: r` replaces the
-                        // fixed strip height (Obsidian view keys).
+                        // fixed strip height.
                         let fit = if computed.image_fit.as_deref() == Some("contain") {
                             ObjectFit::Contain
                         } else {
@@ -7159,7 +7154,7 @@ impl Render for BaseView {
                         .strip_prefix("file://")
                         .map(|p| std::path::PathBuf::from(p).into())
                         .unwrap_or_else(|| cover.clone().into());
-                    // `imageFit:`/`imageAspectRatio:` — same Obsidian
+                    // `imageFit:`/`imageAspectRatio:` — same the reference editor
                     // keys as kanban card art.
                     let fit = if computed.image_fit.as_deref() == Some("contain") {
                         ObjectFit::Contain
@@ -7197,7 +7192,7 @@ impl Render for BaseView {
             }
             rows = rows.child(grid);
         } else if list {
-            // Obsidian's list view: one compact row per note — cover
+            // the list view: one compact row per note — cover
             // thumb, name, then the first few non-empty properties
             // inline. No column header; sort comes from the spec.
             // `group_by` bands the rows like the table view does.
@@ -7613,7 +7608,7 @@ impl Render for BaseView {
                             .text_xs()
                             .truncate()
                             // Summary values are aggregates — always
-                            // numeric and right-aligned like Obsidian.
+                            // numeric and right-aligned.
                             .text_right()
                             .text_color(theme.muted_foreground)
                             .child(

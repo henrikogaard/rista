@@ -1,4 +1,4 @@
-//! Vault link graph — Obsidian's Graph view. Nodes are notes (plus
+//! Vault link graph — the Graph view. Nodes are notes (plus
 //! unresolved `[[targets]]` as dimmer ghosts), edges are `[[wiki]]`,
 //! `![[embed]]` and `[label](path)` links. Force-directed layout
 //! (Fruchterman–Reingold) settles live over the first few seconds;
@@ -20,7 +20,7 @@ use crate::actions::CloseGraph;
 use crate::app::Workspace;
 
 /// One simulated node — `path` is `None` for ghosts (unresolved link
-/// targets, which Obsidian shows too).
+/// targets, which the reference editor shows too).
 struct GNode {
     path: Option<PathBuf>,
     label: SharedString,
@@ -28,7 +28,7 @@ struct GNode {
     vel: Point<f32>,
     degree: usize,
     ghost: bool,
-    /// Attachment file (image) — Obsidian's "Attachments" display
+    /// Attachment file (image) — the "Attachments" display
     /// option: smaller, info-tinted, still a real node you can open.
     attachment: bool,
     /// Pinned nodes (the local-graph center) don't move under layout.
@@ -53,7 +53,7 @@ pub struct GraphView {
     /// Local-graph center node (pinned at the origin, emphasised).
     local: Option<usize>,
     /// BFS hop distance from the local center — ring 1 bright,
-    /// ring 2 mid, the rest far (Obsidian's local-graph depth).
+    /// ring 2 mid, the rest far (the local-graph depth).
     dist: Option<Vec<usize>>,
     /// The workspace's active document — painted with a halo ring.
     pub(crate) active: Option<PathBuf>,
@@ -89,7 +89,7 @@ type BuiltGraph = (
 );
 
 /// Hop distance from `center` over `adjacent`; `usize::MAX` for
-/// unreachable nodes (disconnected components — Obsidian dims them).
+/// unreachable nodes (disconnected components — the reference editor dims them).
 fn bfs_dist(center: usize, adjacent: &[Vec<usize>]) -> Vec<usize> {
     let mut dist = vec![usize::MAX; adjacent.len()];
     let mut queue = std::collections::VecDeque::from([center]);
@@ -135,8 +135,7 @@ impl GraphView {
                 pinned: false,
             });
         }
-        // Attachments — every image in the vault gets a node (Obsidian's
-        // attachments toggle); notes embed them through the same edges.
+        // Attachments — every image in the vault gets a node (the attachments toggle); notes embed them through the same edges.
         for path in vault.images.borrow().values() {
             let ix = nodes.len();
             by_path.insert(path.clone(), ix);
@@ -245,7 +244,7 @@ impl GraphView {
     }
 
     /// The filter input + its change subscription — every graph owns
-    /// one; non-matching nodes fade out like Obsidian's graph search.
+    /// one; non-matching nodes fade out like the graph search.
     fn make_filter(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -304,7 +303,7 @@ impl GraphView {
     }
 
     /// Local graph — `center`'s node pinned at the origin; the rest of
-    /// the map still renders but fades back, like Obsidian's local view.
+    /// the map still renders but fades back, like the local view.
     pub fn new_local(
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
@@ -557,7 +556,7 @@ impl Focusable for GraphView {
 struct Painted {
     nodes: Vec<(Point<Pixels>, Pixels)>, // center, radius
     ghost: Vec<bool>,
-    /// Image files — Obsidian's attachments display option.
+    /// Image files — the attachments display option.
     attachment: Vec<bool>,
     lit: Vec<bool>,
     /// Per-node opacity — local mode fades the wider map, hover dims
@@ -884,8 +883,7 @@ impl Render for GraphView {
                                 view.nodes.get(ix).and_then(|n| {
                                     n.path.clone().or_else(|| {
                                         // Ghost click → create the
-                                        // missing note (Obsidian does
-                                        // the same from its graph).
+                                        // missing note.
                                         let label = n.label.to_string();
                                         if label.is_empty()
                                             || label.contains('/')
@@ -911,8 +909,7 @@ impl Render for GraphView {
                         let ws = this.read(cx).workspace.upgrade();
                         if let Some(ws) = ws {
                             ws.update(cx, |ws, cx| {
-                                // Click = jump to the note (Obsidian
-                                // local-graph semantics) — the graph
+                                // Click = jump to the note — the graph
                                 // hands the editor back afterwards.
                                 ws.open_document_pub(path, window, cx);
                                 ws.close_graph(window, cx);

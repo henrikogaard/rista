@@ -114,7 +114,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("escape", CloseGraph, Some("RistaGraph")),
         // App
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
-        // Obsidian muscle memory — same palette as ⌘K.
+        // the reference editor muscle memory — same palette as ⌘K.
         KeyBinding::new("cmd-p", OpenCommandPalette, None),
         // ⌘F reaches the editor when focused; the workspace handler
         // filters .base rows or refocuses the editor otherwise.
@@ -122,7 +122,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-q", Quit, None),
-        // Auto-pairs (Obsidian) — "RistaEditor" scopes them to the document
+        // Auto-pairs — "RistaEditor" scopes them to the document
         // editor so search/dialog inputs still type the plain characters.
         KeyBinding::new("(", PairInsert { pair: "()" }, Some("RistaEditor")),
         KeyBinding::new("[", PairInsert { pair: "[]" }, Some("RistaEditor")),

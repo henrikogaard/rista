@@ -82,7 +82,7 @@ pub struct Workspace {
     /// Whether the sidebar's Tags group is expanded.
     tags_open: bool,
     /// Nested-tag paths expanded in the Tags pane (collapsed by
-    /// default, like Obsidian).
+    /// default,).
     tags_expanded: std::collections::BTreeSet<String>,
     tasks_open: bool,
     outline_open: bool,
@@ -92,7 +92,7 @@ pub struct Workspace {
     /// Month the sidebar calendar is showing (year, month 1-12).
     cal_month: (i32, u32),
     /// Wikilink hover preview — target + anchor point, rendered as a
-    /// floating card over the workspace (Obsidian's page preview).
+    /// floating card over the workspace (the page preview).
     peek: Option<(PeekKind, gpui::Point<gpui::Pixels>)>,
     /// Vault link graph — open as a full editor-area view (⌘G).
     graph: Option<Entity<crate::graph::GraphView>>,
@@ -647,7 +647,7 @@ impl Workspace {
         });
 
         // Reopen the vault the user last had open, then restore the
-        // document tabs from last session (Obsidian parity).
+        // document tabs from last session.
         if let Some(root) = this.settings.last_vault.clone() {
             if root.exists() {
                 // Clone before open_vault_at — its close_all_docs call
@@ -865,7 +865,7 @@ impl Workspace {
 
     /// Preview wikilink hover → anchor the peek card at `pos`. Repeat
     /// moves over the same link update silently — the card stays
-    /// anchored where the hover started, like Obsidian's page preview.
+    /// anchored where the hover started, like the page preview.
     pub fn peek_at(
         &mut self,
         kind: PeekKind,
@@ -929,7 +929,7 @@ impl Workspace {
         self.open_document_impl(path, false, window, cx);
     }
 
-    /// ⌘+click semantics (Obsidian): always open in a new tab, even
+    /// ⌘+click semantics: always open in a new tab, even
     /// when the note already has one.
     fn open_document_impl(
         &mut self,
@@ -989,7 +989,7 @@ impl Workspace {
         let base = is_base_file.then(|| {
             let workspace = cx.entity().downgrade();
             let vault = self.vault.clone();
-            // The view this file was left on — restored like Obsidian
+            // The view this file was left on — restored
             // does. Read here: BaseView::new runs inside our update
             // borrow, so it can't read Workspace itself.
             let key = doc.read(cx).path.to_string_lossy().to_string();
@@ -1115,7 +1115,7 @@ impl Workspace {
     }
 
     /// ⌘G / palette / View menu — the vault link graph takes over the
-    /// editor area (Obsidian's Graph view); ⌘G again closes it.
+    /// editor area (the Graph view); ⌘G again closes it.
     fn on_open_graph(&mut self, _: &OpenGraph, window: &mut Window, cx: &mut Context<Self>) {
         if self.graph.is_some() {
             self.close_graph(window, cx);
@@ -1139,7 +1139,7 @@ impl Workspace {
     }
 
     /// Palette "Open local graph" — neighbourhood view pinned on the
-    /// current note (Obsidian's local graph).
+    /// current note (the local graph).
     fn on_open_local_graph(
         &mut self,
         _: &OpenLocalGraph,
@@ -1217,7 +1217,7 @@ impl Workspace {
 
     /// Palette "Pin tab" / "Unpin tab" — pinned tabs keep their tab
     /// across close-others/close-right and can't be closed until
-    /// unpinned (Obsidian parity). Persisted in `pinned_tabs`.
+    /// unpinned. Persisted in `pinned_tabs`.
     fn toggle_pin(&mut self, cx: &mut Context<Self>) {
         let Some(ix) = self.active else {
             self.note_status("No note open", cx);
@@ -1266,8 +1266,7 @@ impl Workspace {
         }
     }
 
-    /// Close every unpinned tab — palette "Close all tabs" (Obsidian:
-    /// pinned tabs survive).
+    /// Close every unpinned tab — palette "Close all tabs".
     fn close_all_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let n = self
             .docs
@@ -1387,7 +1386,7 @@ impl Workspace {
     }
 
     /// Expand ancestors and scroll the file tree to the active document —
-    /// Obsidian's "reveal active file in navigation", automatic.
+    /// the "reveal active file in navigation", automatic.
     fn reveal_active_file(&self, cx: &mut Context<Self>) {
         let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
             return;
@@ -1556,7 +1555,7 @@ impl Workspace {
         self.open_daily_at(chrono::Local::now().date_naive(), window, cx);
     }
 
-    /// Initial content for a missing daily note — Obsidian convention:
+    /// Initial content for a missing daily note — the reference editor convention:
     /// `<templates_dir>/daily.md` seeds it with `{{date}}`/`{{time}}`/
     /// `{{title}}`/`{{cursor}}` expanded, else a plain heading.
     fn daily_seed(&self, path: &Path, cx: &App) -> String {
@@ -1609,7 +1608,7 @@ impl Workspace {
     }
 
     /// Palette "Append to daily note…" — prompt for a line, append it
-    /// as `- {text}` without opening the note (Obsidian parity).
+    /// as `- {text}` without opening the note.
     fn show_append_daily_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.daily_path_for(chrono::Local::now().date_naive(), cx) else {
             self.note_status("Open a folder first", cx);
@@ -1857,7 +1856,7 @@ impl Workspace {
     }
 
     /// Writes `<name>.md` with the selection's body and replaces the
-    /// selection with `[[name]]` — Obsidian's Note Composer extract.
+    /// selection with `[[name]]` — the Note Composer extract.
     fn commit_extract(
         &mut self,
         doc: Entity<Document>,
@@ -2137,7 +2136,7 @@ impl Workspace {
         self.set_view_mode(ViewMode::Preview, w, cx);
     }
 
-    /// ⌘E — Obsidian's edit/read toggle: Preview ⇄ Source (Split
+    /// ⌘E — the edit/read toggle: Preview ⇄ Source (Split
     /// counts as editing → jumps to Preview).
     fn on_toggle_edit_preview(
         &mut self,
@@ -2278,7 +2277,7 @@ impl Workspace {
             .cloned()
             .map(PaletteEntry::File)
             .collect();
-        // Recently opened notes come first — Obsidian quick-switcher
+        // Recently opened notes come first — the reference editor quick-switcher
         // style — but only ones still on disk.
         let recent: Vec<PaletteEntry> = self
             .recent
@@ -2589,7 +2588,7 @@ impl Workspace {
             }
             PaletteCmd::CopyLinkHeading => {
                 // `[[stem#heading]]` for the nearest heading at or above
-                // the caret — Obsidian's "copy link to heading".
+                // the caret — the "copy link to heading".
                 let link = self.active_doc().and_then(|d| {
                     let doc = d.read(cx);
                     let stem = doc.path.file_stem()?.to_string_lossy().to_string();
@@ -2766,7 +2765,7 @@ impl Workspace {
             return;
         }
         // A `/` in the name moves the file: it resolves against the
-        // vault root (Obsidian's rename-as-move), creating folders
+        // vault root (the rename-as-move), creating folders
         // on the way. A bare name stays in the same directory.
         let new_path = if name.contains('/') {
             let Some(root) = self.vault.read(cx).root.clone() else {
@@ -2954,8 +2953,7 @@ impl Workspace {
         self.edit_note_property(path, prop, current, window, cx);
     }
 
-    /// `true`/`false` properties toggle in place like Obsidian's
-    /// Properties checkbox; everything else opens the text dialog.
+    /// `true`/`false` properties toggle in place like the Properties checkbox; everything else opens the text dialog.
     pub fn edit_note_property(
         &mut self,
         path: PathBuf,
@@ -2979,7 +2977,7 @@ impl Workspace {
     }
 
     /// Date-valued properties open a calendar popover instead of the
-    /// text dialog — Obsidian's Properties panel does the same. A pick
+    /// text dialog — the Properties panel does the same. A pick
     /// writes `YYYY-MM-DD` back and closes.
     pub fn show_date_dialog(
         &mut self,
@@ -3319,7 +3317,7 @@ impl Workspace {
         self.set_note_property(path, &name, value, window, cx);
     }
 
-    /// Click a Properties row's type glyph — Obsidian's property type
+    /// Click a Properties row's type glyph — the property type
     /// picker: coerce the value to the chosen type and write it back.
     pub fn show_property_type_picker(
         &mut self,
@@ -3614,7 +3612,7 @@ impl Workspace {
     }
 
     /// Notes whose `[[wikilinks]]` resolve to the active document —
-    /// Obsidian's backlink panel as a dialog.
+    /// the backlink panel as a dialog.
     fn show_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc_path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
             return;
@@ -3702,7 +3700,7 @@ impl Workspace {
     }
 
     /// Convert the first plain-text mention of the active note's
-    /// title inside `note` into a `[[wikilink]]` — Obsidian's "Link"
+    /// title inside `note` into a `[[wikilink]]` — the "Link"
     /// action on unlinked mentions. Splices through the editor when
     /// the note is open, writes the file otherwise.
     fn link_up_mention(&mut self, note: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -3986,7 +3984,7 @@ impl Workspace {
     }
 
     /// Public hook used by preview plugins (wikilinks, transclusion
-    /// fallback links) and ⌥⏎. Obsidian's create-on-click: an
+    /// fallback links) and ⌥⏎. the create-on-click: an
     /// unresolved `[[link]]` becomes a new note; `[[note#heading]]`
     /// jumps the caret to the heading (Source view); `[[#heading]]`
     /// jumps within the open note.
@@ -4043,7 +4041,7 @@ impl Workspace {
         }
     }
 
-    /// Move the caret to the heading line matching an Obsidian anchor
+    /// Move the caret to the heading line matching an the reference editor anchor
     /// (`[[note#heading]]`) — case-insensitive match on the text after
     /// the `#`s, fences skipped.
     fn jump_to_anchor(&mut self, anchor: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -4498,7 +4496,7 @@ impl Workspace {
             })
     }
 
-    /// Notes that link to the active document — Obsidian's linked-
+    /// Notes that link to the active document — the linked-
     /// mentions pane, pinned in the sidebar. Click opens the note.
     /// Hover rows get the same peek card as the tree and .base rows.
     fn render_backlinks_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4561,7 +4559,7 @@ impl Workspace {
                         .strip_prefix(&root)
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                    // First line containing the link — Obsidian shows
+                    // First line containing the link — the reference editor shows
                     // the mention's context under each backlink.
                     let snippet = active_path
                         .as_ref()
@@ -4744,7 +4742,7 @@ impl Workspace {
             })
     }
 
-    /// Links the active note points at — Obsidian's Outgoing Links
+    /// Links the active note points at — the Outgoing Links
     /// pane. Resolved rows open the note; unresolvable `[[targets]]`
     /// list dimmed below. Refreshes on the preview debounce.
     fn render_outgoing_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4880,7 +4878,7 @@ impl Workspace {
             })
     }
 
-    /// Month-grid mini-calendar — Obsidian's Calendar plugin. Days
+    /// Month-grid mini-calendar — the Calendar plugin. Days
     /// with a `YYYY-MM-DD.md` daily note render accent+bold; today is
     /// ringed; click opens (or templates) that day's note.
     fn render_calendar_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5190,7 +5188,7 @@ impl Workspace {
     }
 
     /// Vault-wide tag index pinned at the bottom of the sidebar —
-    /// Obsidian's tag pane. Clicking a tag opens project search
+    /// the tag pane. Clicking a tag opens project search
     /// pre-filled with `#tag`.
     fn render_tags(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -5233,7 +5231,7 @@ impl Workspace {
             )
             .when(self.tags_open, |this| {
                 // Nest `a/b` under `a` — parents aggregate descendant
-                // counts and expand to show children (Obsidian's tag
+                // counts and expand to show children (the tag
                 // pane). A tag clicked at any level searches that path,
                 // which already matches its nested tags.
                 let mut tree: std::collections::BTreeMap<String, TagNode> = Default::default();
@@ -5912,7 +5910,7 @@ impl Workspace {
                         });
                     }
                 })
-                // Middle-click closes the tab (browser/Obsidian parity).
+                // Middle-click closes the tab (browser/the reference editor parity).
                 .on_mouse_down(gpui::MouseButton::Middle, {
                     let view = view.clone();
                     move |_ev, window, cx| {
@@ -5999,7 +5997,7 @@ impl Workspace {
                             })),
                     )
                     // Right-click anywhere on the strip opens the tab menu
-                    // (Obsidian parity). Each tab's Right mouse-down sets
+                    //. Each tab's Right mouse-down sets
                     // `tab_menu_ix` first — the menu builder runs deferred.
                     .context_menu({
                         let view = view.clone();
@@ -6144,7 +6142,7 @@ impl Workspace {
             .overflow_hidden()
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
             // Notes without frontmatter get the same "+ Add property"
-            // affordance Obsidian shows — the write path creates the
+            // affordance the reference editor shows — the write path creates the
             // `---` block on first use.
             .when(!has_frontmatter, |this| {
                 this.child(
@@ -6227,7 +6225,7 @@ impl Workspace {
             return self.render_empty_editor(cx).into_any_element();
         };
 
-        // Image files render the picture itself (Obsidian-style), not a
+        // Image files render the picture itself, not a
         // text editor over binary bytes.
         if doc.read(cx).is_image {
             return self.render_image_view(&doc, cx).into_any_element();
@@ -6333,7 +6331,7 @@ impl Workspace {
 
     /// Breadcrumb row above the editor: `folder / sub / name` — each
     /// folder segment reveals itself in the file tree; the filename
-    /// opens the rename dialog, like Obsidian's inline title.
+    /// opens the rename dialog, like the inline title.
     fn render_breadcrumb(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Option<Div> {
         let path = doc.read(cx).path.clone();
         let root = self.vault.read(cx).root.clone()?;
@@ -6483,7 +6481,7 @@ impl Workspace {
             }))
             .child({
                 // Right-click menu — clipboard row plus the markdown actions
-                // the palette already exposes (Obsidian's edit context menu).
+                // the palette already exposes (the edit context menu).
                 let editor = Editor::new(&doc.read(cx).editor).h_full().context_menu(
                     |menu, _window, _cx| {
                         menu.menu("Cut", Box::new(input::Cut))
@@ -6505,7 +6503,7 @@ impl Workspace {
                 );
                 // `cssclasses:` per-note override — `wide` lifts the
                 // readable-width cap for this note, `narrow`/`readable`
-                // forces it on (Obsidian's per-note styling hook).
+                // forces it on (the per-note styling hook).
                 let classes = &doc.read(cx).css_classes;
                 let readable = if classes.iter().any(|c| c == "wide") {
                     false
@@ -6516,7 +6514,7 @@ impl Workspace {
                 };
                 if readable {
                     // Readable line length: cap the text column and
-                    // center it (Obsidian's editor setting).
+                    // center it (the editor setting).
                     div()
                         .size_full()
                         .flex()
@@ -6582,7 +6580,7 @@ impl Workspace {
                 }
                 ClipboardEntry::String(text) => {
                     // Pasting a URL over a selection wraps it in a
-                    // markdown link — Obsidian/smart-editor behavior.
+                    // markdown link — smart-editor behavior.
                     let url = text.text.trim();
                     let is_url = (url.starts_with("https://") || url.starts_with("http://"))
                         && !url.chars().any(char::is_whitespace)
@@ -6616,7 +6614,7 @@ impl Workspace {
     }
 
     /// Write clipboard image bytes into the attachments dir and insert
-    /// `![[name]]` — the Obsidian "Pasted image <stamp>" convention.
+    /// `![[name]]` — the the reference editor "Pasted image <stamp>" convention.
     fn import_image_bytes(
         &mut self,
         bytes: &[u8],
@@ -7134,7 +7132,7 @@ fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
         })
 }
 
-/// The preview's linked-mentions footer — Obsidian's "Linked mentions"
+/// The preview's linked-mentions footer — the "Linked mentions"
 /// section pinned under the note: a count header that expands into rows,
 /// each opening the note that links here.
 fn render_linked_mentions(
@@ -7253,7 +7251,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
     let _ = path;
 }
 
-/// Open `path` in the OS default application — Obsidian's "Open in
+/// Open `path` in the OS default application — the "Open in
 /// default app" file context item.
 fn open_in_default_app(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
@@ -7271,7 +7269,7 @@ fn open_in_default_app(path: &std::path::Path) {
     let _ = path;
 }
 
-/// Whether the file is an Obsidian-style `.base` database spec.
+/// Whether the file is an `.base` database spec.
 pub(crate) fn is_base(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -7342,7 +7340,7 @@ impl Render for TreeDragPreview {
     }
 }
 
-/// The Properties strip type picker's coercion — Obsidian writes a
+/// The Properties strip type picker's coercion — the reference editor writes a
 /// typed YAML value when a property's type changes.
 fn coerce_property_value(edit: &str, kind: &str) -> serde_yaml::Value {
     use serde_yaml::Value as V;

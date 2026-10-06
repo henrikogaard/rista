@@ -34,14 +34,14 @@ Windows, developed macOS-first.
 - Local-first folder workflow — a folder is a vault, every `.md` a note
 - File tree sidebar with create / rename / delete and context menus
 - Multi-tab editing with source, split, and preview view modes
-- Live Markdown preview with Obsidian extensions (below)
+- Live Markdown preview with extended syntax (below)
 - Autosave on every pause, plus file watching for external changes
 - Find in note (`⌘F`) and project search (`⌘⇧F`)
 - Command palette (`⌘K`) over notes and commands
 - Dark and light themes, system-aware; settings sheet (`⌘,`)
 - Zen mode (`⌘⇧⏎`) — everything but the words
 
-## Obsidian compatibility
+## Extended markdown support
 
 - YAML frontmatter renders as a properties block in preview
 - `[[wikilinks]]` and `[[note|aliases]]` resolve against the vault
@@ -91,7 +91,7 @@ rista/
 │   ├── app.rs             # Workspace: sidebar, tabs, palette, dialogs, actions
 │   ├── vault.rs           # Vault model: file index, tree items, watcher (notify)
 │   ├── document.rs        # Document: EditorState, autosave, preview sync
-│   ├── preview.rs         # Markdown preview + Obsidian preprocessing
+│   ├── preview.rs         # Markdown preview + extended preprocessing
 │   ├── search.rs          # Project search dialog
 │   ├── settings.rs        # Settings model + persistence
 │   ├── settings_panel.rs  # Settings sheet UI

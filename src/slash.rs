@@ -1,5 +1,5 @@
 //! Editor completion: `/` at the start of a line opens markdown block
-//! templates — Notion-style, plain markdown out. `[[` / `![[` anywhere
+//! templates — rich , plain markdown out. `[[` / `![[` anywhere
 //! completes vault notes (and vault images for embeds).
 
 use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt};
@@ -198,7 +198,7 @@ fn wiki_items(
 
     // `[[note#…` — heading anchors. The note part resolves the same way
     // the link itself does; an empty part (`[[#`) completes headings in
-    // the note being edited, matching Obsidian.
+    // the note being edited, matching the reference editor.
     if let Some(hash) = query.find('#') {
         let note_part = &query[..hash];
         let head_q = query[hash + 1..].to_lowercase();
@@ -460,7 +460,7 @@ fn tag_items(
     }
 }
 
-/// `:query` → emoji — Obsidian's emoji-picker core plugin. The `:`
+/// `:query` → emoji — the emoji-picker core plugin. The `:`
 /// must start a token (whitespace or line start before it) so `https:`
 /// and `::` never fire; needs ≥2 query chars to keep the popup quiet.
 fn emoji_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {

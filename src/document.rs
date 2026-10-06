@@ -1120,7 +1120,7 @@ impl Document {
     }
 
     /// Move the lines covered by the selection up or down by one line,
-    /// Notion-style (⌥↑/⌥↓). Selection is expanded to whole lines and
+    /// rich (⌥↑/⌥↓). Selection is expanded to whole lines and
     /// follows the moved block.
     pub fn move_block(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
@@ -1189,7 +1189,7 @@ impl Document {
         });
     }
 
-    /// Obsidian's list continuation: Enter on a list/quote line
+    /// the list continuation: Enter on a list/quote line
     /// inserts `\n` + the same marker (tasks get a fresh `- [ ] `,
     /// ordered lists increment); Enter on a marker-only line just
     /// strips the marker, ending the list. Returns false outside
@@ -1213,7 +1213,7 @@ impl Document {
 
             // Table row — Enter appends an empty row with the same
             // column count and lands the caret in its first cell
-            // (Obsidian parity). Separator lines get a normal newline.
+            //. Separator lines get a normal newline.
             let is_table = trimmed.starts_with('|')
                 && trimmed.ends_with('|')
                 && trimmed[1..].contains('|')
@@ -1358,8 +1358,7 @@ impl Document {
 
     /// Insert an empty 2×2 markdown table at the caret — header row,
     /// separator, one body row. The caret lands in the first header
-    /// cell so a header name can be typed right away (Obsidian's
-    /// "Insert table").
+    /// cell so a header name can be typed right away (the "Insert table").
     pub fn insert_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
@@ -1380,7 +1379,7 @@ impl Document {
     /// Insert a footnote reference `[^n]` at the selection and append
     /// its `[^n]: ` definition at the end of the document, leaving the
     /// caret after the definition marker so the text can be typed
-    /// right away — Obsidian's "Insert footnote".
+    /// right away — the "Insert footnote".
     pub fn insert_footnote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
@@ -1402,7 +1401,7 @@ impl Document {
         });
     }
 
-    /// Wrap the selected lines in an Obsidian callout: a `> [!kind]`
+    /// Wrap the selected lines in an the reference editor callout: a `> [!kind]`
     /// marker line followed by every line quoted `> `. When the block
     /// already is a callout, the marker and quoting come back off. The
     /// `kind` word stays selected so typing replaces it (`note` →
@@ -1515,7 +1514,7 @@ impl Document {
         });
     }
 
-    /// Toggle `%%` around the selection — Obsidian's ⌘/ comment. With
+    /// Toggle `%%` around the selection — the ⌘/ comment. With
     /// no selection it toggles the current line's trimmed span.
     pub fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
@@ -1568,7 +1567,7 @@ impl Document {
     }
 
     /// Toggle `marker` (`**`, `*`, `~~`, `==`) around the selection —
-    /// Obsidian's inline formatting toggle. With no selection it wraps
+    /// the inline formatting toggle. With no selection it wraps
     /// the word under the caret; already-wrapped text unwraps.
     pub fn toggle_wrap(&mut self, marker: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
@@ -1622,8 +1621,7 @@ impl Document {
         });
     }
 
-    /// Toggle `> ` on every line the selection touches — Obsidian's
-    /// "Blockquote" command. Strips it only when every non-empty
+    /// Toggle `> ` on every line the selection touches — the "Blockquote" command. Strips it only when every non-empty
     /// line is already quoted.
     pub fn toggle_line_prefix(
         &mut self,
@@ -1738,7 +1736,7 @@ impl Document {
     }
 
     /// Toggle a list marker on every line the selection touches —
-    /// Obsidian's "Toggle bulleted/numbered list/checklist".
+    /// the "Toggle bulleted/numbered list/checklist".
     /// `style`: `- `, `- [ ] ` or `1. `; existing markers are
     /// stripped first so list styles convert rather than nest.
     pub fn toggle_list(&mut self, style: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1825,7 +1823,7 @@ impl Document {
     }
 
     /// Toggle `#`*`level` + ` ` on every line the selection touches —
-    /// Obsidian's "Heading N". Strips any existing ATX marker first
+    /// the "Heading N". Strips any existing ATX marker first
     /// so `# a` → level 2 becomes `## a`; toggles off (plain text)
     /// when every non-empty line is already that level.
     pub fn toggle_heading(&mut self, level: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1945,7 +1943,7 @@ impl Document {
     }
 
     /// Tab/Shift-Tab inside a `|`-table row hops the caret cell to
-    /// cell (Obsidian). Only fires when the caret sits on a table
+    /// cell. Only fires when the caret sits on a table
     /// line; the separator row and other text fall through.
     pub fn table_cell_nav(&mut self, backward: bool, cx: &mut Context<Self>) -> bool {
         self.editor.update(cx, |editor, cx| {
@@ -1990,7 +1988,7 @@ impl Document {
                 (caret..le).find(|&i| bytes[i] == b'|').map(|i| i + 1)
             };
             // Wrap to the adjacent row's first/last cell when this
-            // row runs out — Obsidian's Tab cycle.
+            // row runs out — the Tab cycle.
             let at = match next {
                 Some(at) => at,
                 None => {
@@ -2043,7 +2041,7 @@ impl Document {
     /// typed against their own closer skip over it, doubled markers
     /// (`~~x~~`, `==x==`) close plainly after the same char, and quotes/`~`/
     /// `=`/`%`/`$` don't pair after a letter/digit (apostrophes, `a=b`) —
-    /// Obsidian's rules.
+    /// the rules.
     pub fn insert_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         self.pair_edit(pair, true, window, cx);
     }
@@ -2055,7 +2053,7 @@ impl Document {
     }
 
     /// Backspace with the caret inside an empty pair `( | )`/`" | "` deletes
-    /// both chars — Obsidian's pair-delete. Returns false when the caret
+    /// both chars — the pair-delete. Returns false when the caret
     /// isn't between a pair so the editor's own Backspace runs.
     pub fn delete_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.editor.update(cx, |editor, cx| {
@@ -2119,7 +2117,7 @@ impl Document {
             // char completes the closing marker instead of nesting a pair.
             let doubled = symmetric && prev == open.chars().next();
             // Word guard — quotes and markdown pair chars don't pair after a
-            // letter/digit (apostrophes, `a=b`), Obsidian's rule.
+            // letter/digit (apostrophes, `a=b`), the rule.
             let word_guard = prev.is_some_and(|c| c.is_alphanumeric())
                 && matches!(open, "'" | "\"" | "~" | "=" | "%" | "$");
             if doubled || word_guard {
@@ -2132,7 +2130,7 @@ impl Document {
         });
     }
 
-    /// Tab/Shift-Tab on list lines — Obsidian indents list items two
+    /// Tab/Shift-Tab on list lines — the reference editor indents list items two
     /// spaces instead of inserting a tab. Every list line the
     /// selection touches shifts together; non-list selections fall
     /// through to the editor's default behavior.

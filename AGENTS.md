@@ -65,7 +65,7 @@ rista/
 │   │                      # TreeItem builder, notify watcher → VaultEvent
 │   ├── document.rs        # Document entity: EditorState, autosave (800ms),
 │   │                      # preview sync (150ms), external-change check
-│   ├── preview.rs         # MarkdownNode render + Obsidian preprocessing:
+│   ├── preview.rs         # MarkdownNode render + the reference editor preprocessing:
 │   │                      # frontmatter, [[wikilinks]], ![[embeds]], ^block-id,
 │   │                      # > [!callouts]
 │   ├── search.rs          # Project-search dialog (⌘⇧F)

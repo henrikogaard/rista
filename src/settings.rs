@@ -44,24 +44,23 @@ pub struct Settings {
     pub tab_size: usize,
     pub view_mode: ViewMode,
     pub sidebar_collapsed: bool,
-    /// Obsidian-style: reveal markup around the cursor (live preview).
+    /// the reference-editor style: reveal markup around the cursor (live preview).
     /// Kept off — the raw buffer stays honest.
     pub focus_mode: bool,
     /// The folder that was open last — reopened on launch.
     pub last_vault: Option<std::path::PathBuf>,
     /// Vault-relative folder pasted/dropped images are copied into
-    /// (Obsidian's "attachment folder path").
+    /// (the "attachment folder path").
     pub attachments_dir: String,
     /// Vault-relative folder the template picker and the daily-note
-    /// template live in (Obsidian's template folder setting).
+    /// template live in (the template folder setting).
     #[serde(default = "default_templates_dir")]
     pub templates_dir: String,
-    /// Vault-relative folder daily notes are created in (Obsidian's
-    /// daily-notes "new file location"; empty = vault root).
+    /// Vault-relative folder daily notes are created in (the daily-notes "new file location"; empty = vault root).
     #[serde(default)]
     pub daily_dir: String,
     /// Daily-note filename pattern in Moment syntax, e.g.
-    /// `YYYY-MM-DD` → `2026-10-05.md` (Obsidian's daily-notes
+    /// `YYYY-MM-DD` → `2026-10-05.md` (the daily-notes
     /// "date format").
     #[serde(default = "default_daily_format")]
     pub daily_format: String,
@@ -83,9 +82,9 @@ pub struct Settings {
     /// show a pin glyph instead of the × button.
     pub pinned_tabs: Vec<String>,
     /// Readable line length — cap the editor at a centered column
-    /// (Obsidian's editor setting).
+    /// (the editor setting).
     pub readable_width: bool,
-    /// File-tree ordering — Obsidian's explorer offers name/modified.
+    /// File-tree ordering — the explorer offers name/modified.
     pub tree_sort: TreeSort,
 }
 

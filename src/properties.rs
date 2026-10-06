@@ -1,4 +1,4 @@
-//! Frontmatter properties: an Obsidian-style key/value editor that
+//! Frontmatter properties: an key/value editor that
 //! round-trips through the note's `--- YAML ---` block, plus a vault-wide
 //! tag index (`tags:` frontmatter + inline `#tags`).
 
@@ -331,7 +331,7 @@ pub fn frontmatter_aliases(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `cssclasses:`/`cssclass:` frontmatter — Obsidian's per-note styling
+/// `cssclasses:`/`cssclass:` frontmatter — the per-note styling
 /// hook. Accepts a YAML list or a space/comma-separated string.
 pub fn frontmatter_cssclasses(text: &str) -> Vec<String> {
     fn split(s: &str) -> Vec<String> {

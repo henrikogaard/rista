@@ -341,7 +341,7 @@ fn task_markers(text: &str, base: usize, out: &mut Vec<TextDecoration>, accent: 
     }
 }
 
-/// `#tag` word pass — Obsidian colors tags; headings are safe (`# ` has
+/// `#tag` word pass — the reference editor colors tags; headings are safe (`# ` has
 /// a space after the marker). Skips fenced code and `[[link#target]]`
 /// targets so no color fights the wikilink accent.
 fn tags(text: &str, base: usize, out: &mut Vec<TextDecoration>, color: HighlightStyle) {
@@ -391,7 +391,7 @@ fn tags(text: &str, base: usize, out: &mut Vec<TextDecoration>, color: Highlight
     }
 }
 
-/// `%%` Obsidian comment regions — inline or spanning lines; a lone
+/// `%%` the reference editor comment regions — inline or spanning lines; a lone
 /// trailing `%%` comments out to EOF. Fenced code stays literal. The
 /// emitted style is fade-only so it composes deterministically with
 /// whatever color the other passes put inside a commented span.
@@ -426,7 +426,7 @@ fn comments(text: &str, base: usize, out: &mut Vec<TextDecoration>, style: Highl
         }
         at += line.len();
     }
-    // Unclosed `%%` runs to the end of the note, like Obsidian.
+    // Unclosed `%%` runs to the end of the note,.
     if let Some(start) = open {
         mark(out, base + start..base + text.len(), style);
     }

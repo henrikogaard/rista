@@ -65,7 +65,7 @@ local-only Markdown editor with iA Writer as the quality bar.
 - These now define the roadmap, architecture direction, regression checklist, and short-term execution order
 
 ### 1. Callout support
-- Added Obsidian-style callout rendering in `src/renderer/markdown.js`
+- Added callout rendering in `src/renderer/markdown.js`
 - Added preview callout styling in `src/renderer/styles/main.css`
 - Added toolbar callout insertion in `src/renderer/index.js`
 
@@ -779,14 +779,14 @@ which collapsed the sidebar.
   updates --sidebar-width 220->350px and cleans up
 - Packaged + reinstalled /Applications/Rísta.app, launches clean
 
-## Session: 2026-08-01 — Obsidian-style structure + Octarine warm accent preset
+## Session: 2026-08-01 — structure + the reference editor warm accent preset
 
-User asked how to make the UI look better (references: Obsidian, Octarine).
+User asked how to make the UI look better (references: the reference editor, the reference editor).
 Chose "Both (structure + accent preset)".
 
 ### Changes
 
-1. **File tree structure (Obsidian-style)**
+1. **File tree structure (the reference editor-style)**
    - New `markdownFileIcon()` in icons.js; tree rows now show a document
      glyph instead of the plain dot (`tree-file__dot` → `tree-file__icon`),
      tinted with the accent on active rows.
@@ -797,7 +797,7 @@ Chose "Both (structure + accent preset)".
    - "No note open" / "No headings" now show an icon above the text
      (`.outline-view__empty-icon`), centered.
 
-3. **Octarine-style warm accent presets**
+3. **warm accent presets**
    - `ember` (dark): warm amber `#e0933c` accent on warm dark browns.
    - `ember-paper` (light): warm `#c07a2d` accent on warm paper.
    - Both appear automatically in Settings → Appearance (preset picker reads
@@ -816,13 +816,13 @@ Chose "Both (structure + accent preset)".
   re-run the macro with new dist content. Fixed with a clean rebuild
   (`rm -rf target/release/build/rista-*` + cargo build), repackage, reinstall.
 - Folder rows now render a folder icon + chevron (previously chevron only) —
-  the most visible Obsidian signature alongside the file icons.
+  the most visible the reference editor signature alongside the file icons.
 - Note: most UI polish is subtle; the warm Ember preset is opt-in via
   Settings → Appearance → Dark preset.
 
-## Session: 2026-08-02 — Obsidian/Octarine visual overhaul (default warm theme)
+## Session: 2026-08-02 — the reference editor/the reference editor visual overhaul (default warm theme)
 
-User asked for a look "nearly identical to Octarine/Obsidian" while keeping
+User asked for a look "nearly identical to reference-editor" while keeping
 all features/functionality. Changes are visual-only:
 
 1. **Ember is now the default theme** — DEFAULT_SETTINGS darkThemePreset
@@ -835,10 +835,10 @@ all features/functionality. Changes are visual-only:
    pass, 0 cold whites remain). Light-theme overrides untouched.
 
 3. **Folder count badges** — tree folders now show child counts
-   (Octarine's "Newsletter (6)" pattern) via `.tree-folder__count`.
+   (the reference "Newsletter (6)" pattern) via `.tree-folder__count`.
 
 4. **Folder icons** — tree folders render a folder icon + chevron
-   (previously chevron only), matching Obsidian's folder glyphs.
+   (previously chevron only), matching the folder glyphs.
 
 5. Pane separation + tab active states already existed (accent top-bar,
    tinted active tab); now warm-tinted to match.

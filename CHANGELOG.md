@@ -10,7 +10,7 @@
 - Auto-save on keystroke with debounced save pipeline
 - Self-hosted fonts (16 families via @fontsource) — zero CDN calls
 - Strict CSP with zero external network origins
-- Obsidian compatibility: callouts, wikilinks, block references, attachment embeds
+- Extended-markdown compatibility: callouts, wikilinks, block references, attachment embeds
 - Command palette (Cmd+K) with file + command + tag search
 - Word count goals (document + session)
 - Readability hints: FK Grade, adverb/passive/complex sentence highlighting

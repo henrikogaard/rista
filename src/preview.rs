@@ -1,17 +1,17 @@
-//! Preview: Obsidian-flavored preprocessing before TextView's markdown parse,
+//! Preview: the reference editor-flavored preprocessing before TextView's markdown parse,
 //! plus a callout block plugin.
 //!
 //! Transforms:
 //! - `[[Note]]` / `[[Note|alias]]` → `[label](wiki:Note)` — clicks handled by the
 //!   workspace and resolved against the vault index.
 //! - `![[img.png]]` → image embed resolved to a `file://` URI via the vault's
-//!   image index; `![[img|300]]` / `![[img|300x200]]` carry an Obsidian size
+//!   image index; `![[img|300]]` / `![[img|300x200]]` carry an the reference editor size
 //!   suffix through a `rista:` title marker that [`SizedImagePlugin`] renders
 //!   at the requested dimensions. Unresolved embeds become wikilinks instead.
 //! - `^block-id` markers → stripped (they are anchors, not content).
 //! - `%%` comment regions → stripped (hidden markup, spans lines).
 //! - `#tag` → `[#tag](tag:tag)` — clickable, opens project search.
-//! - `> [!type]` Obsidian callouts → parsed by [`CalloutPlugin`] at render time.
+//! - `> [!type]` the reference editor callouts → parsed by [`CalloutPlugin`] at render time.
 //! - `banner:`/`cover:`/`banner_y`/`banner_icon` frontmatter → [`BannerSpec`],
 //!   rendered by the workspace above the preview.
 
@@ -36,7 +36,7 @@ pub struct PreviewCtx {
     pub workspace: WeakEntity<crate::app::Workspace>,
     pub views: EmbedViews,
     /// The note being rendered — bound as `this` in ```` ```base ````
-    /// embeds (Obsidian). Transclusions re-bind it to the embedded file.
+    /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
     pub depth: usize,
 }
@@ -101,7 +101,7 @@ pub fn extensions(
     ext.plugin(MathPlugin).plugin(MathBlockPlugin)
 }
 
-/// Rewrite Obsidian syntax into CommonMark for the preview pipeline.
+/// Rewrite the reference editor syntax into CommonMark for the preview pipeline.
 pub fn preprocess(
     source: &str,
     doc_path: &Path,
@@ -150,7 +150,7 @@ pub fn preprocess(
             continue;
         }
 
-        // `::: columns` fenced divs (the Obsidian Columns plugin's
+        // `::: columns` fenced divs (the the reference editor Columns plugin's
         // syntax) → a `columns` code fence the ColumnBlockPlugin
         // splits into side-by-side nested markdown. `::: column`
         // lines are column separators; a bare `:::` closes.
@@ -222,7 +222,7 @@ fn rewrite_line(
 
     while i < bytes.len() {
         let ch = line[i..].chars().next().unwrap();
-        // `%%` comment regions — Obsidian's hidden markup. An open
+        // `%%` comment regions — the hidden markup. An open
         // comment swallows everything up to the next `%%`, even across
         // lines; `%%` inside inline code is literal.
         if *in_comment {
@@ -331,7 +331,7 @@ fn rewrite_line(
                 continue;
             }
         } else if ch == '[' {
-            // `[label](target)` / `![label](target)` — Obsidian treats
+            // `[label](target)` / `![label](target)` — the reference editor treats
             // document-relative destinations as vault paths. `.md`/
             // `.base`/extensionless targets become `wiki:` note links
             // (create-on-click like `[[…]]`), other existing files
@@ -349,7 +349,7 @@ fn rewrite_line(
                 }
             }
         } else if line[i..].starts_with("==") {
-            // `==highlight==` — Obsidian's mark syntax; renders through
+            // `==highlight==` — the mark syntax; renders through
             // the inline-HTML path as <mark>. The content must be
             // non-empty and not start with `=` (keeps `===` and `====`
             // runs literal).
@@ -378,7 +378,7 @@ fn render_embed(
         Some((t, s)) => (t.trim(), s.trim()),
         None => (inner, ""),
     };
-    // `.md`/`.base`, or no extension at all — Obsidian wiki targets
+    // `.md`/`.base`, or no extension at all — the reference editor wiki targets
     // are extensionless note names. The `#anchor`/`#View` suffix is
     // stripped first so `![[db.base#Board]]` still reads as a note.
     let file_part = target.split('#').next().unwrap_or(target);
@@ -391,7 +391,7 @@ fn render_embed(
     if looks_like_note {
         // Note transclusion — TranscludePlugin renders the note inline.
         // `<>`-wrapped so targets with spaces stay a single URL. A
-        // numeric `|height` suffix (Obsidian embed sizing) rides along
+        // numeric `|height` suffix rides along
         // on the target for `.base` embeds.
         let height = parse_size_suffix(suffix)
             .map(|(w, h)| format!("|{}", h.unwrap_or(w) as u32))
@@ -532,7 +532,7 @@ fn wrap_dest(url: String) -> String {
     }
 }
 
-/// Rewrite a relative markdown link/image destination the way Obsidian
+/// Rewrite a relative markdown link/image destination the way the reference editor
 /// resolves it: note-ish targets (`.md`, `.base`, extensionless) become
 /// `wiki:` links against the vault, `![](note.md)` becomes a
 /// transclusion, other existing files become `file://` links, and a
@@ -696,7 +696,7 @@ fn image_source(url: &str) -> ImageSource {
 
 // ------------------------------------------------------------------
 // Banner: `banner:`/`cover:`/`banner_y:`/`banner_icon:` frontmatter keys,
-// the convention shared by Obsidian's banner/cover plugins.
+// the convention shared by the banner/cover plugins.
 // ------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -802,7 +802,7 @@ fn resolve_banner_value(
 }
 
 // ------------------------------------------------------------------
-// Callouts: `> [!note]` / `> [!warning]-` Obsidian-style admonitions.
+// Callouts: `> [!note]` / `> [!warning]-` admonitions.
 // ------------------------------------------------------------------
 
 /// Fold state for collapsible callouts, keyed by source offset so it
@@ -828,7 +828,7 @@ impl CalloutFolds {
     }
 }
 
-/// Frontmatter rendered Obsidian-style: a compact, collapsible
+/// Frontmatter rendered the reference-editor style: a compact, collapsible
 /// "Properties" strip instead of a raw YAML table. Properties are the
 /// data behind bases, so they stay visible — just not noisy.
 struct PropertiesPlugin {
@@ -916,7 +916,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                     .text_color(theme.muted_foreground)
                     .truncate()
                     .child({
-                        // Click the type glyph → type picker (Obsidian);
+                        // Click the type glyph → type picker;
                         // stop_propagation keeps the row's edit click.
                         let mut icon_cell = div().id(("property-type", ix)).child(
                             Icon::new(*kind)
@@ -1257,7 +1257,7 @@ fn prop_links(v: &serde_yaml::Value) -> Option<Vec<String>> {
     }
 }
 
-/// Lucide icon for a property's YAML type — Obsidian's Properties
+/// Lucide icon for a property's YAML type — the Properties
 /// panel marks each row with its type glyph.
 fn prop_kind(key: &str, v: &serde_yaml::Value, has_links: bool) -> assets::IconName {
     use assets::IconName as I;
@@ -1488,7 +1488,7 @@ fn parse_callout(source: &str) -> Option<Callout> {
     let end = rest.find(']')?;
     let mut kind = rest[..end].to_lowercase();
     let mut tail = rest[end + 1..].trim_start();
-    // Obsidian fold markers: `[!type]-` starts folded, `[!type]+` starts
+    // the reference editor fold markers: `[!type]-` starts folded, `[!type]+` starts
     // expanded; without a marker the callout is not collapsible.
     let mut foldable = None;
     if let Some(stripped) = tail.strip_prefix('-') {
@@ -1565,7 +1565,7 @@ fn callout_accent(kind: &str, cx: &App) -> gpui_kit::Hsla {
 // ── Link preview cards ──────────────────────────────────────────────
 //
 // A paragraph that is exactly one bare `https://…` link renders as a
-// bookmark card (Notion-style) once its OpenGraph metadata has loaded.
+// bookmark card (rich ) once its OpenGraph metadata has loaded.
 
 /// Fetch state for a card, keyed by URL — global since the same link
 /// shows the same card in every note.
@@ -2372,7 +2372,7 @@ impl MarkdownPlugin for TranscludePlugin {
         let theme = cx.theme().clone();
         let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
         let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
-        // `![[db.base]]` embeds the live base view (Obsidian parity) —
+        // `![[db.base]]` embeds the live base view —
         // keyed by spec text + view anchor so the view survives re-renders.
         if let Some(path) = resolved.as_ref().filter(|p| crate::app::is_base(p)) {
             if let Ok(spec) = std::fs::read_to_string(path) {
@@ -2482,8 +2482,7 @@ impl MarkdownPlugin for TranscludePlugin {
 
 // ------------------------------------------------------------------
 // Wikilinks — `[label](wiki:target)` rewritten by `preprocess`. Accent
-// when the target resolves, dimmed when it doesn't (Obsidian's
-// "unresolved" styling); clicks flow through `open_wikilink`, which
+// when the target resolves, dimmed when it doesn't (the "unresolved" styling); clicks flow through `open_wikilink`, which
 // creates the note when it's missing.
 // ------------------------------------------------------------------
 
@@ -2574,7 +2573,7 @@ impl MarkdownPlugin for WikiLinkPlugin {
                     }
                 });
             });
-        // Resolved links get Obsidian's page-preview hover: the card
+        // Resolved links get the page-preview hover: the card
         // anchors where the cursor first crossed the link and clears
         // on hover-out (or on navigation).
         if let Some(path) = resolved_path {

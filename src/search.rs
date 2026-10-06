@@ -58,7 +58,7 @@ impl ProjectSearch {
         let vault = workspace.read(cx).vault_entity().read(cx);
         let notes = vault.notes.clone();
         let root = vault.root.clone();
-        // Obsidian search operators: `tag:`/`path:`/`file:`/`task:`/
+        // the reference editor search operators: `tag:`/`path:`/`file:`/`task:`/
         // `content:` tokens filter per-note; every term must match (AND).
         // A `-` prefix negates the term (`-tag:x`, `-path:y`, `-word`).
         // Non-operator words rejoin into one content needle so multiword
@@ -124,7 +124,7 @@ impl ProjectSearch {
                     "path" => (rel.contains(needle), 1usize, rel.clone()),
                     "file" => (file.contains(needle), 1usize, rel.clone()),
                     "tag" => {
-                        // `tag:#a` also matches nested `#a/b` (Obsidian).
+                        // `tag:#a` also matches nested `#a/b`.
                         let arg = needle.trim_start_matches('#');
                         let hit = crate::properties::note_tags(&content)
                             .iter()
