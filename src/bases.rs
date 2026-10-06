@@ -3114,6 +3114,46 @@ pub fn drop_view(src: &str, view_ix: usize) -> Option<(usize, usize, String)> {
     Some((offs[start_ln], offs[end_ln], String::new()))
 }
 
+/// Copy the `view_ix`-th view item right after itself, renamed —
+/// the tab context-menu "Duplicate view" write path. An item with
+/// no `name:` line gains one after `type:`.
+pub fn duplicate_view(src: &str, view_ix: usize, name: &str) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut item = String::new();
+    let mut named = false;
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if !named && indent(lines[i]) == key_ind && t.starts_with("name:") {
+            item.push_str(&format!(
+                "{}name: {}\n",
+                " ".repeat(key_ind),
+                yaml_name(name)
+            ));
+            named = true;
+        } else {
+            item.push_str(lines[i]);
+        }
+    }
+    if !named {
+        let mut out = String::new();
+        for l in item.split_inclusive('\n') {
+            out.push_str(l);
+            if !named && l.trim_start().starts_with("type:") {
+                out.push_str(&format!(
+                    "{}name: {}\n",
+                    " ".repeat(key_ind),
+                    yaml_name(name)
+                ));
+                named = true;
+            }
+        }
+        item = out;
+    }
+    let at = offs[end_ln];
+    Some((at, at, item))
+}
+
 /// Move the `from`-th view item to position `to` — the tab
 /// drag-reorder write path. The item's whole text span travels,
 /// comments and formatting included; content outside the `views:`
@@ -3710,6 +3750,7 @@ impl Render for BaseView {
                         .context_menu({
                             let this = this.clone();
                             let name = name.clone();
+                            let names = computed.view_names.clone();
                             let multi = computed.view_names.len() > 1;
                             move |menu, _window, cx| {
                                 if !matches!(this.read(cx).spec_src, SpecSrc::Doc(_)) {
@@ -3786,6 +3827,54 @@ impl Render for BaseView {
                                                     input2.update(cx, |input, cx| {
                                                         input.focus(window, cx);
                                                     });
+                                                });
+                                            }
+                                        }),
+                                );
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Duplicate view")
+                                        .icon(assets::IconName::Copy)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let names = names.clone();
+                                            move |_, window, cx| {
+                                                let _ = this.update(cx, |view, cx| {
+                                                    let mut name =
+                                                        format!("{} copy", names[ix]);
+                                                    let mut n = 2;
+                                                    while names.iter().any(|t| t == &name) {
+                                                        name = format!("{} copy {n}", names[ix]);
+                                                        n += 1;
+                                                    }
+                                                    if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                        let key = doc
+                                                            .read(cx)
+                                                            .path
+                                                            .to_string_lossy()
+                                                            .to_string();
+                                                        if doc.update(cx, |doc, cx| {
+                                                            doc.duplicate_base_view(
+                                                                ix, &name, window, cx,
+                                                            )
+                                                        }) {
+                                                            // The copy lands right
+                                                            // after its source —
+                                                            // select it.
+                                                            view.view_ix = ix + 1;
+                                                            if let Some(ws) =
+                                                                view.workspace.upgrade()
+                                                            {
+                                                                ws.update(cx, |ws, _cx| {
+                                                                    ws.remember_base_view(
+                                                                        key,
+                                                                        ix + 1,
+                                                                    );
+                                                                });
+                                                            }
+                                                            view.doc_epoch += 1;
+                                                        }
+                                                    }
+                                                    cx.notify();
                                                 });
                                             }
                                         }),

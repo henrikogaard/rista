@@ -642,6 +642,27 @@ impl Document {
         true
     }
 
+    /// Copy the `view_ix`-th view item right after itself under
+    /// `name` — the tab "Duplicate view" write path. Returns false
+    /// when the view can't be located.
+    pub fn duplicate_base_view(
+        &mut self,
+        view_ix: usize,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::duplicate_view(&text, view_ix, name) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Move the `from`-th view item to position `to` in the spec —
     /// the tab drag-reorder write path. Returns false when the views
     /// can't be located.
