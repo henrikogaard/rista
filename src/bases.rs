@@ -1317,6 +1317,37 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
             }
             _ => Err(format!("{name}(date) wants a timestamp")),
         },
+        "datetime" => match args {
+            [Lit::Str(s)] => {
+                for fmt in [
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%dT%H:%M",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%d %H:%M",
+                ] {
+                    if let Ok(t) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+                        return Ok(Lit::Num(t.and_utc().timestamp() as f64));
+                    }
+                }
+                Err("datetime() wants \"YYYY-MM-DD HH:MM\"".into())
+            }
+            _ => Err("datetime() wants a string".into()),
+        },
+        "number" => match args {
+            [Lit::Num(n)] => Ok(Lit::Num(*n)),
+            [Lit::Str(s)] => s
+                .trim()
+                .parse::<f64>()
+                .map(Lit::Num)
+                .map_err(|_| "number() wants a numeric string".into()),
+            [Lit::Bool(b)] => Ok(Lit::Num(if *b { 1.0 } else { 0.0 })),
+            _ => Err("number() wants a string/number/bool".into()),
+        },
+        "list" => match args {
+            [Lit::List(items)] => Ok(Lit::List(items.clone())),
+            [v] => Ok(Lit::List(vec![v.clone()])),
+            _ => Err("list() wants one arg".into()),
+        },
         _ => Err(format!("unknown function '{name}'")),
     }
 }
@@ -3922,6 +3953,12 @@ mod tests {
             evals(r#"format(date("2026-01-31"), "MMM Do")"#, &p),
             Lit::Str("Jan 31".into())
         );
+        assert_eq!(
+            evals(r#"format(datetime("2026-01-31 09:30"), "HH:mm")"#, &p),
+            Lit::Str("09:30".into())
+        );
+        assert_eq!(evals(r#"number("42")"#, &p), Lit::Num(42.0));
+        assert_eq!(evals(r#"list("a").join(",")"#, &p), Lit::Str("a".into()));
     }
 
     #[test]
