@@ -26,6 +26,9 @@ impl EventEmitter<DocumentEvent> for Document {}
 
 pub struct Document {
     pub path: PathBuf,
+    /// Image file — the editor stays empty and the workspace renders
+    /// the picture itself instead of the source/preview panes.
+    pub is_image: bool,
     pub editor: Entity<EditorState>,
     /// Collapsible-callout fold state, keyed by callout source offset.
     pub callout_folds: preview::CalloutFolds,
@@ -111,6 +114,7 @@ impl Document {
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
         let mut this = Self {
+            is_image: crate::vault::is_image_file(&path),
             path,
             editor,
             callout_folds: preview::CalloutFolds::default(),

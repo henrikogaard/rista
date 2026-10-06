@@ -961,11 +961,14 @@ impl Workspace {
         self.reveal_active_file(cx);
         cx.notify();
 
-        // Focus the editor once the frame settles.
+        // Focus the editor once the frame settles (image docs have no
+        // visible editor to focus).
         let doc = doc.clone();
         window.defer(cx, move |window, cx| {
             doc.update(cx, |doc, cx| {
-                doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
+                if !doc.is_image {
+                    doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
+                }
             });
         });
     }
@@ -5640,7 +5643,22 @@ impl Workspace {
                         }
                     }),
             )
-            .child(div().pr_2().child(self.render_view_mode_tabs(cx)))
+            .child(
+                div()
+                    .pr_2()
+                    // Image tabs have no source/preview modes.
+                    .when(!self.active_doc_is_image(cx), |this| {
+                        this.child(self.render_view_mode_tabs(cx))
+                    }),
+            )
+    }
+
+    /// Is the active doc an image file (rendered as a picture, not a
+    /// text editor)? Hides the Source/Split/Preview switcher.
+    fn active_doc_is_image(&self, cx: &App) -> bool {
+        self.active_doc()
+            .map(|d| d.read(cx).is_image)
+            .unwrap_or(false)
     }
 
     /// The Source/Split/Preview switcher, kept out of the window titlebar so
@@ -5780,6 +5798,12 @@ impl Workspace {
             return self.render_empty_editor(cx).into_any_element();
         };
 
+        // Image files render the picture itself (Obsidian-style), not a
+        // text editor over binary bytes.
+        if doc.read(cx).is_image {
+            return self.render_image_view(&doc, cx).into_any_element();
+        }
+
         // `.base` files render their live view in Preview/Split; Source
         // stays the raw YAML so the spec stays editable.
         let base = self
@@ -5826,6 +5850,56 @@ impl Workspace {
                 .into_any_element(),
             None => content,
         }
+    }
+
+    /// Image document: the picture centered in the editor area with a
+    /// `name.ext · N KB` caption — the breadcrumb stays on top.
+    fn render_image_view(
+        &self,
+        doc: &Entity<Document>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let path = doc.read(cx).path.clone();
+        let caption = {
+            let name = doc.read(cx).file_name();
+            let kb = std::fs::metadata(&path)
+                .map(|m| m.len() as f64 / 1024.)
+                .unwrap_or(0.);
+            let kb = if kb >= 1024. {
+                format!("{:.1} MB", kb / 1024.)
+            } else {
+                format!("{} KB", kb.round() as u64)
+            };
+            format!("{name} · {kb}")
+        };
+        let picture = div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_6()
+            .child(
+                img(gpui::ImageSource::from(path.clone()))
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Contain),
+            );
+        v_flex()
+            .size_full()
+            .overflow_hidden()
+            .when_some(self.render_breadcrumb(doc, cx), |this, crumb| {
+                this.child(crumb)
+            })
+            .child(div().flex_1().min_h_0().child(picture))
+            .child(
+                div()
+                    .w_full()
+                    .p_2()
+                    .text_xs()
+                    .text_center()
+                    .text_color(muted)
+                    .child(caption),
+            )
     }
 
     /// Breadcrumb row above the editor: `folder / sub / name` — each
