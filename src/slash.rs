@@ -103,6 +103,12 @@ const ITEMS: &[SlashItem] = &[
         keywords: "latex equation tex",
         text: "$$\n\n$$\n",
     },
+    SlashItem {
+        label: "Base",
+        detail: "```base",
+        keywords: "database query table cards",
+        text: "```base\nfilters:\n  and:\n    - 'file.ext == \"md\"'\nviews:\n  - type: table\n    name: Table\n```\n",
+    },
 ];
 
 /// Completion provider installed on every document editor. The menu opens on
