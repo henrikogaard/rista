@@ -2993,14 +2993,7 @@ pub fn splice_view(src: &str, name: &str, kind: &str) -> Option<(usize, usize, S
     }
     let indent = |l: &str| l.len() - l.trim_start().len();
     let is_item = |t: &str| t.starts_with("- ") || t == "-";
-    let name_yaml = if name
-        .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-'))
-    {
-        name.to_string()
-    } else {
-        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
-    };
+    let name_yaml = yaml_name(name);
 
     let Some(views_ln) = lines
         .iter()
@@ -3045,6 +3038,55 @@ pub fn splice_view(src: &str, name: &str, kind: &str) -> Option<(usize, usize, S
     Some((at, at, item))
 }
 
+/// `name` rendered as a YAML scalar — unquoted when safe.
+fn yaml_name(name: &str) -> String {
+    if name
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-'))
+    {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+/// Rewrite the `view_ix`-th view's `name:` — the tab context-menu
+/// "Rename view" write path. A view without a `name:` key gets one
+/// right after its `type:` line.
+pub fn splice_name(src: &str, view_ix: usize, name: &str) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let value = yaml_name(name);
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if indent(lines[i]) == key_ind && t.starts_with("name:") {
+            return Some((
+                offs[i],
+                offs[i + 1],
+                format!("{}name: {value}\n", " ".repeat(key_ind)),
+            ));
+        }
+    }
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if indent(lines[i]) == key_ind && t.starts_with("type:") {
+            return Some((
+                offs[i + 1],
+                offs[i + 1],
+                format!("{}name: {value}\n", " ".repeat(key_ind)),
+            ));
+        }
+    }
+    None
+}
+
+/// Delete the `view_ix`-th view item outright — the tab context-menu
+/// "Delete view" write path.
+pub fn drop_view(src: &str, view_ix: usize) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, _) = view_item(src, view_ix)?;
+    Some((offs[start_ln], offs[end_ln], String::new()))
+}
+
 // ------------------------------------------------------------------
 // View — renders inside the workspace for `.base` documents.
 // ------------------------------------------------------------------
@@ -3071,6 +3113,8 @@ pub struct BaseView {
     /// Per-view search box — Obsidian's base search; filters rows live
     /// on note name + every displayed cell.
     search: Entity<InputState>,
+    /// View-tab "Rename view…" dialog input.
+    rename_input: Entity<InputState>,
     notes_epoch: u64,
     doc_epoch: u64,
     cache_key: Option<(u64, u64, usize)>,
@@ -3161,6 +3205,7 @@ impl BaseView {
             cal_offset: 0,
             sort: None,
             search,
+            rename_input: cx.new(|cx| InputState::new(window, cx)),
             notes_epoch: 0,
             doc_epoch: 0,
             cache_key: None,
@@ -3551,6 +3596,124 @@ impl Render for BaseView {
                                     }
                                     cx.notify();
                                 });
+                            }
+                        })
+                        // Right-click a tab → rename/delete the view it
+                        // names (Obsidian's view menu). Inline ```base
+                        // embeds are read-only and get an empty menu.
+                        .context_menu({
+                            let this = this.clone();
+                            let name = name.clone();
+                            let multi = computed.view_names.len() > 1;
+                            move |menu, _window, cx| {
+                                if !matches!(this.read(cx).spec_src, SpecSrc::Doc(_)) {
+                                    return menu;
+                                }
+                                let menu = menu.item(
+                                    PopupMenuItem::new("Rename view…")
+                                        .icon(assets::IconName::SquarePen)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let name = name.clone();
+                                            move |_, window, cx| {
+                                                let input =
+                                                    this.read(cx).rename_input.clone();
+                                                input.update(cx, |input, cx| {
+                                                    input.set_value(&name, window, cx);
+                                                });
+                                                let this = this.clone();
+                                                let input2 = input.clone();
+                                                window.open_dialog(
+                                                    cx,
+                                                    move |dialog, _window, _cx| {
+                                                        let input = input.clone();
+                                                        dialog
+                                                            .title("Rename view")
+                                                            .w(px(320.))
+                                                            .child(
+                                                                div().w_full().child(
+                                                                    Input::new(&input)
+                                                                        .appearance(true),
+                                                                ),
+                                                            )
+                                                            .on_ok({
+                                                                let this = this.clone();
+                                                                move |_, window, cx| {
+                                                                    this.update(
+                                                                        cx,
+                                                                        |view, cx| {
+                                                                            let text = view
+                                                                                .rename_input
+                                                                                .read(cx)
+                                                                                .value()
+                                                                                .trim()
+                                                                                .to_string();
+                                                                            if text.is_empty() {
+                                                                                return;
+                                                                            }
+                                                                            if let SpecSrc::Doc(
+                                                                                doc,
+                                                                            ) = &view.spec_src
+                                                                            {
+                                                                                doc.update(
+                                                                                    cx,
+                                                                                    |doc, cx| {
+                                                                                        doc.rename_base_view(
+                                                                                            ix,
+                                                                                            &text,
+                                                                                            window,
+                                                                                            cx,
+                                                                                        );
+                                                                                    },
+                                                                                );
+                                                                            }
+                                                                            view.doc_epoch += 1;
+                                                                            cx.notify();
+                                                                        },
+                                                                    );
+                                                                    true
+                                                                }
+                                                            })
+                                                    },
+                                                );
+                                                window.defer(cx, move |window, cx| {
+                                                    input2.update(cx, |input, cx| {
+                                                        input.focus(window, cx);
+                                                    });
+                                                });
+                                            }
+                                        }),
+                                );
+                                if !multi {
+                                    return menu;
+                                }
+                                menu.item(
+                                    PopupMenuItem::new("Delete view")
+                                        .icon(assets::IconName::Delete)
+                                        .on_click({
+                                            let this = this.clone();
+                                            move |_, window, cx| {
+                                                this.update(cx, |view, cx| {
+                                                    if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                        doc.update(cx, |doc, cx| {
+                                                            doc.remove_base_view(
+                                                                ix, window, cx,
+                                                            );
+                                                        });
+                                                    }
+                                                    // Keep the selection on a
+                                                    // surviving view.
+                                                    if ix < view.view_ix {
+                                                        view.view_ix -= 1;
+                                                    } else if ix == view.view_ix {
+                                                        view.view_ix = ix.saturating_sub(1);
+                                                    }
+                                                    view.doc_epoch += 1;
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                )
                             }
                         }),
                 );

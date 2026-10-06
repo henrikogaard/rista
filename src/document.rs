@@ -602,6 +602,46 @@ impl Document {
         true
     }
 
+    /// Rewrite the `view_ix`-th view's `name:` — the tab "Rename view"
+    /// write path. Returns false when the view can't be located.
+    pub fn rename_base_view(
+        &mut self,
+        view_ix: usize,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::splice_name(&text, view_ix, name) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
+    /// Delete the `view_ix`-th view item from the spec — the tab
+    /// "Delete view" write path. Returns false when the view can't
+    /// be located.
+    pub fn remove_base_view(
+        &mut self,
+        view_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::drop_view(&text, view_ix) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Flip the task-list marker (`[ ]`/`[x]`) on `line` (1-based) —
     /// the preview's interactive checkbox writes back into source.
     /// Line numbers survive `preprocess` rewriting; byte offsets don't.
