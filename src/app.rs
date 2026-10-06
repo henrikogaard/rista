@@ -7155,6 +7155,7 @@ fn render_linked_mentions(
                         )),
                 )
                 .on_click(move |_, _window, cx| {
+                    let view = view.clone();
                     doc.update(cx, |doc, cx| {
                         doc.mentions_open = !doc.mentions_open;
                         cx.notify();
