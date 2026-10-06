@@ -2657,12 +2657,14 @@ fn prefill_pairs(spec: &BaseSpec, view: &ViewSpec) -> Vec<(String, String)> {
     pairs.into_iter().collect()
 }
 
-/// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
-/// a `.base` spec — the column-chooser write path. Returns
-/// `(byte_start, byte_end, replacement)` for select-and-replace, or None
-/// when the view can't be located. Text-level (not serde) so comments
-/// and formatting elsewhere in the spec survive.
-pub fn splice_order(src: &str, view_ix: usize, prop: &str) -> Option<(usize, usize, String)> {
+/// Shared front half of the `order:` splices: split `src` into lines
+/// with byte offsets and locate the `view_ix`-th `views:` item.
+/// Returns `(lines, offs, item_start_ln, item_end_ln, key_indent)` —
+/// `key_indent` is the indent a view's own keys sit at.
+fn view_item<'a>(
+    src: &'a str,
+    view_ix: usize,
+) -> Option<(Vec<&'a str>, Vec<usize>, usize, usize, usize)> {
     let lines: Vec<&str> = src.split_inclusive('\n').collect();
     let mut offs = Vec::with_capacity(lines.len() + 1);
     offs.push(0usize);
@@ -2709,8 +2711,18 @@ pub fn splice_order(src: &str, view_ix: usize, prop: &str) -> Option<(usize, usi
                 .find(|&i| !lines[i].trim().is_empty() && indent(lines[i]) <= views_ind)
         })
         .unwrap_or(lines.len());
-    let item_ind = item_ind?;
-    let key_ind = item_ind + 2;
+    Some((lines, offs, start_ln, end_ln, item_ind? + 2))
+}
+
+/// Text-splice `prop` onto the `order:` list of the `view_ix`-th view in
+/// a `.base` spec — the column-chooser write path. Returns
+/// `(byte_start, byte_end, replacement)` for select-and-replace, or None
+/// when the view can't be located. Text-level (not serde) so comments
+/// and formatting elsewhere in the spec survive.
+pub fn splice_order(src: &str, view_ix: usize, prop: &str) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_item = |t: &str| t.starts_with("- ") || t == "-";
 
     // An existing `order:` key inside this view item — block list or
     // flow form — wins over appending a fresh key at the item's end.
@@ -2767,6 +2779,110 @@ pub fn splice_order(src: &str, view_ix: usize, prop: &str) -> Option<(usize, usi
             " ".repeat(key_ind + 2)
         ),
     ))
+}
+
+/// A YAML scalar with one level of matching quotes stripped — `order:`
+/// entries may be `- "my prop"` or `['a']`.
+fn unquote(s: &str) -> &str {
+    s.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(s)
+}
+
+/// Text-splice the removal of `prop` from the `view_ix`-th view's
+/// `order:` — the header "Hide column" write path. When the view has
+/// no `order:` (everything on show), writes `current_cols` minus
+/// `prop` as a fresh block list. Emptying the list collapses to
+/// `order: [file.name]` so the table keeps its row key.
+pub fn drop_order(
+    src: &str,
+    view_ix: usize,
+    prop: &str,
+    current_cols: &[String],
+) -> Option<(usize, usize, String)> {
+    let (lines, offs, start_ln, end_ln, key_ind) = view_item(src, view_ix)?;
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_item = |t: &str| t.starts_with("- ") || t == "-";
+
+    for i in start_ln..end_ln {
+        let t = lines[i].trim_start();
+        if !t.starts_with("order:") || indent(lines[i]) != key_ind {
+            continue;
+        }
+        let after = t["order:".len()..].trim();
+        if after.starts_with('[') {
+            // Flow — rebuild the line without `prop`.
+            let inner = after
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches(',')
+                .trim();
+            let listed: Vec<&str> = inner
+                .split(',')
+                .map(|s| unquote(s.trim()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !listed.contains(&prop) {
+                return None;
+            }
+            let kept: Vec<&str> = listed.into_iter().filter(|c| *c != prop).collect();
+            let items_str = if kept.is_empty() {
+                "file.name".to_string()
+            } else {
+                kept.join(", ")
+            };
+            return Some((
+                offs[i],
+                offs[i + 1],
+                format!("{}order: [{items_str}]\n", " ".repeat(key_ind)),
+            ));
+        }
+        // Block list — delete the `- prop` line, or collapse a
+        // single-entry list to `[file.name]`.
+        let mut entries: Vec<usize> = Vec::new();
+        for (j, line_j) in lines.iter().enumerate().take(end_ln).skip(i + 1) {
+            let t = line_j.trim_end();
+            if t.is_empty() {
+                continue;
+            }
+            let ind = indent(line_j);
+            if ind > key_ind && is_item(t.trim_start()) {
+                entries.push(j);
+            } else {
+                break;
+            }
+        }
+        let hit = entries
+            .iter()
+            .copied()
+            .find(|&j| unquote(lines[j].trim_start().trim_start_matches('-').trim()) == prop)?;
+        if entries.len() == 1 {
+            return Some((
+                offs[i],
+                offs[entries[0] + 1],
+                format!("{}order: [file.name]\n", " ".repeat(key_ind)),
+            ));
+        }
+        return Some((offs[hit], offs[hit + 1], String::new()));
+    }
+
+    // No `order:` — the displayed set is `current_cols`; write it
+    // minus `prop` so only that column disappears.
+    let mut kept: Vec<&str> = current_cols
+        .iter()
+        .map(|c| c.as_str())
+        .filter(|c| *c != prop)
+        .collect();
+    if kept.is_empty() {
+        kept.push("file.name");
+    }
+    let mut insert = format!("{}order:\n", " ".repeat(key_ind));
+    for c in kept {
+        insert.push_str(&format!("{}- {c}\n", " ".repeat(key_ind + 2)));
+    }
+    let at = offs[end_ln];
+    Some((at, at, insert))
 }
 
 // ------------------------------------------------------------------
@@ -3339,6 +3455,7 @@ impl Render for BaseView {
             .border_color(theme.border)
             .children(computed.headers.iter().enumerate().map(|(ix, h)| {
                 let this = this.clone();
+                let this_menu = this.clone();
                 let sorted = self.sort.filter(|(c, _)| *c == ix);
                 div()
                     .id(("base-h", ix))
@@ -3380,6 +3497,46 @@ impl Render for BaseView {
                                 }
                                 cx.notify();
                             });
+                        }
+                    })
+                    // Right-click a header → hide that column (splices it
+                    // out of `order:`). `file.name` is the row key and
+                    // stays, and inline fences have no writable spec — an
+                    // empty menu never renders, so the trigger is a no-op.
+                    .context_menu({
+                        let this = this_menu.clone();
+                        let writable = matches!(self.spec_src, SpecSrc::Doc(_));
+                        let col = computed.columns.get(ix).cloned().unwrap_or_default();
+                        move |menu, _window, _cx| {
+                            if !writable || col == "file.name" {
+                                return menu;
+                            }
+                            let this = this.clone();
+                            let col = col.clone();
+                            menu.item(
+                                PopupMenuItem::new(format!("Hide {col}"))
+                                    .icon(assets::IconName::EyeOff)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = this.update(cx, |view, cx| {
+                                            let SpecSrc::Doc(doc) = &view.spec_src else {
+                                                return;
+                                            };
+                                            let doc = doc.clone();
+                                            let cols = view.computed(cx).columns.clone();
+                                            if doc.update(cx, |doc, cx| {
+                                                doc.remove_base_column(
+                                                    view.view_ix,
+                                                    &col,
+                                                    &cols,
+                                                    window,
+                                                    cx,
+                                                )
+                                            }) {
+                                                view.doc_epoch += 1;
+                                            }
+                                        });
+                                    }),
+                            )
                         }
                     })
             }))
@@ -4574,5 +4731,44 @@ views:
         assert!(out.contains("    order:\n      - status\n"));
         // A second view keeps the first untouched.
         assert!(super::splice_order(spec, 5, "x").is_none());
+    }
+
+    #[test]
+    fn drop_order() {
+        let spec = r#"views:
+  - type: table
+    name: All notes
+    order:
+      - file.name
+      - file.folder
+      - cover
+  - type: cards
+    name: Gallery
+    order: [file.name, cover, rating]
+"#;
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        // Block list — the `- cover` line disappears.
+        let out = apply(spec, super::drop_order(spec, 0, "cover", &[]).unwrap());
+        assert!(out.contains("      - file.folder\n"));
+        assert!(!out.contains("- cover"));
+        // Flow — only `rating` leaves the list.
+        let out = apply(spec, super::drop_order(spec, 1, "rating", &[]).unwrap());
+        assert!(out.contains("order: [file.name, cover]"));
+        // Prop not listed → nothing to do.
+        assert!(super::drop_order(spec, 0, "status", &[]).is_none());
+        // Single-entry list collapses to `file.name` (keeps the row key).
+        let one = "views:\n  - type: table\n    order: [status]\n";
+        let out = apply(one, super::drop_order(one, 0, "status", &[]).unwrap());
+        assert!(out.contains("order: [file.name]"));
+        // No `order:` — writes the displayed set minus the hidden prop.
+        let bare = "views:\n  - type: table\n    name: Bare\n";
+        let cols = vec![
+            "file.name".to_string(),
+            "status".to_string(),
+            "tags".to_string(),
+        ];
+        let out = apply(bare, super::drop_order(bare, 0, "status", &cols).unwrap());
+        assert!(out.contains("    order:\n      - file.name\n      - tags\n"));
     }
 }

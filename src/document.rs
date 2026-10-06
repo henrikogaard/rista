@@ -534,6 +534,32 @@ impl Document {
         true
     }
 
+    /// Drop `prop` from the `order:` list of a `.base` spec's
+    /// `view_ix`-th view — the header "Hide column" write path.
+    /// `current_cols` is the displayed column set, needed when the
+    /// spec has no `order:` to remove from. Returns false when the
+    /// prop isn't listed or the view can't be located.
+    pub fn remove_base_column(
+        &mut self,
+        view_ix: usize,
+        prop: &str,
+        current_cols: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) =
+            crate::bases::drop_order(&text, view_ix, prop, current_cols)
+        else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Flip the task-list marker (`[ ]`/`[x]`) on `line` (1-based) —
     /// the preview's interactive checkbox writes back into source.
     /// Line numbers survive `preprocess` rewriting; byte offsets don't.
