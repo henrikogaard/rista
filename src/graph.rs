@@ -49,6 +49,9 @@ pub struct GraphView {
     mutual: HashSet<usize>,
     /// Local-graph center node (pinned at the origin, emphasised).
     local: Option<usize>,
+    /// BFS hop distance from the local center — ring 1 bright,
+    /// ring 2 mid, the rest far (Obsidian's local-graph depth).
+    dist: Option<Vec<usize>>,
     /// The workspace's active document — painted with a halo ring.
     pub(crate) active: Option<PathBuf>,
     /// Graph search — non-matching nodes fade out.
@@ -81,6 +84,23 @@ type BuiltGraph = (
     // Edge indices whose endpoints link both ways.
     HashSet<usize>,
 );
+
+/// Hop distance from `center` over `adjacent`; `usize::MAX` for
+/// unreachable nodes (disconnected components — Obsidian dims them).
+fn bfs_dist(center: usize, adjacent: &[Vec<usize>]) -> Vec<usize> {
+    let mut dist = vec![usize::MAX; adjacent.len()];
+    let mut queue = std::collections::VecDeque::from([center]);
+    dist[center] = 0;
+    while let Some(ix) = queue.pop_front() {
+        for &nb in &adjacent[ix] {
+            if dist[nb] == usize::MAX {
+                dist[nb] = dist[ix] + 1;
+                queue.push_back(nb);
+            }
+        }
+    }
+    dist
+}
 
 impl GraphView {
     /// Build the node/edge graph from the vault's link index. Also
@@ -177,6 +197,28 @@ impl GraphView {
         (nodes, by_path, edges, adjacent, mutual)
     }
 
+    /// Base node opacity — filter (non-matches dim) or local depth
+    /// (ring 1 bright / 2 mid / rest far). Hover dims further on top.
+    fn base_fade(&self, ix: usize) -> f32 {
+        if !self.filter.is_empty() {
+            return if self.nodes[ix]
+                .label
+                .to_lowercase()
+                .contains(self.filter.as_str())
+            {
+                1.0
+            } else {
+                0.12
+            };
+        }
+        match self.dist.as_ref().map(|d| d[ix]) {
+            Some(0) | Some(1) => 1.0,
+            Some(2) => 0.45,
+            Some(_) => 0.18,
+            None => 1.0,
+        }
+    }
+
     /// The filter input + its change subscription — every graph owns
     /// one; non-matching nodes fade out like Obsidian's graph search.
     fn make_filter(
@@ -216,6 +258,7 @@ impl GraphView {
             adjacent,
             mutual,
             local: None,
+            dist: None,
             active: None,
             filter: String::new(),
             filter_input,
@@ -251,6 +294,7 @@ impl GraphView {
             nodes[ix].pos = point(0., 0.);
             nodes[ix].pinned = true;
         }
+        let dist = local.map(|c| bfs_dist(c, &adjacent));
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -260,6 +304,7 @@ impl GraphView {
             adjacent,
             mutual,
             local,
+            dist,
             active: Some(center.to_path_buf()),
             filter: String::new(),
             filter_input,
@@ -320,6 +365,7 @@ impl GraphView {
         self.edges = edges;
         self.adjacent = adjacent;
         self.mutual = mutual;
+        self.dist = self.local.map(|c| bfs_dist(c, &self.adjacent));
         self.steps = STEPS_INIT;
         for _ in 0..self.steps {
             self.step();
@@ -508,28 +554,11 @@ impl Render for GraphView {
         let ghosts: Vec<bool> = self.nodes.iter().map(|n| n.ghost).collect();
         let lit = self.lit();
         let hovered = self.hovered;
-        // Local mode: center + its neighbourhood stays bright, the
-        // wider map fades back (Obsidian's local-graph emphasis).
+        // Base fade — filter matches bright, or local depth rings
+        // (hop 1 bright / hop 2 mid / the rest far back).
         let fade: Vec<f32> = (0..self.nodes.len())
             .map(|ix| {
-                let base = if !self.filter.is_empty() {
-                    // Filter dominates — matching stems stay bright.
-                    if self.nodes[ix]
-                        .label
-                        .to_lowercase()
-                        .contains(self.filter.as_str())
-                    {
-                        1.0
-                    } else {
-                        0.12
-                    }
-                } else {
-                    match self.local {
-                        Some(c) if ix == c || self.adjacent[c].contains(&ix) => 1.0,
-                        Some(_) => 0.18,
-                        None => 1.0,
-                    }
-                };
+                let base = self.base_fade(ix);
                 if hovered.is_some() && !lit[ix] {
                     base * 0.35
                 } else {
@@ -694,18 +723,27 @@ impl Render for GraphView {
             },
         );
 
-        // Labels — degree ≥ 3 or the hovered node, positioned over the dot.
+        // Labels — hubs (degree ≥ 3), hovered, or filter matches,
+        // positioned over the dot; they fade with their node.
         let label_layer = self
             .nodes
             .iter()
             .enumerate()
-            .filter(|(ix, n)| self.hovered == Some(*ix) || (n.degree >= 3 && !n.ghost))
+            .filter(|(ix, n)| {
+                self.hovered == Some(*ix)
+                    || if self.filter.is_empty() {
+                        n.degree >= 3 && !n.ghost
+                    } else {
+                        self.base_fade(*ix) >= 1.0
+                    }
+            })
             .map(|(ix, n)| {
                 // to_screen gives window-absolute points; absolute
                 // positioning here is relative to the pane's origin.
                 let c = self.to_screen(n.pos, last_bounds) - last_bounds.origin;
                 let r = px(self.node_radius(ix) * self.scale);
                 let lift = self.hovered == Some(ix);
+                let fade = self.base_fade(ix);
                 div()
                     .absolute()
                     .left(c.x - px(60.))
@@ -716,7 +754,11 @@ impl Render for GraphView {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(if lift { theme.foreground } else { label_color })
+                            .text_color(if lift {
+                                theme.foreground
+                            } else {
+                                label_color.opacity(fade)
+                            })
                             .whitespace_nowrap()
                             .child(n.label.clone()),
                     )
