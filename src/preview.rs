@@ -387,8 +387,13 @@ fn render_embed(
         || !file_part.contains('.');
     if looks_like_note {
         // Note transclusion — TranscludePlugin renders the note inline.
-        // `<>`-wrapped so targets with spaces stay a single URL.
-        return format!("![](<transclude:{target}>)");
+        // `<>`-wrapped so targets with spaces stay a single URL. A
+        // numeric `|height` suffix (Obsidian embed sizing) rides along
+        // on the target for `.base` embeds.
+        let height = parse_size_suffix(suffix)
+            .map(|(w, h)| format!("|{}", h.unwrap_or(w) as u32))
+            .unwrap_or_default();
+        return format!("![](<transclude:{target}{height}>)");
     }
     // `![[img|300]]` width, `![[img|300x200]]` w×h; anything else is a caption.
     let size = parse_size_suffix(suffix);
@@ -2294,6 +2299,8 @@ fn slice_section(text: &str, anchor: &str) -> Option<String> {
 
 struct Transclude {
     target: String,
+    /// `|height` suffix on `.base` embeds — pixel height of the frame.
+    height: Option<f32>,
 }
 
 struct TranscludePlugin {
@@ -2312,11 +2319,14 @@ impl MarkdownPlugin for TranscludePlugin {
             return None;
         };
         let target = image.url.strip_prefix("transclude:")?;
+        // `![[db.base|400]]` — a trailing `|N` is the embed height.
+        let (target, height) = match target.rsplit_once('|') {
+            Some((t, h)) => (t.to_string(), h.parse::<f32>().ok()),
+            None => (target.to_string(), None),
+        };
         Some(MarkdownNode::new(
             "transclude",
-            Transclude {
-                target: target.to_string(),
-            },
+            Transclude { target, height },
         ))
     }
 
@@ -2361,7 +2371,7 @@ impl MarkdownPlugin for TranscludePlugin {
                 }
                 return div()
                     .w_full()
-                    .h(px(320.))
+                    .h(px(embed.height.unwrap_or(320.).clamp(80., 4000.)))
                     .my_2()
                     .border_1()
                     .border_color(theme.border)
