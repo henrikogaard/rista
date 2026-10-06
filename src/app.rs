@@ -711,6 +711,7 @@ impl Workspace {
         self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
+            vault.templates_dir = self.settings.templates_dir.clone();
             vault.open(root.clone(), cx);
         });
         self.settings.last_vault = Some(root);
