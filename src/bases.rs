@@ -1259,8 +1259,130 @@ fn apply_fn(name: &str, args: &[Lit]) -> Result<Lit, String> {
                 .map_err(|_| "date() wants YYYY-MM-DD".into()),
             _ => Err("date() wants a string".into()),
         },
+        "format" | "dateAdd" | "dateSubtract" | "duration" | "year" | "month" | "day"
+        | "weekday" | "hour" | "minute" | "second"
+            if args.iter().any(|a| matches!(a, Lit::Null)) =>
+        {
+            Ok(Lit::Null)
+        }
+        "format" => match args {
+            [Lit::Num(epoch), Lit::Str(pattern)] => {
+                let dt = chrono::DateTime::from_timestamp(*epoch as i64, 0)
+                    .ok_or("format() wants a timestamp")?;
+                Ok(Lit::Str(dt.format(&moment_to_chrono(pattern)).to_string()))
+            }
+            _ => Err("format(date, pattern) wants timestamp + string".into()),
+        },
+        "dateAdd" | "dateSubtract" => match args {
+            [Lit::Num(epoch), Lit::Str(dur)] => {
+                let d = parse_duration(dur).ok_or("duration like \"1 week\"")?;
+                let sign: i64 = if name == "dateAdd" { 1 } else { -1 };
+                let dt = chrono::DateTime::from_timestamp(*epoch as i64, 0)
+                    .ok_or("dateAdd wants a timestamp")?;
+                let out = match d {
+                    Dur::Delta(d) => dt.checked_add_signed(d * (sign as i32)),
+                    Dur::Months(m) if sign > 0 => dt.checked_add_months(chrono::Months::new(m)),
+                    Dur::Months(m) => dt.checked_sub_months(chrono::Months::new(m)),
+                };
+                out.map(|d| Lit::Num(d.timestamp() as f64))
+                    .ok_or_else(|| format!("{name} overflow"))
+            }
+            _ => Err(format!(
+                "{name}(date, \"1 week\") wants timestamp + duration"
+            )),
+        },
+        "duration" => match args {
+            [Lit::Str(s)] => match parse_duration(s) {
+                Some(Dur::Delta(d)) => Ok(Lit::Num(d.num_seconds() as f64)),
+                Some(Dur::Months(m)) => Ok(Lit::Num(m as f64 * 30.0 * 86400.0)),
+                None => Err("duration(\"1 week\") unrecognized".into()),
+            },
+            _ => Err("duration(\"1 week\") wants a string".into()),
+        },
+        "year" | "month" | "day" | "weekday" | "hour" | "minute" | "second" => match args {
+            [Lit::Num(epoch)] => {
+                let dt = chrono::DateTime::from_timestamp(*epoch as i64, 0)
+                    .ok_or(format!("{name} wants a timestamp"))?;
+                use chrono::Datelike as _;
+                use chrono::Timelike as _;
+                Ok(Lit::Num(match name {
+                    "year" => dt.year() as f64,
+                    "month" => dt.month() as f64,
+                    "day" => dt.day() as f64,
+                    "weekday" => (dt.weekday().num_days_from_monday() + 1) as f64,
+                    "hour" => dt.hour() as f64,
+                    "minute" => dt.minute() as f64,
+                    _ => dt.second() as f64,
+                }))
+            }
+            _ => Err(format!("{name}(date) wants a timestamp")),
+        },
         _ => Err(format!("unknown function '{name}'")),
     }
+}
+
+/// Moment.js pattern → chrono strftime. Covers the common tokens:
+/// `YYYY MM DD HH mm ss`, ordinals `Do`, names `dddd/ddd/MMMM/MMM`,
+/// `A/a` meridian — Obsidian `.base` `format(date, pattern)`.
+fn moment_to_chrono(pattern: &str) -> String {
+    const TOKENS: &[(&str, &str)] = &[
+        // Longest first — `find` returns the first prefix match.
+        ("dddd", "%A"),
+        ("MMMM", "%B"),
+        ("ddd", "%a"),
+        ("MMM", "%b"),
+        ("YYYY", "%Y"),
+        ("Do", "%-d"),
+        ("DD", "%d"),
+        ("MM", "%m"),
+        ("YY", "%y"),
+        ("HH", "%H"),
+        ("hh", "%I"),
+        ("mm", "%M"),
+        ("ss", "%S"),
+        ("D", "%-d"),
+        ("M", "%-m"),
+        ("H", "%-H"),
+        ("h", "%-I"),
+        ("m", "%-M"),
+        ("s", "%-S"),
+        ("A", "%p"),
+        ("a", "%P"),
+    ];
+    let mut out = String::with_capacity(pattern.len() * 2);
+    let mut rest = pattern;
+    while !rest.is_empty() {
+        if let Some((tok, fmt)) = TOKENS.iter().find(|(tok, _)| rest.starts_with(tok)) {
+            out.push_str(fmt);
+            rest = &rest[tok.len()..];
+        } else {
+            out.push(rest.chars().next().unwrap());
+            rest = &rest[1..];
+        }
+    }
+    out
+}
+
+enum Dur {
+    Delta(chrono::Duration),
+    Months(u32),
+}
+
+/// `"3 days"`, `"1 week"`, `"2 months"` — calendar-aware for month/year.
+fn parse_duration(s: &str) -> Option<Dur> {
+    let mut it = s.split_whitespace();
+    let n: f64 = it.next()?.parse().ok()?;
+    let unit = it.next().unwrap_or("seconds");
+    Some(match unit.trim_end_matches('s').to_lowercase().as_str() {
+        "second" => Dur::Delta(chrono::Duration::seconds(n as i64)),
+        "minute" => Dur::Delta(chrono::Duration::minutes(n as i64)),
+        "hour" => Dur::Delta(chrono::Duration::hours(n as i64)),
+        "day" => Dur::Delta(chrono::Duration::days(n as i64)),
+        "week" => Dur::Delta(chrono::Duration::weeks(n as i64)),
+        "month" => Dur::Months(n as u32),
+        "year" => Dur::Months((n * 12.0) as u32),
+        _ => return None,
+    })
 }
 
 // ------------------------------------------------------------------
@@ -3771,6 +3893,34 @@ mod tests {
         assert_eq!(
             evals(&format!(r#"today() == date("{today}")"#), &p),
             Lit::Bool(true)
+        );
+    }
+
+    #[test]
+    fn date_functions() {
+        let p: [(&str, Lit); 0] = [];
+        // Month clamp: Jan 31 + 1 month → Feb 28.
+        assert_eq!(
+            evals(
+                r#"format(dateAdd(date("2026-01-31"), "1 month"), "YYYY-MM-DD")"#,
+                &p
+            ),
+            Lit::Str("2026-02-28".into())
+        );
+        assert_eq!(
+            evals(
+                r#"format(dateSubtract(date("2026-06-15"), "2 weeks"), "YYYY-MM-DD")"#,
+                &p
+            ),
+            Lit::Str("2026-06-01".into())
+        );
+        assert_eq!(evals(r#"duration("1 week")"#, &p), Lit::Num(604800.0));
+        assert_eq!(evals(r#"year(date("2026-01-31"))"#, &p), Lit::Num(2026.0));
+        // 2026-01-31 is a Saturday → ISO weekday 6.
+        assert_eq!(evals(r#"weekday(date("2026-01-31"))"#, &p), Lit::Num(6.0));
+        assert_eq!(
+            evals(r#"format(date("2026-01-31"), "MMM Do")"#, &p),
+            Lit::Str("Jan 31".into())
         );
     }
 
