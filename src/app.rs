@@ -5980,6 +5980,10 @@ impl Workspace {
                     .min_w_0()
                     .child(
                         TabBar::new("doc-tabs")
+                            // Segmented = no bar hairline or tab borders —
+                            // the strip reads as one quiet track inside the
+                            // pane card, like the view-mode switcher.
+                            .segmented()
                             .selected_index(self.active.unwrap_or(0))
                             .children(tabs)
                             .on_click(cx.listener(|this, &ix, _window, cx| {
@@ -6482,8 +6486,12 @@ impl Workspace {
             .child({
                 // Right-click menu — clipboard row plus the markdown actions
                 // the palette already exposes (the edit context menu).
-                let editor = Editor::new(&doc.read(cx).editor).h_full().context_menu(
-                    |menu, _window, _cx| {
+                // `appearance(false)` — the editor's bordered box would
+                // draw a second frame inside the pane card.
+                let editor = Editor::new(&doc.read(cx).editor)
+                    .h_full()
+                    .appearance(false)
+                    .context_menu(|menu, _window, _cx| {
                         menu.menu("Cut", Box::new(input::Cut))
                             .menu("Copy", Box::new(input::Copy))
                             .menu("Paste", Box::new(input::Paste))
@@ -6499,8 +6507,7 @@ impl Workspace {
                             .menu("Delete line", Box::new(DeleteLine))
                             .separator()
                             .menu("Open link under cursor", Box::new(FollowLink))
-                    },
-                );
+                    });
                 // `cssclasses:` per-note override — `wide` lifts the
                 // readable-width cap for this note, `narrow`/`readable`
                 // forces it on (the per-note styling hook).
