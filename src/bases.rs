@@ -3314,6 +3314,8 @@ pub struct BaseView {
     this_path: Option<PathBuf>,
     /// Calendar view: months offset from the current month.
     cal_offset: i32,
+    /// Collapsed table group bands — (view index, band text).
+    collapsed_groups: std::collections::HashSet<(usize, String)>,
     /// Interactive header sort: (column index, descending).
     sort: Option<(usize, bool)>,
     /// Per-view search box — Obsidian's base search; filters rows live
@@ -3409,6 +3411,7 @@ impl BaseView {
             view_ix: 0,
             this_path: None,
             cal_offset: 0,
+            collapsed_groups: std::collections::HashSet::new(),
             sort: None,
             search,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
@@ -5321,12 +5324,15 @@ impl Render for BaseView {
                 }
             }
             let mut last_group: Option<&str> = None;
+            let mut group_collapsed = false;
             for (ix, &rix) in order.iter().enumerate() {
                 let row = visible[rix];
                 let path = row.path.clone();
                 let workspace = self.workspace.clone();
                 if computed.grouped && last_group != Some(row.cells[gix].text.as_str()) {
                     last_group = Some(row.cells[gix].text.as_str());
+                    let gkey = (self.view_ix, row.cells[gix].text.clone());
+                    group_collapsed = self.collapsed_groups.contains(&gkey);
                     let label = if row.cells[gix].text.trim().is_empty() {
                         format!(
                             "No {}",
@@ -5343,6 +5349,11 @@ impl Render for BaseView {
                         .get(row.cells[gix].text.as_str())
                         .copied()
                         .unwrap_or(0);
+                    let chevron = if group_collapsed {
+                        assets::IconName::ChevronRight
+                    } else {
+                        assets::IconName::ChevronDown
+                    };
                     rows = rows.child(
                         div()
                             .id(("base-group", ix))
@@ -5352,11 +5363,29 @@ impl Render for BaseView {
                             .border_b_1()
                             .border_color(theme.border.opacity(0.5))
                             .bg(theme.muted.opacity(0.3))
+                            .cursor_pointer()
+                            .on_click({
+                                let this = this.clone();
+                                let gkey = gkey.clone();
+                                move |_, _window, cx| {
+                                    let _ = this.update(cx, |view, cx| {
+                                        if !view.collapsed_groups.insert(gkey.clone()) {
+                                            view.collapsed_groups.remove(&gkey);
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            })
                             .child(
                                 h_flex()
                                     .w_full()
                                     .items_center()
                                     .gap_2()
+                                    .child(
+                                        Icon::new(chevron)
+                                            .size_3()
+                                            .text_color(theme.muted_foreground),
+                                    )
                                     .child(
                                         div()
                                             .text_xs()
@@ -5373,6 +5402,9 @@ impl Render for BaseView {
                                     ),
                             ),
                     );
+                }
+                if group_collapsed {
+                    continue;
                 }
                 rows = rows.child(
                     div()
