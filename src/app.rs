@@ -80,6 +80,9 @@ pub struct Workspace {
     starred_open: bool,
     /// Whether the sidebar's Tags group is expanded.
     tags_open: bool,
+    /// Nested-tag paths expanded in the Tags pane (collapsed by
+    /// default, like Obsidian).
+    tags_expanded: std::collections::BTreeSet<String>,
     tasks_open: bool,
     outline_open: bool,
     backlinks_open: bool,
@@ -99,6 +102,37 @@ struct OpenDoc {
     /// Present when the file is a `.base` — a live view over the vault.
     base: Option<Entity<bases::BaseView>>,
     _sub: Subscription,
+}
+
+/// Nested tag node for the sidebar Tags pane — `#a/b` hangs under `#a`.
+#[derive(Default)]
+struct TagNode {
+    /// Notes carrying exactly this tag path.
+    own: usize,
+    kids: std::collections::BTreeMap<String, TagNode>,
+}
+
+impl TagNode {
+    fn total(&self) -> usize {
+        self.own + self.kids.values().map(TagNode::total).sum::<usize>()
+    }
+}
+
+/// Insert `count` at the leaf of `segs`, creating intermediate nodes.
+fn tag_insert(
+    nodes: &mut std::collections::BTreeMap<String, TagNode>,
+    segs: &[&str],
+    count: usize,
+) {
+    let Some((seg, rest)) = segs.split_first() else {
+        return;
+    };
+    let node = nodes.entry(seg.to_string()).or_default();
+    if rest.is_empty() {
+        node.own += count;
+    } else {
+        tag_insert(&mut node.kids, rest, count);
+    }
 }
 
 impl Focusable for Workspace {
@@ -563,6 +597,7 @@ impl Workspace {
             nav_suppress: false,
             starred_open: settings.panes.starred,
             tags_open: settings.panes.tags,
+            tags_expanded: Default::default(),
             tasks_open: settings.panes.tasks,
             outline_open: settings.panes.outline,
             backlinks_open: settings.panes.backlinks,
@@ -4773,25 +4808,106 @@ impl Workspace {
                     })),
             )
             .when(self.tags_open, |this| {
-                let rows = v_flex().w_full().children(tags.iter().enumerate().map(
-                    |(ix, (tag, count))| {
-                        let query = format!("#{tag}");
+                // Nest `a/b` under `a` — parents aggregate descendant
+                // counts and expand to show children (Obsidian's tag
+                // pane). A tag clicked at any level searches that path,
+                // which already matches its nested tags.
+                let mut tree: std::collections::BTreeMap<String, TagNode> = Default::default();
+                for (tag, count) in &tags {
+                    let segs: Vec<&str> = tag.split('/').collect();
+                    tag_insert(&mut tree, &segs, *count);
+                }
+                // (depth, full path, segment, total count, has children,
+                // expanded) — children of collapsed parents are skipped.
+                let mut flat: Vec<(usize, String, String, usize, bool, bool)> = Vec::new();
+                fn flatten(
+                    nodes: &std::collections::BTreeMap<String, TagNode>,
+                    depth: usize,
+                    prefix: String,
+                    expanded: &std::collections::BTreeSet<String>,
+                    out: &mut Vec<(usize, String, String, usize, bool, bool)>,
+                ) {
+                    for (seg, node) in nodes {
+                        let full = if prefix.is_empty() {
+                            seg.clone()
+                        } else {
+                            format!("{prefix}/{seg}")
+                        };
+                        let has_kids = !node.kids.is_empty();
+                        let open = expanded.contains(&full);
+                        out.push((
+                            depth,
+                            full.clone(),
+                            seg.clone(),
+                            node.total(),
+                            has_kids,
+                            open,
+                        ));
+                        if open {
+                            flatten(&node.kids, depth + 1, full, expanded, out);
+                        }
+                    }
+                }
+                flatten(&tree, 0, String::new(), &self.tags_expanded, &mut flat);
+
+                let rows = v_flex().w_full().children(flat.into_iter().enumerate().map(
+                    |(ix, (depth, full, seg, total, has_kids, open))| {
+                        let query = format!("#{full}");
+                        let full_for_toggle = full.clone();
                         div()
                             .id(("tag-row", ix))
                             .w_full()
-                            .px_2()
+                            .pr_2()
+                            .pl(px(8. + depth as f32 * 14.))
                             .py_0p5()
                             .child(
                                 h_flex()
                                     .w_full()
                                     .justify_between()
                                     .items_center()
-                                    .child(div().text_sm().truncate().child(format!("#{tag}")))
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .child(if has_kids {
+                                                div()
+                                                    .id(("tag-toggle", ix))
+                                                    .cursor_pointer()
+                                                    .child(
+                                                        Icon::new(if open {
+                                                            assets::IconName::ChevronDown
+                                                        } else {
+                                                            assets::IconName::ChevronRight
+                                                        })
+                                                        .size_3()
+                                                        .text_color(theme.muted_foreground),
+                                                    )
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        if open {
+                                                            this.tags_expanded
+                                                                .remove(&full_for_toggle);
+                                                        } else {
+                                                            this.tags_expanded
+                                                                .insert(full_for_toggle.clone());
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                                    .into_any_element()
+                                            } else {
+                                                // Keep leaf labels aligned
+                                                // with siblings' chevrons.
+                                                div().w(px(12.)).into_any_element()
+                                            })
+                                            .child(
+                                                div().text_sm().truncate().child(format!("#{seg}")),
+                                            ),
+                                    )
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(theme.muted_foreground)
-                                            .child(count.to_string()),
+                                            .child(total.to_string()),
                                     ),
                             )
                             .hover(|s| s.bg(theme.muted.opacity(0.5)))
@@ -4804,7 +4920,7 @@ impl Workspace {
                                 );
                             }))
                             .context_menu({
-                                let tag = tag.clone();
+                                let tag = full.clone();
                                 let view = cx.entity();
                                 move |menu, _window, _cx| {
                                     menu.item(
