@@ -7725,6 +7725,75 @@ impl Render for BaseView {
                 }
             })
             .child(toolbar)
+            // The active view's `filters:` terms as removable chips — the ×
+            // splices the term out via `remove_base_view_filter`, so active
+            // filters are visible instead of buried in the tab menu.
+            // Embedded bases render the chips read-only.
+            .children({
+                let terms = computed
+                    .view_filters
+                    .get(self.view_ix)
+                    .cloned()
+                    .unwrap_or_default();
+                if terms.is_empty() {
+                    None
+                } else {
+                    let writable = matches!(self.spec_src, SpecSrc::Doc(_));
+                    let mut bar = h_flex()
+                        .w_full()
+                        .px_3()
+                        .pb_1()
+                        .gap_1()
+                        .flex_wrap()
+                        .items_center();
+                    for (tix, term) in terms.iter().enumerate() {
+                        let this = this.clone();
+                        bar = bar.child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .px_2()
+                                .py_0p5()
+                                .rounded(px(3.))
+                                .bg(theme.muted.opacity(0.4))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.foreground)
+                                        .child(term.clone()),
+                                )
+                                .when(writable, |chip| {
+                                    chip.child(
+                                        div()
+                                            .id(("filter-chip", tix))
+                                            .flex()
+                                            .cursor_pointer()
+                                            .text_color(theme.muted_foreground)
+                                            .hover(|s| s.text_color(theme.danger))
+                                            .child(Icon::new(assets::IconName::X).size(px(10.)))
+                                            .on_click(move |_, window, cx| {
+                                                this.update(cx, |view, cx| {
+                                                    if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                        doc.update(cx, |doc, cx| {
+                                                            doc.remove_base_view_filter(
+                                                                view.view_ix,
+                                                                tix,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                    view.doc_epoch += 1;
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    )
+                                }),
+                        );
+                    }
+                    Some(bar)
+                }
+            })
             .when(!cards && !kanban && !calendar && !list, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
                 div()
