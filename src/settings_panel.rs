@@ -3,6 +3,7 @@
 use crate::app::Workspace;
 use crate::settings::{Appearance, Settings, ViewMode, EDITOR_FONTS};
 use gpui_kit::base::StyledExt;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -15,6 +16,7 @@ pub struct SettingsView {
     font_size_select: Entity<SelectState<SearchableVec<String>>>,
     ui_size_select: Entity<SelectState<SearchableVec<String>>>,
     tab_size_select: Entity<SelectState<SearchableVec<String>>>,
+    attachments_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -84,6 +86,11 @@ impl SettingsView {
                 cx,
             )
         });
+        let attachments_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("attachments");
+            state.set_value(settings.attachments_dir.clone(), window, cx);
+            state
+        });
 
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(
@@ -128,6 +135,21 @@ impl SettingsView {
                 }
             },
         ));
+        subs.push(cx.subscribe_in(
+            &attachments_input,
+            window,
+            |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let dir = state.read(cx).value().trim().to_string();
+                // Vault-relative only: no absolute paths or traversal.
+                if dir.is_empty() || dir.starts_with('/') || dir.contains("..") {
+                    return;
+                }
+                this.update_setting(cx, |s| s.attachments_dir = dir, window);
+            },
+        ));
 
         Self {
             workspace,
@@ -135,6 +157,7 @@ impl SettingsView {
             font_size_select,
             ui_size_select,
             tab_size_select,
+            attachments_input,
             _subscriptions: subs,
         }
     }
@@ -304,6 +327,22 @@ impl Render for SettingsView {
                         cx,
                         "Tab size",
                         Select::new(&self.tab_size_select).w(px(90.)),
+                    )),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("VAULT"),
+                    )
+                    .child(Self::row(
+                        cx,
+                        "Attachment folder",
+                        Input::new(&self.attachments_input).w(px(180.)),
                     )),
             )
             .child(
