@@ -581,6 +581,27 @@ impl Document {
         true
     }
 
+    /// Append a `{type: kind, name:}` item to the spec's `views:` list —
+    /// the "+ view" tab writes through here. Returns false when the
+    /// spec can't be edited.
+    pub fn add_base_view(
+        &mut self,
+        name: &str,
+        kind: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = self.editor.read(cx).value().to_string();
+        let Some((start, end, insert)) = crate::bases::splice_view(&text, name, kind) else {
+            return false;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(start..end, cx);
+            editor.replace(&insert, window, cx);
+        });
+        true
+    }
+
     /// Flip the task-list marker (`[ ]`/`[x]`) on `line` (1-based) —
     /// the preview's interactive checkbox writes back into source.
     /// Line numbers survive `preprocess` rewriting; byte offsets don't.

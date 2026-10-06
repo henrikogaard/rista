@@ -2979,6 +2979,72 @@ pub fn reorder_order(src: &str, view_ix: usize, cols: &[String]) -> Option<(usiz
     Some((at, at, block()))
 }
 
+/// Text-splice a fresh view item onto the top-level `views:` list —
+/// the "+ view" write path. A spec with no `views:` key gains one at
+/// the end of the file; the item's indent follows the existing items'
+/// (defaulting to the `views:` indent + 2 for an empty list). `name`
+/// is quoted only when it needs to be.
+pub fn splice_view(src: &str, name: &str, kind: &str) -> Option<(usize, usize, String)> {
+    let lines: Vec<&str> = src.split_inclusive('\n').collect();
+    let mut offs = Vec::with_capacity(lines.len() + 1);
+    offs.push(0usize);
+    for l in &lines {
+        offs.push(offs.last().unwrap() + l.len());
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let is_item = |t: &str| t.starts_with("- ") || t == "-";
+    let name_yaml = if name
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-'))
+    {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    };
+
+    let Some(views_ln) = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("views:"))
+    else {
+        let mut text = String::new();
+        if !src.is_empty() && !src.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!(
+            "views:\n  - type: {kind}\n    name: {name_yaml}\n"
+        ));
+        return Some((src.len(), src.len(), text));
+    };
+
+    let views_ind = indent(lines[views_ln]);
+    let mut item_ind = None;
+    let mut end_ln = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(views_ln + 1) {
+        let t = line.trim_end();
+        if t.is_empty() || t.trim_start().starts_with('#') {
+            continue;
+        }
+        if indent(line) <= views_ind {
+            end_ln = i;
+            break;
+        }
+        if item_ind.is_none() && is_item(t.trim_start()) {
+            item_ind = Some(indent(line));
+        }
+    }
+    let ind = item_ind.unwrap_or(views_ind + 2);
+    let mut item = format!(
+        "{}- type: {kind}\n{}  name: {name_yaml}\n",
+        " ".repeat(ind),
+        " ".repeat(ind)
+    );
+    if end_ln == lines.len() && !src.ends_with('\n') {
+        item.insert(0, '\n');
+    }
+    let at = offs[end_ln];
+    Some((at, at, item))
+}
+
 // ------------------------------------------------------------------
 // View — renders inside the workspace for `.base` documents.
 // ------------------------------------------------------------------
@@ -3439,16 +3505,17 @@ impl Render for BaseView {
         // Toolbar row: view switcher on the left, "new note" on the
         // right. Views only appear when the spec declares >1.
         let mut tabs = h_flex().gap_1();
-        if computed.view_names.len() > 1 {
+        let view_icon = |kind: Option<&str>| match kind {
+            Some("cards") | Some("gallery") => assets::IconName::GalleryVerticalEnd,
+            Some("kanban") | Some("board") => assets::IconName::SquareKanban,
+            Some("calendar") => assets::IconName::Calendar,
+            Some("list") => assets::IconName::List,
+            _ => assets::IconName::Table,
+        };
+        if computed.view_names.len() > 1 || matches!(self.spec_src, SpecSrc::Doc(_)) {
             for (ix, name) in computed.view_names.iter().enumerate() {
                 let selected = ix == self.view_ix;
-                let icon = match computed.view_kinds.get(ix).map(String::as_str) {
-                    Some("cards") | Some("gallery") => assets::IconName::GalleryVerticalEnd,
-                    Some("kanban") | Some("board") => assets::IconName::SquareKanban,
-                    Some("calendar") => assets::IconName::Calendar,
-                    Some("list") => assets::IconName::List,
-                    _ => assets::IconName::Table,
-                };
+                let icon = view_icon(computed.view_kinds.get(ix).map(String::as_str));
                 tabs = tabs.child(
                     div()
                         .id(("base-view", ix))
@@ -3485,6 +3552,108 @@ impl Render for BaseView {
                                     cx.notify();
                                 });
                             }
+                        }),
+                );
+            }
+            // `+` tab — append a fresh view to the spec (Obsidian's
+            // "New view" affordance), then select it.
+            if matches!(self.spec_src, SpecSrc::Doc(_)) {
+                let this = this.clone();
+                let names = computed.view_names.clone();
+                tabs = tabs.child(
+                    div()
+                        .id("base-add-view")
+                        .px_2()
+                        .py_0p5()
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .hover(|s| s.text_color(theme.accent))
+                        .child(Icon::new(assets::IconName::Plus).size_3p5())
+                        .on_click(move |_, window, cx| {
+                            let this = this.clone();
+                            let taken = names.clone();
+                            window.open_dialog(cx, move |dialog, _window, _cx| {
+                                let theme = _cx.theme();
+                                let mut list = v_flex().w_full().py_1();
+                                for (ix, (label, kind)) in [
+                                    ("Table", "table"),
+                                    ("Cards", "cards"),
+                                    ("Board", "board"),
+                                    ("List", "list"),
+                                    ("Calendar", "calendar"),
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                {
+                                    let this = this.clone();
+                                    let taken = taken.clone();
+                                    list = list.child(
+                                        div()
+                                            .id(("view-pick", ix))
+                                            .w_full()
+                                            .px_3()
+                                            .py_1p5()
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(theme.muted))
+                                            .child(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(
+                                                        Icon::new(view_icon(Some(kind)))
+                                                            .size_3p5()
+                                                            .text_color(theme.muted_foreground),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(theme.foreground)
+                                                            .child(label),
+                                                    ),
+                                            )
+                                            .on_click(move |_, window, cx| {
+                                                this.update(cx, |view, cx| {
+                                                    let mut name = label.to_string();
+                                                    let mut n = 2;
+                                                    while taken.iter().any(|t| t == &name) {
+                                                        name = format!("{label} {n}");
+                                                        n += 1;
+                                                    }
+                                                    let new_ix = taken.len();
+                                                    if let SpecSrc::Doc(doc) = &view.spec_src {
+                                                        let key = doc
+                                                            .read(cx)
+                                                            .path
+                                                            .to_string_lossy()
+                                                            .to_string();
+                                                        doc.update(cx, |doc, cx| {
+                                                            doc.add_base_view(
+                                                                &name, kind, window, cx,
+                                                            );
+                                                        });
+                                                        view.view_ix = new_ix;
+                                                        view.sort = None;
+                                                        if let Some(ws) = view.workspace.upgrade() {
+                                                            ws.update(cx, |ws, _cx| {
+                                                                ws.remember_base_view(key, new_ix);
+                                                            });
+                                                        }
+                                                    }
+                                                    view.doc_epoch += 1;
+                                                    cx.notify();
+                                                });
+                                                window.close_dialog(cx);
+                                            }),
+                                    );
+                                }
+                                dialog
+                                    .title("New view")
+                                    .w(px(240.))
+                                    .overlay_closable(true)
+                                    .child(list)
+                            });
                         }),
                 );
             }
@@ -4945,5 +5114,29 @@ views:
             super::reorder_order(bare, 0, &cols(&["file.name", "status"])).unwrap(),
         );
         assert!(out.contains("    order:\n      - file.name\n      - status\n"));
+    }
+
+    #[test]
+    fn splice_view() {
+        let apply =
+            |src: &str, r: (usize, usize, String)| format!("{}{}{}", &src[..r.0], r.2, &src[r.1..]);
+        // Appends after the last item, before the next top-level key.
+        let spec = "views:\n  - type: table\n    name: All\nfilters: x\n";
+        let out = apply(spec, super::splice_view(spec, "Board", "board").unwrap());
+        assert!(out.contains("  - type: board\n    name: Board\nfilters: x\n"));
+        // Names needing quotes are quoted.
+        let out = apply(
+            spec,
+            super::splice_view(spec, "A \"weird\" name", "list").unwrap(),
+        );
+        assert!(out.contains("name: \"A \\\"weird\\\" name\""));
+        // No `views:` key — one is appended at the end.
+        let bare = "filters: 'file.ext == \"md\"'\n";
+        let out = apply(bare, super::splice_view(bare, "All", "table").unwrap());
+        assert!(out.ends_with("views:\n  - type: table\n    name: All\n"));
+        // Empty `views:` block still gets a well-formed item.
+        let empty = "views:\n";
+        let out = apply(empty, super::splice_view(empty, "Cards", "cards").unwrap());
+        assert!(out.contains("  - type: cards\n    name: Cards\n"));
     }
 }
