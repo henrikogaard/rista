@@ -28,6 +28,9 @@ struct GNode {
     vel: Point<f32>,
     degree: usize,
     ghost: bool,
+    /// Attachment file (image) — Obsidian's "Attachments" display
+    /// option: smaller, info-tinted, still a real node you can open.
+    attachment: bool,
     /// Pinned nodes (the local-graph center) don't move under layout.
     pinned: bool,
 }
@@ -128,6 +131,27 @@ impl GraphView {
                 vel: point(0., 0.),
                 degree: 0,
                 ghost: false,
+                attachment: false,
+                pinned: false,
+            });
+        }
+        // Attachments — every image in the vault gets a node (Obsidian's
+        // attachments toggle); notes embed them through the same edges.
+        for path in vault.images.borrow().values() {
+            let ix = nodes.len();
+            by_path.insert(path.clone(), ix);
+            nodes.push(GNode {
+                path: Some(path.clone()),
+                label: path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+                    .into(),
+                pos: point(0., 0.),
+                vel: point(0., 0.),
+                degree: 0,
+                ghost: false,
+                attachment: true,
                 pinned: false,
             });
         }
@@ -173,6 +197,7 @@ impl GraphView {
                         vel: point(0., 0.),
                         degree: 0,
                         ghost: true,
+                        attachment: false,
                         pinned: false,
                     });
                     ix
@@ -532,6 +557,8 @@ impl Focusable for GraphView {
 struct Painted {
     nodes: Vec<(Point<Pixels>, Pixels)>, // center, radius
     ghost: Vec<bool>,
+    /// Image files — Obsidian's attachments display option.
+    attachment: Vec<bool>,
     lit: Vec<bool>,
     /// Per-node opacity — local mode fades the wider map, hover dims
     /// non-neighbours further.
@@ -552,6 +579,7 @@ impl Render for GraphView {
         let positions: Vec<Point<f32>> = self.nodes.iter().map(|n| n.pos).collect();
         let degrees: Vec<usize> = self.nodes.iter().map(|n| n.degree).collect();
         let ghosts: Vec<bool> = self.nodes.iter().map(|n| n.ghost).collect();
+        let attachments: Vec<bool> = self.nodes.iter().map(|n| n.attachment).collect();
         let lit = self.lit();
         let hovered = self.hovered;
         // Base fade — filter matches bright, or local depth rings
@@ -580,6 +608,8 @@ impl Render for GraphView {
         let node_fill = theme.primary;
         let node_hover = theme.primary_hover;
         let ghost_fill = theme.muted_foreground.opacity(0.45);
+        // Attachments read as files, not notes — info tint, a bit dimmer.
+        let attach_fill = theme.info.opacity(0.75);
         let label_color = theme.muted_foreground;
 
         // Screen geometry for hit tests/labels needs the painted bounds —
@@ -598,13 +628,20 @@ impl Render for GraphView {
                         cyp + px(pos.y * scale + offset.y),
                     );
                     let r = (4. + (degrees[ix] as f32).sqrt() * 1.6)
-                        * if ghosts[ix] { 0.7 } else { 1. }
+                        * if ghosts[ix] {
+                            0.7
+                        } else if attachments[ix] {
+                            0.8
+                        } else {
+                            1.
+                        }
                         * scale;
                     nodes_px.push((c, px(r.max(2.5))));
                 }
                 Painted {
                     nodes: nodes_px,
                     ghost: ghosts,
+                    attachment: attachments,
                     lit,
                     fade,
                     ring,
@@ -688,6 +725,8 @@ impl Render for GraphView {
                     let is_hover = hovered == Some(ix);
                     let color = if painted.ghost[ix] {
                         ghost_fill
+                    } else if painted.attachment[ix] {
+                        attach_fill
                     } else if is_hover {
                         node_hover
                     } else {
@@ -695,7 +734,8 @@ impl Render for GraphView {
                     };
                     let color = color.opacity(painted.fade[ix]);
                     if painted.ring[ix] {
-                        // Halo ring — the local center / active note.
+                        // Halo ring — the local center / active note;
+                        // it fades with its node under the filter.
                         window.paint_quad(gpui::PaintQuad {
                             bounds: Bounds {
                                 origin: point(c.x - *r - px(3.), c.y - *r - px(3.)),
@@ -704,7 +744,7 @@ impl Render for GraphView {
                             corner_radii: Corners::all(*r + px(3.)),
                             background: gpui::transparent_black().into(),
                             border_widths: Edges::all(px(1.5)),
-                            border_color: node_hover,
+                            border_color: node_hover.opacity(painted.fade[ix]),
                             border_style: BorderStyle::default(),
                         });
                     }
@@ -927,7 +967,10 @@ impl Render for GraphView {
                         format!(
                             "{} matching · {} notes · {} links",
                             matches,
-                            self.nodes.iter().filter(|n| !n.ghost).count(),
+                            self.nodes
+                                .iter()
+                                .filter(|n| !n.ghost && !n.attachment)
+                                .count(),
                             self.edges.len()
                         )
                     } else {
@@ -935,12 +978,18 @@ impl Render for GraphView {
                             Some(c) => format!(
                                 "local graph · {} · {} notes · {} links",
                                 self.nodes[c].label,
-                                self.nodes.iter().filter(|n| !n.ghost).count(),
+                                self.nodes
+                                    .iter()
+                                    .filter(|n| !n.ghost && !n.attachment)
+                                    .count(),
                                 self.edges.len()
                             ),
                             None => format!(
                                 "{} notes · {} links · scroll to zoom, drag to pan",
-                                self.nodes.iter().filter(|n| !n.ghost).count(),
+                                self.nodes
+                                    .iter()
+                                    .filter(|n| !n.ghost && !n.attachment)
+                                    .count(),
                                 self.edges.len()
                             ),
                         }
