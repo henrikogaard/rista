@@ -1571,6 +1571,9 @@ struct ViewSpec {
     /// Cards: `imageAspectRatio:`/`image_aspect_ratio` — the cover
     /// area's width/height ratio instead of the fixed strip height.
     image_aspect: Option<f64>,
+    /// Tables: `columnSize: {prop: px}` — per-column pixel widths
+    /// overriding the grid default (Obsidian view key).
+    col_size: BTreeMap<String, f64>,
     columns: Vec<String>,
     sort: Vec<SortKey>,
     limit: Option<usize>,
@@ -1783,6 +1786,16 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 image_aspect: ["imageAspectRatio", "image_aspect_ratio"]
                     .iter()
                     .find_map(|k| getv(k).and_then(|v| v.as_f64())),
+                col_size: ["columnSize", "column_size"]
+                    .iter()
+                    .find_map(|k| getv(k))
+                    .and_then(|v| v.as_mapping())
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_f64()?)))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             });
         }
     }
@@ -1802,6 +1815,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             image_prop: None,
             image_fit: None,
             image_aspect: None,
+            col_size: BTreeMap::new(),
             summaries: Vec::new(),
         });
     }
@@ -1841,6 +1855,16 @@ fn bool_icon(checked: bool, muted: Hsla, accent: Hsla) -> AnyElement {
     .size(px(13.))
     .text_color(if checked { accent } else { muted })
     .into_any_element()
+}
+
+/// Table column width — `columnSize: {prop: px}` (Obsidian) pins a
+/// column; otherwise the first column flexes and the rest hold 140px.
+fn sized_cell<T: gpui::Styled>(d: T, computed: &Computed, cix: usize) -> T {
+    match computed.col_size.get(cix).copied().flatten() {
+        Some(w) => d.w(px(w)).flex_none(),
+        None if cix == 0 => d.flex_1(),
+        None => d.w(px(140.)).flex_none(),
+    }
 }
 
 /// "name: value" property cell for cards/list views — bools render
@@ -2004,6 +2028,9 @@ struct Computed {
     image_fit: Option<String>,
     /// Selected view's `imageAspectRatio:` for card art.
     image_aspect: Option<f64>,
+    /// Selected view's `columnSize:` resolved per column index —
+    /// `Some(px)` pins that column's width.
+    col_size: Vec<Option<f32>>,
     error: Option<String>,
 }
 
@@ -2495,7 +2522,7 @@ fn compute(
         })
         .collect();
 
-    let headers = columns
+    let headers: Vec<String> = columns
         .iter()
         .map(|c| {
             spec.properties
@@ -2552,6 +2579,20 @@ fn compute(
     let group_ix = group_col.and_then(|g| columns.iter().position(|c| *c == g));
 
     let available = available_columns(&all_rows, &spec.formulas, &columns);
+    // `columnSize:` keys may name the column (`file.mtime`,
+    // `note.status`, `formula.x`) or the property the header
+    // shows (`status`).
+    let col_size: Vec<Option<f32>> = columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            view.col_size
+                .get(c.as_str())
+                .or_else(|| view.col_size.get(c.strip_prefix("note.").unwrap_or(c)))
+                .or_else(|| headers.get(i).and_then(|h| view.col_size.get(h)))
+                .map(|w| *w as f32)
+        })
+        .collect();
     Computed {
         headers,
         columns,
@@ -2572,6 +2613,7 @@ fn compute(
         available,
         image_fit: view.image_fit.clone(),
         image_aspect: view.image_aspect,
+        col_size,
         error,
     }
 }
@@ -3402,6 +3444,7 @@ impl BaseView {
                 summaries: Vec::new(),
                 image_fit: None,
                 image_aspect: None,
+                col_size: Vec::new(),
                 error: Some(
                     spec.error
                         .clone()
@@ -4107,10 +4150,7 @@ impl Render for BaseView {
                 let this_menu = this.clone();
                 let this_drag = this.clone();
                 let sorted = self.sort.filter(|(c, _)| *c == ix);
-                div()
-                    .id(("base-h", ix))
-                    .when(ix == 0, |d| d.flex_1())
-                    .when(ix > 0, |d| d.w(px(140.)).flex_none())
+                sized_cell(div().id(("base-h", ix)), &computed, ix)
                     .text_xs()
                     .font_semibold()
                     .text_color(theme.muted_foreground)
@@ -4944,61 +4984,55 @@ impl Render for BaseView {
                                 if let Some(target) = &cell.link {
                                     let target = target.clone();
                                     let workspace = self.workspace.clone();
-                                    div()
-                                        .id(("base-cell-link", ix * 4096 + cix))
-                                        .when(cix == 0, |d| d.flex_1())
-                                        .when(cix > 0, |d| d.w(px(140.)).flex_none())
-                                        .text_sm()
-                                        .truncate()
-                                        .text_color(theme.accent)
-                                        .cursor_pointer()
-                                        .on_click(move |ev, window, cx| {
-                                            cx.stop_propagation();
-                                            open_path_click(
-                                                &workspace,
-                                                target.clone(),
-                                                ev,
-                                                window,
-                                                cx,
-                                            )
-                                        })
-                                        .child(cell.text.clone())
-                                        .into_any_element()
+                                    sized_cell(
+                                        div().id(("base-cell-link", ix * 4096 + cix)),
+                                        &computed,
+                                        cix,
+                                    )
+                                    .text_sm()
+                                    .truncate()
+                                    .text_color(theme.accent)
+                                    .cursor_pointer()
+                                    .on_click(move |ev, window, cx| {
+                                        cx.stop_propagation();
+                                        open_path_click(&workspace, target.clone(), ev, window, cx)
+                                    })
+                                    .child(cell.text.clone())
+                                    .into_any_element()
                                 } else if let Some(prop) = editable_prop(cix) {
                                     let path = row.path.clone();
                                     let current = cell.text.clone();
                                     let workspace = self.workspace.clone();
-                                    div()
-                                        .id(("base-cell", ix * 4096 + cix))
-                                        .when(cix == 0, |d| d.flex_1())
-                                        .when(cix > 0, |d| d.w(px(140.)).flex_none())
-                                        .text_sm()
-                                        .truncate()
-                                        .text_color(theme.foreground)
-                                        .cursor_pointer()
-                                        .on_click(move |_, window, cx| {
-                                            cx.stop_propagation();
-                                            let _ = workspace.update(cx, |ws, cx| {
-                                                ws.edit_note_property(
-                                                    path.clone(),
-                                                    prop.clone(),
-                                                    current.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                        })
-                                        .child(match &cell.lit {
-                                            Lit::Bool(b) => {
-                                                bool_icon(*b, theme.muted_foreground, theme.accent)
-                                            }
-                                            _ => cell.text.clone().into_any_element(),
-                                        })
-                                        .into_any_element()
+                                    sized_cell(
+                                        div().id(("base-cell", ix * 4096 + cix)),
+                                        &computed,
+                                        cix,
+                                    )
+                                    .text_sm()
+                                    .truncate()
+                                    .text_color(theme.foreground)
+                                    .cursor_pointer()
+                                    .on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        let _ = workspace.update(cx, |ws, cx| {
+                                            ws.edit_note_property(
+                                                path.clone(),
+                                                prop.clone(),
+                                                current.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    })
+                                    .child(match &cell.lit {
+                                        Lit::Bool(b) => {
+                                            bool_icon(*b, theme.muted_foreground, theme.accent)
+                                        }
+                                        _ => cell.text.clone().into_any_element(),
+                                    })
+                                    .into_any_element()
                                 } else {
-                                    div()
-                                        .when(cix == 0, |d| d.flex_1())
-                                        .when(cix > 0, |d| d.w(px(140.)).flex_none())
+                                    sized_cell(div(), &computed, cix)
                                         .text_sm()
                                         .truncate()
                                         .text_color(theme.foreground)
@@ -5061,9 +5095,7 @@ impl Render for BaseView {
                     .border_color(theme.border)
                     .children(computed.headers.iter().enumerate().map(|(ix, _)| {
                         let cell = computed.summaries.iter().find(|(c, _, _)| *c == ix);
-                        div()
-                            .when(ix == 0, |d| d.flex_1())
-                            .when(ix > 0, |d| d.w(px(140.)).flex_none())
+                        sized_cell(div(), &computed, ix)
                             .text_xs()
                             .truncate()
                             .text_color(theme.muted_foreground)
