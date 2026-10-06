@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -50,6 +51,10 @@ pub struct GraphView {
     local: Option<usize>,
     /// The workspace's active document — painted with a halo ring.
     pub(crate) active: Option<PathBuf>,
+    /// Graph search — non-matching nodes fade out.
+    filter: String,
+    filter_input: Entity<InputState>,
+    _filter_sub: gpui::Subscription,
     hovered: Option<usize>,
     scale: f32,
     /// Pan offset in screen pixels.
@@ -172,6 +177,28 @@ impl GraphView {
         (nodes, by_path, edges, adjacent, mutual)
     }
 
+    /// The filter input + its change subscription — every graph owns
+    /// one; non-matching nodes fade out like Obsidian's graph search.
+    fn make_filter(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<InputState>, gpui::Subscription) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter…"));
+        let sub = cx.subscribe(&input, |this, input, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.filter = input.read(cx).value().to_lowercase();
+                cx.notify();
+            }
+        });
+        (input, sub)
+    }
+
+    /// ⌘F while the graph is open — focus the filter field.
+    pub(crate) fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter_input
+            .update(cx, |input, cx| input.focus(window, cx));
+    }
+
     pub fn new(
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
@@ -179,6 +206,7 @@ impl GraphView {
         cx: &mut Context<Self>,
     ) -> Self {
         let (nodes, _by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
+        let (filter_input, _filter_sub) = Self::make_filter(window, cx);
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -189,6 +217,9 @@ impl GraphView {
             mutual,
             local: None,
             active: None,
+            filter: String::new(),
+            filter_input,
+            _filter_sub,
             hovered: None,
             scale: 1.0,
             offset: point(0., 0.),
@@ -214,6 +245,7 @@ impl GraphView {
         cx: &mut Context<Self>,
     ) -> Self {
         let (mut nodes, by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
+        let (filter_input, _filter_sub) = Self::make_filter(window, cx);
         let local = by_path.get(center).copied();
         if let Some(ix) = local {
             nodes[ix].pos = point(0., 0.);
@@ -229,6 +261,9 @@ impl GraphView {
             mutual,
             local,
             active: Some(center.to_path_buf()),
+            filter: String::new(),
+            filter_input,
+            _filter_sub,
             hovered: None,
             // Slightly zoomed in — the neighbourhood is what matters.
             scale: 1.4,
@@ -477,10 +512,23 @@ impl Render for GraphView {
         // wider map fades back (Obsidian's local-graph emphasis).
         let fade: Vec<f32> = (0..self.nodes.len())
             .map(|ix| {
-                let base = match self.local {
-                    Some(c) if ix == c || self.adjacent[c].contains(&ix) => 1.0,
-                    Some(_) => 0.18,
-                    None => 1.0,
+                let base = if !self.filter.is_empty() {
+                    // Filter dominates — matching stems stay bright.
+                    if self.nodes[ix]
+                        .label
+                        .to_lowercase()
+                        .contains(self.filter.as_str())
+                    {
+                        1.0
+                    } else {
+                        0.12
+                    }
+                } else {
+                    match self.local {
+                        Some(c) if ix == c || self.adjacent[c].contains(&ix) => 1.0,
+                        Some(_) => 0.18,
+                        None => 1.0,
+                    }
                 };
                 if hovered.is_some() && !lit[ix] {
                     base * 0.35
@@ -807,19 +855,42 @@ impl Render for GraphView {
                     .left_4()
                     .text_xs()
                     .text_color(theme.muted_foreground.opacity(0.7))
-                    .child(match self.local {
-                        Some(c) => format!(
-                            "local graph · {} · {} notes · {} links",
-                            self.nodes[c].label,
+                    .child(if !self.filter.is_empty() {
+                        let matches = self
+                            .nodes
+                            .iter()
+                            .filter(|n| n.label.to_lowercase().contains(self.filter.as_str()))
+                            .count();
+                        format!(
+                            "{} matching · {} notes · {} links",
+                            matches,
                             self.nodes.iter().filter(|n| !n.ghost).count(),
                             self.edges.len()
-                        ),
-                        None => format!(
-                            "{} notes · {} links · scroll to zoom, drag to pan",
-                            self.nodes.iter().filter(|n| !n.ghost).count(),
-                            self.edges.len()
-                        ),
+                        )
+                    } else {
+                        match self.local {
+                            Some(c) => format!(
+                                "local graph · {} · {} notes · {} links",
+                                self.nodes[c].label,
+                                self.nodes.iter().filter(|n| !n.ghost).count(),
+                                self.edges.len()
+                            ),
+                            None => format!(
+                                "{} notes · {} links · scroll to zoom, drag to pan",
+                                self.nodes.iter().filter(|n| !n.ghost).count(),
+                                self.edges.len()
+                            ),
+                        }
                     }),
+            )
+            .child(
+                // Filter — top-left, small and quiet; ⌘F focuses it.
+                div()
+                    .absolute()
+                    .top_2()
+                    .left_3()
+                    .w(px(170.))
+                    .child(Input::new(&self.filter_input).appearance(true).xsmall()),
             )
             .child(
                 div().absolute().top_2().right_3().child(

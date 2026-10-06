@@ -759,6 +759,11 @@ impl Workspace {
     /// so its find bar opens even when the workspace held focus. In
     /// Source the YAML editor's own binding handles it first.
     fn on_find(&mut self, _: &input::Search, window: &mut Window, cx: &mut Context<Self>) {
+        // Graph open → ⌘F is the node filter, not the note find bar.
+        if let Some(graph) = self.graph.clone() {
+            graph.update(cx, |g, cx| g.focus_filter(window, cx));
+            return;
+        }
         if self.settings.view_mode != ViewMode::Source {
             if let Some(base) = self
                 .active
