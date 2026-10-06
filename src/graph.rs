@@ -6,7 +6,7 @@
 //! to open its note.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -44,6 +44,8 @@ pub struct GraphView {
     edges: Vec<(usize, usize)>,
     /// Adjacency list for hover highlighting.
     adjacent: Vec<Vec<usize>>,
+    /// Edges whose endpoints link both ways — arrowheads at both ends.
+    mutual: HashSet<usize>,
     /// Local-graph center node (pinned at the origin, emphasised).
     local: Option<usize>,
     /// The workspace's active document — painted with a halo ring.
@@ -71,6 +73,8 @@ type BuiltGraph = (
     HashMap<PathBuf, usize>,
     Vec<(usize, usize)>,
     Vec<Vec<usize>>,
+    // Edge indices whose endpoints link both ways.
+    HashSet<usize>,
 );
 
 impl GraphView {
@@ -82,6 +86,8 @@ impl GraphView {
         let mut by_path: HashMap<PathBuf, usize> = HashMap::new();
         let mut ghosts: HashMap<String, usize> = HashMap::new();
         let mut edges: Vec<(usize, usize)> = Vec::new();
+        let mut mutual: HashSet<usize> = HashSet::new();
+        let mut edge_ix: HashMap<(usize, usize), usize> = HashMap::new();
 
         for path in &vault.notes {
             let ix = nodes.len();
@@ -107,15 +113,30 @@ impl GraphView {
             let from = by_path[path];
             let from_dir = path.parent().unwrap_or(std::path::Path::new("/"));
             let (resolved, unresolved) = vault.outgoing_from(&text, from_dir);
+            let link = |from: usize,
+                        to: usize,
+                        edges: &mut Vec<(usize, usize)>,
+                        mutual: &mut HashSet<usize>,
+                        edge_ix: &mut HashMap<(usize, usize), usize>,
+                        nodes: &mut Vec<GNode>| {
+                if to == from || edge_ix.contains_key(&(from, to)) {
+                    return;
+                }
+                if let Some(&ix) = edge_ix.get(&(to, from)) {
+                    // Both directions link — arrowheads on both rims.
+                    mutual.insert(ix);
+                    return;
+                }
+                edge_ix.insert((from, to), edges.len());
+                edges.push((from, to));
+                nodes[from].degree += 1;
+                nodes[to].degree += 1;
+            };
             for target in resolved {
                 let Some(&to) = by_path.get(&target) else {
                     continue;
                 };
-                if to != from && !edges.contains(&(from, to)) && !edges.contains(&(to, from)) {
-                    edges.push((from, to));
-                    nodes[from].degree += 1;
-                    nodes[to].degree += 1;
-                }
+                link(from, to, &mut edges, &mut mutual, &mut edge_ix, &mut nodes);
             }
             for name in unresolved {
                 let to = *ghosts.entry(name.clone()).or_insert_with(|| {
@@ -131,11 +152,7 @@ impl GraphView {
                     });
                     ix
                 });
-                if to != from && !edges.contains(&(from, to)) && !edges.contains(&(to, from)) {
-                    edges.push((from, to));
-                    nodes[from].degree += 1;
-                    nodes[to].degree += 1;
-                }
+                link(from, to, &mut edges, &mut mutual, &mut edge_ix, &mut nodes);
             }
         }
 
@@ -152,7 +169,7 @@ impl GraphView {
             let t = ix as f32 / n * std::f32::consts::TAU;
             node.pos = point(radius * t.cos(), radius * t.sin());
         }
-        (nodes, by_path, edges, adjacent)
+        (nodes, by_path, edges, adjacent, mutual)
     }
 
     pub fn new(
@@ -161,7 +178,7 @@ impl GraphView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (nodes, _by_path, edges, adjacent) = Self::build(vault.read(cx));
+        let (nodes, _by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -169,6 +186,7 @@ impl GraphView {
             nodes,
             edges,
             adjacent,
+            mutual,
             local: None,
             active: None,
             hovered: None,
@@ -195,7 +213,7 @@ impl GraphView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (mut nodes, by_path, edges, adjacent) = Self::build(vault.read(cx));
+        let (mut nodes, by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
         let local = by_path.get(center).copied();
         if let Some(ix) = local {
             nodes[ix].pos = point(0., 0.);
@@ -208,6 +226,7 @@ impl GraphView {
             nodes,
             edges,
             adjacent,
+            mutual,
             local,
             active: Some(center.to_path_buf()),
             hovered: None,
@@ -228,7 +247,7 @@ impl GraphView {
     /// Rebuild the node set after vault changes — positions carry over
     /// by path (and ghosts by label) so the map doesn't jump.
     pub(crate) fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let (mut nodes, _by_path, edges, adjacent) = Self::build(self.vault.read(cx));
+        let (mut nodes, _by_path, edges, adjacent, mutual) = Self::build(self.vault.read(cx));
         let mut old_pos: HashMap<String, Point<f32>> = HashMap::new();
         for n in &self.nodes {
             let key = n
@@ -265,6 +284,7 @@ impl GraphView {
         self.nodes = nodes;
         self.edges = edges;
         self.adjacent = adjacent;
+        self.mutual = mutual;
         self.steps = STEPS_INIT;
         for _ in 0..self.steps {
             self.step();
@@ -447,6 +467,7 @@ impl Render for GraphView {
         let scale = self.scale;
         let offset = self.offset;
         let edges = self.edges.clone();
+        let mutual = self.mutual.clone();
         let positions: Vec<Point<f32>> = self.nodes.iter().map(|n| n.pos).collect();
         let degrees: Vec<usize> = self.nodes.iter().map(|n| n.degree).collect();
         let ghosts: Vec<bool> = self.nodes.iter().map(|n| n.ghost).collect();
@@ -551,6 +572,38 @@ impl Render for GraphView {
                 if any_hot {
                     if let Ok(path) = hot.build() {
                         window.paint_path(path, edge_lit);
+                    }
+                    // Arrowheads on lit edges only — direction reads
+                    // while inspecting, zero clutter at rest.
+                    for (eix, (a, b)) in edges.iter().enumerate() {
+                        if !(painted.lit[*a] || painted.lit[*b]) {
+                            continue;
+                        }
+                        let (ca, ra) = painted.nodes[*a];
+                        let (cb, rb) = painted.nodes[*b];
+                        let dx = f32::from(cb.x - ca.x);
+                        let dy = f32::from(cb.y - ca.y);
+                        let d = (dx * dx + dy * dy).sqrt().max(1.);
+                        let (ux, uy) = (dx / d, dy / d);
+                        // Tip on the target's rim, wings behind it.
+                        for (tip_at, rim) in [(cb, rb)]
+                            .into_iter()
+                            .chain(mutual.contains(&eix).then_some((ca, ra)))
+                        {
+                            let r = f32::from(rim);
+                            let (ux, uy) = if tip_at == cb { (ux, uy) } else { (-ux, -uy) };
+                            let tip = point(tip_at.x - px(ux * r), tip_at.y - px(uy * r));
+                            let (wx, wy) = (-uy, ux);
+                            let back = point(tip.x - px(ux * 7.), tip.y - px(uy * 7.));
+                            let mut arrow = gpui::PathBuilder::fill();
+                            arrow.move_to(tip);
+                            arrow.line_to(point(back.x + px(wx * 2.6), back.y + px(wy * 2.6)));
+                            arrow.line_to(point(back.x - px(wx * 2.6), back.y - px(wy * 2.6)));
+                            arrow.close();
+                            if let Ok(path) = arrow.build() {
+                                window.paint_path(path, edge_lit);
+                            }
+                        }
                     }
                 }
                 // Nodes — ghosts first, then normal, hovered last.
