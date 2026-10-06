@@ -43,6 +43,15 @@ pub struct Vault {
     /// Lowercase `aliases:` frontmatter values → the note declaring them,
     /// so `[[Alias]]` resolves like Obsidian. Rebuilt with the index.
     pub aliases: std::collections::HashMap<String, PathBuf>,
+    /// `folder/note` (extensionless, lowercase) → note — the full-path
+    /// branch of wikilink resolution without a linear scan.
+    by_rel: std::collections::HashMap<String, PathBuf>,
+    /// Lowercase file stem → note — basename resolution. First note wins
+    /// on duplicates, matching the old `.find()` scan order.
+    by_stem: std::collections::HashMap<String, PathBuf>,
+    /// Per-note mtime → parsed `aliases:` values. Lets a refresh reuse
+    /// frontmatter without re-reading every file's body.
+    alias_cache: std::collections::HashMap<PathBuf, (std::time::SystemTime, Vec<String>)>,
     /// Starred notes (absolute path strings) — mirrors
     /// `Settings::starred` so `.base` `file.starred` can read it
     /// without touching the workspace borrow.
@@ -54,6 +63,11 @@ pub struct Vault {
     expanded: std::collections::BTreeSet<String>,
     /// File ordering inside each folder — dirs stay alphabetical.
     pub tree_sort: TreeSort,
+    /// Templates folder relative to the root — its notes stay visible
+    /// and linkable but their scaffolding (`{{cursor}}` tasks, tags,
+    /// aliases) doesn't pollute the vault indexes. Mirrors
+    /// `Settings::templates_dir`, set by the workspace on open.
+    pub templates_dir: String,
     _tree_sub: Subscription,
 }
 
@@ -78,9 +92,13 @@ impl Vault {
             tags: Vec::new(),
             tasks: Vec::new(),
             aliases: std::collections::HashMap::new(),
+            by_rel: std::collections::HashMap::new(),
+            by_stem: std::collections::HashMap::new(),
+            alias_cache: std::collections::HashMap::new(),
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
             tree_sort: TreeSort::default(),
+            templates_dir: "templates".to_string(),
             _tree_sub: tree_sub,
         }
     }
@@ -101,6 +119,9 @@ impl Vault {
         self.stop_watching();
         self.root = None;
         self.notes.clear();
+        self.by_rel.clear();
+        self.by_stem.clear();
+        self.aliases.clear();
         self.tree
             .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
         cx.notify();
@@ -112,16 +133,57 @@ impl Vault {
         };
         let items = mark_expanded(build_items(&root, 0, self.tree_sort), &self.expanded);
         let (notes, images) = collect_files(&root);
-        self.tags = crate::properties::vault_tags(&notes);
-        self.tasks = crate::properties::vault_tasks(&notes);
+        // Template files are scaffolding, not notes — they stay in the
+        // tree and resolve as links, but their tags/tasks/aliases don't
+        // index (a `- [ ] {{cursor}}` placeholder is not a vault task).
+        let tpl_root = root.join(&self.templates_dir);
+        let content: Vec<PathBuf> = notes
+            .iter()
+            .filter(|p| !p.starts_with(&tpl_root))
+            .cloned()
+            .collect();
+        self.tags = crate::properties::vault_tags(&content);
+        self.tasks = crate::properties::vault_tasks(&content);
+        // Link-resolution indexes + frontmatter aliases. Aliases are
+        // cached per note by mtime so a watcher refresh only re-reads
+        // files that actually changed instead of the whole vault.
+        self.by_rel.clear();
+        self.by_stem.clear();
         self.aliases.clear();
+        let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
+        self.alias_cache.retain(|p, _| note_set.contains(p));
         for note in &notes {
-            if note.extension().and_then(|e| e.to_str()) == Some("md") {
-                if let Ok(text) = std::fs::read_to_string(note) {
-                    for alias in crate::properties::frontmatter_aliases(&text) {
-                        self.aliases.insert(alias.to_lowercase(), note.clone());
+            let in_templates = note.starts_with(&tpl_root);
+            if let Some(rel) = note.strip_prefix(&root).ok().and_then(|rel| rel.to_str()) {
+                self.by_rel
+                    .insert(rel.trim_end_matches(".md").to_lowercase(), note.clone());
+            }
+            if let Some(stem) = note.file_stem().and_then(|s| s.to_str()) {
+                self.by_stem
+                    .entry(stem.to_lowercase())
+                    .or_insert_with(|| note.clone());
+            }
+            // `aliases:` only live in markdown frontmatter — `.base`
+            // files and templates get indexed above but skip the read.
+            if in_templates || note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let mtime = std::fs::metadata(note).and_then(|m| m.modified()).ok();
+            let aliases = match (mtime, self.alias_cache.get(note)) {
+                (Some(mt), Some((cached_mt, cached))) if *cached_mt == mt => cached.clone(),
+                _ => {
+                    let parsed = std::fs::read_to_string(note)
+                        .ok()
+                        .map(|text| crate::properties::frontmatter_aliases(&text))
+                        .unwrap_or_default();
+                    if let Some(mt) = mtime {
+                        self.alias_cache.insert(note.clone(), (mt, parsed.clone()));
                     }
+                    parsed
                 }
+            };
+            for alias in aliases {
+                self.aliases.insert(alias.to_lowercase(), note.clone());
             }
         }
         self.tree.update(cx, |tree, cx| {
@@ -206,30 +268,13 @@ impl Vault {
         if needle.is_empty() {
             return None;
         }
-        // Full path match first, then basename match.
-        self.notes
-            .iter()
-            .find(|p| {
-                p.strip_prefix(self.root.as_deref().unwrap_or(Path::new("")))
-                    .ok()
-                    .and_then(|rel| rel.to_str())
-                    .map(|s| s.trim_end_matches(".md").to_lowercase() == needle)
-                    .unwrap_or(false)
-            })
+        // Full path match first, then basename match, then aliases —
+        // O(1) lookups against the index built on the last refresh.
+        self.by_rel
+            .get(&needle)
+            .or_else(|| self.by_stem.get(&needle))
+            .or_else(|| self.aliases.get(&needle))
             .cloned()
-            .or_else(|| {
-                self.notes
-                    .iter()
-                    .find(|p| {
-                        p.file_stem()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_lowercase() == needle)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            })
-            // A literal note name wins; frontmatter aliases resolve last.
-            .or_else(|| self.aliases.get(&needle).cloned())
     }
 
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
