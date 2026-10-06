@@ -3442,6 +3442,27 @@ impl BaseView {
             .update(cx, |search, cx| search.focus(window, cx));
     }
 
+    /// Set the interactive header sort — `desc` `None` clears. On doc
+    /// specs the choice persists per (file, view, header-name) in
+    /// settings; the header name is robust to view reorders.
+    fn apply_header_sort(
+        &mut self,
+        ix: usize,
+        desc: Option<bool>,
+        header: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.sort = desc.map(|d| (ix, d));
+        if let SpecSrc::Doc(doc) = &self.spec_src {
+            let path = doc.read(cx).path.to_string_lossy().to_string();
+            if let (Some(ws), Some(vn)) = (self.workspace.upgrade(), self.spec_view_name(cx)) {
+                let saved = desc.map(|d| (header, d));
+                ws.update(cx, |ws, _cx| ws.remember_base_sort(path, vn, saved));
+            }
+        }
+        cx.notify();
+    }
+
     /// `![[db.base#View]]` — switch the embed to the named view
     /// (case-insensitive). Unknown names keep the first view.
     pub fn select_view_by_name(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -4669,25 +4690,12 @@ impl Render for BaseView {
                             // none → asc → desc → none
                             let h_name = h_name.clone();
                             this.update(cx, |view, cx| {
-                                view.sort = match view.sort {
-                                    Some((c, false)) if c == ix => Some((ix, true)),
+                                let next = match view.sort {
+                                    Some((c, false)) if c == ix => Some(true),
                                     Some((c, true)) if c == ix => None,
-                                    _ => Some((ix, false)),
+                                    _ => Some(false),
                                 };
-                                // Persist per file + view — the saved column
-                                // is the header name, robust to view reorders.
-                                if let SpecSrc::Doc(doc) = &view.spec_src {
-                                    let path = doc.read(cx).path.to_string_lossy().to_string();
-                                    if let (Some(ws), Some(vn)) =
-                                        (view.workspace.upgrade(), view.spec_view_name(cx))
-                                    {
-                                        let saved = view.sort.map(|(_, d)| (h_name.clone(), d));
-                                        ws.update(cx, |ws, _cx| {
-                                            ws.remember_base_sort(path, vn, saved)
-                                        });
-                                    }
-                                }
-                                cx.notify();
+                                view.apply_header_sort(ix, next, h_name.clone(), cx);
                             });
                         }
                     })
@@ -4737,7 +4745,45 @@ impl Render for BaseView {
                         let this = this_menu.clone();
                         let writable = matches!(self.spec_src, SpecSrc::Doc(_));
                         let col = computed.columns.get(ix).cloned().unwrap_or_default();
+                        let h_name = h.clone();
                         move |menu, _window, _cx| {
+                            let menu = menu
+                                .item(
+                                    PopupMenuItem::new("Sort ascending")
+                                        .icon(assets::IconName::ArrowDownAZ)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let h_name = h_name.clone();
+                                            move |_, _window, cx| {
+                                                let _ = this.update(cx, |view, cx| {
+                                                    view.apply_header_sort(
+                                                        ix,
+                                                        Some(false),
+                                                        h_name.clone(),
+                                                        cx,
+                                                    );
+                                                });
+                                            }
+                                        }),
+                                )
+                                .item(
+                                    PopupMenuItem::new("Sort descending")
+                                        .icon(assets::IconName::ArrowDownWideNarrow)
+                                        .on_click({
+                                            let this = this.clone();
+                                            let h_name = h_name.clone();
+                                            move |_, _window, cx| {
+                                                let _ = this.update(cx, |view, cx| {
+                                                    view.apply_header_sort(
+                                                        ix,
+                                                        Some(true),
+                                                        h_name.clone(),
+                                                        cx,
+                                                    );
+                                                });
+                                            }
+                                        }),
+                                );
                             if !writable || col == "file.name" {
                                 return menu;
                             }
