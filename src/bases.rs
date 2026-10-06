@@ -1561,6 +1561,10 @@ struct ViewSpec {
     /// Calendar: property the month grid buckets on
     /// (`date:`/`dateProperty:`/`date_property:`/`property:`).
     date_prop: Option<String>,
+    /// Cards: the property supplying the card image — Obsidian's
+    /// `image: note.cover` (bare `cover` also accepted). Empty → the
+    /// usual cover/banner/image key list applies.
+    image_prop: Option<String>,
     columns: Vec<String>,
     sort: Vec<SortKey>,
     limit: Option<usize>,
@@ -1764,6 +1768,9 @@ fn parse_spec(yaml: &str) -> BaseSpec {
                 limit,
                 filters: getv("filters").cloned(),
                 summaries,
+                image_prop: ["image", "imageProperty", "image_property"]
+                    .iter()
+                    .find_map(|k| getv(k).and_then(|v| v.as_str()).map(str::to_string)),
             });
         }
     }
@@ -1780,6 +1787,7 @@ fn parse_spec(yaml: &str) -> BaseSpec {
             sort: Vec::new(),
             limit: None,
             filters: None,
+            image_prop: None,
             summaries: Vec::new(),
         });
     }
@@ -1971,17 +1979,30 @@ fn cover_of(
     row: &RowData,
     root: &Path,
     images: &std::collections::HashMap<String, PathBuf>,
+    image_prop: Option<String>,
 ) -> Option<String> {
-    let raw = ["cover", "banner", "image", "cover_image"]
-        .iter()
-        .find_map(|key| match row.props.get(*key) {
+    // The view's `image:` key names the cover property (Obsidian's
+    // `image: note.cover`); without it the usual cover keys are probed.
+    let custom = image_prop
+        .as_deref()
+        .map(|p| p.trim().trim_start_matches("note.").to_string())
+        .filter(|p| !p.is_empty());
+    let prop_of = |key: &str| -> Option<String> {
+        match row.props.get(key) {
             Some(Lit::Str(s)) => Some(s.clone()),
             Some(Lit::List(items)) => items.iter().find_map(|i| match i {
                 Lit::Str(s) => Some(s.clone()),
                 _ => None,
             }),
             _ => None,
-        })?;
+        }
+    };
+    let raw = match &custom {
+        Some(key) => prop_of(key)?,
+        None => ["cover", "banner", "image", "cover_image"]
+            .iter()
+            .find_map(|k| prop_of(k))?,
+    };
     let raw = raw.trim();
     let raw = raw
         .strip_prefix("![[")
@@ -2288,7 +2309,7 @@ fn compute(
                 },
             )
             .collect();
-        let cover = cover_of(row, root, images);
+        let cover = cover_of(row, root, images, view.image_prop.clone());
         rows.push((row, cells, cover));
     }
 
