@@ -1864,8 +1864,9 @@ fn bool_icon(checked: bool, muted: Hsla, accent: Hsla) -> AnyElement {
 
 /// Table column width — `columnSize: {prop: px}` (Obsidian) pins a
 /// column; otherwise the first column flexes and the rest hold 140px.
-fn sized_cell<T: gpui::Styled>(d: T, computed: &Computed, cix: usize) -> T {
-    match computed.col_size.get(cix).copied().flatten() {
+/// `sizes` is `col_size` overlaid with any in-progress drag-resize.
+fn sized_cell<T: gpui::Styled>(d: T, sizes: &[Option<f32>], cix: usize) -> T {
+    match sizes.get(cix).copied().flatten() {
         Some(w) => d.w(px(w)).flex_none(),
         None if cix == 0 => d.flex_1(),
         None => d.w(px(140.)).flex_none(),
@@ -3847,6 +3848,9 @@ pub struct BaseView {
     search: Entity<InputState>,
     /// View-tab "Rename view…" dialog input.
     rename_input: Entity<InputState>,
+    /// In-progress column drag-resize: (column ix, grab x, start
+    /// width, live width). Written to `columnSize:` on release.
+    col_resize: Option<(usize, f32, f32, f32)>,
     notes_epoch: u64,
     doc_epoch: u64,
     cache_key: Option<(u64, u64, usize)>,
@@ -3939,6 +3943,7 @@ impl BaseView {
             sort: None,
             search,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
+            col_resize: None,
             notes_epoch: 0,
             doc_epoch: 0,
             cache_key: None,
@@ -4291,6 +4296,15 @@ impl Render for BaseView {
         let computed = self.computed(cx);
         let this = cx.entity();
 
+        // Effective column sizes — `columnSize:` overlaid with the
+        // live drag-resize width so the column tracks the pointer.
+        let mut eff_sizes = computed.col_size.clone();
+        if let Some((rix, _, _, w)) = self.col_resize {
+            if let Some(s) = eff_sizes.get_mut(rix) {
+                *s = Some(w);
+            }
+        }
+
         // Search box filter — whitespace-separated terms ANDed across
         // whatever the current view renders (table/cards/kanban/list/
         // calendar all iterate `visible`). `prop=value`, `prop!=value`,
@@ -4376,7 +4390,7 @@ impl Render for BaseView {
                                 style.border_color(cx.theme().accent)
                             })
                             .on_drop::<ViewDrag>(move |src: &ViewDrag, window, cx| {
-                                let _ = this.update(cx, |view, cx| {
+                                this.update(cx, |view, cx| {
                                     let SpecSrc::Doc(doc) = &view.spec_src else {
                                         return;
                                     };
@@ -4519,7 +4533,7 @@ impl Render for BaseView {
                                             let this = this.clone();
                                             let names = names.clone();
                                             move |_, window, cx| {
-                                                let _ = this.update(cx, |view, cx| {
+                                                this.update(cx, |view, cx| {
                                                     let mut name =
                                                         format!("{} copy", names[ix]);
                                                     let mut n = 2;
@@ -4897,7 +4911,7 @@ impl Render for BaseView {
                                             .on_click({
                                                 let this = this.clone();
                                                 move |_, window, cx| {
-                                                    let _ = this.update(cx, |view, cx| {
+                                                    this.update(cx, |view, cx| {
                                                         if let SpecSrc::Doc(doc) = &view.spec_src {
                                                             doc.update(cx, |doc, cx| {
                                                                 doc.set_base_view_key(
@@ -5553,7 +5567,9 @@ impl Render for BaseView {
                 let this_menu = this.clone();
                 let this_drag = this.clone();
                 let sorted = self.sort.filter(|(c, _)| *c == ix);
-                sized_cell(div().id(("base-h", ix)), &computed, ix)
+                let writable = matches!(self.spec_src, SpecSrc::Doc(_));
+                sized_cell(div().id(("base-h", ix)), &eff_sizes, ix)
+                    .relative()
                     .text_xs()
                     .font_semibold()
                     .text_color(theme.muted_foreground)
@@ -5564,6 +5580,39 @@ impl Render for BaseView {
                         Some(_) => format!("{h} ▲"),
                         None => h.clone(),
                     })
+                    // Drag-resize handle on the cell's right edge —
+                    // live width overlays `eff_sizes` while dragging,
+                    // `columnSize:` writes on release. Column 0 flexes,
+                    // so only sized columns offer it (Obsidian parity
+                    // for every column would need layout measurement).
+                    .when(
+                        writable && (ix != 0 || eff_sizes[ix].is_some()),
+                        |d| {
+                            let this = this.clone();
+                            let start_w = eff_sizes.get(ix).copied().flatten().unwrap_or(140.);
+                            d.child(
+                                div()
+                                    .id(("base-rs", ix))
+                                    .absolute()
+                                    .occlude()
+                                    .right_0()
+                                    .top_0()
+                                    .w(px(6.))
+                                    .h_full()
+                                    .cursor_col_resize()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        move |ev: &gpui::MouseDownEvent, _window, cx| {
+                                            let x = f32::from(ev.position.x);
+                                            this.update(cx, |view, _cx| {
+                                                view.col_resize = Some((ix, x, start_w, start_w));
+                                            });
+                                            cx.stop_propagation();
+                                        },
+                                    ),
+                            )
+                        },
+                    )
                     .on_click({
                         let h_name = h.clone();
                         move |_, _window, cx| {
@@ -5597,7 +5646,7 @@ impl Render for BaseView {
                             style.border_color(cx.theme().accent)
                         })
                         .on_drop::<ColDrag>(move |src: &ColDrag, window, cx| {
-                            let _ = this.update(cx, |view, cx| {
+                            this.update(cx, |view, cx| {
                                 let SpecSrc::Doc(doc) = &view.spec_src else {
                                     return;
                                 };
@@ -5637,7 +5686,7 @@ impl Render for BaseView {
                                             let this = this.clone();
                                             let h_name = h_name.clone();
                                             move |_, _window, cx| {
-                                                let _ = this.update(cx, |view, cx| {
+                                                this.update(cx, |view, cx| {
                                                     view.apply_header_sort(
                                                         ix,
                                                         Some(false),
@@ -5655,7 +5704,7 @@ impl Render for BaseView {
                                             let this = this.clone();
                                             let h_name = h_name.clone();
                                             move |_, _window, cx| {
-                                                let _ = this.update(cx, |view, cx| {
+                                                this.update(cx, |view, cx| {
                                                     view.apply_header_sort(
                                                         ix,
                                                         Some(true),
@@ -6106,7 +6155,7 @@ impl Render for BaseView {
                                 PopupMenuItem::new(format!("Hide {col}"))
                                     .icon(assets::IconName::EyeOff)
                                     .on_click(move |_, window, cx| {
-                                        let _ = this.update(cx, |view, cx| {
+                                        this.update(cx, |view, cx| {
                                             let SpecSrc::Doc(doc) = &view.spec_src else {
                                                 return;
                                             };
@@ -7011,7 +7060,7 @@ impl Render for BaseView {
                                 let this = this.clone();
                                 let gkey = gkey.clone();
                                 move |_, _window, cx| {
-                                    let _ = this.update(cx, |view, cx| {
+                                    this.update(cx, |view, cx| {
                                         if !view.collapsed_groups.insert(gkey.clone()) {
                                             view.collapsed_groups.remove(&gkey);
                                         }
@@ -7066,7 +7115,7 @@ impl Render for BaseView {
                                     let workspace = self.workspace.clone();
                                     sized_cell(
                                         div().id(("base-cell-link", ix * 4096 + cix)),
-                                        &computed,
+                                        &eff_sizes,
                                         cix,
                                     )
                                     .text_sm()
@@ -7085,7 +7134,7 @@ impl Render for BaseView {
                                     let workspace = self.workspace.clone();
                                     sized_cell(
                                         div().id(("base-cell", ix * 4096 + cix)),
-                                        &computed,
+                                        &eff_sizes,
                                         cix,
                                     )
                                     .text_sm()
@@ -7112,7 +7161,7 @@ impl Render for BaseView {
                                     })
                                     .into_any_element()
                                 } else {
-                                    sized_cell(div(), &computed, cix)
+                                    sized_cell(div(), &eff_sizes, cix)
                                         .text_sm()
                                         .truncate()
                                         .text_color(theme.foreground)
@@ -7175,7 +7224,7 @@ impl Render for BaseView {
                     .border_color(theme.border)
                     .children(computed.headers.iter().enumerate().map(|(ix, _)| {
                         let cell = computed.summaries.iter().find(|(c, _, _)| *c == ix);
-                        sized_cell(div(), &computed, ix)
+                        sized_cell(div(), &eff_sizes, ix)
                             .text_xs()
                             .truncate()
                             .text_color(theme.muted_foreground)
@@ -7200,6 +7249,54 @@ impl Render for BaseView {
 
         v_flex()
             .size_full()
+            // Column drag-resize: track the pointer while a header
+            // handle is grabbed, write `columnSize:` on release.
+            .on_mouse_move({
+                let this = this.clone();
+                move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                    this.update(cx, |view, cx| {
+                        let Some((rix, gx, sw, _)) = view.col_resize else {
+                            return;
+                        };
+                        let x = f32::from(ev.position.x);
+                        let live = (sw + x - gx).max(48.);
+                        if view.col_resize != Some((rix, gx, sw, live)) {
+                            view.col_resize = Some((rix, gx, sw, live));
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_mouse_up(gpui::MouseButton::Left, {
+                let this = this.clone();
+                move |_, window, cx| {
+                    this.update(cx, |view, cx| {
+                        let Some((rix, _, _, live)) = view.col_resize.take() else {
+                            return;
+                        };
+                        let col = view
+                            .computed(cx)
+                            .columns
+                            .get(rix)
+                            .cloned()
+                            .unwrap_or_default();
+                        if let SpecSrc::Doc(doc) = &view.spec_src {
+                            doc.update(cx, |doc, cx| {
+                                doc.set_base_view_map_entry(
+                                    view.view_ix,
+                                    "columnSize",
+                                    &col,
+                                    Some(&format!("{}", live.round() as i64)),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                        view.doc_epoch += 1;
+                        cx.notify();
+                    });
+                }
+            })
             .child(toolbar)
             .when(!cards && !kanban && !calendar && !list, |v| v.child(header))
             .children(computed.error.iter().map(|e| {
