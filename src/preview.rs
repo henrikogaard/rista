@@ -1091,6 +1091,12 @@ impl MarkdownPlugin for PropertiesPlugin {
                                 chips = chips.child(chip);
                             }
                             value_cell = div().flex_1().text_xs().child(chips);
+                        } else if *kind == assets::IconName::SquareCheck {
+                            // Bool props get the ☐/☑ glyph .base cells use —
+                            // the row's toggle-on-click stays the same.
+                            value_cell = value_cell
+                                .text_color(theme.foreground)
+                                .child(if v == "true" { "☑" } else { "☐" });
                         } else {
                             value_cell = value_cell.text_color(theme.foreground).child(v.clone());
                         }
