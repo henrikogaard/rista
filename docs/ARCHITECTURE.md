@@ -1,206 +1,43 @@
-# Rísta Architecture
+# Architecture
 
-## Goal
+Rísta v0.1.0 is a Rust 2021 single-binary desktop application built with GPUI through `gpui-kit` 0.7. The runtime is a native workspace and editor; the pre-GPUI renderer architecture is retained only in the [archive](archive/pre-gpui/README.md).
 
-This is the short, implementation-facing architecture reference for Rísta.
+## Runtime map
 
-For deeper planning context, see:
-- [ARCHITECTURE-PLAN.md](./ARCHITECTURE-PLAN.md)
-- [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md)
+| Module | Responsibility |
+| --- | --- |
+| `src/main.rs` | Bootstraps the app, themes, menus, key bindings, application-level file URLs, and workspace recreation after the last window closes. |
+| `src/app.rs` | Workspace, tabs, vault UI, dialogs, and application interactions. |
+| `src/document.rs` | Editor state, dirty baseline, save/conflict handling, autosave, and preview synchronization. |
+| `src/vault.rs` | Vault indexing and the 250 ms filesystem watcher; note and image indexes include cached wikilink aliases. |
+| `src/preview.rs` | Markdown preview and its `MarkdownPlugin` processing pipeline. |
+| `src/bases.rs` | YAML `.base` queries and formulas; table, cards, gallery, kanban, board, and calendar views; relations and rollups. |
+| `src/properties.rs` | Frontmatter properties. |
+| `src/history.rs` | Vault-local history under `.rista/history` and trash. |
+| `src/graph.rs` | Note and link graph. |
+| `src/slash.rs` | Slash-command completions. |
+| `src/emoji.rs` | Emoji support. |
+| `src/decorations.rs` | Editor decorations. |
+| `src/settings.rs` | Persisted settings and runtime theme, source, split, and preview preferences. |
 
-## High-Level Structure
+On macOS, settings are stored at `~/Library/Application Support/no.ogard.rista/settings.json`.
 
-Rísta has two runtime layers:
+## Files and workspace lifecycle
 
-1. Tauri shell
-   Rust commands, native plugins, file access, watching, command execution, export helpers, and bundle metadata.
+Users can open a vault with **⌘⇧O** or a standalone Markdown file with **⌘O**. The app registers `.md` and `.markdown` documents for native opening. Application-level URL handling accepts file-open events, and Finder/Dock reopen events recreate a workspace after the final window has closed; no recovery click is required.
 
-2. Renderer
-   State, layout, panes, editors, preview, tree, settings, dialogs.
+A vault watcher observes filesystem changes with a 250 ms debounce. The standalone-document poll runs every 500 ms but invalidates only when the observed file metadata changes; it does not force an unconditional full content read or render each interval.
 
-The renderer still talks to native capabilities through the stable `window.fjord.*` compatibility API, which is installed by `src/renderer/tauri-api.js`.
+## Save and conflict behavior
 
-## Architecture Rules
+Documents keep a byte baseline for the last observed on-disk content. Before writing, save compares current bytes with that baseline and rejects an external edit or deletion, including a same-length edit. Dirty-document lifecycle flushes abort when a save fails.
 
-### 1. State drives layout
+The comparison is a guarded check followed by a write, not an atomic compare-and-swap. Do not promise that it eliminates every concurrent-write race or guarantees zero data loss.
 
-The DOM must be an output of state.
-Do not rely on previous DOM placement as hidden state.
+## Preview and structured notes
 
-### 2. Standalone and split layouts stay separate
+The preview pipeline supports headings, local images, cover/banner content, callouts, wiki-note transclusion, base embeds, and a subset of math notation. Math support is not full TeX. `.base` views provide query/formula-backed structured collections and can relate or roll up note properties.
 
-Standalone:
-- Markdown
-- Preview
-- WYSIWYG
+## Platform and release scope
 
-Split:
-- left/right layout with one editable side and one preview side
-
-Do not reuse split slots as the standalone rendering path.
-
-### 3. Surface ownership must be explicit
-
-Per workspace pane:
-- one CodeMirror instance
-- one WYSIWYG instance
-- one standalone surface container
-- one split layout container
-
-Each surface should always have a clear canonical mount target.
-
-### 4. File identity is path-based
-
-Use full file paths for:
-- tab identity
-- tree highlighting
-- watcher updates
-- save-as updates
-
-Never rely on filenames alone.
-
-### 5. Keep native commands thin
-
-The Tauri shell should do:
-- file system access
-- watcher events
-- command execution
-- export
-
-Renderer should own application behavior and UI state.
-
-## Recommended Renderer Module Boundaries
-
-Target direction:
-
-- `index.js`
-  Bootstrapping only
-
-- `app-shell.js`
-  App shell and global UI mounting
-
-- `pane-layout.js`
-  Pane mode rendering and surface ownership
-
-- `workspace.js`
-  Workspace split, pane focus, pane state
-
-- `tabs.js`
-  Tab open/close/activate/move logic
-
-- `tree-view.js`
-  Explorer rendering and file activation
-
-- `commands.js`
-  Toolbar and command handlers
-
-- `insights.js`
-  Stats and headings
-
-- `dialogs.js`
-  Command dialogs and overlays
-
-## Target State Shape
-
-Keep one explicit state tree for:
-
-- workspace
-- panes
-- tabs
-- tree
-- UI flags
-- settings
-
-The important rule:
-mode transitions should go through dedicated state helpers, not scattered direct mutations.
-
-## Pane Rendering Model
-
-Each pane should support:
-
-### Standalone mode
-
-One dedicated full-width surface:
-- Markdown editor
-- Preview
-- WYSIWYG editor
-
-### Split mode
-
-One dedicated split layout:
-- editable side: `markdown` or `wysiwyg`
-- preview side: `left` or `right`
-
-No arbitrary left/right split state beyond those two values.
-
-## Performance Rules
-
-### Separate expensive pipelines
-
-Keep independent scheduling for:
-- autosave
-- preview rendering
-- stats
-- heading extraction
-
-### Avoid full rerenders
-
-Prefer targeted updates:
-- active pane only
-- changed tab only
-- affected tree node only
-
-### Keep tree updates incremental
-
-Do not rebuild the entire tree for every file change.
-
-## Robustness Rules
-
-### Safer IPC
-
-Prefer structured return shapes over bare booleans.
-
-### Conflict awareness
-
-Dirty tabs should not silently lose to external file changes.
-
-### Recovery readiness
-
-Design state and tabs so session restore and crash recovery can be added cleanly.
-
-## Completed Work (Phase 0 Cleanup — 2026-08-01)
-
-### Feature Flags & Survivor Set
-- 16 non-core module toggles in `settings.js`, all off by default
-- `showExperimental` master toggle gates the experimental section
-- Panels wrapped with `_featureEnabled()` in `index.js`
-- Survivor set documented in `AGENTS.md`: core on by default, non-core opt-in
-
-### Statusbar Collapse
-- Statusbar reduced to metrics (mode, filename, word count, reading time) + settings gear
-- All mode-toggles removed from statusbar; reachable via Cmd-K or keyboard shortcuts
-- Tests updated to match
-
-### PDF Export
-- `export_pdf()` Rust stub replaced with real implementation
-- Generates print-ready HTML via `export_html_document()`, writes to temp file, opens in system browser
-- Tauri bridge updated to pass payload
-
-### Build Fix
-- Removed pre-existing orphan code in `editor.js` that broke esbuild
-- Both JS and Rust builds pass cleanly
-
-### Documentation
-- `AGENTS.md` updated from stale Electron/Fjordmark to current Tauri/Rísta architecture
-- All agent instructions reflect the 2-layer (Tauri shell + vanilla JS renderer) setup
-
-## Near-Term Priorities (Remaining)
-
-1. #62 — Tighten 0-radius Nordic identity end-to-end (purely visual audit)
-2. #59 — Make the whole app feel like the welcome screen (design consistency)
-3. #52 — Pleasant inline table editing (UX evaluation of table-editor.js)
-4. #42 — Ship reference-quality dark and light themes (visual tuning)
-5. Validate pane/surface stability via TEST-CASES.md manual QA pass
-6. Separate debounce pipelines for save vs preview
-7. Reduce tree refresh scope after file changes
-8. Refactor `index.js` into focused modules
+The v0.1.0 package was tested on Apple Silicon macOS. Its declared minimum is macOS 13; not every OS version has been tested. Linux and Windows are intended targets, but their builds, packages, and keyboard mappings are not verified. See the [release checklist](RELEASE-CHECKLIST.md) and [test cases](TEST-CASES.md) for validation work.

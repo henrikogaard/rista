@@ -19,7 +19,7 @@ These rules apply before any code change.
 
 ## What is Rísta
 
-A **local-first, open-source Markdown editor** written in Rust on GPUI.
+A **local-first, MIT-licensed Markdown editor** written in Rust on GPUI.
 The design language is Nordic/Scandinavian — dark, minimal, purposeful.
 
 Users open a folder. All `.md` files in that folder become a "vault".
@@ -33,7 +33,7 @@ No cloud. No accounts. No telemetry. Files are just files.
 - **Compact density** — tight spacing, small type (11–14px), nothing wastes vertical space.
 - **No gradients in UI chrome** — flat mineral surfaces only.
 - **Quiet chrome** — borderless toolbar controls, one-pixel separators, text-only status bar.
-- **Core by default** — writing features come first. Non-core modules (graph, agents, calendar, terminal, publish) are out of scope until a settings/flag system justifies them.
+- **Core by default** — writing workflows come first. The shipped native baseline also includes the note/link graph and calendar `.base` views; treat the current architecture documentation as the source of truth for shipped modules.
 
 ---
 
@@ -41,6 +41,7 @@ No cloud. No accounts. No telemetry. Files are just files.
 
 | Layer | Technology |
 |---|---|
+| Language | Rust 2021 |
 | UI framework | GPUI via `gpui-kit` (`gpui-component` + `gpui-base`) |
 | Editor | `gpui_kit::component::input::Editor` (Rope + tree-sitter) |
 | Markdown preview | `gpui_kit::component::text::TextView` + `markdown` crate, custom `MarkdownPlugin`s |
@@ -48,8 +49,9 @@ No cloud. No accounts. No telemetry. Files are just files.
 | Settings | `serde`/`serde_json` under `directories` config dir |
 | Async | `smol` timers inside `cx.spawn` / `cx.spawn_in` |
 
-Single crate, single binary — there is no web renderer, no JS, no IPC bridge.
-Platforms: macOS (primary), Linux, Windows (same code path).
+Single Rust crate and GPUI binary; the previous web renderer is not part of the current app.
+
+The packaged app is tested on Apple Silicon macOS and declares macOS 13 as its minimum. Not every OS version has been tested. Linux and Windows are intended targets, but their builds, packages, and keyboard mappings are not verified.
 
 ---
 
@@ -58,27 +60,33 @@ Platforms: macOS (primary), Linux, Windows (same code path).
 ```
 rista/
 ├── src/
-│   ├── main.rs            # Bootstrap: themes, keymap, menus, window
-│   ├── app.rs             # Workspace view: sidebar tree, tabs, palette,
-│   │                      # dialogs, zen mode, action handlers, render
-│   ├── vault.rs           # Vault entity: root, notes/images index,
-│   │                      # TreeItem builder, notify watcher → VaultEvent
-│   ├── document.rs        # Document entity: EditorState, autosave (800ms),
-│   │                      # preview sync (150ms), external-change check
-│   ├── preview.rs         # MarkdownNode render + the reference editor preprocessing:
-│   │                      # frontmatter, [[wikilinks]], ![[embeds]], ^block-id,
-│   │                      # > [!callouts]
-│   ├── search.rs          # Project-search dialog (⌘⇧F)
-│   ├── settings.rs        # Settings model, load/save, theme resolution
-│   ├── settings_panel.rs  # Settings sheet (Placement::Right)
-│   ├── theme.rs           # RÍSTA_THEMES JSON packs + install/change helpers
-│   └── actions.rs         # actions!(rista, ...) keyboard action types
-├── design/                # tokens.json / tokens.css / tokens.ts (generated)
-├── public/                # icon + brand assets
+│   ├── main.rs            # Bootstrap, menus, key bindings, file URLs, reopen
+│   ├── app.rs             # Workspace, tabs, vault UI, and interactions
+│   ├── document.rs        # Editor, dirty baseline, conflicts, autosave/preview
+│   ├── vault.rs           # Indexes, aliases, and filesystem watcher
+│   ├── preview.rs         # Markdown preview and MarkdownPlugin pipeline
+│   ├── bases.rs           # .base queries, formulas, views, relations, rollups
+│   ├── properties.rs      # Frontmatter properties
+│   ├── history.rs         # .rista/history and trash
+│   ├── graph.rs           # Note/link graph
+│   ├── slash.rs           # Slash-command completions
+│   ├── emoji.rs           # Emoji support
+│   ├── decorations.rs     # Editor decorations
+│   ├── settings.rs        # Persisted and runtime settings
+│   ├── settings_panel.rs  # Settings UI
+│   ├── theme.rs           # Theme packs and theme helpers
+│   └── actions.rs         # Keyboard action types
+├── design/                # Generated tokens.json / tokens.css / tokens.ts
+├── public/                # App icon and brand assets
 ├── Cargo.toml
-├── DESIGN.md              # Design system (colors, type, components)
-└── README.md
+├── DESIGN.md
+├── README.md
+└── docs/README.md         # Active documentation index and legacy inventory
 ```
+
+On macOS, settings are stored at `~/Library/Application Support/no.ogard.rista/settings.json`. Runtime preferences include theme, source, split, and preview modes.
+
+See [docs/README.md](docs/README.md) for current references and the disposition of superseded documents.
 
 ---
 
@@ -115,20 +123,22 @@ palette. Never hardcode a color in UI code — always `cx.theme().<token>`.
 
 ## Keyboard shortcuts
 
-| Action | macOS | Linux/Windows |
-|---|---|---|
-| Save | `⌘S` | `Ctrl+S` |
-| Save as | `⌘⇧S` | `Ctrl+Shift+S` |
-| Toggle sidebar | `⌘B` | `Ctrl+B` |
-| Find in note | `⌘F` | `Ctrl+F` |
-| Project search | `⌘⇧F` | `Ctrl+Shift+F` |
-| Command palette | `⌘K` | `Ctrl+K` |
-| Settings | `⌘,` | `Ctrl+,` |
-| Daily note | `⌘⇧D` | `Ctrl+Shift+D` |
-| New file | `⌘N` | `Ctrl+N` |
-| Open file | `⌘O` | `Ctrl+O` |
-| Open folder | `⌘⇧O` | `Ctrl+Shift+O` |
-| Zen mode | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
+The verified bindings are macOS command-key shortcuts. Linux and Windows mappings have not been verified.
+
+| Action | macOS |
+|---|---|
+| Save | `⌘S` |
+| Save as | `⌘⇧S` |
+| Toggle sidebar | `⌘B` |
+| Find in note | `⌘F` |
+| Project search | `⌘⇧F` |
+| Command palette | `⌘K` |
+| Settings | `⌘,` |
+| Daily note | `⌘⇧D` |
+| New file | `⌘N` |
+| Open standalone `.md` or `.markdown` file | `⌘O` |
+| Open vault | `⌘⇧O` |
+| Zen mode | `⌘⇧Enter` |
 
 Bindings live in `main.rs` (`cx.bind_keys`); actions in `src/actions.rs`;
 handlers are `Workspace::on_*` methods in `app.rs`.
@@ -136,10 +146,11 @@ handlers are `Workspace::on_*` methods in `app.rs`.
 ## Running locally
 
 ```bash
-cargo run              # debug build + launch
-cargo build --release  # optimized binary in target/release/rista
-cargo clippy           # lint (keep clean)
-cargo fmt              # required before commit
+cargo run -- /absolute/path
+cargo build --release
+cargo fmt --check
+cargo clippy
+cargo test
 ```
 
 ## Contribution conventions

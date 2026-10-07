@@ -1,110 +1,157 @@
-# Rísta
-
 <p align="center">
-  <img src="./public/icon.svg" width="132" height="132" alt="Rísta logo" />
+  <img src="public/icon.svg" width="128" height="128" alt="Rísta app icon" />
 </p>
 
+<h1 align="center">Rísta</h1>
+<p align="center"><strong>A quiet place for your notes.</strong></p>
+<p align="center">Native Markdown. Beautiful pages. Databases made from your own files.</p>
 <p align="center">
-  <strong>A local-first Markdown editor with a quiet, modern-mythic interface.</strong>
-</p>
-
-<p align="center">
-  Open a folder. Write in plain Markdown. Keep your files on disk, under your control.
-</p>
-
-<p align="center">
-  <code>Rust</code> · <code>GPUI</code> · <code>gpui-kit</code> · <code>notify</code>
+  <a href="https://github.com/henrikogaard/rista/releases">Releases</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="DESIGN.md">Design system</a> ·
+  <a href="LICENSE">MIT license</a>
 </p>
 
 ---
 
-## Overview
+Rísta is a local-first Markdown editor built in Rust with
+[GPUI](https://gpui.rs) and [gpui-kit](https://gpui-kit.com).
+Open a single note or a folder of notes. Write in source, read in preview,
+or keep both side by side. Your work stays in ordinary Markdown files,
+with images alongside them and properties in YAML frontmatter.
 
-Rísta is a small, fast native desktop editor for people who want Markdown files to stay as files.
-There is no cloud sync, no account system, and no telemetry layer between you and your notes.
+No account is required. There is no built-in cloud sync or telemetry.
+Remote images and packaged update checks can still make network requests.
 
-The interface is compact and dark by default. The name references runes, but the product stays restrained: carved geometry, mineral color, terse language, and low-noise local writing tools.
+## Write, connect, organise
 
-Rísta is written entirely in Rust on [GPUI](https://gpui.rs) via the
-[`gpui-kit`](https://gpui-kit.com) component set — one codebase for macOS, Linux, and
-Windows, developed macOS-first.
+- **A native writing workspace.** Multiple tabs, a file tree, search,
+  command palette, autosave, session restoration, and a distraction-free zen mode.
+- **Pages with presence.** Headings, cover images, image embeds, callouts,
+  editable properties, and tables in a live Markdown preview.
+- **Connected notes.** Wikilinks and aliases, note transclusion, backlinks,
+  outgoing links, tags, an outline, and local/global graph views.
+- **Databases without a server.** `.base` YAML files query your notes and
+  frontmatter. View the same notes as a table, cards, a board, or a calendar;
+  add filters, formulas, relations, and rollups.
+- **Everyday organisation.** Daily notes, templates, tasks, starred notes,
+  local page history, and a recoverable vault trash.
+- **Quiet by design.** Rísta Night and Rísta Day, compact controls, adjustable
+  typography, and resizable panes.
 
-## Highlights
+## Get Rísta
 
-- Local-first folder workflow — a folder is a vault, every `.md` a note
-- File tree sidebar with create / rename / delete and context menus
-- Multi-tab editing with source, split, and preview view modes
-- Live Markdown preview with extended syntax (below)
-- Autosave on every pause, plus file watching for external changes
-- Find in note (`⌘F`) and project search (`⌘⇧F`)
-- Command palette (`⌘K`) over notes and commands
-- Dark and light themes, system-aware; settings sheet (`⌘,`)
-- Zen mode (`⌘⇧⏎`) — everything but the words
+The [v0.1.0 release](https://github.com/henrikogaard/rista/releases/tag/v0.1.0)
+is an early **macOS 13+ / Apple Silicon** build. Download `Rista-0.1.0.zip`,
+unzip it, and move **Rísta.app** to Applications.
 
-## Extended markdown support
+This build is ad-hoc signed, **not Developer ID signed or notarized**.
+macOS may block it on first launch; only approve an app you trust using
+System Settings → Privacy & Security. The repository is currently private,
+so downloads require GitHub access. Public automatic updates are not yet available.
 
-- YAML frontmatter renders as a properties block in preview
-- `[[wikilinks]]` and `[[note|aliases]]` resolve against the vault
-- `![[note]]` embeds link the note; `![[image.png]]` embeds render the image
-- `> [!note]` callouts render with titled boxes
-- `^block-ids` are hidden anchors, not trailing syntax
-- Daily note (`⌘⇧D`) creates/opens `YYYY-MM-DD.md` at vault root
+macOS is the primary development and tested platform. Linux and Windows are
+targets, not verified v0.1.0 distributions. See the
+[roadmap and limitations](docs/PRODUCT-ROADMAP.md).
 
-## Getting started
+## Your first page
+
+Choose **Open File** (`⌘O`) for a standalone Markdown document, or
+**Open Folder** (`⌘⇧O`) for a vault: a normal folder of notes and attachments.
+Finder’s **Open With → Rísta** also opens `.md` and `.markdown` files.
+
+Use **Split** (`⌘2`) to see how a note renders. With `cover.jpg` next to
+your note, try:
+
+```markdown
+---
+title: Field notes
+cover: cover.jpg
+banner_y: 50
+status: Draft
+---
+
+# A little room to think
+
+Ideas become clearer when you write them down.
+
+> [!note] Keep it simple
+> Start with one page, then connect it to [[Tomorrow]].
+
+![A detail worth remembering](cover.jpg)
+```
+
+For a small database, create `Notes.base` inside your vault:
+
+```yaml
+filters:
+  and:
+    - 'file.ext == "md"'
+views:
+  - type: table
+    name: Notes
+    order:
+      - file.name
+      - status
+```
+
+Open it from the file tree. Rows come from your notes; properties remain in
+their frontmatter. `.base` implements a supported expression/view subset,
+not a promise of complete compatibility with other tools.
+
+## Keyboard essentials
+
+| Action | macOS |
+|---|---|
+| New note / Open file / Open folder | `⌘N` / `⌘O` / `⌘⇧O` |
+| Save / Save as | `⌘S` / `⌘⇧S` |
+| Source / Split / Preview | `⌘1` / `⌘2` / `⌘3` |
+| Find / Search vault | `⌘F` / `⌘⇧F` |
+| Command palette | `⌘K` or `⌘P` |
+| Toggle sidebar / Zen mode | `⌘B` / `⌘⇧Enter` |
+| Daily note / Graph | `⌘⇧D` / `⌘G` |
+| Settings | `⌘,` |
+
+## Build from source
+
+On macOS, install a stable [Rust toolchain](https://rustup.rs) and Xcode
+Command Line Tools (`xcode-select --install`), then:
 
 ```bash
+git clone https://github.com/henrikogaard/rista.git
+cd rista
 cargo run
+# Or open a file/folder at launch:
+cargo run -- /absolute/path/to/notes
 ```
 
-Release build:
+`cargo build --release` produces a binary, not an installable app bundle.
+See the [release checklist](docs/RELEASE-CHECKLIST.md) for macOS packaging
+and Sparkle signing. A normal `cargo run` does not need Sparkle.
+
+Before submitting a change:
 
 ```bash
-cargo build --release
+cargo fmt --check
+cargo clippy
+cargo test
 ```
 
-The app restores the last opened folder on launch. Settings live in
-`~/Library/Application Support/no.ogard.rista/settings.json` on macOS
-(the platform equivalents on Linux/Windows via the `directories` crate).
+Read [AGENTS.md](AGENTS.md) for code conventions and
+[the architecture guide](docs/ARCHITECTURE.md) for the module map.
+Use the [manual QA checklist](docs/TEST-CASES.md) for user-facing changes.
 
-## Keyboard shortcuts
+## Storage and safety
 
-| Action | macOS | Linux / Windows |
-|---|---|---|
-| Save | `⌘S` | `Ctrl+S` |
-| Save as | `⌘⇧S` | `Ctrl+Shift+S` |
-| Toggle sidebar | `⌘B` | `Ctrl+B` |
-| Find in note | `⌘F` | `Ctrl+F` |
-| Project search | `⌘⇧F` | `Ctrl+Shift+F` |
-| Command palette | `⌘K` | `Ctrl+K` |
-| Settings | `⌘,` | `Ctrl+,` |
-| Daily note | `⌘⇧D` | `Ctrl+Shift+D` |
-| New file | `⌘N` | `Ctrl+N` |
-| Open file | `⌘O` | `Ctrl+O` |
-| Open folder | `⌘⇧O` | `Ctrl+Shift+O` |
-| Zen mode | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
+Notes, attachments, and `.base` definitions live in your own folder.
+Vault history and trash live under `.rista/`. Settings and session state
+live in `~/Library/Application Support/no.ogard.rista/settings.json` on macOS.
 
-## Project structure
+Rísta checks for external changes before saving and stops on conflicts rather
+than silently overwriting them. History is not a backup: keep independent
+backups, especially while using an early release.
 
-```
-rista/
-├── src/
-│   ├── main.rs            # App bootstrap, keymap, menus, window
-│   ├── app.rs             # Workspace: sidebar, tabs, palette, dialogs, actions
-│   ├── vault.rs           # Vault model: file index, tree items, watcher (notify)
-│   ├── document.rs        # Document: EditorState, autosave, preview sync
-│   ├── preview.rs         # Markdown preview + extended preprocessing
-│   ├── search.rs          # Project search dialog
-│   ├── settings.rs        # Settings model + persistence
-│   ├── settings_panel.rs  # Settings sheet UI
-│   ├── theme.rs           # Rísta Night / Rísta Day theme packs
-│   └── actions.rs         # GPUI action definitions (shortcuts)
-├── design/                # Framework-agnostic design tokens (JSON/CSS/TS)
-├── public/                # App icon + brand assets
-├── Cargo.toml
-└── DESIGN.md              # Design system reference
-```
+## License
 
-## Design
-
-See [DESIGN.md](./DESIGN.md) for the design system — color, type, spacing, and
-component tokens, exported in framework-agnostic form under `design/`.
+[MIT](LICENSE) · Copyright (c) 2026 Henrik Øgård.
+Dependencies retain their respective licenses.

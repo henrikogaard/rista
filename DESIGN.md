@@ -3,10 +3,10 @@
 Quiet, modern-mythic. Nordic restraint: mineral surfaces, restrained accents,
 terse type, nothing ornamental. Files are the product; chrome recedes.
 
-The tokens below are the single source of truth in `src/theme.rs`
+The source of truth for UI tokens is `src/theme.rs`
 (Rísta Night / Rísta Day), exported framework-agnostically:
 
-- `design/tokens.json` — canonical values
+- `design/tokens.json` — generated values
 - `design/tokens.css` — CSS custom properties (`--rista-*`), usable by any web surface
 - `design/tokens.ts` — typed constants for TypeScript consumers
 
@@ -72,9 +72,45 @@ Night uses a restrained teal accent; Day uses blue-grey.
 
 ## Markdown preview rendering
 
-Frontmatter → properties card. `[[links]]` → accent-colored links.
-`![[note]]` → note link; `![[image]]` → inline image. Callouts → titled boxes
-with `IconName` glyphs. `^block-id` → hidden anchor (stripped).
+Frontmatter renders as editable properties; `cover`/`banner` supplies a page
+header image. `[[links]]` become navigable note links. `![[note]]` transcludes
+note content, while `![[image]]` renders an inline image. Callouts become
+titled, collapsible boxes. `^block-id` markers are hidden from prose.
+Database embeds reuse native `.base` views. Math supports a Unicode-rendered
+subset, not a full TeX engine. See `src/preview.rs` for the rendering pipeline.
+
+## Brand identity
+
+The **carved R** replaces the earlier multicolour rune. A single geometric
+letter has a chamfered bowl and a separated diagonal leg: an incision rather
+than an ornament. Warm paper and ink keep it legible in both app themes.
+
+| Asset | Use |
+|---|---|
+| [`public/icon.svg`](public/icon.svg) | Master app icon, warm paper tile |
+| [`public/icon.png`](public/icon.png) | 1024 × 1024 transparent PNG used by the macOS bundle |
+| [`rista-icon-dark.svg`](public/logos/rista-icon-dark.svg) | Alternate dark tile; not an automatic OS appearance switch |
+| [`rista-mark.svg`](public/logos/rista-mark.svg) | Ink mark on a light background |
+| [`rista-mark-light.svg`](public/logos/rista-mark-light.svg) | Paper mark on a dark background |
+
+- Ink: `#363b47`; paper: `#f6f4ef` (from Rísta Day foreground/background).
+- Keep the SVG viewBox and built-in clear space. Do not stretch or rotate.
+- Use the icon at 16px or larger; use the standalone mark at 24px or larger.
+- Pair with the name **Rísta**, preserving the acute accent. Plain ASCII
+  `Rista` is reserved for filenames that need portable URLs.
+- Do not add gradients, multicolour fills, outlines around the letter, or
+  extra runic details. The icon's small offset shadow is not UI chrome.
+- The original brand artwork is covered by the repository's [MIT license](LICENSE).
+
+After editing the master SVG, regenerate the committed app PNG on macOS:
+
+```bash
+sips -s format png public/icon.svg --out public/icon.png
+```
+
+The bundle script creates a full macOS iconset from that PNG. Inspect the
+16px, 32px, 128px, and 512px results on light and dark backgrounds before
+shipping. Do not regenerate the app's UI tokens when only brand assets change.
 
 ## Generating token exports
 

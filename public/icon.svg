@@ -1,13 +1,7 @@
-<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Rista Split Rune Aurora Gradient">
-  <defs>
-    <linearGradient id="auroraDefault" x1="48" y1="36" x2="208" y2="216" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#36d399"/>
-      <stop offset="0.52" stop-color="#5b7fa6"/>
-      <stop offset="1" stop-color="#a071d6"/>
-    </linearGradient>
-  </defs>
-  <rect width="256" height="256" rx="56" fill="#0d0e10"/>
-  <circle cx="128" cy="128" r="94" fill="#111417" stroke="#253138" stroke-width="8"/>
-  <path d="M102 196V60M102 72h48l28 28-30 30h-46M132 130l44 66" fill="none" stroke="url(#auroraDefault)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M78 78l24 24M78 178l24-24" fill="none" stroke="#8bcdbd" stroke-width="12" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256" role="img" aria-label="Rísta — carved R on warm paper">
+  <rect x="16" y="19" width="224" height="224" rx="50" fill="#363b47" opacity=".12"/>
+  <rect x="16" y="16" width="224" height="224" rx="50" fill="#f6f4ef"/>
+  <rect x="16.5" y="16.5" width="223" height="223" rx="49.5" fill="none" stroke="#363b47" stroke-opacity=".10"/>
+  <path fill="#363b47" fill-rule="evenodd" d="M72 58h66l44 40v28l-34 30h-40v42H72V58Zm36 32v36h25l15-13-25-23h-15Z"/>
+  <path fill="#363b47" d="M122 164h38l32 34h-43l-27-34Z"/>
 </svg>

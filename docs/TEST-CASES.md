@@ -1,285 +1,49 @@
-# Rista Test Cases
+# Test cases
 
-## Purpose
+This is a manual regression checklist for native Rísta. Items are deliberately unchecked; this document does not claim that any case has passed. Use disposable copies of fixtures and preserve originals.
 
-This document is the core manual regression checklist for Rista.
+## Fixtures and settings
 
-Use it:
-- before major merges
-- before packaging
-- after any pane/layout/editor refactor
-- after file watcher, tab, or theme changes
+- [ ] Back up the active settings file before changing preferences: `~/Library/Application Support/no.ogard.rista/settings.json`.
+- [ ] Prepare a disposable vault containing ordinary Markdown, frontmatter, Unicode filenames, duplicate note stems in different folders, wiki links, local images, `.base` files, and notes with relations/rollups.
+- [ ] Record fixture file bytes before each save test so comparisons are exact, not visual-only.
+- [ ] Change theme and source/split/preview preferences; restart and confirm they persist without modifying unrelated note files.
 
-## Test Environment
+## Editing, saving, and document lifecycle
 
-Recommended test setup:
-- one small Markdown folder
-- one larger Markdown folder with nested folders
-- at least two files with the same filename in different folders
-- at least one long document with:
-  - headings
-  - tables
-  - callouts
-  - task lists
-  - links
-  - images
+- [ ] Edit a standalone document and a vault document, save, and compare exact bytes with the expected output.
+- [ ] Type and immediately close a tab, switch folders/vaults, or quit before the 800 ms autosave interval. Confirm dirty content is flushed before the lifecycle completes.
+- [ ] Force a save failure during a dirty-document lifecycle; confirm closing or switching aborts rather than discarding dirty content.
+- [ ] Externally edit a document after it is opened, including replacing bytes with different content of the same length. Confirm a later save rejects the conflict and preserves the external bytes.
+- [ ] Delete an opened document externally. Confirm save rejects the missing file and does not recreate or overwrite it silently.
+- [ ] Reopen duplicate stems with Unicode names in separate folders and confirm selection, tabs, and links resolve to the intended files.
+- [ ] Change a standalone file externally. Confirm the 500 ms poll only invalidates after metadata changes and the changed content is noticed without an unconditional idle read/render loop.
 
-## 1. App Boot
+## Native file opening and windows
 
-- Launch app
-- Confirm app window opens without console-visible failure
-- Confirm welcome screen appears when no folder is open
-- Confirm app theme renders correctly on first load
+- [ ] Open `.md` and `.markdown` files from Finder and with **⌘O**; confirm they open as standalone documents.
+- [ ] Open a vault with **⌘⇧O** and confirm its Markdown files are indexed.
+- [ ] Close the final window, then reopen from Finder and from the Dock. Confirm a workspace returns without an extra recovery click.
+- [ ] Immediately use **⌘K** after each reopening; confirm keyboard focus works without clicking the editor first.
+- [ ] With no windows left open, use **⌘Q** and confirm the process exits.
 
-## 2. Folder Open
+## Preview and vault regression
 
-- Open a folder from welcome screen
-- Open a folder from menu
-- Confirm tree renders
-- Confirm watcher starts without visible issues
-- Confirm switching to another folder resets workspace correctly
+- [ ] Check headings, local images, cover/banner content, callouts, wiki links, note transclusion, and base embeds in preview.
+- [ ] Check representative supported math notation; do not treat this as full TeX coverage.
+- [ ] Check vault indexing and wikilink aliases after file create, rename, delete, and recreate operations.
+- [ ] Check `.base` query/formula results in table, cards, gallery, kanban, board, and calendar views.
+- [ ] Mutate a `.base` source row that is not selected in the current view; confirm derived views, relations, and rollups refresh correctly.
+- [ ] Re-run preview and `.base` regression after changing a note's frontmatter properties.
 
-## 3. File Open And Tabs
+## Themes, input, and accessibility
 
-- Open one file from tree
-- Open a second file from tree
-- Switch between tabs
-- Reopen an already open file
-- Close active tab
-- Close inactive tab
-- Close final tab and confirm empty/welcome state appears correctly
+- [ ] Repeat representative editor, preview, vault, and `.base` cases in both dark and light themes.
+- [ ] Check keyboard focus, common editing input, and assistive-technology labels on macOS.
+- [ ] Verify platform-specific keyboard mappings separately on any Linux or Windows build; those mappings are not currently verified.
 
-## 4. Duplicate Filename Safety
+## Cleanup
 
-- Open two files with the same filename from different folders
-- Confirm correct file opens each time
-- Confirm explorer highlights the correct file path
-- Confirm saving one does not affect the other
-
-## 5. Standalone Pane Modes
-
-For a loaded file, verify:
-
-### Markdown
-
-- Switch to `MD`
-- Confirm CodeMirror is visible
-- Confirm text content appears
-- Confirm cursor can be placed
-- Confirm typing updates content
-- Confirm autosave still works
-
-### Preview
-
-- Switch to `Preview`
-- Confirm preview fills the pane width
-- Confirm no empty split geometry remains
-- Confirm headings, tables, and callouts render correctly
-
-### WYSIWYG
-
-- Switch to `WYSIWYG`
-- Confirm editor fills the pane width
-- Confirm content renders
-- Confirm edits update content
-
-## 6. Standalone Mode Transitions
-
-Verify all of these:
-
-- `Markdown -> Preview`
-- `Preview -> Markdown`
-- `Markdown -> WYSIWYG`
-- `WYSIWYG -> Markdown`
-- `Preview -> WYSIWYG`
-- `WYSIWYG -> Preview`
-
-For each transition, confirm:
-- no empty pane
-- no leftover column spacing
-- no stale editor surface remains
-- content remains correct
-
-## 7. Split Mode Basics
-
-- Switch to `Split`
-- Confirm split layout appears
-- Confirm resizer appears
-- Confirm left/right selectors render correctly
-- Confirm one side can be editor and one side preview
-
-## 8. Split Mode Combinations
-
-Verify:
-
-- left = `Markdown`, right = `Preview`
-- left = `Preview`, right = `Markdown`
-- left = `WYSIWYG`, right = `Preview`
-- left = `Preview`, right = `WYSIWYG`
-
-For each combination, confirm:
-- correct content appears
-- editor side is editable
-- preview side is read-only
-- no nested or ghost columns appear
-- switching sides reclaims previous space correctly
-
-## 9. Split To Standalone Transitions
-
-Verify:
-
-- `Split -> Markdown`
-- `Split -> Preview`
-- `Split -> WYSIWYG`
-
-Confirm:
-- split layout fully disappears
-- standalone layout fills width
-- no stale slot geometry remains
-
-## 10. Standalone To Split Transitions
-
-Verify:
-
-- `Markdown -> Split`
-- `Preview -> Split`
-- `WYSIWYG -> Split`
-
-Confirm:
-- split layout appears correctly
-- correct editable mode is preserved
-- preview side appears where expected
-
-## 11. Workspace Dual-Pane Mode
-
-- Enable workspace split
-- Confirm secondary pane appears
-- Open a file in secondary pane
-- Switch focus between panes
-- Close secondary tab
-- Return to single workspace mode
-
-Confirm:
-- focus state updates correctly
-- secondary pane cleanup is correct
-- no layout residue remains when collapsing back to single mode
-
-## 12. Drag And Drop Tabs
-
-- Drag a tab from primary to secondary
-- Drag a tab back
-- Confirm active tab and focus behavior remain correct
-- Confirm content remains in sync after moves
-
-## 13. Markdown Editing
-
-- Type plain text
-- Undo and redo
-- Insert headings, lists, blockquotes
-- Insert callout syntax
-- Insert table
-- Insert link and image syntax
-
-Confirm:
-- changes update preview
-- changes save correctly
-
-## 14. WYSIWYG Editing
-
-- Edit text
-- Change headings
-- Insert table
-- Insert link
-- Insert image
-- Toggle back to Markdown
-
-Confirm:
-- markdown round-trips correctly
-- no major formatting corruption appears
-
-## 15. Preview Accuracy
-
-- Confirm preview matches markdown structure
-- Confirm tables render correctly
-- Confirm callouts render correctly
-- Confirm task lists render correctly
-- Confirm images render correctly
-
-## 16. Theme Switching
-
-- Toggle dark/light theme in Markdown
-- Toggle dark/light theme in Preview
-- Toggle dark/light theme in WYSIWYG
-- Toggle theme while in Split
-
-Confirm:
-- text remains legible
-- CodeMirror updates correctly
-- WYSIWYG remount remains correct
-- no layout reset bug appears
-
-## 17. Settings Panel
-
-- Open settings
-- Change editor font size
-- Change preview typography
-- Change app font
-- Change text colors
-- Reset settings
-
-Confirm:
-- updates apply correctly
-- reset restores expected defaults
-
-## 18. File Watcher Behavior
-
-- Edit a clean file externally
-- Confirm tab reloads
-- Confirm tree refreshes correctly
-- Edit a dirty file externally
-- Confirm no silent overwrite happens
-
-## 19. Save And Save As
-
-- Save edited file
-- Save As to a new file
-- Confirm tab updates to the new path
-- Confirm explorer updates correctly
-
-## 20. Search / Find And Replace
-
-- Open find panel
-- Search for common term
-- Search for missing term
-- Replace one
-- Replace all
-
-Confirm:
-- result count updates correctly
-- selection moves correctly
-
-## 21. Image Paste
-
-- Paste image from clipboard into Markdown
-- Confirm Markdown image syntax is inserted
-- Confirm preview updates
-- Confirm saved document still references expected image data/path
-
-## 22. PDF Export
-
-- Export current document
-- Confirm PDF file is created
-- Confirm output contains document content
-- Confirm output does not incorrectly include full app chrome
-
-## Release Gate
-
-Before shipping a milestone:
-
-- all core pane transitions pass
-- duplicate filename handling passes
-- theme switching passes
-- save/save-as passes
-- watcher behavior passes
-- export passes
-
+- [ ] Restore settings and preferences exactly as found, including their absence on a clean machine.
+- [ ] Remove only disposable fixtures and test app installations; restore any Launch Services registration changed for the test.
+- [ ] Confirm no test process remains and no real note or default file-handler preference was changed.

@@ -1,3 +1,5 @@
+> **Historical, pre-GPUI document.** Preserved as an archive; paths, commands, feature descriptions, and plans below are not current product guidance. See the [active documentation index](../../README.md).
+
 # Rísta Next Sprint
 
 ## Sprint Goal
@@ -116,4 +118,3 @@ Definition of done:
 - at least three infrastructure problems are removed
 - the renderer becomes easier to evolve
 - tomorrow's work starts from a cleaner base than today's
-

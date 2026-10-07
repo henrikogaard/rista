@@ -1,46 +1,20 @@
 # Changelog
 
-## v0.1.0 (unreleased)
+## Unreleased
 
-### Added
-- Local-first folder-based Markdown editing via Tauri desktop shell
-- Multi-tab editing with single/dual pane workspaces
-- Markdown, split preview, preview-only, and WYSIWYG writing modes
-- CodeMirror 6 editor with live preview, focus mode, and typewriter scrolling
-- Auto-save on keystroke with debounced save pipeline
-- Self-hosted fonts (16 families via @fontsource) — zero CDN calls
-- Strict CSP with zero external network origins
-- Extended-markdown compatibility: callouts, wikilinks, block references, attachment embeds
-- Command palette (Cmd+K) with file + command + tag search
-- Word count goals (document + session)
-- Readability hints: FK Grade, adverb/passive/complex sentence highlighting
-- Smart typography: auto-curly quotes, em-dash, ellipsis
-- Image paste from clipboard into local `_assets/` folder
-- Light and dark themes with CSS variable system
-- Inline table editing with tab navigation
-- Find and replace with keyboard shortcuts
-- File watcher with external conflict detection
-- Session restore (reopens previous tabs on relaunch)
-- Version history snapshots stored in `.rista/history/`
-- PDF, HTML, DOCX export
-- Settings panel with typography, layout, and visual controls
-- First-run sample document
+- Added the MIT license with copyright attributed to Henrik Øgård, also included in the macOS bundle.
+- Replaced the multicolour icon with the carved R identity, light/dark brand assets, and a full-resolution macOS iconset.
+- Rewrote current product, architecture, release, and QA documentation; archived superseded plans with clear historical labels.
 
-### Architecture
-- Tauri 2 desktop shell with Rust backend (notify watcher, file ops, export)
-- Vanilla JS renderer (CodeMirror 6 + Toast UI Editor WYSIWYG)
-- esbuild bundler, no React/Vue/framework
-- 16 self-hosted font families via @fontsource
+## v0.1.0 — 2026-10-07
 
-### Changed
-- Pivot from Electron (Fjordmark) to Tauri (Rista)
-- Feature-flags system: 14 non-core modules off by default behind `showExperimental`
-- Statusbar collapsed to metrics and settings only
-- PDF export moved from Electron Chromium to Rust HTML pipeline
+First release of the native Rust/GPUI application.
 
-### Fixed
-- Clippy warnings in Rust backend
-- Preload unsubscribe behavior (per-listener not removeAllListeners)
-- Path-based tree identity (not filename-based)
-- Stale Electron source files removed
-- Various stale docs references
+- Single-binary Rust 2021 app built with `gpui-kit` 0.7.
+- Native opening for `.md` and `.markdown` standalone documents and vault workflows, including Finder/Dock reopen after the last window closes.
+- Multi-tab editing with autosave, byte-baseline external-change protection, and Markdown preview.
+- Vault indexing, wikilink aliases, note/link graph, vault-local history and trash, and YAML `.base` views with queries, formulas, relations, and rollups.
+- Preview support for headings, local images, cover/banner content, callouts, wiki-note transclusion, base embeds, and a subset of math notation.
+- Versioned release assets: `Rista-0.1.0.zip`, `SHA256SUMS`, and `appcast.xml`.
+
+The package was tested on Apple Silicon macOS and declares macOS 13 as its minimum; not every OS version has been tested. This build is ad hoc signed and not notarized; Linux and Windows packages are not verified. See the [documentation index](docs/README.md) for architecture, release, test, and roadmap notes.

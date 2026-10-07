@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256" role="img" aria-label="Rísta — carved R on ink">
+  <rect x="16" y="19" width="224" height="224" rx="50" fill="#0a0b0e" opacity=".18"/>
+  <rect x="16" y="16" width="224" height="224" rx="50" fill="#363b47"/>
+  <rect x="16.5" y="16.5" width="223" height="223" rx="49.5" fill="none" stroke="#f6f4ef" stroke-opacity=".12"/>
+  <path fill="#f6f4ef" fill-rule="evenodd" d="M72 58h66l44 40v28l-34 30h-40v42H72V58Zm36 32v36h25l15-13-25-23h-15Z"/>
+  <path fill="#f6f4ef" d="M122 164h38l32 34h-43l-27-34Z"/>
+</svg>

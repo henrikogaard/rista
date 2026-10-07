@@ -1,63 +1,32 @@
-# Rista Release Checklist
+# Release checklist
 
-## Purpose
+Use this checklist for each release candidate. It is a procedure, not a record that the listed checks have passed. Leave items unchecked until verified against the candidate artifact.
 
-Pre-flight checks before cutting a release. Run these steps in order before
-tagging and packaging.
+## Build and package
 
-## Pre-Release
+- [ ] Confirm the intended source commit and tag `vX.Y.Z`; the crate and bundle versions use numeric `X.Y.Z`.
+- [ ] Run `cargo fmt --check`.
+- [ ] Run `cargo clippy` and review warnings without broadening scope into unrelated cleanup.
+- [ ] Run `cargo test`.
+- [ ] Fetch the pinned Sparkle dependency with `scripts/fetch-sparkle.sh`.
+- [ ] Build the versioned macOS package with `VERSION=X.Y.Z scripts/bundle-macos.sh`.
+- [ ] For a signed appcast, confirm the GitHub Actions secret `SPARKLE_PRIVATE_ED_KEY` is configured. Never print, paste, or commit the key. Local packaging without the key skips appcast generation.
+- [ ] Verify `codesign --verify --deep --strict 'dist/Rísta.app'`.
+- [ ] Confirm the bundle includes `Contents/Resources/LICENSE` with the correct copyright holder, and its iconset displays clearly at small and large sizes.
+- [ ] Verify the generated checksum with `(cd dist && shasum -a 256 -c SHA256SUMS)`.
+- [ ] Confirm the archive and checksum use the ASCII asset name `Rista-X.Y.Z.zip`, and the appcast enclosure URL names that same archive.
+- [ ] Verify the appcast Ed25519 signature against the public key embedded as `SUPublicEDKey` in the bundled `Info.plist`.
 
-- [ ] All PRs targeting this release are merged
-- [ ] No open todos, fixmes, or debugger statements
-- [ ] `npm run build` passes (zero warnings)
-- [ ] `cargo build` passes (zero warnings, `cargo clippy` clean)
-- [ ] `npm test` passes (all tests green)
-- [ ] WORKLOG.md is updated through the release date
+The tag-triggered GitHub Actions workflow runs on `v*`, removes the leading `v` for the bundle version, and publishes `Rista-X.Y.Z.zip`, `SHA256SUMS`, and `appcast.xml`. Its default code signature is ad hoc; v0.1.0 is not Developer ID signed or notarized.
 
-## Regression QA (manual)
+## Installed-artifact validation
 
-Run the full TEST-CASES.md pass:
-- [ ] App boot
-- [ ] Folder open / close / switch
-- [ ] File open, tab switch, tab close
-- [ ] Duplicate filename safety (same name, different folders)
-- [ ] Standalone pane modes: Markdown, Preview, WYSIWYG
-- [ ] Split pane: left/right editable, preview side toggle
-- [ ] Dual workspace mode
-- [ ] Explorer navigation
-- [ ] File operations: create, rename, delete, move
-- [ ] Watcher: create/rename/delete file externally, verify UI updates
-- [ ] Session restore: relaunch with previous folder
-- [ ] External conflict detection: edit file externally while tab is dirty
-- [ ] Auto-save: verify debounce fires, content persists on reload
-- [ ] Keyboard shortcuts: all registered shortcuts work
-- [ ] Command palette: file search, command search, dismiss
-- [ ] Find & replace: find, replace, replace all
-- [ ] Theme toggle: dark ↔ light, editor + preview surfaces update
-- [ ] Focus mode / zen mode
-- [ ] Print / PDF export
-- [ ] Settings panel: every toggle and control
-- [ ] Settings persistence: close, reopen, verify state restored
+- [ ] Download the actual release assets; do not substitute a locally built ZIP for the published artifact.
+- [ ] Verify the downloaded ZIP against the downloaded `SHA256SUMS`, comparing the digest even if the host normalizes the asset filename.
+- [ ] Verify the downloaded app bundle signature and the appcast signature using the embedded public key, without accessing or exposing the private key.
+- [ ] Install and exercise the downloaded app on macOS 13+ Apple Silicon using the manual cases in [TEST-CASES.md](TEST-CASES.md).
+- [ ] Confirm `.md` and `.markdown` Finder opens and Dock/Finder reopen work after the final app window closes.
+- [ ] Confirm the appcast and package URLs are reachable by intended users. The repository is private, so the GitHub release feed is not suitable for unauthenticated update clients without publicly accessible hosting.
+- [ ] Confirm distribution signing and notarization requirements for the intended audience; the current v0.1.0 artifact is ad hoc signed and not notarized.
 
-## Platform Checks
-
-- [ ] macOS: ⌘ shortcuts, native menu, window controls
-- [ ] Windows/Linux: Ctrl shortcuts (verify keybindings module)
-- [ ] Dark theme: all surfaces readable
-- [ ] Light theme: all surfaces readable
-- [ ] High-contrast / accessibility: contrast ratios meet WCAG AA
-
-## Performance Check
-
-- [ ] Cold launch ≤ 400 ms (check console for perf budget warnings)
-- [ ] File-switch ≤ 80 ms p95
-
-## Release
-
-- [ ] Version bumped in `package.json` and `tauri.conf.json`
-- [ ] CHANGELOG.md entry added for this release
-- [ ] Git tag created (`git tag vX.Y.Z`)
-- [ ] Tag pushed (`git push --tags`)
-- [ ] `npm run package` completes without error
-- [ ] Packaged app launches and passes a minimal QA smoke test
-- [ ] Release notes published on GitHub
+Linux and Windows are intended targets, but there are no verified packages or platform-specific release checks yet.

@@ -1,3 +1,5 @@
+> **Historical, pre-GPUI document.** Preserved as an archive; paths, commands, feature descriptions, and plans below are not current product guidance. See the [active documentation index](../../README.md).
+
 # Rísta Project Board
 
 This document turns the product roadmap into concrete epics, milestones, issue-style tasks, and acceptance criteria.

@@ -41,7 +41,16 @@ ditto vendor/sparkle/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framewo
 sed "s/@VERSION@/${VERSION}/g; s/@BUILD@/${BUILD}/g" \
   macos/Info.plist > "$APP/Contents/Info.plist"
 
-sips -s format icns public/icon.png --out "$APP/Contents/Resources/AppIcon.icns" >/dev/null
+cp LICENSE "$APP/Contents/Resources/LICENSE"
+ICONSET="dist/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" public/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -z "$double" "$double" public/icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET"
 
 # Inside-out: helpers first, then framework, then the bundle.
 find "$APP/Contents/Frameworks/Sparkle.framework" \
