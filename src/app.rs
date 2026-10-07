@@ -14,19 +14,19 @@ use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
 use chrono::NaiveDate;
 use gpui_kit::assets;
 use gpui_kit::base::Placement;
+use gpui_kit::base::Selectable;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, ResizablePanelGroup};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::tree::tree;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
@@ -120,9 +120,14 @@ pub struct Workspace {
     /// Wikilink hover preview — target + anchor point, rendered as a
     /// floating card over the workspace (the page preview).
     peek: Option<(PeekKind, gpui::Point<gpui::Pixels>)>,
+    file_menu: Option<(Entity<PopupMenu>, gpui::Point<gpui::Pixels>)>,
+    file_menu_sub: Option<Subscription>,
     /// Vault link graph — open as a full editor-area view (⌘G).
     graph: Option<Entity<crate::graph::GraphView>>,
     needs_fs_check: bool,
+    needs_standalone_fs_check: bool,
+    standalone_fs_task: Option<Task<()>>,
+    focus_fallback_pending: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -181,6 +186,7 @@ enum PaletteEntry {
 enum PaletteCmd {
     NewFile,
     NewFolder,
+    OpenFile,
     OpenFolder,
     DailyNote,
     AppendDaily,
@@ -268,6 +274,11 @@ impl PaletteCmd {
                 assets::IconName::FolderPlus,
                 "New folder",
                 &["create", "directory"],
+            ),
+            OpenFile => (
+                assets::IconName::FileText,
+                "Open file…",
+                &["markdown", "document"],
             ),
             OpenFolder => (
                 assets::IconName::FolderOpen,
@@ -604,7 +615,7 @@ impl PaletteCmd {
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, initial_paths: Vec<PathBuf>) -> Self {
         let vault = cx.new(Vault::new);
         let palette_state = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
@@ -660,8 +671,13 @@ impl Workspace {
                 )
             },
             peek: None,
+            file_menu: None,
+            file_menu_sub: None,
             graph: None,
             needs_fs_check: false,
+            needs_standalone_fs_check: false,
+            standalone_fs_task: None,
+            focus_fallback_pending: false,
             focus_handle,
             settings,
             _subscriptions: vec![vault_sub],
@@ -673,29 +689,45 @@ impl Workspace {
             vault.starred = this.settings.starred.iter().cloned().collect();
         });
 
-        // Reopen the vault the user last had open, then restore the
-        // document tabs from last session.
-        if let Some(root) = this.settings.last_vault.clone() {
-            if root.exists() {
-                // Clone before open_vault_at — its close_all_docs call
-                // persist_tabs()es the (empty) doc list over these.
-                let tabs = this.settings.open_tabs.clone();
-                let active = this.settings.active_tab.clone();
-                this.open_vault_at(root, cx);
-                for p in tabs {
-                    this.open_document_pub(PathBuf::from(&p), window, cx);
-                }
-                if let Some(active) = active {
-                    if let Some(ix) = this
-                        .docs
-                        .iter()
-                        .position(|d| d.entity.read(cx).path.display().to_string() == active)
-                    {
-                        this.active = Some(ix);
-                    }
+        let restored_tabs = this.settings.open_tabs.clone();
+        let restored_active = this.settings.active_tab.clone();
+        if initial_paths.is_empty() {
+            if let Some(root) = this
+                .settings
+                .last_vault
+                .clone()
+                .filter(|root| root.exists())
+            {
+                this.open_vault_at(root, window, cx);
+            }
+            for path in restored_tabs {
+                this.open_path(PathBuf::from(path), window, cx);
+            }
+            if let Some(active) = restored_active {
+                if let Some(ix) = this
+                    .docs
+                    .iter()
+                    .position(|d| d.entity.read(cx).path.display().to_string() == active)
+                {
+                    this.active = Some(ix);
                 }
             }
+        } else {
+            for path in initial_paths {
+                this.open_path(path, window, cx);
+            }
         }
+
+        let workspace = cx.entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            workspace.update(cx, |this, cx| match this.save_all(cx) {
+                Ok(()) => true,
+                Err(err) => {
+                    this.note_status(format!("Could not save before closing: {err}"), cx);
+                    false
+                }
+            })
+        });
         this
     }
 
@@ -703,8 +735,29 @@ impl Workspace {
     // Vault plumbing
     // ------------------------------------------------------------------
 
-    fn open_vault_at(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        self.close_all_docs(cx);
+    fn open_vault_at(
+        &mut self,
+        root: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Err(err) = self.save_all(cx) {
+            self.note_status(format!("Could not switch folders: {err}"), cx);
+            return false;
+        }
+        let root = match root.canonicalize() {
+            Ok(root) if root.is_dir() => root,
+            Ok(_) => {
+                self.note_status("That path is not a folder", cx);
+                return false;
+            }
+            Err(err) => {
+                self.note_status(format!("Could not open folder: {err}"), cx);
+                return false;
+            }
+        };
+        self.close_all_docs(window, cx);
+        self.clear_file_menu();
         self.graph = None;
         self.nav_stack.clear();
         self.nav_pos = 0;
@@ -718,11 +771,16 @@ impl Workspace {
         self.settings.save();
         self.status_note = None;
         cx.notify();
+        true
     }
 
-    fn close_vault(&mut self, cx: &mut Context<Self>) {
-        self.save_all(cx);
-        self.close_all_docs(cx);
+    fn close_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Err(err) = self.save_all(cx) {
+            self.note_status(format!("Could not close folder: {err}"), cx);
+            return false;
+        }
+        self.close_all_docs(window, cx);
+        self.clear_file_menu();
         self.graph = None;
         self.nav_stack.clear();
         self.nav_pos = 0;
@@ -731,6 +789,200 @@ impl Workspace {
         self.settings.last_vault = None;
         self.settings.save();
         cx.notify();
+        true
+    }
+
+    fn clear_file_menu(&mut self) {
+        self.file_menu = None;
+        self.file_menu_sub = None;
+    }
+
+    fn show_file_menu(
+        &mut self,
+        path: PathBuf,
+        is_folder: bool,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.peek = None;
+        let action_context = window
+            .focused(cx)
+            .unwrap_or_else(|| self.focus_handle.clone());
+        let starred_list = self.settings.starred.clone();
+        let view = cx.entity();
+        self.clear_file_menu();
+
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            Self::build_file_menu(menu, path, is_folder, starred_list, view)
+                .action_context(action_context)
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        self.file_menu_sub = Some(cx.subscribe(
+            &menu,
+            |this, _menu, _: &gpui_kit::DismissEvent, cx| {
+                this.file_menu = None;
+                this.file_menu_sub = None;
+                cx.notify();
+            },
+        ));
+        self.file_menu = Some((menu, position));
+        cx.notify();
+    }
+
+    fn build_file_menu(
+        menu: PopupMenu,
+        path: PathBuf,
+        is_folder: bool,
+        starred_list: Vec<String>,
+        view: Entity<Self>,
+    ) -> PopupMenu {
+        let dir = if is_folder {
+            path.clone()
+        } else {
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| path.clone())
+        };
+        let menu = menu
+            .item(
+                PopupMenuItem::new("New file here")
+                    .icon(assets::IconName::FilePlus)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.new_file_in(dir.clone(), window, cx);
+                            });
+                        }
+                    }),
+            )
+            .separator();
+        // Files can be pinned into the Starred group.
+        let menu = if is_folder {
+            menu
+        } else {
+            let starred = starred_list.contains(&path.to_string_lossy().to_string());
+            menu.item(
+                PopupMenuItem::new(if starred { "Unstar" } else { "Star" })
+                    .icon(if starred {
+                        assets::IconName::StarOff
+                    } else {
+                        assets::IconName::Star
+                    })
+                    .on_click({
+                        let path = path.clone();
+                        let view = view.clone();
+                        move |_, _window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.toggle_star(path.clone(), cx);
+                            });
+                        }
+                    }),
+            )
+        };
+        menu.item(
+            PopupMenuItem::new("Rename…")
+                .icon(assets::IconName::SquarePen)
+                .on_click({
+                    let path = path.clone();
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.show_rename_dialog(path.clone(), window, cx);
+                        });
+                    }
+                }),
+        )
+        .when(!is_folder, |menu| {
+            menu.item(
+                PopupMenuItem::new("Duplicate")
+                    .icon(assets::IconName::CopyPlus)
+                    .on_click({
+                        let path = path.clone();
+                        let view = view.clone();
+                        move |_, _window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.duplicate_file(path.clone(), cx);
+                            });
+                        }
+                    }),
+            )
+        })
+        .when(
+            !is_folder && path.extension().map(|e| e == "md").unwrap_or(false),
+            |menu| {
+                menu.item(
+                    PopupMenuItem::new("Open local graph")
+                        .icon(assets::IconName::Waypoints)
+                        .on_click({
+                            let path = path.clone();
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_local_graph_for(path.clone(), window, cx);
+                                });
+                            }
+                        }),
+                )
+            },
+        )
+        .item(
+            PopupMenuItem::new("Copy path")
+                .icon(assets::IconName::Link)
+                .on_click({
+                    let path = path.clone();
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.copy_rel_path(path.clone(), cx);
+                        });
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Copy wikilink")
+                .icon(assets::IconName::Copy)
+                .on_click({
+                    let path = path.clone();
+                    move |_, _window, cx| {
+                        let stem = path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        cx.write_to_clipboard(ClipboardItem::new_string(format!("[[{stem}]]")));
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Reveal in Finder")
+                .icon(assets::IconName::FolderOpen)
+                .on_click({
+                    let path = path.clone();
+                    move |_, _window, _cx| reveal_in_file_manager(&path)
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Open in default app")
+                .icon(assets::IconName::ExternalLink)
+                .on_click({
+                    let path = path.clone();
+                    move |_, _window, _cx| open_in_default_app(&path)
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Delete…")
+                .icon(assets::IconName::Delete)
+                .on_click({
+                    let path = path.clone();
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.show_delete_confirm(path.clone(), window, cx);
+                        });
+                    }
+                }),
+        )
     }
 
     /// Show a status-bar note that fades after ~4s. A bumped epoch keeps
@@ -957,6 +1209,51 @@ impl Workspace {
         self.open_document_impl(path, false, window, cx);
     }
 
+    pub(crate) fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) => {
+                self.note_status(format!("Could not open {}: {err}", path.display()), cx);
+                return;
+            }
+        };
+        if path.is_dir() {
+            self.open_vault_at(path, window, cx);
+        } else if path.is_file() {
+            self.open_document(path, window, cx);
+        } else {
+            self.note_status(format!("Could not open {}", path.display()), cx);
+        }
+    }
+
+    fn start_standalone_fs_check(&mut self, cx: &mut Context<Self>) {
+        if self.standalone_fs_task.is_some() {
+            return;
+        }
+        self.standalone_fs_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| loop {
+            smol::Timer::after(std::time::Duration::from_millis(500)).await;
+            let keep_running = this
+                .update(&mut *cx, |this, cx| {
+                    if this
+                        .docs
+                        .iter()
+                        .any(|doc| doc.entity.read(cx).vault_root.is_none())
+                    {
+                        this.needs_standalone_fs_check = true;
+                        cx.notify();
+                        true
+                    } else {
+                        this.standalone_fs_task = None;
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if !keep_running {
+                break;
+            }
+        }));
+    }
+
     /// ⌘+click semantics: always open in a new tab, even
     /// when the note already has one.
     fn open_document_impl(
@@ -967,6 +1264,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.peek = None;
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) => {
+                self.note_status(format!("Could not open {}: {err}", path.display()), cx);
+                return;
+            }
+        };
         if !new_tab {
             if let Some(ix) = self
                 .docs
@@ -987,26 +1291,38 @@ impl Workspace {
         if !path.is_file() {
             return;
         }
+        let initial = match Document::load_initial(&path) {
+            Ok(initial) => initial,
+            Err(err) => {
+                self.note_status(format!("Could not open {}: {err}", path.display()), cx);
+                return;
+            }
+        };
         self.recent.retain(|p| *p != path);
         self.recent.insert(0, path.clone());
         self.recent.truncate(12);
         self.record_nav(&path);
-        let resolver: ImageResolver = self.vault.read(cx).image_resolver();
-        let vault_root = self.vault.read(cx).root.clone();
+        let vault_root = self
+            .vault
+            .read(cx)
+            .root
+            .clone()
+            .filter(|root| path.starts_with(root));
+        let resolver: ImageResolver = if vault_root.is_some() {
+            self.vault.read(cx).image_resolver()
+        } else {
+            let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            std::rc::Rc::new(move |reference| {
+                let candidate = parent.join(reference);
+                candidate.exists().then_some(candidate)
+            })
+        };
         let settings = self.settings.clone();
-        let is_base_file = is_base(&path);
-        let vault = self.vault.clone();
-        let doc = cx.new(|cx| {
-            Document::open(
-                path,
-                vault_root,
-                &settings,
-                resolver,
-                Some(vault),
-                window,
-                cx,
-            )
-        });
+        let is_base_file = vault_root.is_some() && is_base(&path);
+        let vault = vault_root.as_ref().map(|_| self.vault.clone());
+        let is_standalone = vault_root.is_none();
+        let doc = cx
+            .new(|cx| Document::open(vault_root, &settings, resolver, vault, initial, window, cx));
         let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| match event {
             DocumentEvent::Saved | DocumentEvent::Changed => {
                 this.status_note = None;
@@ -1055,6 +1371,9 @@ impl Workspace {
         self.active = Some(self.docs.len() - 1);
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
+        if is_standalone {
+            self.start_standalone_fs_check(cx);
+        }
         cx.notify();
 
         // Focus the editor once the frame settles. Preview mode and
@@ -1220,10 +1539,18 @@ impl Workspace {
         }
     }
 
-    fn close_all_docs(&mut self, cx: &mut Context<Self>) {
+    fn close_all_docs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.docs.clear();
         self.active = None;
         self.persist_tabs(cx);
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                if this.docs.is_empty() && this.graph.is_none() && this.file_menu.is_none() {
+                    this.focus_handle.focus(window, cx);
+                }
+            });
+        });
     }
 
     /// Snapshot open doc paths + the active one into settings — the
@@ -1340,25 +1667,34 @@ impl Workspace {
         let dirty = self.docs[ix].entity.read(cx).dirty;
         let title = self.docs[ix].entity.read(cx).title();
         if dirty {
+            let target = self.docs[ix].entity.clone();
             let view = cx.entity();
             window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+                let target = target.clone();
+                let view = view.clone();
                 dialog
                     .title(format!("Close “{}” without saving?", title))
                     .description("The note has unsaved changes.")
                     .show_cancel(true)
                     .ok_text("Close without saving")
                     .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
-                    .on_ok({
-                        let view = view.clone();
-                        move |_, _window, cx| {
-                            view.update(cx, |this, cx| this.close_tab_now(ix, cx));
-                            true
-                        }
+                    .on_ok(move |_, window, cx| {
+                        let target_id = target.entity_id();
+                        view.update(cx, |this, cx| {
+                            if let Some(ix) = this
+                                .docs
+                                .iter()
+                                .position(|doc| doc.entity.entity_id() == target_id)
+                            {
+                                this.close_tab_now(ix, window, cx);
+                            }
+                        });
+                        true
                     })
             });
             return;
         }
-        self.close_tab_now(ix, cx);
+        self.close_tab_now(ix, window, cx);
     }
 
     /// Drag a tab onto another tab to reorder the strip. `self.active`
@@ -1391,10 +1727,16 @@ impl Workspace {
         }
     }
 
-    fn close_tab_now(&mut self, ix: usize, cx: &mut Context<Self>) {
+    fn close_tab_now(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.docs.len() {
             return;
         }
+        let closed_focus = self.docs[ix]
+            .entity
+            .read(cx)
+            .editor
+            .read(cx)
+            .focus_handle(cx);
         let path = self.docs[ix].entity.read(cx).path.clone();
         self.docs.remove(ix);
         self.closed_tabs.push(path);
@@ -1411,6 +1753,18 @@ impl Workspace {
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
         cx.notify();
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                let focused = window.focused(cx);
+                if focused
+                    .as_ref()
+                    .is_none_or(|focused| focused == &closed_focus)
+                {
+                    this.refocus(window, cx);
+                }
+            });
+        });
     }
 
     /// Expand ancestors and scroll the file tree to the active document —
@@ -1434,14 +1788,11 @@ impl Workspace {
         });
     }
 
-    fn save_all(&mut self, cx: &mut Context<Self>) {
+    fn save_all(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         for doc in &self.docs {
-            doc.entity.update(cx, |doc, cx| {
-                if doc.dirty {
-                    let _ = doc.save(cx);
-                }
-            });
+            doc.entity.update(cx, |doc, cx| doc.flush_and_save(cx))?;
         }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1553,8 +1904,27 @@ impl Workspace {
         cx.spawn_in(window, async move |view, window| {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 if let Some(path) = paths.into_iter().next() {
-                    let _ = window.update(|_window, cx| {
-                        view.update(cx, |this, cx| this.open_vault_at(path, cx))
+                    let _ = window.update(|window, cx| {
+                        view.update(cx, |this, cx| this.open_vault_at(path, window, cx))
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn on_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open a Markdown file".into()),
+        });
+        cx.spawn_in(window, async move |view, window| {
+            if let Ok(Ok(Some(paths))) = receiver.await {
+                if let Some(path) = paths.into_iter().next() {
+                    let _ = window.update(|window, cx| {
+                        view.update(cx, |this, cx| this.open_path(path, window, cx))
                     });
                 }
             }
@@ -1715,15 +2085,15 @@ impl Workspace {
         self.note_status("Appended to daily note", cx);
     }
 
-    fn on_close_folder(&mut self, _: &CloseFolder, _window: &mut Window, cx: &mut Context<Self>) {
-        self.close_vault(cx);
+    fn on_close_folder(&mut self, _: &CloseFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_vault(window, cx);
     }
 
     fn on_save(&mut self, _: &SaveFile, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
-            doc.update(cx, |doc, cx| {
-                let _ = doc.save(cx);
-            });
+            if let Err(err) = doc.update(cx, |doc, cx| doc.save(cx)) {
+                self.note_status(format!("Could not save: {err}"), cx);
+            }
         }
     }
 
@@ -1743,13 +2113,84 @@ impl Workspace {
             if let Ok(Ok(Some(path))) = receiver.await {
                 let _ = window.update(|_window, cx| {
                     view.update(cx, |this, cx| {
-                        let _ = doc.update(cx, |doc, cx| doc.save_as(path, cx));
-                        this.vault.update(cx, |vault, cx| vault.refresh(cx));
+                        match doc.update(cx, |doc, cx| doc.save_as(path, cx)) {
+                            Err(err) => {
+                                this.note_status(format!("Could not save: {err}"), cx);
+                            }
+                            Ok(()) => {
+                                let saved_path = doc.read(cx).path.clone();
+                                let root = this
+                                    .vault
+                                    .read(cx)
+                                    .root
+                                    .clone()
+                                    .filter(|root| saved_path.starts_with(root));
+                                let resolver: ImageResolver = if root.is_some() {
+                                    this.vault.read(cx).image_resolver()
+                                } else {
+                                    let parent = saved_path
+                                        .parent()
+                                        .map(Path::to_path_buf)
+                                        .unwrap_or_default();
+                                    std::rc::Rc::new(move |reference| {
+                                        let candidate = parent.join(reference);
+                                        candidate.exists().then_some(candidate)
+                                    })
+                                };
+                                let is_standalone = root.is_none();
+                                let vault = root.as_ref().map(|_| this.vault.clone());
+                                doc.update(cx, |doc, cx| {
+                                    doc.set_location_context(root, vault, resolver, cx)
+                                });
+                                if is_standalone {
+                                    this.start_standalone_fs_check(cx);
+                                }
+                                this.persist_tabs(cx);
+                                if this
+                                    .vault
+                                    .read(cx)
+                                    .root
+                                    .as_ref()
+                                    .is_some_and(|root| saved_path.starts_with(root))
+                                {
+                                    this.vault.update(cx, |vault, cx| vault.refresh(cx));
+                                }
+                                this.note_status(format!("Saved {}", saved_path.display()), cx);
+                            }
+                        }
                     })
                 });
             }
         })
         .detach();
+    }
+
+    fn confirm_reload_from_disk(
+        &mut self,
+        doc: Entity<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = doc.read(cx).title();
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let view = view.clone();
+            let doc = doc.clone();
+            dialog
+                .title(format!("Reload “{}” from disk?", title))
+                .description("This will discard your local changes.")
+                .show_cancel(true)
+                .ok_text("Discard and reload")
+                .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
+                .on_ok(move |_, window, cx| {
+                    let reload_result = doc.update(cx, |doc, cx| doc.reload(window, cx));
+                    view.update(cx, |this, cx| match reload_result {
+                        Ok(()) => this.note_status("Reloaded from disk", cx),
+                        Err(err) => this.note_status(format!("Could not reload: {err}"), cx),
+                    });
+                    true
+                })
+        });
     }
 
     /// Palette → "Export note as HTML…" — a save panel for `<stem>.html`
@@ -2190,9 +2631,11 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_quit(&mut self, _: &Quit, _w: &mut Window, cx: &mut Context<Self>) {
-        self.save_all(cx);
-        cx.quit();
+    pub(crate) fn quit(&mut self, cx: &mut Context<Self>) {
+        match self.save_all(cx) {
+            Ok(()) => cx.quit(),
+            Err(err) => self.note_status(format!("Could not save before quitting: {err}"), cx),
+        }
     }
 
     fn on_about(&mut self, _: &About, _w: &mut Window, cx: &mut Context<Self>) {
@@ -2227,6 +2670,7 @@ impl Workspace {
             PaletteCmd::NewBase,
             PaletteCmd::DailyNote,
             PaletteCmd::AppendDaily,
+            PaletteCmd::OpenFile,
             PaletteCmd::OpenFolder,
             PaletteCmd::NewFolder,
             PaletteCmd::Save,
@@ -2443,12 +2887,15 @@ impl Workspace {
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
             PaletteCmd::NewBase => self.new_base(window, cx),
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
+            PaletteCmd::OpenFile => self.on_open_file(&OpenFile, window, cx),
             PaletteCmd::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             PaletteCmd::DailyNote => self.on_open_daily(&OpenDailyNote, window, cx),
             PaletteCmd::AppendDaily => {
                 self.defer_dialog(Self::show_append_daily_dialog, window, cx)
             }
-            PaletteCmd::CloseFolder => self.close_vault(cx),
+            PaletteCmd::CloseFolder => {
+                self.close_vault(window, cx);
+            }
             PaletteCmd::Save => self.on_save(&SaveFile, window, cx),
             PaletteCmd::SaveAs => self.on_save_as(&SaveFileAs, window, cx),
             PaletteCmd::SourceMode => self.set_view_mode(ViewMode::Source, window, cx),
@@ -2691,7 +3138,7 @@ impl Workspace {
                 cx,
             ),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
-            PaletteCmd::Quit => self.on_quit(&Quit, window, cx),
+            PaletteCmd::Quit => self.quit(cx),
         }
     }
 
@@ -3434,7 +3881,7 @@ impl Workspace {
                     let path = path.clone();
                     move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.delete_path(path.clone(), cx);
+                            this.delete_path(path.clone(), window, cx);
                             this.refocus(window, cx);
                         });
                         true
@@ -3987,7 +4434,7 @@ impl Workspace {
         });
     }
 
-    fn delete_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn delete_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let root = self.vault.read(cx).root.clone();
         let moved = root
             .as_ref()
@@ -4006,7 +4453,7 @@ impl Workspace {
             .iter()
             .position(|d| d.entity.read(cx).path == path)
         {
-            self.close_tab_now(ix, cx);
+            self.close_tab_now(ix, window, cx);
         }
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
     }
@@ -5420,6 +5867,7 @@ impl Workspace {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let tree_state = self.vault.read(cx).tree.clone();
+        let tree_scroll = tree_state.read(cx).scroll_handle().clone();
 
         v_flex()
             .size_full()
@@ -5497,71 +5945,85 @@ impl Workspace {
             )
             .child(self.render_starred(cx))
             .child(
-                div().flex_1().min_h(px(120.)).child(
-                    tree(&tree_state, {
-                        let render_view = view.clone();
-                        let starred_rows = self.settings.starred.clone();
-                        move |ix, entry, selected, _window, cx| {
-                            render_view.update(cx, |this, cx| {
-                                let item = entry.item();
-                                let path = PathBuf::from(item.id.as_str());
-                                let is_file = !entry.is_folder();
-                                let is_starred =
-                                    is_file && starred_rows.iter().any(|s| s == item.id.as_str());
-                                // The open note stays lit even when the
-                                // tree's own selection moved (nav via
-                                // wikilinks, palette, tabs…).
-                                let is_active = is_file
-                                    && this
-                                        .active_doc()
-                                        .map(|d| d.read(cx).path == path)
-                                        .unwrap_or(false);
-                                let icon: assets::IconName = if !is_file {
-                                    if entry.is_expanded() {
-                                        assets::IconName::FolderOpen
-                                    } else {
-                                        assets::IconName::FolderClosed
-                                    }
-                                } else {
-                                    match path
-                                        .extension()
-                                        .and_then(|e| e.to_str())
-                                        .map(|e| e.to_lowercase())
-                                        .as_deref()
-                                    {
-                                        Some("base") => assets::IconName::Database,
-                                        Some(e) if IMAGE_EXTS.contains(&e) => {
-                                            assets::IconName::FileImage
-                                        }
-                                        _ => assets::IconName::FileText,
-                                    }
-                                };
-                                let row = ListItem::new(ix)
-                                    .w_full()
-                                    .rounded(cx.theme().radius)
-                                    .py_0p5()
-                                    .px_2()
-                                    .pl(px(16.) * entry.depth() + px(8.))
-                                    .selected(selected || is_active)
-                                    .child(
-                                        h_flex()
-                                            .w_full()
-                                            .gap_2()
-                                            .child(Icon::new(icon).size_4())
-                                            .child(
-                                                div().flex_1().truncate().child(item.label.clone()),
-                                            )
-                                            .when(is_starred, |h| {
-                                                h.child(
-                                                    Icon::new(assets::IconName::StarFill)
-                                                        .size_3()
-                                                        .text_color(cx.theme().info),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(120.))
+                    .child(
+                        gpui_kit::base::Tree::new(&tree_state)
+                            .item({
+                                let render_view = view.clone();
+                                let starred_rows = self.settings.starred.clone();
+                                move |ix, entry, entry_state, _window, cx| {
+                                    render_view.update(cx, |this, cx| {
+                                        let item = entry.item();
+                                        let path = PathBuf::from(item.id.as_str());
+                                        let is_file = !entry.is_folder();
+                                        let is_folder = entry.is_folder();
+                                        let is_starred = is_file
+                                            && starred_rows.iter().any(|s| s == item.id.as_str());
+                                        // The open note stays lit even when the
+                                        // tree's own selection moved (nav via
+                                        // wikilinks, palette, tabs…).
+                                        let is_active = is_file
+                                            && this
+                                                .active_doc()
+                                                .map(|d| d.read(cx).path == path)
+                                                .unwrap_or(false);
+                                        let icon: assets::IconName = if !is_file {
+                                            if entry.is_expanded() {
+                                                assets::IconName::FolderOpen
+                                            } else {
+                                                assets::IconName::FolderClosed
+                                            }
+                                        } else {
+                                            match path
+                                                .extension()
+                                                .and_then(|e| e.to_str())
+                                                .map(|e| e.to_lowercase())
+                                                .as_deref()
+                                            {
+                                                Some("base") => assets::IconName::Database,
+                                                Some(e) if IMAGE_EXTS.contains(&e) => {
+                                                    assets::IconName::FileImage
+                                                }
+                                                _ => assets::IconName::FileText,
+                                            }
+                                        };
+                                        let row =
+                                            ListItem::new(ix)
+                                                .w_full()
+                                                .rounded(cx.theme().radius)
+                                                .py_0p5()
+                                                .px_2()
+                                                .pl(px(16.) * entry.depth() + px(8.))
+                                                .selected(entry_state.is_selected() || is_active)
+                                                .secondary_selected(entry_state.is_right_clicked())
+                                                .disabled(entry.is_disabled())
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .gap_2()
+                                                        .child(Icon::new(icon).size_4())
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .truncate()
+                                                                .child(item.label.clone()),
+                                                        )
+                                                        .when(is_starred, |h| {
+                                                            h.child(
+                                                                Icon::new(
+                                                                    assets::IconName::StarFill,
+                                                                )
+                                                                .size_3()
+                                                                .text_color(cx.theme().info),
+                                                            )
+                                                        }),
                                                 )
-                                            }),
-                                    )
-                                    .on_click(cx.listener({
-                                        let path = path.clone();
-                                        move |this, ev: &gpui::ClickEvent, window, cx| {
+                                                .on_click(cx.listener({
+                                                    let path = path.clone();
+                                                    move |this, ev: &gpui::ClickEvent, window, cx| {
                                             if is_file {
                                                 if ev.modifiers().platform {
                                                     this.open_document_new_tab(
@@ -5598,233 +6060,99 @@ impl Workspace {
                                                 }
                                             }
                                         }
-                                    }))
-                                    .on_drag(path.clone(), {
-                                        let label = item.label.clone();
-                                        move |_, _, _, cx| {
-                                            cx.new(|_| TreeDragPreview {
-                                                label: label.clone(),
+                                                }))
+                                                .on_drag(path.clone(), {
+                                                    let label = item.label.clone();
+                                                    move |_, _, _, cx| {
+                                                        cx.new(|_| TreeDragPreview {
+                                                            label: label.clone(),
+                                                        })
+                                                    }
+                                                })
+                                                // Peek card on hover — same machinery
+                                                // as .base rows and property chips.
+                                                .on_mouse_move({
+                                                    let path = path.clone();
+                                                    let view = render_view.clone();
+                                                    move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                                        if is_file {
+                                                            view.update(cx, |ws, cx| {
+                                                                ws.peek_at(
+                                                                    crate::app::PeekKind::Note(
+                                                                        path.clone(),
+                                                                    ),
+                                                                    ev.position,
+                                                                    cx,
+                                                                )
+                                                            });
+                                                        }
+                                                    }
+                                                })
+                                                .on_hover({
+                                                    let path = path.clone();
+                                                    let view = render_view.clone();
+                                                    move |hovered: &bool, _window, cx| {
+                                                        if is_file && !*hovered {
+                                                            view.update(cx, |ws, cx| {
+                                                                ws.hide_peek(
+                                                                    &crate::app::PeekKind::Note(
+                                                                        path.clone(),
+                                                                    ),
+                                                                    cx,
+                                                                )
+                                                            });
+                                                        }
+                                                    }
+                                                });
+                                        // Folders accept drops; files only drag.
+                                        let row = if entry.is_folder() {
+                                            let dest_dir = path.clone();
+                                            row.drag_over::<PathBuf>(|style, _, _, cx| {
+                                                style.bg(cx.theme().accent.opacity(0.2))
                                             })
-                                        }
-                                    })
-                                    // Peek card on hover — same machinery
-                                    // as .base rows and property chips.
-                                    .on_mouse_move({
-                                        let path = path.clone();
-                                        let view = render_view.clone();
-                                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                                            if is_file {
-                                                view.update(cx, |ws, cx| {
-                                                    ws.peek_at(
-                                                        crate::app::PeekKind::Note(path.clone()),
-                                                        ev.position,
-                                                        cx,
-                                                    )
-                                                });
-                                            }
-                                        }
-                                    })
-                                    .on_hover({
-                                        let path = path.clone();
-                                        let view = render_view.clone();
-                                        move |hovered: &bool, _window, cx| {
-                                            if is_file && !*hovered {
-                                                view.update(cx, |ws, cx| {
-                                                    ws.hide_peek(
-                                                        &crate::app::PeekKind::Note(path.clone()),
-                                                        cx,
-                                                    )
-                                                });
-                                            }
-                                        }
-                                    });
-                                // Folders accept drops; files only drag.
-                                let row = if entry.is_folder() {
-                                    let dest_dir = path.clone();
-                                    row.drag_over::<PathBuf>(|style, _, _, cx| {
-                                        style.bg(cx.theme().accent.opacity(0.2))
-                                    })
-                                    .on_drop::<PathBuf>({
-                                        let view = render_view.clone();
-                                        move |src, _window, cx| {
-                                            let src = src.clone();
-                                            let dest_dir = dest_dir.clone();
-                                            view.update(cx, |this, cx| {
-                                                this.move_tree_entry(src, dest_dir, cx);
-                                            });
-                                        }
-                                    })
-                                } else {
-                                    row
-                                };
-                                row
-                            })
-                        }
-                    })
-                    .context_menu({
-                        let view = view.clone();
-                        let starred_list = self.settings.starred.clone();
-                        move |_ix, entry, menu, _window, _cx| {
-                            let path = PathBuf::from(entry.item().id.as_str());
-                            let view = view.clone();
-                            let dir = if entry.is_folder() {
-                                path.clone()
-                            } else {
-                                path.parent()
-                                    .map(|p| p.to_path_buf())
-                                    .unwrap_or_else(|| path.clone())
-                            };
-                            let menu = menu
-                                .item(
-                                    PopupMenuItem::new("New file here")
-                                        .icon(assets::IconName::FilePlus)
-                                        .on_click({
-                                            let view = view.clone();
-                                            move |_, window, cx| {
-                                                view.update(cx, |this, cx| {
-                                                    this.new_file_in(dir.clone(), window, cx);
-                                                });
-                                            }
-                                        }),
-                                )
-                                .separator();
-                            // Files can be pinned into the Starred group.
-                            let menu = if entry.is_folder() {
-                                menu
-                            } else {
-                                let starred =
-                                    starred_list.contains(&path.to_string_lossy().to_string());
-                                menu.item(
-                                    PopupMenuItem::new(if starred { "Unstar" } else { "Star" })
-                                        .icon(if starred {
-                                            assets::IconName::StarOff
-                                        } else {
-                                            assets::IconName::Star
-                                        })
-                                        .on_click({
-                                            let path = path.clone();
-                                            let view = view.clone();
-                                            move |_, _window, cx| {
-                                                view.update(cx, |this, cx| {
-                                                    this.toggle_star(path.clone(), cx);
-                                                });
-                                            }
-                                        }),
-                                )
-                            };
-                            menu.item(
-                                PopupMenuItem::new("Rename…")
-                                    .icon(assets::IconName::SquarePen)
-                                    .on_click({
-                                        let path = path.clone();
-                                        let view = view.clone();
-                                        move |_, window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.show_rename_dialog(path.clone(), window, cx);
-                                            });
-                                        }
-                                    }),
-                            )
-                            .when(!entry.is_folder(), |menu| {
-                                menu.item(
-                                    PopupMenuItem::new("Duplicate")
-                                        .icon(assets::IconName::CopyPlus)
-                                        .on_click({
-                                            let path = path.clone();
-                                            let view = view.clone();
-                                            move |_, _window, cx| {
-                                                view.update(cx, |this, cx| {
-                                                    this.duplicate_file(path.clone(), cx);
-                                                });
-                                            }
-                                        }),
-                                )
-                            })
-                            .when(
-                                !entry.is_folder()
-                                    && path.extension().map(|e| e == "md").unwrap_or(false),
-                                |menu| {
-                                    menu.item(
-                                        PopupMenuItem::new("Open local graph")
-                                            .icon(assets::IconName::Waypoints)
-                                            .on_click({
-                                                let path = path.clone();
-                                                let view = view.clone();
-                                                move |_, window, cx| {
+                                            .on_drop::<PathBuf>({
+                                                let view = render_view.clone();
+                                                move |src, _window, cx| {
+                                                    let src = src.clone();
+                                                    let dest_dir = dest_dir.clone();
                                                     view.update(cx, |this, cx| {
-                                                        this.open_local_graph_for(
+                                                        this.move_tree_entry(src, dest_dir, cx);
+                                                    });
+                                                }
+                                            })
+                                        } else {
+                                            row
+                                        };
+                                        div()
+                                            .id(SharedString::from(format!("file-row-{}", item.id)))
+                                            .child(row)
+                                            .on_mouse_down(gpui::MouseButton::Right, {
+                                                let path = path.clone();
+                                                let view = render_view.clone();
+                                                move |event, window, cx| {
+                                                    window.prevent_default();
+                                                    view.update(cx, |this, cx| {
+                                                        this.show_file_menu(
                                                             path.clone(),
+                                                            is_folder,
+                                                            event.position,
                                                             window,
                                                             cx,
                                                         );
                                                     });
                                                 }
-                                            }),
-                                    )
-                                },
-                            )
-                            .item(
-                                PopupMenuItem::new("Copy path")
-                                    .icon(assets::IconName::Link)
-                                    .on_click({
-                                        let path = path.clone();
-                                        let view = view.clone();
-                                        move |_, _window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.copy_rel_path(path.clone(), cx);
-                                            });
-                                        }
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Copy wikilink")
-                                    .icon(assets::IconName::Copy)
-                                    .on_click({
-                                        let path = path.clone();
-                                        move |_, _window, cx| {
-                                            let stem = path
-                                                .file_stem()
-                                                .map(|s| s.to_string_lossy().to_string())
-                                                .unwrap_or_default();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                format!("[[{stem}]]"),
-                                            ));
-                                        }
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Reveal in Finder")
-                                    .icon(assets::IconName::FolderOpen)
-                                    .on_click({
-                                        let path = path.clone();
-                                        move |_, _window, _cx| reveal_in_file_manager(&path)
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Open in default app")
-                                    .icon(assets::IconName::ExternalLink)
-                                    .on_click({
-                                        let path = path.clone();
-                                        move |_, _window, _cx| open_in_default_app(&path)
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Delete…")
-                                    .icon(assets::IconName::Delete)
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, window, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.show_delete_confirm(path.clone(), window, cx);
-                                            });
-                                        }
-                                    }),
-                            )
-                        }
-                    })
+                                            })
+                                            .into_any_element()
+                                    })
+                                }
+                            })
+                            .list_style(StyleRefinement::default().flex_grow_1().size_full())
+                            .relative()
+                            .size_full(),
+                    )
                     .p_1()
-                    .text_sm(),
-                ),
+                    .text_sm()
+                    .vertical_scrollbar(&tree_scroll),
             )
             .child(
                 div()
@@ -6319,14 +6647,62 @@ impl Workspace {
                 )
                 .into_any_element(),
         };
-        match self.render_breadcrumb(&doc, cx) {
+        let content = match self.render_breadcrumb(&doc, cx) {
             Some(crumb) => v_flex()
                 .size_full()
                 .child(crumb)
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element(),
             None => content,
+        };
+        if !doc.read(cx).conflict {
+            return content;
         }
+
+        let reload_doc = doc.clone();
+        let banner = h_flex()
+            .w_full()
+            .min_h(px(36.))
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .bg(cx.theme().warning.opacity(0.12))
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(cx.theme().warning)
+                    .child("Changed on disk — saving paused"),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Button::new("conflict-save-copy")
+                            .ghost()
+                            .xsmall()
+                            .label("Save copy…")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_save_as(&SaveFileAs, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("conflict-reload")
+                            .ghost()
+                            .xsmall()
+                            .label("Reload from disk")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_reload_from_disk(reload_doc.clone(), window, cx);
+                            })),
+                    ),
+            );
+        v_flex()
+            .size_full()
+            .child(banner)
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
     }
 
     /// Image document: the picture centered in the editor area with a
@@ -6783,8 +7159,17 @@ impl Workspace {
                                 .child("A quiet place for words."),
                         )
                         .child(
-                            Button::new("open-folder")
+                            Button::new("open-file")
                                 .primary()
+                                .icon(assets::IconName::FileText)
+                                .label("Open file…")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.on_open_file(&OpenFile, window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("open-folder")
+                                .ghost()
                                 .icon(assets::IconName::FolderOpen)
                                 .label("Open folder…")
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -6915,10 +7300,22 @@ impl Render for Workspace {
             self.needs_fs_check = false;
             for doc in &self.docs {
                 doc.entity.update(cx, |doc, cx| {
-                    doc.check_external(window, cx);
-                    // Embeds/banners resolve against the vault index — a
-                    // newly added image should light up open previews.
-                    doc.resync_preview(cx);
+                    if doc.vault_root.is_some() {
+                        doc.check_external(window, cx);
+                        // Embeds/banners resolve against the vault index — a
+                        // newly added image should light up open previews.
+                        doc.resync_preview(cx);
+                    }
+                });
+            }
+        }
+        if self.needs_standalone_fs_check {
+            self.needs_standalone_fs_check = false;
+            for doc in &self.docs {
+                doc.entity.update(cx, |doc, cx| {
+                    if doc.vault_root.is_none() {
+                        doc.check_external(window, cx);
+                    }
                 });
             }
         }
@@ -6926,12 +7323,22 @@ impl Render for Workspace {
         // Focus fallback: shortcuts and menu items only dispatch through a
         // focused view. When nothing holds focus (welcome screen, preview
         // mode, just-closed dialog) give it back to the workspace root.
-        if window.focused(cx).is_none() {
+        if window.focused(cx).is_none() && !self.focus_fallback_pending {
+            self.focus_fallback_pending = true;
             let handle = self.focus_handle.clone();
-            window.on_next_frame(move |window, cx| handle.focus(window, cx));
+            let view = cx.entity();
+            window.on_next_frame(move |window, cx| {
+                view.update(cx, |this, cx| {
+                    this.focus_fallback_pending = false;
+                    if window.focused(cx).is_none() {
+                        handle.focus(window, cx);
+                    }
+                });
+            });
         }
 
         let vault_open = self.vault.read(cx).is_open();
+        let has_workspace = vault_open || !self.docs.is_empty();
         let sidebar_visible = vault_open && !self.settings.sidebar_collapsed && !self.zen;
         let background = cx.theme().background;
 
@@ -6943,6 +7350,7 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_new_file))
             .on_action(cx.listener(Self::on_new_folder))
+            .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_open_folder))
             .on_action(cx.listener(Self::on_open_daily))
             .on_action(cx.listener(Self::on_close_folder))
@@ -6978,7 +7386,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_toggle_theme))
-            .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_check_for_updates))
             .when(!self.zen, |this| {
@@ -6990,7 +7397,7 @@ impl Render for Workspace {
                     .min_h_0()
                     .px_1()
                     .py_1()
-                    .child(if !vault_open {
+                    .child(if !has_workspace {
                         div()
                             .size_full()
                             .child(self.render_empty_editor(cx))
@@ -7053,11 +7460,22 @@ impl Render for Workspace {
                             .into_any_element()
                     }),
             )
-            .when(!self.zen && vault_open, |this| {
+            .when(!self.zen && has_workspace, |this| {
                 this.child(self.render_status_bar(cx))
             })
             .when_some(self.peek.clone(), |this, (kind, pos)| {
                 this.child(self.render_peek_card(&kind, pos, window, cx))
+            })
+            .when_some(self.file_menu.clone(), |this, (menu, pos)| {
+                this.child(
+                    deferred(
+                        anchored()
+                            .position(pos)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(menu),
+                    )
+                    .with_priority(gpui_kit::base::POPUP_PRIORITY),
+                )
             })
     }
 }

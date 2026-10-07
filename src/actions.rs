@@ -8,6 +8,7 @@ actions!(
         // File
         NewFile,
         NewFolder,
+        OpenFile,
         OpenFolder,
         OpenDailyNote,
         CloseFolder,

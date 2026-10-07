@@ -126,7 +126,8 @@ palette. Never hardcode a color in UI code — always `cx.theme().<token>`.
 | Settings | `⌘,` | `Ctrl+,` |
 | Daily note | `⌘⇧D` | `Ctrl+Shift+D` |
 | New file | `⌘N` | `Ctrl+N` |
-| Open folder | `⌘O` | `Ctrl+O` |
+| Open file | `⌘O` | `Ctrl+O` |
+| Open folder | `⌘⇧O` | `Ctrl+Shift+O` |
 | Zen mode | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
 
 Bindings live in `main.rs` (`cx.bind_keys`); actions in `src/actions.rs`;

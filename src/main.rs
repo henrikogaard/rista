@@ -27,38 +27,85 @@ use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
 
 fn main() {
-    gpui_kit::application()
+    let initial_paths = std::env::args_os()
+        .skip(1)
+        .map(std::path::PathBuf::from)
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .collect::<Vec<_>>();
+    let (open_url_tx, open_url_rx) = smol::channel::unbounded::<Vec<String>>();
+    let app = gpui_kit::application()
         // AllAssets embeds the full lucide set — the default `Assets` bundle
         // only covers ~100 icons, which silently blanked several IconName
         // variants we use (Table, SquareKanban, ListTodo, FileClock…).
         .with_assets(gpui_kit::assets::AllAssets)
-        .with_http_client(http::client())
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            theme::install_themes(cx);
+        .with_http_client(http::client());
+    app.on_open_urls(move |urls| {
+        let _ = open_url_tx.try_send(urls);
+    });
+    app.run(move |cx| {
+        gpui_kit::init(cx);
+        theme::install_themes(cx);
 
-            let settings = settings::Settings::load();
-            theme::set_theme_mode(settings.theme_mode(cx), cx);
-            apply_ui_settings(&settings, cx);
+        let settings = settings::Settings::load();
+        theme::set_theme_mode(settings.theme_mode(cx), cx);
+        apply_ui_settings(&settings, cx);
 
-            cx.bind_keys(keymap());
-            cx.set_menus(menus());
-            cx.activate(true);
-            updater::start();
+        cx.bind_keys(keymap());
+        cx.set_menus(menus());
+        cx.activate(true);
+        updater::start();
 
-            let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-            gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(720.), px(480.))),
-                    kind: WindowKind::Normal,
-                    ..TitleBar::window_options()
-                },
-                cx,
-                move |window, cx| cx.new(|cx| app::Workspace::new(window, cx)),
-            )
-            .expect("Failed to open window");
-        });
+        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(720.), px(480.))),
+                kind: WindowKind::Normal,
+                ..TitleBar::window_options()
+            },
+            cx,
+            move |window, cx| {
+                let workspace = cx.new(|cx| app::Workspace::new(window, cx, initial_paths.clone()));
+                let quit_workspace = workspace.downgrade();
+                cx.on_action(move |_: &Quit, cx| {
+                    if cx.windows().is_empty() {
+                        cx.quit();
+                    } else {
+                        let _ = quit_workspace.update(cx, |workspace, cx| workspace.quit(cx));
+                    }
+                });
+                let workspace_weak = workspace.downgrade();
+                let receiver = open_url_rx.clone();
+                window
+                    .spawn(cx, async move |cx| {
+                        while let Ok(urls) = receiver.recv().await {
+                            let paths = urls
+                                .into_iter()
+                                .filter_map(|url| {
+                                    url::Url::parse(&url)
+                                        .ok()
+                                        .filter(|url| url.scheme() == "file")
+                                        .and_then(|url| url.to_file_path().ok())
+                                })
+                                .collect::<Vec<_>>();
+                            if paths.is_empty() {
+                                continue;
+                            }
+                            let _ = cx.update(|window, cx| {
+                                workspace_weak.update(cx, |workspace, cx| {
+                                    for path in paths {
+                                        workspace.open_path(path, window, cx);
+                                    }
+                                })
+                            });
+                        }
+                    })
+                    .detach();
+                workspace
+            },
+        )
+        .expect("Failed to open window");
+    });
 }
 
 /// Font-size globals live on the Theme; the editor reads `mono_*` tokens.
@@ -78,7 +125,8 @@ fn keymap() -> Vec<KeyBinding> {
         // Files & folders
         KeyBinding::new("cmd-n", NewFile, None),
         KeyBinding::new("cmd-shift-n", NewFolder, None),
-        KeyBinding::new("cmd-o", OpenFolder, None),
+        KeyBinding::new("cmd-o", OpenFile, None),
+        KeyBinding::new("cmd-shift-o", OpenFolder, None),
         KeyBinding::new("cmd-shift-d", OpenDailyNote, None),
         KeyBinding::new("cmd-s", SaveFile, None),
         KeyBinding::new("cmd-shift-s", SaveFileAs, None),
@@ -191,6 +239,13 @@ fn menus() -> Vec<Menu> {
                 disabled: false,
             },
             MenuItem::separator(),
+            MenuItem::Action {
+                name: "Open File…".into(),
+                action: Box::new(OpenFile),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
             MenuItem::Action {
                 name: "Open Folder…".into(),
                 action: Box::new(OpenFolder),

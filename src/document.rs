@@ -7,7 +7,8 @@ use gpui_kit::component::input::{EditorState, InputEvent, TabSize, TextDecoratio
 use gpui_kit::component::text::TextViewState;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
@@ -38,6 +39,8 @@ pub struct Document {
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
     pub conflict: bool,
+    disk_bytes: Option<Vec<u8>>,
+    reloading: bool,
     mtime: Option<SystemTime>,
     revision: u64,
     /// Vault root — history snapshots live under `<root>/.rista/`.
@@ -80,18 +83,57 @@ pub struct Document {
     _subscriptions: Vec<Subscription>,
 }
 
+pub(crate) struct InitialDocument {
+    path: PathBuf,
+    content: String,
+    disk_bytes: Option<Vec<u8>>,
+    mtime: Option<SystemTime>,
+    is_image: bool,
+}
+
 impl Document {
+    pub(crate) fn load_initial(path: &Path) -> io::Result<InitialDocument> {
+        let is_image = crate::vault::is_image_file(path);
+        let mtime = std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        if is_image {
+            return Ok(InitialDocument {
+                path: path.to_path_buf(),
+                content: String::new(),
+                disk_bytes: None,
+                mtime,
+                is_image,
+            });
+        }
+        let disk_bytes = std::fs::read(path)?;
+        let content = String::from_utf8(disk_bytes.clone())
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        Ok(InitialDocument {
+            path: path.to_path_buf(),
+            content,
+            disk_bytes: Some(disk_bytes),
+            mtime,
+            is_image,
+        })
+    }
+
     pub fn open(
-        path: PathBuf,
         vault_root: Option<PathBuf>,
         settings: &Settings,
         image_resolver: ImageResolver,
         vault: Option<Entity<crate::vault::Vault>>,
+        initial: InitialDocument,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let InitialDocument {
+            path,
+            content,
+            disk_bytes,
+            mtime,
+            is_image,
+        } = initial;
 
         let completions_vault = vault.clone();
         let editor = cx.new(|cx| {
@@ -119,7 +161,7 @@ impl Document {
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
         let mut this = Self {
-            is_image: crate::vault::is_image_file(&path),
+            is_image,
             path,
             editor,
             callout_folds: preview::CalloutFolds::default(),
@@ -127,6 +169,8 @@ impl Document {
             preview,
             dirty: false,
             conflict: false,
+            disk_bytes,
+            reloading: false,
             mtime,
             revision: 0,
             vault_root,
@@ -203,6 +247,17 @@ impl Document {
     }
 
     fn on_edited(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.reloading {
+            return;
+        }
+        if !self.dirty
+            && self
+                .disk_bytes
+                .as_ref()
+                .is_some_and(|bytes| bytes.as_slice() == self.editor.read(cx).value().as_bytes())
+        {
+            return;
+        }
         self.dirty = true;
         self.revision += 1;
         let revision = self.revision;
@@ -222,7 +277,7 @@ impl Document {
         self.save_task = Some(cx.spawn(async move |this: WeakEntity<Document>, cx| {
             smol::Timer::after(std::time::Duration::from_millis(800)).await;
             let _ = this.update(&mut *cx, |this, cx| {
-                if this.revision == revision && this.dirty {
+                if this.revision == revision && this.dirty && !this.conflict {
                     let _ = this.save(cx);
                 }
             });
@@ -426,39 +481,119 @@ impl Document {
         })
     }
 
-    /// Write the buffer to disk. Returns the io result for callers that care.
+    /// Write the buffer to disk only if its loaded bytes are still current.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
+        let Some(baseline) = self.disk_bytes.as_deref() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "This document cannot be saved as text",
+            ));
+        };
+        if let Err(err) = disk_matches_baseline(&self.path, baseline) {
+            self.mark_conflict(cx);
+            return Err(err);
+        }
         if let Some(root) = &self.vault_root {
             history::snapshot_before_write(root, &self.path, &text);
         }
-        match std::fs::write(&self.path, text.as_bytes()) {
+        match guarded_write(&self.path, baseline, text.as_bytes()) {
             Ok(()) => {
+                self.disk_bytes = Some(text.as_bytes().to_vec());
                 self.mtime = std::fs::metadata(&self.path)
                     .and_then(|m| m.modified())
                     .ok();
                 self.dirty = false;
                 self.conflict = false;
+                self.revision += 1;
+                self.save_task.take();
+                self.sync_preview(cx);
                 cx.emit(DocumentEvent::Saved);
                 cx.notify();
                 Ok(())
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                self.mark_conflict(cx);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn flush_and_save(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
+        if !self.is_image
+            && !self.dirty
+            && self
+                .disk_bytes
+                .as_deref()
+                .is_some_and(|bytes| bytes != self.editor.read(cx).value().as_bytes())
+        {
+            self.dirty = true;
+            cx.emit(DocumentEvent::Changed);
+            cx.notify();
+        }
+        if self.dirty {
+            self.save(cx)
+        } else {
+            Ok(())
         }
     }
 
     /// Save the current editor text to a new path; repoints the document at it.
     pub fn save_as(&mut self, path: PathBuf, cx: &mut Context<Self>) -> std::io::Result<()> {
+        if self.is_image {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Image documents cannot be saved as text",
+            ));
+        }
+        if same_existing_path(&self.path, &path) {
+            return self.save(cx);
+        }
+        let path = canonical_save_path(&path)?;
         let text = self.editor.read(cx).value();
         std::fs::write(&path, text.as_bytes())?;
         self.path = path;
+        self.disk_bytes = Some(text.as_bytes().to_vec());
         self.mtime = std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
             .ok();
         self.dirty = false;
+        self.conflict = false;
+        self.revision += 1;
+        self.save_task.take();
         cx.emit(DocumentEvent::Saved);
         cx.notify();
         Ok(())
+    }
+
+    pub fn set_location_context(
+        &mut self,
+        vault_root: Option<PathBuf>,
+        vault: Option<Entity<crate::vault::Vault>>,
+        image_resolver: ImageResolver,
+        cx: &mut Context<Self>,
+    ) {
+        self.vault_root = vault_root;
+        self.vault = vault;
+        self.image_resolver = image_resolver;
+        if self.vault.is_none() {
+            self.linked_mentions.clear();
+            self.outgoing_links.clear();
+            self.outgoing_unresolved.clear();
+        }
+        self.sync_preview(cx);
+        self.refresh_linked_mentions(cx);
+        cx.notify();
+    }
+
+    fn mark_conflict(&mut self, cx: &mut Context<Self>) {
+        self.save_task.take();
+        self.dirty = true;
+        if !self.conflict {
+            self.conflict = true;
+            cx.emit(DocumentEvent::Changed);
+            cx.notify();
+        }
     }
 
     /// Load `text` into the editor as a user edit (dirty, syncs preview).
@@ -1085,38 +1220,54 @@ impl Document {
 
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(meta) = std::fs::metadata(&self.path) else {
+        let Some(baseline) = self.disk_bytes.as_deref() else {
             return;
         };
-        let Ok(mtime) = meta.modified() else {
-            return;
+        let current = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                self.mark_conflict(cx);
+                return;
+            }
         };
-        if Some(mtime) == self.mtime {
+        if current == baseline {
+            if self.conflict {
+                self.conflict = false;
+                cx.emit(DocumentEvent::Changed);
+                cx.notify();
+            }
             return;
         }
-        if self.dirty {
-            // Our write may be in flight; only flag when the mtime clearly
-            // diverges from what we last wrote.
-            self.conflict = true;
-            cx.notify();
+        if self.dirty || self.editor.read(cx).value().as_bytes() != baseline {
+            self.mark_conflict(cx);
             return;
         }
-        self.reload(window, cx);
+        if self.reload(window, cx).is_err() {
+            self.mark_conflict(cx);
+        }
     }
 
-    pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Ok(content) = std::fs::read_to_string(&self.path) {
-            self.mtime = std::fs::metadata(&self.path)
-                .and_then(|m| m.modified())
-                .ok();
-            self.editor.update(cx, |editor, cx| {
-                editor.set_value(content, window, cx);
-            });
-            self.sync_preview(cx);
-            self.dirty = false;
-            self.conflict = false;
-            cx.notify();
-        }
+    pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) -> io::Result<()> {
+        let bytes = std::fs::read(&self.path)?;
+        let content = String::from_utf8(bytes.clone())
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        self.save_task.take();
+        self.revision += 1;
+        self.reloading = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.set_value(content, window, cx);
+        });
+        self.reloading = false;
+        self.disk_bytes = Some(bytes);
+        self.mtime = std::fs::metadata(&self.path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        self.sync_preview(cx);
+        self.dirty = false;
+        self.conflict = false;
+        cx.emit(DocumentEvent::Changed);
+        cx.notify();
+        Ok(())
     }
 
     /// Move the lines covered by the selection up or down by one line,
@@ -2380,9 +2531,105 @@ fn format_table_md(src: &str, caret: usize) -> Option<(usize, usize, String)> {
     Some((offs[s], offs[e] + lines[e].len(), out))
 }
 
+fn disk_matches_baseline(path: &Path, baseline: &[u8]) -> io::Result<()> {
+    let current = std::fs::read(path)?;
+    if current == baseline {
+        Ok(())
+    } else {
+        Err(io::Error::other("File changed on disk"))
+    }
+}
+
+fn guarded_write(path: &Path, baseline: &[u8], content: &[u8]) -> io::Result<()> {
+    disk_matches_baseline(path, baseline)?;
+    std::fs::write(path, content)
+}
+
+fn same_existing_path(source: &Path, target: &Path) -> bool {
+    source == target
+        || source
+            .canonicalize()
+            .ok()
+            .zip(target.canonicalize().ok())
+            .is_some_and(|(source, target)| source == target)
+}
+
+fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize();
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Save destination has no file name",
+        )
+    })?;
+    Ok(parent.canonicalize()?.join(file_name))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::format_table_md;
+    use super::{format_table_md, guarded_write};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn test_path() -> PathBuf {
+        static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "rista-save-test-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn guarded_save_accepts_unchanged_bytes() {
+        let path = test_path();
+        std::fs::write(&path, b"before").unwrap();
+
+        guarded_write(&path, b"before", b"after").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"after");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn guarded_save_rejects_same_length_change_without_watcher() {
+        let path = test_path();
+        std::fs::write(&path, b"before").unwrap();
+        std::fs::write(&path, b"change").unwrap();
+
+        assert!(guarded_write(&path, b"before", b"local!").is_err());
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"change");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn guarded_save_rejects_deletion() {
+        let path = test_path();
+        std::fs::write(&path, b"before").unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(guarded_write(&path, b"before", b"local").is_err());
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn guarded_save_rejects_read_errors_without_writing() {
+        let path = test_path();
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(guarded_write(&path, b"before", b"local").is_err());
+
+        assert!(path.is_dir());
+        std::fs::remove_dir(path).unwrap();
+    }
 
     #[test]
     fn formats_ragged_table() {

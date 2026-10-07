@@ -11,7 +11,7 @@ export const rista = {
         "ring": "#6fd8c8",
         "caret": "#7ee0d0",
         "selection": "#1d4a44",
-        "accent.background": "#181b22",
+        "accent.background": "#29443f",
         "accent.foreground": "#b8c0ce",
         "title_bar.background": "#0a0b0e",
         "title_bar.border": "#0a0b0e",

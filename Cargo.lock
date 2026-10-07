@@ -5634,6 +5634,7 @@ dependencies = [
  "serde_yaml",
  "smol",
  "ureq",
+ "url",
 ]
 
 [[package]]

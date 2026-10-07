@@ -23,6 +23,7 @@ anyhow = "1"
 base64 = "0.22"
 ureq = "3.4.2"
 lsp-types = { version = "0.97.0", features = ["proposed"] }
+url = "2"
 
 [features]
 # Links vendor/sparkle/Sparkle.framework and enables the Sparkle updater

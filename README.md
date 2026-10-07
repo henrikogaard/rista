@@ -79,7 +79,8 @@ The app restores the last opened folder on launch. Settings live in
 | Settings | `⌘,` | `Ctrl+,` |
 | Daily note | `⌘⇧D` | `Ctrl+Shift+D` |
 | New file | `⌘N` | `Ctrl+N` |
-| Open folder | `⌘O` | `Ctrl+O` |
+| Open file | `⌘O` | `Ctrl+O` |
+| Open folder | `⌘⇧O` | `Ctrl+Shift+O` |
 | Zen mode | `⌘⇧Enter` | `Ctrl+Shift+Enter` |
 
 ## Project structure

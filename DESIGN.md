@@ -33,7 +33,7 @@ Palette intent per token group (values in `design/tokens.json`):
 |---|---|---|---|
 | `background` | `#0a0b0e` | `#f6f4ef` | Canvas |
 | `foreground` | `#d8dce5` | `#363b47` | Primary text |
-| `accent.background` | `#181b22` | `#e9e6dd` | Interactive fills |
+| `accent.background` | `#29443f` | `#e9e6dd` | Interactive fills |
 | `ring` / `caret` | `#6fd8c8` / `#7ee0d0` | `#5b7fa3` / `#4a6b8f` | Focus + cursor |
 | `primary.background` | `#6fd8c8` | `#5b7fa3` | Primary action |
 | `sidebar.background` | `#121419` | `#ffffff` | Vault rail |
