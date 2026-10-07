@@ -42,13 +42,12 @@ Remote images and packaged update checks can still make network requests.
 ## Get Rísta
 
 The [latest release](https://github.com/henrikogaard/rista/releases/latest)
-is an early **macOS 13+ / Apple Silicon** build. Download `Rista-0.1.1.zip`,
-unzip it, and move **Rísta.app** to Applications.
+is an early **macOS 13+ / Apple Silicon** build. The v0.1.0 and v0.1.1 ZIP
+packages are ad-hoc signed and not notarized.
 
-This build is ad-hoc signed, **not Developer ID signed or notarized**.
-macOS may block it on first launch; only approve an app you trust using
-System Settings → Privacy & Security. The repository is currently private,
-so downloads require GitHub access. Public automatic updates are not yet available.
+The v0.1.2 release pipeline is being prepared to provide a ZIP and DMG with
+Developer ID signing, notarization, and stapling. Treat those gates as complete
+only after the release workflow and installed artifacts have been verified.
 
 macOS is the primary development and tested platform. Linux and Windows are
 targets, not verified v0.1.0 distributions. See the

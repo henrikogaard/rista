@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.2 — 2026-10-07
+
+- Prepare the macOS release pipeline for Developer ID signing, notarization, and stapling of the app and DMG; Apple acceptance and installed-artifact validation are still pending.
+- Add a compressed DMG alongside the ZIP, with checksums generated after final packaging.
+
 ## v0.1.1 — 2026-10-07
 
 - Added the MIT license with copyright attributed to Henrik Øgård, also included in the macOS bundle.
