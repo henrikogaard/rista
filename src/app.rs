@@ -32,7 +32,49 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileMetadataSnapshot {
+    modified: Option<SystemTime>,
+    len: u64,
+    identity: Option<(u64, u64, i64, i64)>,
+}
+
+fn file_metadata_snapshot(path: &Path) -> Option<FileMetadataSnapshot> {
+    let metadata = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        Some((
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ))
+    };
+    #[cfg(not(unix))]
+    let identity = None;
+    Some(FileMetadataSnapshot {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+        identity,
+    })
+}
+
+fn update_observed_snapshot(
+    observed: &mut HashMap<PathBuf, Option<FileMetadataSnapshot>>,
+    path: &Path,
+    snapshot: Option<FileMetadataSnapshot>,
+) -> bool {
+    let changed = observed
+        .get(path)
+        .is_none_or(|previous| previous.as_ref() != snapshot.as_ref());
+    observed.insert(path.to_path_buf(), snapshot);
+    changed
+}
 
 fn canvas_columns(id: &'static str) -> ResizablePanelGroup {
     h_resizable(id).with_handle_appearance(std::rc::Rc::new(|handle, _, cx| {
@@ -1230,26 +1272,41 @@ impl Workspace {
         if self.standalone_fs_task.is_some() {
             return;
         }
-        self.standalone_fs_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| loop {
-            smol::Timer::after(std::time::Duration::from_millis(500)).await;
-            let keep_running = this
-                .update(&mut *cx, |this, cx| {
-                    if this
-                        .docs
-                        .iter()
-                        .any(|doc| doc.entity.read(cx).vault_root.is_none())
-                    {
-                        this.needs_standalone_fs_check = true;
-                        cx.notify();
-                        true
-                    } else {
-                        this.standalone_fs_task = None;
-                        false
-                    }
-                })
-                .unwrap_or(false);
-            if !keep_running {
-                break;
+        self.standalone_fs_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let mut observed = HashMap::new();
+            loop {
+                smol::Timer::after(std::time::Duration::from_millis(500)).await;
+                let keep_running = this
+                    .update(&mut *cx, |this, cx| {
+                        let standalone_paths: HashSet<PathBuf> = this
+                            .docs
+                            .iter()
+                            .filter_map(|doc| {
+                                let doc = doc.entity.read(cx);
+                                doc.vault_root.is_none().then(|| doc.path.clone())
+                            })
+                            .collect();
+                        observed.retain(|path, _| standalone_paths.contains(path));
+                        let mut changed = false;
+                        for path in &standalone_paths {
+                            let snapshot = file_metadata_snapshot(path);
+                            changed |= update_observed_snapshot(&mut observed, path, snapshot);
+                        }
+                        if !standalone_paths.is_empty() {
+                            if changed {
+                                this.needs_standalone_fs_check = true;
+                                cx.notify();
+                            }
+                            true
+                        } else {
+                            this.standalone_fs_task = None;
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
             }
         }));
     }
@@ -7886,5 +7943,58 @@ fn coerce_property_value(edit: &str, kind: &str) -> serde_yaml::Value {
             _ => V::String(chrono::Local::now().format("%H:%M").to_string()),
         },
         _ => V::String(text_of(&v)),
+    }
+}
+
+#[cfg(test)]
+mod standalone_fs_check_tests {
+    use super::{update_observed_snapshot, FileMetadataSnapshot};
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::time::UNIX_EPOCH;
+
+    #[test]
+    fn observed_metadata_invalidates_only_for_new_or_changed_snapshots() {
+        let path = Path::new("/standalone.md");
+        let mut observed: HashMap<PathBuf, Option<FileMetadataSnapshot>> = HashMap::new();
+        let original = FileMetadataSnapshot {
+            modified: Some(UNIX_EPOCH),
+            len: 6,
+            identity: Some((1, 2, 3, 4)),
+        };
+
+        assert!(update_observed_snapshot(
+            &mut observed,
+            path,
+            Some(original.clone())
+        ));
+        assert!(!update_observed_snapshot(
+            &mut observed,
+            path,
+            Some(original.clone())
+        ));
+
+        let changed = FileMetadataSnapshot {
+            len: 7,
+            ..original.clone()
+        };
+        assert!(update_observed_snapshot(&mut observed, path, Some(changed)));
+        assert!(update_observed_snapshot(&mut observed, path, None));
+        assert!(!update_observed_snapshot(&mut observed, path, None));
+
+        let recreated = FileMetadataSnapshot {
+            identity: Some((1, 5, 6, 7)),
+            ..original.clone()
+        };
+        assert!(update_observed_snapshot(
+            &mut observed,
+            path,
+            Some(recreated.clone())
+        ));
+        assert!(!update_observed_snapshot(
+            &mut observed,
+            path,
+            Some(recreated)
+        ));
     }
 }
