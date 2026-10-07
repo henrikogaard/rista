@@ -8,6 +8,7 @@ mod bases;
 mod decorations;
 mod document;
 mod emoji;
+mod folder;
 mod graph;
 mod history;
 mod http;

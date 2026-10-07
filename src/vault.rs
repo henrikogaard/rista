@@ -685,7 +685,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn should_skip(entry: &std::fs::DirEntry) -> bool {
+pub(crate) fn should_skip(entry: &std::fs::DirEntry) -> bool {
     let name = entry.file_name();
     let name = name.to_string_lossy();
     name.starts_with('.') || (entry.path().is_dir() && SKIP_DIRS.iter().any(|d| name == *d))

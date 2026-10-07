@@ -1,7 +1,7 @@
 //! Settings sheet — segmented controls and switches, applied live.
 
 use crate::app::Workspace;
-use crate::settings::{Appearance, Settings, ViewMode, EDITOR_FONTS};
+use crate::settings::{Appearance, Language, Settings, ViewMode, EDITOR_FONTS};
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -319,6 +319,29 @@ impl Render for SettingsView {
                         cx,
                         "Editor font",
                         Select::new(&self.font_select).w(px(180.)),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        settings
+                            .language
+                            .text("Navigation language", "Navigasjonsspråk"),
+                        TabBar::new("navigation-language")
+                            .segmented()
+                            .selected_index(usize::from(settings.language == Language::Norwegian))
+                            .children([Tab::new().label("English"), Tab::new().label("Norsk")])
+                            .on_click(cx.listener(|this, &ix, window, cx| {
+                                this.update_setting(
+                                    cx,
+                                    |s| {
+                                        s.language = if ix == 1 {
+                                            Language::Norwegian
+                                        } else {
+                                            Language::English
+                                        }
+                                    },
+                                    window,
+                                );
+                            })),
                     ))
                     .child(Self::row(
                         cx,

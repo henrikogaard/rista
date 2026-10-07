@@ -36,6 +36,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[path = "folder_dashboard.rs"]
+mod folder_dashboard;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
     modified: Option<SystemTime>,
@@ -104,6 +107,7 @@ pub struct Workspace {
     vault: Entity<Vault>,
     docs: Vec<OpenDoc>,
     active: Option<usize>,
+    folder: Option<folder_dashboard::FolderPage>,
     settings: Settings,
     zen: bool,
     palette_state: Entity<CommandState>,
@@ -678,6 +682,7 @@ impl Workspace {
             vault,
             docs: Vec::new(),
             active: None,
+            folder: None,
             zen: false,
             palette_state,
             palette_sections: Vec::new(),
@@ -733,6 +738,7 @@ impl Workspace {
 
         let restored_tabs = this.settings.open_tabs.clone();
         let restored_active = this.settings.active_tab.clone();
+        let restored_folder = this.settings.active_folder.clone();
         if initial_paths.is_empty() {
             if let Some(root) = this
                 .settings
@@ -753,6 +759,9 @@ impl Workspace {
                 {
                     this.active = Some(ix);
                 }
+            }
+            if let Some(folder) = restored_folder.filter(|p| p.is_dir()) {
+                this.open_folder_page(folder, window, cx);
             }
         } else {
             for path in initial_paths {
@@ -809,9 +818,10 @@ impl Workspace {
             vault.templates_dir = self.settings.templates_dir.clone();
             vault.open(root.clone(), cx);
         });
-        self.settings.last_vault = Some(root);
+        self.settings.last_vault = Some(root.clone());
         self.settings.save();
         self.status_note = None;
+        self.open_folder_page(root, window, cx);
         cx.notify();
         true
     }
@@ -1073,6 +1083,7 @@ impl Workspace {
         // Flag docs whose files changed underneath; they reload themselves on
         // the next frame where a window handle is available.
         self.needs_fs_check = true;
+        cx.notify();
         // An open graph keeps its map in sync — positions carry over
         // so it settles instead of jumping.
         if let Some(graph) = self.graph.clone() {
@@ -1328,6 +1339,10 @@ impl Workspace {
                 return;
             }
         };
+        if path.is_dir() {
+            self.open_folder_page(path, window, cx);
+            return;
+        }
         if !new_tab {
             if let Some(ix) = self
                 .docs
@@ -1335,6 +1350,8 @@ impl Workspace {
                 .position(|d| d.entity.read(cx).path == path)
             {
                 self.active = Some(ix);
+                self.folder = None;
+                self.graph = None;
                 self.record_nav(&path);
                 self.recent.retain(|p| *p != path);
                 self.recent.insert(0, path);
@@ -1426,6 +1443,8 @@ impl Workspace {
             _sub: sub,
         });
         self.active = Some(self.docs.len() - 1);
+        self.folder = None;
+        self.graph = None;
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
         if is_standalone {
@@ -1598,6 +1617,7 @@ impl Workspace {
 
     fn close_all_docs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.docs.clear();
+        self.folder = None;
         self.active = None;
         self.persist_tabs(cx);
         let view = cx.entity();
@@ -1614,6 +1634,7 @@ impl Workspace {
     /// restore-on-launch list. Also keeps an open graph's active-note
     /// halo in step — this runs after every tab mutation.
     fn persist_tabs(&mut self, cx: &mut Context<Self>) {
+        self.settings.active_folder = self.folder.as_ref().map(|p| p.path.clone());
         self.sync_graph_active(cx);
         self.settings.open_tabs = self
             .docs
@@ -2554,6 +2575,13 @@ impl Workspace {
     }
 
     fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.folder.take().is_some() {
+            self.active = self.docs.len().checked_sub(1);
+            self.persist_tabs(cx);
+            self.refocus(window, cx);
+            cx.notify();
+            return;
+        }
         if let Some(ix) = self.active {
             self.close_tab_at(ix, window, cx);
         }
@@ -2563,6 +2591,8 @@ impl Workspace {
         if self.docs.is_empty() {
             return;
         }
+        self.folder = None;
+        self.graph = None;
         self.active = Some(match self.active {
             Some(i) => (i + 1) % self.docs.len(),
             None => 0,
@@ -2576,6 +2606,8 @@ impl Workspace {
         if self.docs.is_empty() {
             return;
         }
+        self.folder = None;
+        self.graph = None;
         self.active = Some(match self.active {
             Some(0) | None => self.docs.len() - 1,
             Some(i) => i - 1,
@@ -4805,6 +4837,18 @@ impl Workspace {
                     // flush against the window corner.
                     .pr_3()
                     .child(
+                        Button::new("toggle-inspector")
+                            .ghost()
+                            .small()
+                            .tooltip(self.tr("Toggle inspector", "Vis/skjul inspektør"))
+                            .icon(assets::IconName::TableProperties)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.inspector_open = !this.settings.inspector_open;
+                                this.settings.save();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         Button::new("palette")
                             .ghost()
                             .small()
@@ -5954,10 +5998,14 @@ impl Workspace {
                         }
                     })
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Files"),
+                        Button::new("vault-home").ghost().xsmall()
+                            .icon(assets::IconName::House)
+                            .label(self.tr("Home", "Hjem"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(root) = this.vault.read(cx).root.clone() {
+                                    this.open_folder_page(root, window, cx);
+                                }
+                            })),
                     )
                     .child(
                         h_flex()
@@ -6015,18 +6063,18 @@ impl Workspace {
                                     render_view.update(cx, |this, cx| {
                                         let item = entry.item();
                                         let path = PathBuf::from(item.id.as_str());
-                                        let is_file = !entry.is_folder();
-                                        let is_folder = entry.is_folder();
+                                        let is_folder = path.is_dir();
+                                        let is_file = !is_folder;
                                         let is_starred = is_file
                                             && starred_rows.iter().any(|s| s == item.id.as_str());
                                         // The open note stays lit even when the
                                         // tree's own selection moved (nav via
                                         // wikilinks, palette, tabs…).
-                                        let is_active = is_file
-                                            && this
+                                        let is_active = this.folder.as_ref().is_some_and(|page| page.path == path)
+                                            || (is_file && this
                                                 .active_doc()
                                                 .map(|d| d.read(cx).path == path)
-                                                .unwrap_or(false);
+                                                .unwrap_or(false));
                                         let icon: assets::IconName = if !is_file {
                                             if entry.is_expanded() {
                                                 assets::IconName::FolderOpen
@@ -6059,12 +6107,30 @@ impl Workspace {
                                             .child(
                                                 h_flex()
                                                     .w_full()
+                                                    .items_center()
                                                     .gap_2()
+                                                    .child(
+                                                        div().w_3().flex_shrink_0().when(entry.is_folder(), |d| {
+                                                            d.child(Icon::new(if entry.is_expanded() {
+                                                                assets::IconName::ChevronDown
+                                                            } else { assets::IconName::ChevronRight }).size_3())
+                                                        })
+                                                    )
                                                     .child(Icon::new(icon).size_4())
                                                     .child(
                                                         div()
+                                                            .id(("folder-label", ix))
                                                             .flex_1()
                                                             .truncate()
+                                                            .when(is_folder, |label| {
+                                                                let path = path.clone();
+                                                                label.cursor_pointer()
+                                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                                        cx.stop_propagation();
+                                                                        this.open_folder_page(path.clone(), window, cx);
+                                                                    }))
+                                                            })
                                                             .child(item.label.clone()),
                                                     )
                                                     .when(is_starred, |h| {
@@ -6077,7 +6143,6 @@ impl Workspace {
                                             )
                                             .on_click(cx.listener({
                                                 let path = path.clone();
-                                                let item = item.clone();
                                                 move |this, ev: &gpui::ClickEvent, window, cx| {
                                                     if is_file {
                                                         if ev.modifiers().platform {
@@ -6092,25 +6157,6 @@ impl Workspace {
                                                                 window,
                                                                 cx,
                                                             );
-                                                        }
-                                                    } else if let Some(note) =
-                                                        expanded_folder_note(&item)
-                                                    {
-                                                        let indexed = this
-                                                            .vault_entity()
-                                                            .read(cx)
-                                                            .notes
-                                                            .contains(&note);
-                                                        if indexed {
-                                                            if ev.modifiers().platform {
-                                                                this.open_document_new_tab(
-                                                                    note, window, cx,
-                                                                );
-                                                            } else {
-                                                                this.open_document(
-                                                                    note, window, cx,
-                                                                );
-                                                            }
                                                         }
                                                     }
                                                 }
@@ -6207,30 +6253,6 @@ impl Workspace {
                     .p_1()
                     .text_sm()
                     .vertical_scrollbar(&tree_scroll),
-            )
-            .child(
-                div()
-                    .id("sidebar-details")
-                    .w_full()
-                    .max_h(relative(0.45))
-                    .min_h_0()
-                    .flex_shrink_0()
-                    .relative()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.sidebar_details_scroll)
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .px_1()
-                            .py_2()
-                            .child(self.render_outline(cx))
-                            .child(self.render_backlinks_pane(cx))
-                            .child(self.render_outgoing_pane(cx))
-                            .child(self.render_tasks(cx))
-                            .child(self.render_calendar_pane(cx))
-                            .child(self.render_tags(cx)),
-                    )
-                    .vertical_scrollbar(&self.sidebar_details_scroll),
             )
     }
 
@@ -6414,7 +6436,7 @@ impl Workspace {
                             .segmented()
                             .small()
                             .bg(cx.theme().transparent)
-                            .selected_index(self.active.unwrap_or(0))
+                            .selected_index(self.active.unwrap_or(usize::MAX))
                             .children(tabs)
                             .on_click(cx.listener(|this, &ix, _window, cx| {
                                 // The × suffix button closes a tab but its
@@ -6423,7 +6445,11 @@ impl Workspace {
                                 // would blank the editor until another tab
                                 // is clicked.
                                 if ix < this.docs.len() {
+                                    this.folder = None;
+                                    this.graph = None;
                                     this.active = Some(ix);
+                                    let path = this.docs[ix].entity.read(cx).path.clone();
+                                    this.record_nav(&path);
                                     this.persist_tabs(cx);
                                     this.reveal_active_file(cx);
                                     cx.notify();
@@ -6507,7 +6533,9 @@ impl Workspace {
                     // Image tabs have no source/preview modes; an open
                     // graph replaces the content area entirely.
                     .when(
-                        !self.active_doc_is_image(cx) && self.graph.is_none(),
+                        self.active.is_some()
+                            && !self.active_doc_is_image(cx)
+                            && self.graph.is_none(),
                         |this| this.child(self.render_view_mode_tabs(cx)),
                     ),
             )
@@ -6653,6 +6681,9 @@ impl Workspace {
     }
 
     fn render_editor_area(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(page) = &self.folder {
+            return self.render_folder_page(page, cx);
+        }
         let Some(doc) = self.active_doc().cloned() else {
             return self.render_empty_editor(cx).into_any_element();
         };
@@ -6810,7 +6841,7 @@ impl Workspace {
     }
 
     /// Breadcrumb row above the editor: `folder / sub / name` — each
-    /// folder segment reveals itself in the file tree; the filename
+    /// folder segment opens its dashboard; the filename
     /// opens the rename dialog, like the inline title.
     fn render_breadcrumb(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Option<Div> {
         let path = doc.read(cx).path.clone();
@@ -6837,6 +6868,24 @@ impl Workspace {
             .items_center()
             .text_xs()
             .text_color(cx.theme().muted_foreground);
+        let root_target = root.clone();
+        row = row
+            .child(
+                div()
+                    .id("crumb-vault")
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(cx.theme().foreground))
+                    .child(
+                        root.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_folder_page(root_target.clone(), window, cx);
+                    })),
+            )
+            .child(div().child("›"));
         let mut acc = String::new();
         for (ix, seg) in segs.iter().enumerate() {
             if ix > 0 {
@@ -6853,8 +6902,10 @@ impl Workspace {
                         .child(seg.to_string())
                         .on_click({
                             let view = view.clone();
-                            move |_, _window, cx| {
-                                view.update(cx, |this, cx| this.reveal_file(&target, cx));
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_folder_page(target.clone(), window, cx)
+                                });
                             }
                         }),
                 )
@@ -7362,6 +7413,9 @@ impl Render for Workspace {
                     }
                 });
             }
+            if let Some(page) = self.folder.take() {
+                self.folder = Some(self.load_folder_page(page.path, page.scroll, cx));
+            }
         }
         if self.needs_standalone_fs_check {
             self.needs_standalone_fs_check = false;
@@ -7483,7 +7537,7 @@ impl Render for Workspace {
                                             .bg(cx.theme().group_box)
                                             .rounded(cx.theme().radius_lg)
                                             .overflow_hidden()
-                                            .when(!self.zen && !self.docs.is_empty(), |this| {
+                                            .when(!self.zen, |this| {
                                                 this.child(self.render_tab_bar(cx))
                                             })
                                             .child(div().flex_1().min_h_0().child({
@@ -7511,6 +7565,23 @@ impl Render for Workspace {
                                     ),
                                 ),
                             )
+                            .when(!self.zen && self.settings.inspector_open, |columns| {
+                                columns.child(
+                                    resizable_panel()
+                                        .size(px(268.))
+                                        .size_range(px(220.)..px(380.))
+                                        .child(
+                                            div().size_full().p_1().child(
+                                                div()
+                                                    .size_full()
+                                                    .bg(cx.theme().sidebar)
+                                                    .rounded(cx.theme().radius_lg)
+                                                    .overflow_hidden()
+                                                    .child(self.render_inspector(cx)),
+                                            ),
+                                        ),
+                                )
+                            })
                             .into_any_element()
                     }),
             )
@@ -7837,16 +7908,6 @@ fn is_iso_date(s: &str) -> Option<chrono::NaiveDate> {
     None
 }
 
-fn expanded_folder_note(item: &gpui_kit::base::TreeItem) -> Option<PathBuf> {
-    // Tree toggles on mouse-down; opening a note on collapse would reveal it again.
-    if !item.is_folder() || !item.is_expanded() {
-        return None;
-    }
-    let path = Path::new(item.id.as_str());
-    let name = path.file_name()?.to_string_lossy();
-    Some(path.join(format!("{name}.md")))
-}
-
 /// Floating label shown while dragging a file-tree row.
 struct TreeDragPreview {
     label: SharedString,
@@ -7950,36 +8011,6 @@ fn coerce_property_value(edit: &str, kind: &str) -> serde_yaml::Value {
             _ => V::String(chrono::Local::now().format("%H:%M").to_string()),
         },
         _ => V::String(text_of(&v)),
-    }
-}
-
-#[cfg(test)]
-mod folder_note_tests {
-    use super::expanded_folder_note;
-    use gpui_kit::base::TreeItem;
-    use std::path::PathBuf;
-
-    #[test]
-    fn folder_click_reads_live_expansion_state() {
-        let item = TreeItem::new("/vault/02 Areas/Fiske", "Fiske")
-            .child(TreeItem::new("/vault/02 Areas/Fiske/Fiske.md", "Fiske.md"));
-        let click_item = item.clone();
-        assert_eq!(expanded_folder_note(&click_item), None);
-        item.clone().expanded(true);
-        assert_eq!(
-            expanded_folder_note(&click_item),
-            Some(PathBuf::from("/vault/02 Areas/Fiske/Fiske.md"))
-        );
-        item.clone().expanded(false);
-        assert_eq!(expanded_folder_note(&click_item), None);
-        item.expanded(true);
-        assert!(expanded_folder_note(&click_item).is_some());
-    }
-
-    #[test]
-    fn files_are_not_folder_notes() {
-        let item = TreeItem::new("/vault/Fiske.md", "Fiske.md").expanded(true);
-        assert_eq!(expanded_folder_note(&item), None);
     }
 }
 

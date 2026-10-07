@@ -10,6 +10,7 @@ Rísta v0.1.0 is a Rust 2021 single-binary desktop application built with GPUI t
 | `src/app.rs` | Workspace, tabs, vault UI, dialogs, and application interactions. |
 | `src/document.rs` | Editor state, dirty baseline, save/conflict handling, autosave, and preview synchronization. |
 | `src/vault.rs` | Vault indexing and the 250 ms filesystem watcher; note and image indexes include cached wikilink aliases. |
+| `src/folder.rs`, `src/folder_dashboard.rs` | Direct-child filesystem snapshots, folder introductions, dashboard rendering, breadcrumbs, and right inspector. |
 | `src/preview.rs` | Markdown preview and its `MarkdownPlugin` processing pipeline. |
 | `src/bases.rs` | YAML `.base` queries and formulas; table, cards, gallery, kanban, board, and calendar views; relations and rollups. |
 | `src/properties.rs` | Frontmatter properties. |
@@ -27,6 +28,13 @@ On macOS, settings are stored at `~/Library/Application Support/no.ogard.rista/s
 Users can open a vault with **⌘⇧O** or a standalone Markdown file with **⌘O**. The app registers `.md` and `.markdown` documents for native opening. Application-level URL handling accepts file-open events, and Finder/Dock reopen events recreate a workspace after the final window has closed; no recovery click is required.
 
 A vault watcher observes filesystem changes with a 250 ms debounce. The standalone-document poll runs every 500 ms but invalidates only when the observed file metadata changes; it does not force an unconditional full content read or render each interval.
+
+Folder dashboards are read-only workspace destinations, not document tabs. They
+participate in navigation history and restore from `active_folder`; open document
+buffers remain intact while a folder is active. The filesystem snapshot refreshes
+after watcher-driven document reloads. Introductions prefer an open note buffer,
+otherwise read `<folder>.md` or `README.md` from disk. Tree disclosure never opens
+a page, and opening a page never reveals/expands its tree ancestors.
 
 ## Save and conflict behavior
 
