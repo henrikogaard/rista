@@ -6047,120 +6047,117 @@ impl Workspace {
                                                 _ => assets::IconName::FileText,
                                             }
                                         };
-                                        let row =
-                                            ListItem::new(ix)
-                                                .w_full()
-                                                .rounded(cx.theme().radius)
-                                                .py_0p5()
-                                                .px_2()
-                                                .pl(px(16.) * entry.depth() + px(8.))
-                                                .selected(entry_state.is_selected() || is_active)
-                                                .secondary_selected(entry_state.is_right_clicked())
-                                                .disabled(entry.is_disabled())
-                                                .child(
-                                                    h_flex()
-                                                        .w_full()
-                                                        .gap_2()
-                                                        .child(Icon::new(icon).size_4())
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .truncate()
-                                                                .child(item.label.clone()),
-                                                        )
-                                                        .when(is_starred, |h| {
-                                                            h.child(
-                                                                Icon::new(
-                                                                    assets::IconName::StarFill,
-                                                                )
+                                        let row = ListItem::new(ix)
+                                            .w_full()
+                                            .rounded(cx.theme().radius)
+                                            .py_0p5()
+                                            .px_2()
+                                            .pl(px(16.) * entry.depth() + px(8.))
+                                            .selected(entry_state.is_selected() || is_active)
+                                            .secondary_selected(entry_state.is_right_clicked())
+                                            .disabled(entry.is_disabled())
+                                            .child(
+                                                h_flex()
+                                                    .w_full()
+                                                    .gap_2()
+                                                    .child(Icon::new(icon).size_4())
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .truncate()
+                                                            .child(item.label.clone()),
+                                                    )
+                                                    .when(is_starred, |h| {
+                                                        h.child(
+                                                            Icon::new(assets::IconName::StarFill)
                                                                 .size_3()
                                                                 .text_color(cx.theme().info),
-                                                            )
-                                                        }),
-                                                )
-                                                .on_click(cx.listener({
-                                                    let path = path.clone();
-                                                    move |this, ev: &gpui::ClickEvent, window, cx| {
-                                            if is_file {
-                                                if ev.modifiers().platform {
-                                                    this.open_document_new_tab(
-                                                        path.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                } else {
-                                                    this.open_document(path.clone(), window, cx);
-                                                }
-                                            } else {
-                                                // Folder Notes convention:
-                                                // <dir>/<name>.md opens on
-                                                // folder click when it exists.
-                                                let name = path
-                                                    .file_name()
-                                                    .map(|n| n.to_string_lossy().to_string());
-                                                if let Some(name) = name {
-                                                    let note = path.join(format!("{name}.md"));
-                                                    let indexed = this
-                                                        .vault_entity()
-                                                        .read(cx)
-                                                        .notes
-                                                        .contains(&note);
-                                                    if indexed {
+                                                        )
+                                                    }),
+                                            )
+                                            .on_click(cx.listener({
+                                                let path = path.clone();
+                                                let item = item.clone();
+                                                move |this, ev: &gpui::ClickEvent, window, cx| {
+                                                    if is_file {
                                                         if ev.modifiers().platform {
                                                             this.open_document_new_tab(
-                                                                note, window, cx,
+                                                                path.clone(),
+                                                                window,
+                                                                cx,
                                                             );
                                                         } else {
-                                                            this.open_document(note, window, cx);
+                                                            this.open_document(
+                                                                path.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    } else if let Some(note) =
+                                                        expanded_folder_note(&item)
+                                                    {
+                                                        let indexed = this
+                                                            .vault_entity()
+                                                            .read(cx)
+                                                            .notes
+                                                            .contains(&note);
+                                                        if indexed {
+                                                            if ev.modifiers().platform {
+                                                                this.open_document_new_tab(
+                                                                    note, window, cx,
+                                                                );
+                                                            } else {
+                                                                this.open_document(
+                                                                    note, window, cx,
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
-                                                }))
-                                                .on_drag(path.clone(), {
-                                                    let label = item.label.clone();
-                                                    move |_, _, _, cx| {
-                                                        cx.new(|_| TreeDragPreview {
-                                                            label: label.clone(),
-                                                        })
+                                            }))
+                                            .on_drag(path.clone(), {
+                                                let label = item.label.clone();
+                                                move |_, _, _, cx| {
+                                                    cx.new(|_| TreeDragPreview {
+                                                        label: label.clone(),
+                                                    })
+                                                }
+                                            })
+                                            // Peek card on hover — same machinery
+                                            // as .base rows and property chips.
+                                            .on_mouse_move({
+                                                let path = path.clone();
+                                                let view = render_view.clone();
+                                                move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                                                    if is_file {
+                                                        view.update(cx, |ws, cx| {
+                                                            ws.peek_at(
+                                                                crate::app::PeekKind::Note(
+                                                                    path.clone(),
+                                                                ),
+                                                                ev.position,
+                                                                cx,
+                                                            )
+                                                        });
                                                     }
-                                                })
-                                                // Peek card on hover — same machinery
-                                                // as .base rows and property chips.
-                                                .on_mouse_move({
-                                                    let path = path.clone();
-                                                    let view = render_view.clone();
-                                                    move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                                                        if is_file {
-                                                            view.update(cx, |ws, cx| {
-                                                                ws.peek_at(
-                                                                    crate::app::PeekKind::Note(
-                                                                        path.clone(),
-                                                                    ),
-                                                                    ev.position,
-                                                                    cx,
-                                                                )
-                                                            });
-                                                        }
+                                                }
+                                            })
+                                            .on_hover({
+                                                let path = path.clone();
+                                                let view = render_view.clone();
+                                                move |hovered: &bool, _window, cx| {
+                                                    if is_file && !*hovered {
+                                                        view.update(cx, |ws, cx| {
+                                                            ws.hide_peek(
+                                                                &crate::app::PeekKind::Note(
+                                                                    path.clone(),
+                                                                ),
+                                                                cx,
+                                                            )
+                                                        });
                                                     }
-                                                })
-                                                .on_hover({
-                                                    let path = path.clone();
-                                                    let view = render_view.clone();
-                                                    move |hovered: &bool, _window, cx| {
-                                                        if is_file && !*hovered {
-                                                            view.update(cx, |ws, cx| {
-                                                                ws.hide_peek(
-                                                                    &crate::app::PeekKind::Note(
-                                                                        path.clone(),
-                                                                    ),
-                                                                    cx,
-                                                                )
-                                                            });
-                                                        }
-                                                    }
-                                                });
+                                                }
+                                            });
                                         // Folders accept drops; files only drag.
                                         let row = if entry.is_folder() {
                                             let dest_dir = path.clone();
@@ -7840,6 +7837,16 @@ fn is_iso_date(s: &str) -> Option<chrono::NaiveDate> {
     None
 }
 
+fn expanded_folder_note(item: &gpui_kit::base::TreeItem) -> Option<PathBuf> {
+    // Tree toggles on mouse-down; opening a note on collapse would reveal it again.
+    if !item.is_folder() || !item.is_expanded() {
+        return None;
+    }
+    let path = Path::new(item.id.as_str());
+    let name = path.file_name()?.to_string_lossy();
+    Some(path.join(format!("{name}.md")))
+}
+
 /// Floating label shown while dragging a file-tree row.
 struct TreeDragPreview {
     label: SharedString,
@@ -7943,6 +7950,36 @@ fn coerce_property_value(edit: &str, kind: &str) -> serde_yaml::Value {
             _ => V::String(chrono::Local::now().format("%H:%M").to_string()),
         },
         _ => V::String(text_of(&v)),
+    }
+}
+
+#[cfg(test)]
+mod folder_note_tests {
+    use super::expanded_folder_note;
+    use gpui_kit::base::TreeItem;
+    use std::path::PathBuf;
+
+    #[test]
+    fn folder_click_reads_live_expansion_state() {
+        let item = TreeItem::new("/vault/02 Areas/Fiske", "Fiske")
+            .child(TreeItem::new("/vault/02 Areas/Fiske/Fiske.md", "Fiske.md"));
+        let click_item = item.clone();
+        assert_eq!(expanded_folder_note(&click_item), None);
+        item.clone().expanded(true);
+        assert_eq!(
+            expanded_folder_note(&click_item),
+            Some(PathBuf::from("/vault/02 Areas/Fiske/Fiske.md"))
+        );
+        item.clone().expanded(false);
+        assert_eq!(expanded_folder_note(&click_item), None);
+        item.expanded(true);
+        assert!(expanded_folder_note(&click_item).is_some());
+    }
+
+    #[test]
+    fn files_are_not_folder_notes() {
+        let item = TreeItem::new("/vault/Fiske.md", "Fiske.md").expanded(true);
+        assert_eq!(expanded_folder_note(&item), None);
     }
 }
 
