@@ -7,6 +7,23 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    English,
+    Norwegian,
+}
+
+impl Language {
+    pub fn text(self, english: &'static str, norwegian: &'static str) -> &'static str {
+        match self {
+            Self::English => english,
+            Self::Norwegian => norwegian,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum Appearance {
     #[default]
     Dark,
@@ -34,6 +51,9 @@ pub enum TreeSort {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub language: Language,
+    pub inspector_open: bool,
+    pub active_folder: Option<PathBuf>,
     pub appearance: Appearance,
     /// Editor font family — a writing-first set, resolved by name.
     pub editor_font_family: String,
@@ -137,6 +157,9 @@ impl Default for SidebarPanes {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: Language::default(),
+            inspector_open: false,
+            active_folder: None,
             appearance: Appearance::Dark,
             editor_font_family: "SF Mono".to_string(),
             editor_font_size: 14.0,
