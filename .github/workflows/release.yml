@@ -36,6 +36,6 @@ jobs:
           gh release create "${VERSION}" \
             --title "Rísta ${VERSION}" \
             --generate-notes \
-            "dist/Rísta-${VERSION#v}.zip" \
+            "dist/Rista-${VERSION#v}.zip" \
             dist/SHA256SUMS \
             dist/appcast.xml

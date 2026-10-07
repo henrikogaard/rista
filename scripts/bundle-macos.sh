@@ -23,6 +23,7 @@ VERSION="${VERSION#v}"
 BUILD="${BUILD:-$VERSION}"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 APP="dist/${APP_NAME}.app"
+ARCHIVE="Rista-${VERSION}.zip"
 
 test -d vendor/sparkle/Sparkle.framework || {
   echo "Sparkle.framework missing — run scripts/fetch-sparkle.sh first" >&2
@@ -53,8 +54,8 @@ codesign --force --sign "$IDENTITY" --timestamp=none \
 codesign --force --deep --sign "$IDENTITY" "$APP"
 codesign --verify --deep --strict "$APP"
 
-ditto -c -k --keepParent "$APP" "dist/${APP_NAME}-${VERSION}.zip"
-(cd dist && shasum -a 256 "${APP_NAME}-${VERSION}.zip" > SHA256SUMS)
+ditto -c -k --keepParent "$APP" "dist/${ARCHIVE}"
+(cd dist && shasum -a 256 "$ARCHIVE" > SHA256SUMS)
 
 # Appcast: only when the EdDSA seed is present (CI secret or local export).
 if [[ -n "${SPARKLE_PRIVATE_ED_KEY:-}" ]]; then
@@ -66,4 +67,4 @@ else
   echo "SPARKLE_PRIVATE_ED_KEY unset — skipped appcast.xml" >&2
 fi
 
-echo "built ${APP} and dist/${APP_NAME}-${VERSION}.zip"
+echo "built ${APP} and dist/${ARCHIVE}"
