@@ -15,6 +15,11 @@ cd "$(dirname "$0")/.."
 APP_NAME="Rísta"
 EXEC_NAME="rista"
 VERSION="${VERSION:-$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')}"
+VERSION="${VERSION#v}"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "VERSION must be a numeric major.minor.patch version" >&2
+  exit 1
+}
 BUILD="${BUILD:-$VERSION}"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 APP="dist/${APP_NAME}.app"
@@ -41,11 +46,12 @@ sips -s format icns public/icon.png --out "$APP/Contents/Resources/AppIcon.icns"
 find "$APP/Contents/Frameworks/Sparkle.framework" \
   \( -name "*.xpc" -o -name "*.app" -o -name Autoupdate \) -prune -type d \
   | while read -r helper; do
-      codesign --force --sign "$IDENTITY" --timestamp=none "$helper" 2>/dev/null || true
+      codesign --force --sign "$IDENTITY" --timestamp=none "$helper"
     done
 codesign --force --sign "$IDENTITY" --timestamp=none \
-  "$APP/Contents/Frameworks/Sparkle.framework" 2>/dev/null || true
+  "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --force --deep --sign "$IDENTITY" "$APP"
+codesign --verify --deep --strict "$APP"
 
 ditto -c -k --keepParent "$APP" "dist/${APP_NAME}-${VERSION}.zip"
 (cd dist && shasum -a 256 "${APP_NAME}-${VERSION}.zip" > SHA256SUMS)
@@ -53,7 +59,8 @@ ditto -c -k --keepParent "$APP" "dist/${APP_NAME}-${VERSION}.zip"
 # Appcast: only when the EdDSA seed is present (CI secret or local export).
 if [[ -n "${SPARKLE_PRIVATE_ED_KEY:-}" ]]; then
   printf '%s' "${SPARKLE_PRIVATE_ED_KEY}" \
-    | vendor/sparkle/bin/generate_appcast --ed-key-file - dist/
+    | vendor/sparkle/bin/generate_appcast --ed-key-file - \
+      --download-url-prefix "https://github.com/henrikogaard/rista/releases/download/v${VERSION}/" dist/
   echo "wrote dist/appcast.xml"
 else
   echo "SPARKLE_PRIVATE_ED_KEY unset — skipped appcast.xml" >&2

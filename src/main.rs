@@ -26,6 +26,49 @@ use gpui_kit::component::input;
 use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
 
+#[derive(Clone)]
+struct WorkspaceWindow {
+    window: AnyWindowHandle,
+    workspace: WeakEntity<app::Workspace>,
+}
+
+impl Global for WorkspaceWindow {}
+
+fn open_paths(paths: Vec<std::path::PathBuf>, cx: &mut App) {
+    if let Some(current) = cx.try_global::<WorkspaceWindow>().cloned() {
+        if matches!(
+            current.window.update(cx, |_, window, cx| {
+                current.workspace.update(cx, |workspace, cx| {
+                    for path in &paths {
+                        workspace.open_path(path.clone(), window, cx);
+                    }
+                    window.activate_window();
+                })
+            }),
+            Ok(Ok(()))
+        ) {
+            return;
+        }
+    }
+    let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+    let (window, workspace) = gpui_kit::open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(720.), px(480.))),
+            kind: WindowKind::Normal,
+            ..TitleBar::window_options()
+        },
+        cx,
+        move |window, cx| cx.new(|cx| app::Workspace::new(window, cx, paths)),
+    )
+    .expect("Failed to open window");
+    cx.set_global(WorkspaceWindow {
+        window,
+        workspace: workspace.downgrade(),
+    });
+    cx.activate(true);
+}
+
 fn main() {
     let initial_paths = std::env::args_os()
         .skip(1)
@@ -42,6 +85,7 @@ fn main() {
     app.on_open_urls(move |urls| {
         let _ = open_url_tx.try_send(urls);
     });
+    app.on_reopen(|cx| open_paths(Vec::new(), cx));
     app.run(move |cx| {
         gpui_kit::init(cx);
         theme::install_themes(cx);
@@ -52,59 +96,36 @@ fn main() {
 
         cx.bind_keys(keymap());
         cx.set_menus(menus());
+        cx.on_action(|_: &Quit, cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            } else if let Some(current) = cx.try_global::<WorkspaceWindow>().cloned() {
+                let _ = current
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.quit(cx));
+            }
+        });
         cx.activate(true);
         updater::start();
 
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-        gpui_kit::open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(720.), px(480.))),
-                kind: WindowKind::Normal,
-                ..TitleBar::window_options()
-            },
-            cx,
-            move |window, cx| {
-                let workspace = cx.new(|cx| app::Workspace::new(window, cx, initial_paths.clone()));
-                let quit_workspace = workspace.downgrade();
-                cx.on_action(move |_: &Quit, cx| {
-                    if cx.windows().is_empty() {
-                        cx.quit();
-                    } else {
-                        let _ = quit_workspace.update(cx, |workspace, cx| workspace.quit(cx));
-                    }
-                });
-                let workspace_weak = workspace.downgrade();
-                let receiver = open_url_rx.clone();
-                window
-                    .spawn(cx, async move |cx| {
-                        while let Ok(urls) = receiver.recv().await {
-                            let paths = urls
-                                .into_iter()
-                                .filter_map(|url| {
-                                    url::Url::parse(&url)
-                                        .ok()
-                                        .filter(|url| url.scheme() == "file")
-                                        .and_then(|url| url.to_file_path().ok())
-                                })
-                                .collect::<Vec<_>>();
-                            if paths.is_empty() {
-                                continue;
-                            }
-                            let _ = cx.update(|window, cx| {
-                                workspace_weak.update(cx, |workspace, cx| {
-                                    for path in paths {
-                                        workspace.open_path(path, window, cx);
-                                    }
-                                })
-                            });
-                        }
+        open_paths(initial_paths, cx);
+        cx.spawn(async move |cx| {
+            while let Ok(urls) = open_url_rx.recv().await {
+                let paths = urls
+                    .into_iter()
+                    .filter_map(|url| {
+                        url::Url::parse(&url)
+                            .ok()
+                            .filter(|url| url.scheme() == "file")
+                            .and_then(|url| url.to_file_path().ok())
                     })
-                    .detach();
-                workspace
-            },
-        )
-        .expect("Failed to open window");
+                    .collect::<Vec<_>>();
+                if !paths.is_empty() {
+                    cx.update(|cx| open_paths(paths, cx));
+                }
+            }
+        })
+        .detach();
     });
 }
 
