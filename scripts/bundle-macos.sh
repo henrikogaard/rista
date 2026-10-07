@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Build Rísta.app with Sparkle and package a ZIP and DMG.
+# Build Rista.app with Sparkle and package a ZIP and DMG.
 #
 # Local builds default to ad-hoc signing. NOTARIZE=1 requires a real
 # Developer ID identity and App Store Connect API-key authentication.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_NAME="Rísta"
+# Keep the bundle path ASCII: Sparkle compares it with LaunchServices paths
+# without Unicode normalization. CFBundleDisplayName retains the product name.
+APP_NAME="Rista"
 EXEC_NAME="rista"
 VERSION="${VERSION:-$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')}"
 VERSION="${VERSION#v}"
@@ -228,7 +230,7 @@ codesign --verify --deep --strict "$DMG_STAGE/${APP_NAME}.app"
 
 FINAL_DMG="${OUTPUT}/${DMG}"
 hdiutil create \
-  -volname "$APP_NAME" \
+  -volname "Rísta" \
   -srcfolder "$DMG_STAGE" \
   -format UDZO \
   -imagekey zlib-level=9 \

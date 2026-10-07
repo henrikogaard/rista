@@ -45,9 +45,18 @@ The [latest release](https://github.com/henrikogaard/rista/releases/latest)
 is an early **macOS 13+ / Apple Silicon** build. The v0.1.0 and v0.1.1 ZIP
 packages are ad-hoc signed and not notarized.
 
-The v0.1.2 release pipeline is being prepared to provide a ZIP and DMG with
-Developer ID signing, notarization, and stapling. Treat those gates as complete
-only after the release workflow and installed artifacts have been verified.
+The v0.1.2 ZIP and DMG are Developer ID signed, notarized, and stapled;
+the published artifacts have been verified.
+
+**Updating older installs:** The accented bundle filename in v0.1.0–v0.1.2
+can prevent Sparkle from recognizing the running app. An update may install
+without restarting and report the old version. Quit and reopen if that happens.
+Before your next update, quit the app and rename only its outer bundle to
+`Rista.app` in Finder; leave its contents untouched. The published v0.1.1 →
+v0.1.2 update successfully terminated and relaunched with that filename.
+Packages built from this source use `Rista.app` while retaining **Rísta** as
+the display name. Installing a future DMG instead also requires removing the
+old accented-name copy after quitting it, so you do not keep launching it.
 
 macOS is the primary development and tested platform. Linux and Windows are
 targets, not verified v0.1.0 distributions. See the
