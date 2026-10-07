@@ -41,8 +41,8 @@ Remote images and packaged update checks can still make network requests.
 
 ## Get Rísta
 
-The [v0.1.0 release](https://github.com/henrikogaard/rista/releases/tag/v0.1.0)
-is an early **macOS 13+ / Apple Silicon** build. Download `Rista-0.1.0.zip`,
+The [latest release](https://github.com/henrikogaard/rista/releases/latest)
+is an early **macOS 13+ / Apple Silicon** build. Download `Rista-0.1.1.zip`,
 unzip it, and move **Rísta.app** to Applications.
 
 This build is ad-hoc signed, **not Developer ID signed or notarized**.

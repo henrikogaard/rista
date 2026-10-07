@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 — 2026-10-07
 
 - Added the MIT license with copyright attributed to Henrik Øgård, also included in the macOS bundle.
 - Replaced the multicolour icon with the carved R identity, light/dark brand assets, and a full-resolution macOS iconset.
