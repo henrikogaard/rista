@@ -35,7 +35,9 @@ impl Workspace {
                 en: "Shell".into(),
                 nb: "Skall".into(),
             },
-            program: if cfg!(windows) {
+            program: if !self.settings.terminal_shell.trim().is_empty() {
+                self.settings.terminal_shell.trim().to_string()
+            } else if cfg!(windows) {
                 "powershell.exe".into()
             } else {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
@@ -43,7 +45,7 @@ impl Workspace {
             args: if cfg!(windows) {
                 vec!["-NoLogo".into()]
             } else {
-                vec!["-l".into()]
+                vec!["-l".into(), "-i".into()]
             },
             working_directory: WorkingDirectory::Folder,
         }
@@ -218,7 +220,7 @@ impl Workspace {
                         if this.vault.read(cx).root.as_ref() != Some(&root) { return; }
                         match crate::terminal_session::Session::spawn(&program, &args, &cwd) {
                             Ok(session) => {
-                                let terminal = cx.new(|cx| crate::terminal::Terminal::new(session, language, cx));
+                                let terminal = cx.new(|cx| crate::terminal::Terminal::new(session, &this.settings, cx));
                                 let focus = terminal.focus_handle(cx);
                                 window.on_next_frame(move |window, cx| focus.focus(window, cx));
                                 this.next_terminal_id += 1;

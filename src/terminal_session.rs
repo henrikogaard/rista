@@ -137,6 +137,17 @@ impl Session {
         lock_recover(&self.shared.parser).screen().clone()
     }
 
+    pub fn size(&self) -> (u16, u16) {
+        lock_recover(&self.shared.parser).screen().size()
+    }
+    pub fn input_modes(&self) -> (bool, bool) {
+        let parser = lock_recover(&self.shared.parser);
+        (
+            parser.screen().application_cursor(),
+            parser.screen().bracketed_paste(),
+        )
+    }
+
     pub fn send(&self, bytes: Vec<u8>) -> Result<()> {
         if bytes.len() > MAX_WRITE_BYTES {
             bail!("terminal input exceeds the {}-byte limit", MAX_WRITE_BYTES);

@@ -45,6 +45,7 @@ actions!(
         CloseGraph,
         // App
         OpenCommandPalette,
+        QuickOpen,
         OpenProjectSearch,
         OpenSettings,
         ToggleTerminal,

@@ -16,6 +16,7 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"]
 
 /// Emitted after a filesystem burst settles — the tree was already refreshed.
 pub enum VaultEvent {
+    TreeExpansionChanged,
     FilesChanged,
     /// Star/unstar flipped — `.base` `file.starred` rows recompute.
     StarredChanged,
@@ -61,6 +62,9 @@ pub struct Vault {
     /// Folder ids the user expanded — reapplied to rebuilt trees so
     /// watcher refreshes don't collapse the sidebar.
     expanded: std::collections::BTreeSet<String>,
+    all_items: Vec<TreeItem>,
+    pub explorer_query: String,
+    pub explorer_filter: crate::explorer::FileFilter,
     /// File ordering inside each folder — dirs stay alphabetical.
     pub tree_sort: TreeSort,
     pub show_other_files: bool,
@@ -75,13 +79,16 @@ pub struct Vault {
 impl Vault {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
-        let tree_sub = cx.subscribe(&tree, |this, _tree, event, _cx| match event {
-            TreeEvent::Expanded(id) => {
-                this.expanded.insert(id.to_string());
-            }
-            TreeEvent::Collapsed(id) => {
-                this.expanded.remove(id.as_str());
-            }
+        let tree_sub = cx.subscribe(&tree, |this, _tree, event, cx| {
+            match event {
+                TreeEvent::Expanded(id) => {
+                    this.expanded.insert(id.to_string());
+                }
+                TreeEvent::Collapsed(id) => {
+                    this.expanded.remove(id.as_str());
+                }
+            };
+            cx.emit(VaultEvent::TreeExpansionChanged);
         });
         Self {
             root: None,
@@ -98,6 +105,9 @@ impl Vault {
             alias_cache: std::collections::HashMap::new(),
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
+            all_items: Vec::new(),
+            explorer_query: String::new(),
+            explorer_filter: Default::default(),
             tree_sort: TreeSort::default(),
             show_other_files: false,
             templates_dir: "templates".to_string(),
@@ -111,6 +121,15 @@ impl Vault {
 
     pub fn open(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.stop_watching();
+        self.expanded = crate::settings::Settings::load()
+            .expanded_folders
+            .get(&root.to_string_lossy().to_string())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        self.explorer_query.clear();
+        self.explorer_filter = Default::default();
         self.root = Some(root);
         self.refresh_tree(cx);
         self.start_watcher(cx);
@@ -120,6 +139,7 @@ impl Vault {
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.stop_watching();
         self.root = None;
+        self.all_items.clear();
         self.notes.clear();
         self.by_rel.clear();
         self.by_stem.clear();
@@ -133,9 +153,13 @@ impl Vault {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let items = mark_expanded(
-            build_items(&root, 0, self.tree_sort, self.show_other_files),
-            &self.expanded,
+        self.all_items = build_items(&root, 0, self.tree_sort, self.show_other_files);
+        let items = mark_expanded(self.all_items.clone(), &self.expanded);
+        let items = crate::explorer::filtered_tree(
+            &items,
+            &root,
+            &self.explorer_query,
+            self.explorer_filter,
         );
         let (notes, images) = collect_files(&root);
         // Template files are scaffolding, not notes — they stay in the
@@ -212,6 +236,29 @@ impl Vault {
     }
 
     /// Public refresh — called after our own writes so the index stays warm.
+    pub fn expanded_folders(&self) -> Vec<String> {
+        self.expanded.iter().cloned().collect()
+    }
+
+    pub fn explorer_paths(&self) -> Vec<PathBuf> {
+        crate::explorer::paths(&self.all_items)
+    }
+
+    pub fn filter_tree(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let items = mark_expanded(self.all_items.clone(), &self.expanded);
+        let items = crate::explorer::filtered_tree(
+            &items,
+            root,
+            &self.explorer_query,
+            self.explorer_filter,
+        );
+        self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
+        cx.notify();
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_tree(cx);
     }
@@ -726,6 +773,13 @@ fn build_items(dir: &Path, depth: usize, sort: TreeSort, show_other_files: bool)
     }
     dirs.sort_by(|a, b| a.label.cmp(&b.label));
     match sort {
+        TreeSort::Size => files.sort_by_key(|f| {
+            std::cmp::Reverse(
+                std::fs::metadata(f.id.as_str())
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+            )
+        }),
         TreeSort::Name => files.sort_by(|a, b| a.label.cmp(&b.label)),
         TreeSort::Type => files.sort_by_key(|f| {
             (
@@ -754,10 +808,9 @@ fn mark_expanded(
 ) -> Vec<TreeItem> {
     items
         .into_iter()
-        .map(|mut item| {
-            if expanded.contains(item.id.as_str()) {
-                item = item.expanded(true);
-            }
+        .map(|item| {
+            let is_expanded = expanded.contains(item.id.as_str());
+            let mut item = item.expanded(is_expanded);
             item.children = mark_expanded(std::mem::take(&mut item.children), expanded);
             item
         })

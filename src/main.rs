@@ -8,6 +8,7 @@ mod bases;
 mod decorations;
 mod document;
 mod emoji;
+mod explorer;
 mod extensions;
 mod file_preview;
 mod folder;
@@ -191,7 +192,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
         KeyBinding::new("cmd-j", ToggleTerminal, None),
         // the reference editor muscle memory — same palette as ⌘K.
-        KeyBinding::new("cmd-p", OpenCommandPalette, None),
+        KeyBinding::new("cmd-p", QuickOpen, None),
         // ⌘F reaches the editor when focused; the workspace handler
         // filters .base rows or refocuses the editor otherwise.
         KeyBinding::new("cmd-f", input::Search, None),

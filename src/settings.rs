@@ -56,11 +56,17 @@ pub enum TreeSort {
     Name,
     Modified,
     Type,
+    Size,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub terminal_shell: String,
+    pub terminal_font: String,
+    pub terminal_font_size: f32,
+    pub expanded_folders: std::collections::HashMap<String, Vec<String>>,
+    pub folder_file_list: bool,
     pub show_other_files: bool,
     pub language: Language,
     pub inspector_open: bool,
@@ -171,6 +177,16 @@ impl Default for SidebarPanes {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            terminal_shell: String::new(),
+            terminal_font: if cfg!(target_os = "macos") {
+                "Menlo"
+            } else {
+                "monospace"
+            }
+            .into(),
+            terminal_font_size: 13.,
+            expanded_folders: Default::default(),
+            folder_file_list: false,
             show_other_files: false,
             language: Language::default(),
             inspector_open: false,

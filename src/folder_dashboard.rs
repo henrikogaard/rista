@@ -266,6 +266,7 @@ impl Workspace {
             .gap_1()
             .items_center()
             .children(crumbs.into_iter().enumerate().map(|(ix, target)| {
+                let siblings = target.clone();
                 h_flex()
                     .gap_1()
                     .items_center()
@@ -287,6 +288,7 @@ impl Workspace {
                                 this.open_folder_page(target.clone(), window, cx)
                             })),
                     )
+                    .child(self.sibling_button(ix, siblings, cx))
             }))
     }
 
@@ -295,6 +297,9 @@ impl Workspace {
         page: &FolderPage,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.settings.folder_file_list {
+            return self.render_folder_files(page, cx);
+        }
         let muted_foreground = cx.theme().muted_foreground;
         let path = page.path.clone();
         let title = page.metadata.title.clone();
@@ -575,6 +580,7 @@ impl Workspace {
         }
         v_flex()
             .size_full()
+            .child(self.folder_view_picker(cx))
             .child(div().px_4().py_1().child(self.folder_breadcrumb(&path, cx)))
             .child(
                 div()
@@ -594,6 +600,267 @@ impl Workspace {
                             .child(content),
                     )
                     .vertical_scrollbar(&page.scroll),
+            )
+            .into_any_element()
+    }
+
+    fn folder_view_picker(&self, cx: &mut Context<Self>) -> Div {
+        h_flex().px_4().py_1().gap_2().children(
+            [(false, "Dashboard", "Oversikt"), (true, "Files", "Filer")]
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (files, en, nb))| {
+                    Button::new(("folder-view", ix))
+                        .ghost()
+                        .small()
+                        .label(self.tr(en, nb))
+                        .selected(self.settings.folder_file_list == files)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.settings.folder_file_list = files;
+                            this.settings.save();
+                            cx.notify();
+                        }))
+                }),
+        )
+    }
+
+    fn render_folder_files(&self, page: &FolderPage, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.folder_search.read(cx).value().to_lowercase();
+        let filter = self.vault.read(cx).explorer_filter;
+        let mut entries: Vec<_> = page
+            .contents
+            .as_ref()
+            .map(|contents| {
+                contents
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.name.to_lowercase().contains(&query))
+                    .filter(|entry| entry.kind == Kind::Folder || filter.accepts(&entry.path))
+                    .map(|entry| (entry, std::fs::metadata(&entry.path).ok()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort_by(|(a, am), (b, bm)| {
+            (b.kind == Kind::Folder)
+                .cmp(&(a.kind == Kind::Folder))
+                .then_with(|| {
+                    if a.kind == Kind::Folder {
+                        return a.name.to_lowercase().cmp(&b.name.to_lowercase());
+                    }
+                    match self.settings.tree_sort {
+                        TreeSort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                        TreeSort::Type => crate::file_preview::extension(&a.path)
+                            .cmp(&crate::file_preview::extension(&b.path)),
+                        TreeSort::Modified => bm
+                            .as_ref()
+                            .and_then(|m| m.modified().ok())
+                            .cmp(&am.as_ref().and_then(|m| m.modified().ok())),
+                        TreeSort::Size => bm
+                            .as_ref()
+                            .map(|m| m.len())
+                            .cmp(&am.as_ref().map(|m| m.len())),
+                    }
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                })
+        });
+        let mut header = h_flex().w_full().px_2().gap_3();
+        for (ix, (sort, en, nb, width)) in [
+            (TreeSort::Name, "Name", "Navn", 0.),
+            (TreeSort::Type, "Type", "Type", 80.),
+            (TreeSort::Modified, "Modified", "Endret", 140.),
+            (TreeSort::Size, "Size", "Størrelse", 80.),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            header = header.child(
+                div()
+                    .when(width == 0., |d| d.flex_1().min_w_0())
+                    .when(width > 0., |d| d.w(px(width)))
+                    .child(
+                        Button::new(("file-column", ix))
+                            .ghost()
+                            .xsmall()
+                            .label(format!(
+                                "{}{}",
+                                self.tr(en, nb),
+                                if self.settings.tree_sort == sort {
+                                    if matches!(sort, TreeSort::Modified | TreeSort::Size) {
+                                        " ↓"
+                                    } else {
+                                        " ↑"
+                                    }
+                                } else {
+                                    ""
+                                }
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings.tree_sort = sort;
+                                this.settings.save();
+                                this.vault.update(cx, |vault, cx| {
+                                    vault.tree_sort = sort;
+                                    vault.refresh(cx);
+                                });
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+        let mut rows = v_flex().w_full();
+        if entries.is_empty() {
+            rows = rows.child(
+                div()
+                    .px_3()
+                    .py_4()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.tr(
+                        "No matching files. Check the search and file filters.",
+                        "Ingen samsvarende filer. Kontroller søket og filfiltrene.",
+                    )),
+            );
+        }
+        for (ix, (entry, metadata)) in entries.into_iter().enumerate() {
+            let path = entry.path.clone();
+            let context_path = path.clone();
+            let drag_path = path.clone();
+            let folder = entry.kind == Kind::Folder;
+            let modified = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .map(|time| {
+                    chrono::DateTime::<chrono::Local>::from(time)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "—".into());
+            rows = rows.child(
+                h_flex()
+                    .id(("file-list-row", ix))
+                    .w_full()
+                    .px_2()
+                    .h_8()
+                    .gap_3()
+                    .items_center()
+                    .text_sm()
+                    .hover(|row| row.bg(cx.theme().muted))
+                    .cursor_pointer()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Icon::new(if folder {
+                                    assets::IconName::Folder
+                                } else if entry.kind == Kind::Image {
+                                    assets::IconName::FileImage
+                                } else {
+                                    assets::IconName::FileText
+                                })
+                                .size_4(),
+                            )
+                            .child(div().truncate().child(entry.name.clone())),
+                    )
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .truncate()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if folder {
+                                self.tr("Folder", "Mappe").to_string()
+                            } else {
+                                crate::file_preview::extension(&path).to_uppercase()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .w(px(140.))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(modified),
+                    )
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if folder {
+                                "—".into()
+                            } else {
+                                metadata
+                                    .map(|m| crate::explorer::size_label(m.len()))
+                                    .unwrap_or_else(|| "—".into())
+                            }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.open_explorer_path(
+                                path.clone(),
+                                event.click_count == 2 || event.modifiers.platform,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.show_file_menu(
+                                context_path.clone(),
+                                folder,
+                                event.position,
+                                window,
+                                cx,
+                            )
+                        }),
+                    )
+                    .on_drag(drag_path.clone(), move |path, _, _, cx| {
+                        cx.new(|_| TreeDragPreview {
+                            label: path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string()
+                                .into(),
+                        })
+                    })
+                    .when(folder, |row| {
+                        row.drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().muted))
+                            .on_drop::<PathBuf>(cx.listener(
+                                move |this, source: &PathBuf, _, cx| {
+                                    this.move_tree_entry(source.clone(), drag_path.clone(), cx)
+                                },
+                            ))
+                    }),
+            );
+        }
+        v_flex()
+            .size_full()
+            .child(self.folder_view_picker(cx))
+            .child(
+                div()
+                    .px_4()
+                    .py_1()
+                    .child(self.folder_breadcrumb(&page.path, cx)),
+            )
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .child(Input::new(&self.folder_search).small()),
+            )
+            .child(header)
+            .child(
+                div()
+                    .id("folder-file-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&page.scroll)
+                    .child(rows),
             )
             .into_any_element()
     }

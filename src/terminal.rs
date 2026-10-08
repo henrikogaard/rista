@@ -4,10 +4,13 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::{cell::Cell, ops::Range, rc::Rc};
 
-const FONT_SIZE: f32 = 13.;
-const LINE_HEIGHT: f32 = 19.;
-
 pub struct Terminal {
+    pub visible: bool,
+    screen: Rc<vt100::Screen>,
+    screen_generation: u64,
+    font_family: String,
+    font_size: f32,
+    line_height: f32,
     session: Session,
     focus: FocusHandle,
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -19,55 +22,78 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(session: Session, language: Language, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: Session,
+        settings: &crate::settings::Settings,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let screen = Rc::new(session.snapshot());
         let poll = cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let mut generation = 0;
+            let mut delay = 16;
             loop {
-                smol::Timer::after(std::time::Duration::from_millis(33)).await;
-                if this
-                    .update(&mut *cx, |this, cx| {
-                        let bounds = this.bounds.get();
-                        let rows = (f32::from(bounds.size.height) / LINE_HEIGHT)
-                            .floor()
-                            .clamp(2., 200.) as u16;
-                        let cols = (f32::from(bounds.size.width) / this.cell_width)
-                            .floor()
-                            .clamp(10., 400.) as u16;
-                        if bounds.size.width > px(0.)
-                            && this.session.snapshot().size() != (rows, cols)
-                            && this.session.resize(rows, cols).is_err()
-                        {
-                            this.error = Some(
-                                this.language
-                                    .text(
-                                        "Could not resize terminal",
-                                        "Kunne ikke endre terminalstørrelsen",
-                                    )
-                                    .into(),
-                            );
-                        }
-                        let next = this.session.generation();
-                        if next != generation {
-                            generation = next;
+                smol::Timer::after(std::time::Duration::from_millis(delay)).await;
+                match this.update(&mut *cx, |this, cx| {
+                    let bounds = this.bounds.get();
+                    let rows = (f32::from(bounds.size.height) / this.line_height)
+                        .floor()
+                        .clamp(2., 200.) as u16;
+                    let cols = (f32::from(bounds.size.width) / this.cell_width)
+                        .floor()
+                        .clamp(10., 400.) as u16;
+                    if this.visible
+                        && bounds.size.width > px(0.)
+                        && this.session.size() != (rows, cols)
+                        && this.session.resize(rows, cols).is_err()
+                    {
+                        this.error = Some(
+                            this.language
+                                .text(
+                                    "Could not resize terminal",
+                                    "Kunne ikke endre terminalstørrelsen",
+                                )
+                                .into(),
+                        );
+                    }
+                    let next = this.session.generation();
+                    if next != generation {
+                        generation = next;
+                        if this.visible {
                             cx.notify();
                         }
-                    })
-                    .is_err()
-                {
-                    break;
+                    }
+                    this.visible
+                }) {
+                    Ok(true) => delay = 16,
+                    Ok(false) => delay = 200,
+                    Err(_) => break,
                 }
             }
         });
         Self {
+            visible: true,
+            screen,
+            screen_generation: u64::MAX,
+            font_family: settings.terminal_font.clone(),
+            font_size: settings.terminal_font_size.clamp(10., 24.),
+            line_height: settings.terminal_font_size.clamp(10., 24.) * 1.45,
             session,
             focus: cx.focus_handle(),
             bounds: Rc::new(Cell::new(Bounds::default())),
             cell_width: 7.8,
             marked: String::new(),
             error: None,
-            language,
+            language: settings.language,
             _poll: poll,
         }
+    }
+
+    pub fn apply_settings(&mut self, settings: &crate::settings::Settings, cx: &mut Context<Self>) {
+        self.font_family = settings.terminal_font.clone();
+        self.font_size = settings.terminal_font_size.clamp(10., 24.);
+        self.line_height = self.font_size * 1.45;
+        self.language = settings.language;
+        cx.notify();
     }
 
     fn send(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
@@ -95,7 +121,7 @@ impl Terminal {
 
     fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let text = text.replace('\u{1b}', "").replace("\r\n", "\n");
-        let bytes = if self.session.snapshot().bracketed_paste() {
+        let bytes = if self.session.input_modes().1 {
             format!("\x1b[200~{text}\x1b[201~").into_bytes()
         } else {
             text.replace('\n', "\r").into_bytes()
@@ -118,7 +144,7 @@ impl Terminal {
             cx.stop_propagation();
             return;
         }
-        if let Some(bytes) = key_bytes(key, self.session.snapshot().application_cursor()) {
+        if let Some(bytes) = key_bytes(key, self.session.input_modes().0) {
             self.marked.clear();
             self.send(bytes, cx);
             cx.stop_propagation();
@@ -255,14 +281,14 @@ impl EntityInputHandler for Terminal {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let (row, col) = self.session.snapshot().cursor_position();
+        let (row, col) = self.screen.cursor_position();
         Some(Bounds::new(
             bounds.origin
                 + point(
                     px(col as f32 * self.cell_width),
-                    px(row as f32 * LINE_HEIGHT),
+                    px(row as f32 * self.line_height),
                 ),
-            size(px(self.cell_width), px(LINE_HEIGHT)),
+            size(px(self.cell_width), px(self.line_height)),
         ))
     }
     fn character_index_for_point(
@@ -349,11 +375,9 @@ impl Render for Terminal {
             theme.info,
             foreground,
         ];
-        let font = font(if cfg!(target_os = "macos") {
-            "Menlo"
-        } else {
-            "monospace"
-        });
+        let font = font(self.font_family.clone());
+        let font_size = self.font_size;
+        let line_height = self.line_height;
         let run = TextRun {
             len: 1,
             font: font.clone(),
@@ -365,12 +389,17 @@ impl Render for Terminal {
         self.cell_width = f32::from(
             window
                 .text_system()
-                .shape_line("M".into(), px(FONT_SIZE), &[run], None)
+                .shape_line("M".into(), px(font_size), &[run], None)
                 .width,
         )
         .max(1.);
         let cell_width = self.cell_width;
-        let screen = self.session.snapshot();
+        let generation = self.session.generation();
+        if self.screen_generation != generation {
+            self.screen = Rc::new(self.session.snapshot());
+            self.screen_generation = generation;
+        }
+        let screen = self.screen.clone();
         let bounds_slot = self.bounds.clone();
         let focus = self.focus.clone();
         let input = cx.entity();
@@ -393,7 +422,7 @@ impl Render for Terminal {
                             continue;
                         }
                         let origin = bounds.origin
-                            + point(px(col as f32 * cell_width), px(row as f32 * LINE_HEIGHT));
+                            + point(px(col as f32 * cell_width), px(row as f32 * line_height));
                         let is_cursor = focused
                             && !screen.hide_cursor()
                             && screen.scrollback() == 0
@@ -409,7 +438,7 @@ impl Render for Terminal {
                         let width = cell_width * if cell.is_wide() { 2. } else { 1. };
                         if bg != background {
                             window.paint_quad(fill(
-                                Bounds::new(origin, size(px(width), px(LINE_HEIGHT))),
+                                Bounds::new(origin, size(px(width), px(line_height))),
                                 bg,
                             ));
                         }
@@ -438,16 +467,16 @@ impl Render for Terminal {
                         };
                         let line = window.text_system().shape_line(
                             text.into(),
-                            px(FONT_SIZE),
+                            px(font_size),
                             &[run],
                             None,
                         );
                         let _ =
-                            line.paint(origin, px(LINE_HEIGHT), TextAlign::Left, None, window, cx);
+                            line.paint(origin, px(line_height), TextAlign::Left, None, window, cx);
                         if cell.underline() {
                             window.paint_quad(fill(
                                 Bounds::new(
-                                    origin + point(px(0.), px(LINE_HEIGHT - 2.)),
+                                    origin + point(px(0.), px(line_height - 2.)),
                                     size(px(width), px(1.)),
                                 ),
                                 fg,
@@ -495,8 +524,8 @@ impl Render for Terminal {
                         cx.listener(|this, _, window, cx| this.focus.focus(window, cx)),
                     )
                     .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                        let y = f32::from(ev.delta.pixel_delta(px(LINE_HEIGHT)).y);
-                        this.session.scroll((y / LINE_HEIGHT).round() as i32);
+                        let y = f32::from(ev.delta.pixel_delta(px(this.line_height)).y);
+                        this.session.scroll((y / this.line_height).round() as i32);
                         cx.notify();
                         cx.stop_propagation();
                     }))

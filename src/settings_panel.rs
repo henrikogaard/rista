@@ -18,6 +18,9 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 pub struct SettingsView {
+    terminal_font_input: Entity<InputState>,
+    terminal_size_input: Entity<InputState>,
+    terminal_shell_input: Entity<InputState>,
     workspace: WeakEntity<Workspace>,
     font_select: Entity<SelectState<SearchableVec<String>>>,
     font_size_select: Entity<SelectState<SearchableVec<String>>>,
@@ -45,6 +48,21 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = settings.clone();
+        let terminal_font_input = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_value(settings.terminal_font.clone(), window, cx);
+            input
+        });
+        let terminal_size_input = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_value(settings.terminal_font_size.to_string(), window, cx);
+            input
+        });
+        let terminal_shell_input = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("$SHELL");
+            input.set_value(settings.terminal_shell.clone(), window, cx);
+            input
+        });
 
         let dark_theme_select =
             Self::theme_select(ThemeMode::Dark, &settings.dark_theme, window, cx);
@@ -126,6 +144,43 @@ impl SettingsView {
         });
 
         let mut subs = Vec::new();
+        for (input, kind) in [
+            (&terminal_font_input, 0),
+            (&terminal_size_input, 1),
+            (&terminal_shell_input, 2),
+        ] {
+            subs.push(cx.subscribe_in(
+                input,
+                window,
+                move |this, input, event: &InputEvent, window, cx| {
+                    if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        return;
+                    }
+                    let value = input.read(cx).value().trim().to_string();
+                    this.update_setting(
+                        cx,
+                        |s| match kind {
+                            0 => {
+                                s.terminal_font = if value.is_empty() {
+                                    Settings::default().terminal_font
+                                } else {
+                                    value
+                                }
+                            }
+                            1 => {
+                                if let Ok(size) = value.parse::<f32>() {
+                                    if size.is_finite() {
+                                        s.terminal_font_size = size.clamp(10., 24.);
+                                    }
+                                }
+                            }
+                            _ => s.terminal_shell = value,
+                        },
+                        window,
+                    );
+                },
+            ));
+        }
         for (select, dark) in [(&dark_theme_select, true), (&light_theme_select, false)] {
             subs.push(cx.subscribe_in(
                 select,
@@ -248,6 +303,9 @@ impl SettingsView {
         ));
 
         Self {
+            terminal_font_input,
+            terminal_size_input,
+            terminal_shell_input,
             workspace,
             dark_theme_select,
             light_theme_select,
@@ -610,6 +668,14 @@ impl Render for SettingsView {
                         Select::new(&self.tab_size_select).w(px(90.)),
                     )),
             )
+            .child(v_flex().gap_2()
+                .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child(settings.language.text("TERMINAL", "TERMINAL")))
+                .child(Self::row(cx, settings.language.text("Font", "Skrifttype"), Input::new(&self.terminal_font_input).w(px(180.))))
+                .child(Self::row(cx, settings.language.text("Font size", "Skriftstørrelse"), Input::new(&self.terminal_size_input).w(px(90.))))
+                .child(Self::row(cx, settings.language.text("Shell", "Kommandotolk"), Input::new(&self.terminal_shell_input).w(px(180.))))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(settings.language.text(
+                    "Use an installed monospace or Nerd Font. Leave shell blank to use $SHELL. Shell changes apply to new tabs; existing zsh/Oh My Zsh configuration is preserved.",
+                    "Bruk en installert monospace- eller Nerd Font. La kommandotolk stå tom for å bruke $SHELL. Endringen gjelder nye faner; eksisterende zsh-/Oh My Zsh-oppsett beholdes."))))
             .child(
                 v_flex()
                     .gap_2()

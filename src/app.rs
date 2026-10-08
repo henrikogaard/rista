@@ -36,6 +36,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[path = "explorer_panel.rs"]
+mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
 #[path = "tools_panel.rs"]
@@ -115,6 +117,8 @@ pub struct Workspace {
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
     folder_search: Entity<InputState>,
+    explorer_search: Entity<InputState>,
+    move_undo: Vec<(PathBuf, PathBuf)>,
     terminals: Vec<tools_panel::TerminalTab>,
     active_terminal: Option<usize>,
     next_terminal_id: usize,
@@ -706,6 +710,24 @@ impl Workspace {
         let folder_search_sub = cx.subscribe(&folder_search, |_, _, _: &input::InputEvent, cx| {
             cx.notify()
         });
+        let explorer_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(
+                settings
+                    .language
+                    .text("Find files or paths…", "Finn filer eller stier…"),
+            )
+        });
+        let explorer_sub = cx.subscribe(
+            &explorer_search,
+            |this, input, _: &input::InputEvent, cx| {
+                let query = input.read(cx).value().to_string();
+                this.vault.update(cx, |vault, cx| {
+                    vault.explorer_query = query;
+                    vault.filter_tree(cx);
+                });
+                cx.notify();
+            },
+        );
         let weak = cx.weak_entity();
         let settings_view = cx.new(|cx| SettingsView::new(weak, &settings, window, cx));
         let focus_handle = cx.focus_handle();
@@ -721,6 +743,8 @@ impl Workspace {
             active: None,
             folder: None,
             folder_search,
+            explorer_search,
+            move_undo: Vec::new(),
             terminals: Vec::new(),
             active_terminal: None,
             next_terminal_id: 0,
@@ -769,7 +793,7 @@ impl Workspace {
             focus_fallback_pending: false,
             focus_handle,
             settings,
-            _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub],
+            _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
         };
 
         // `.base` `file.starred` reads this set — `toggle_star` keeps
@@ -855,6 +879,9 @@ impl Workspace {
         self.nav_stack.clear();
         self.nav_pos = 0;
         self.nav_suppress = false;
+        self.move_undo.clear();
+        self.explorer_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
             vault.show_other_files = self.settings.show_other_files;
@@ -1146,7 +1173,17 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_vault_event(&mut self, _event: &VaultEvent, cx: &mut Context<Self>) {
+    fn on_vault_event(&mut self, event: &VaultEvent, cx: &mut Context<Self>) {
+        if matches!(event, VaultEvent::TreeExpansionChanged) {
+            let vault = self.vault.read(cx);
+            if let Some(root) = &vault.root {
+                self.settings
+                    .expanded_folders
+                    .insert(root.to_string_lossy().to_string(), vault.expanded_folders());
+                self.settings.save();
+            }
+            return;
+        }
         // Flag docs whose files changed underneath; they reload themselves on
         // the next frame where a window handle is available.
         self.needs_fs_check = true;
@@ -2057,7 +2094,8 @@ impl Workspace {
         self.settings.tree_sort = match self.settings.tree_sort {
             TreeSort::Name => TreeSort::Modified,
             TreeSort::Modified => TreeSort::Type,
-            TreeSort::Type => TreeSort::Name,
+            TreeSort::Type => TreeSort::Size,
+            TreeSort::Size => TreeSort::Name,
         };
         self.settings.save();
         self.vault.update(cx, |vault, cx| {
@@ -3406,6 +3444,10 @@ impl Workspace {
             }
         }
         theme::apply(&settings, cx);
+        for tab in &self.terminals {
+            tab.terminal
+                .update(cx, |terminal, cx| terminal.apply_settings(&settings, cx));
+        }
         crate::apply_ui_settings(&settings, cx);
         for doc in &self.docs {
             doc.entity
@@ -4144,20 +4186,29 @@ impl Workspace {
             );
             return;
         }
-        match std::fs::rename(&src, &dest) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        match crate::explorer::move_entry(&root, &src, &dest) {
             Ok(()) => {
-                self.note_status(format!("Moved {}", name.to_string_lossy()), cx);
-                for doc in &self.docs {
-                    doc.entity.update(cx, |doc, _cx| {
-                        if let Ok(rel) = doc.path.strip_prefix(&src) {
-                            doc.path = dest.join(rel);
-                        }
-                    });
-                }
-                self.vault.update(cx, |vault, cx| vault.refresh(cx));
+                self.repoint_moved_entry(&src, &dest, cx);
+                self.move_undo.push((src, dest));
+                self.note_status(
+                    self.tr(
+                        "Moved · Undo available in explorer",
+                        "Flyttet · Angre er tilgjengelig i filutforskeren",
+                    ),
+                    cx,
+                );
             }
-            Err(err) => {
-                self.note_status(format!("Move failed: {err}"), cx);
+            Err(_) => {
+                self.note_status(
+                    self.tr(
+                        "Could not move. Check the destination and permissions.",
+                        "Kunne ikke flytte. Kontroller målmappen og tilganger.",
+                    ),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -6183,11 +6234,13 @@ impl Workspace {
                                         TreeSort::Name => assets::IconName::ListOrdered,
                                         TreeSort::Modified => assets::IconName::FileClock,
                                         TreeSort::Type => assets::IconName::File,
+                                        TreeSort::Size => assets::IconName::ListOrdered,
                                     })
                                     .tooltip(match self.settings.tree_sort {
                                         TreeSort::Name => self.tr("Sorted by name", "Sortert etter navn"),
                                         TreeSort::Modified => self.tr("Sorted by modified", "Sortert etter endring"),
                                         TreeSort::Type => self.tr("Sorted by type", "Sortert etter filtype"),
+                                        TreeSort::Size => self.tr("Sorted by size", "Sortert etter størrelse"),
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_tree_sort(cx);
@@ -6195,6 +6248,7 @@ impl Workspace {
                             ),
                     ),
             )
+            .child(self.render_explorer_controls(cx))
             .child(self.render_starred(cx))
             .child(
                 div()
@@ -7131,6 +7185,7 @@ impl Workspace {
             .text_xs()
             .text_color(cx.theme().muted_foreground);
         let root_target = root.clone();
+        let root_siblings = root.clone();
         row = row
             .child(
                 div()
@@ -7147,6 +7202,7 @@ impl Workspace {
                         this.open_folder_page(root_target.clone(), window, cx);
                     })),
             )
+            .child(self.sibling_button(0, root_siblings, cx))
             .child(div().child("›"));
         let mut acc = String::new();
         for (ix, seg) in segs.iter().enumerate() {
@@ -7155,6 +7211,7 @@ impl Workspace {
             }
             acc.push_str(seg);
             let target = root.join(&acc);
+            let siblings = target.clone();
             row = row
                 .child(
                     div()
@@ -7171,6 +7228,7 @@ impl Workspace {
                             }
                         }),
                 )
+                .child(self.sibling_button(ix + 1, siblings, cx))
                 .child(div().child("›"));
         }
         Some(
@@ -7683,6 +7741,11 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for (index, tab) in self.terminals.iter().enumerate() {
+            tab.terminal.update(cx, |terminal, _| {
+                terminal.visible = self.terminal_visible && self.active_terminal == Some(index)
+            });
+        }
         // Docs pick up external edits here — a window handle is guaranteed.
         if self.needs_fs_check {
             self.needs_fs_check = false;
@@ -7773,6 +7836,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))
