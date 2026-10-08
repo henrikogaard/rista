@@ -1790,7 +1790,8 @@ impl Workspace {
             .active
             .and_then(|i| self.docs.get(i))
             .map(|d| d.entity.read(cx).path.clone());
-        let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, window, cx));
+        let language = self.settings.language;
+        let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, language, window, cx));
         graph.update(cx, |g, _cx| g.active = active);
         graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
@@ -1807,8 +1808,16 @@ impl Workspace {
             .active
             .and_then(|ix| self.docs.get(ix))
             .map(|doc| doc.entity.read(cx).path.clone());
+        let language = self.settings.language;
         self.graph_dock = Some(cx.new(|cx| {
-            crate::graph::GraphView::new_docked(workspace, vault, active.as_deref(), window, cx)
+            crate::graph::GraphView::new_docked(
+                workspace,
+                vault,
+                active.as_deref(),
+                language,
+                window,
+                cx,
+            )
         }));
     }
 
@@ -1870,7 +1879,9 @@ impl Workspace {
     ) {
         let weak = cx.weak_entity();
         let vault = self.vault.clone();
-        let graph = cx.new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, window, cx));
+        let language = self.settings.language;
+        let graph = cx
+            .new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, language, window, cx));
         graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
         cx.notify();

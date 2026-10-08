@@ -19,6 +19,7 @@ use gpui_kit::*;
 
 use crate::actions::{CloseGraph, ToggleLocalGraphPanel};
 use crate::app::Workspace;
+use crate::settings::Language;
 
 /// One simulated node — `path` is `None` for ghosts (unresolved link
 /// targets, which the reference editor shows too).
@@ -256,19 +257,11 @@ impl GraphView {
     /// The filter input + its change subscription — every graph owns
     /// one; non-matching nodes fade out like the graph search.
     fn make_filter(
-        workspace: &WeakEntity<Workspace>,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Entity<InputState>, gpui::Subscription) {
-        let placeholder = workspace
-            .upgrade()
-            .map(|workspace| {
-                workspace
-                    .read(cx)
-                    .tr("Filter graph…", "Filtrer grafen…")
-                    .to_string()
-            })
-            .unwrap_or_default();
+        let placeholder = language.text("Filter graph…", "Filtrer grafen…");
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let sub = cx.subscribe(&input, |this, input, event, cx| {
             if matches!(event, InputEvent::Change) {
@@ -295,7 +288,11 @@ impl GraphView {
     }
 
     pub(crate) fn toggle_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_filter(window, cx);
+        if self.filter_visible {
+            self.hide_filter(window, cx);
+        } else {
+            self.focus_filter(window, cx);
+        }
     }
 
     fn hide_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -320,6 +317,7 @@ impl GraphView {
         let close_label = self.localized(cx, "Close graph (Esc)", "Lukk graf (Esc)");
         h_flex()
             .h_10()
+            .flex_shrink_0()
             .px_3()
             .gap_2()
             .items_center()
@@ -379,6 +377,7 @@ impl GraphView {
         let close_label = self.localized(cx, "Close graph search", "Lukk grafsøk");
         h_flex()
             .h_8()
+            .flex_shrink_0()
             .mx_3()
             .mb_2()
             .px_2()
@@ -416,11 +415,12 @@ impl GraphView {
     pub fn new(
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (nodes, _by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
-        let (filter_input, _filter_sub) = Self::make_filter(&workspace, window, cx);
+        let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -458,11 +458,12 @@ impl GraphView {
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
         center: &std::path::Path,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (mut nodes, by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
-        let (filter_input, _filter_sub) = Self::make_filter(&workspace, window, cx);
+        let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
         let local = by_path.get(center).copied();
         if let Some(ix) = local {
             nodes[ix].pos = point(0., 0.);
@@ -504,13 +505,14 @@ impl GraphView {
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
         center: Option<&std::path::Path>,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = if let Some(center) = center {
-            Self::new_local(workspace, vault, center, window, cx)
+            Self::new_local(workspace, vault, center, language, window, cx)
         } else {
-            Self::new(workspace, vault, window, cx)
+            Self::new(workspace, vault, language, window, cx)
         };
         view.docked = true;
         view.filter_visible = false;
