@@ -517,10 +517,17 @@ impl AgentPanel {
                     .and_then(|tool| tool.get("title"))
                     .and_then(Value::as_str)
                     .or_else(|| {
-                        params
+                        let id = params
                             .get("toolCall")
                             .and_then(|tool| tool.get("toolCallId"))
-                            .and_then(Value::as_str)
+                            .and_then(Value::as_str)?;
+                        Some(
+                            self.update
+                                .tools
+                                .iter()
+                                .find(|tool| tool.id == id && !tool.title.is_empty())
+                                .map_or(id, |tool| tool.title.as_str()),
+                        )
                     })
                     .unwrap_or(self.tr(
                         cx,
@@ -1409,9 +1416,7 @@ impl Render for AgentPanel {
                                         div()
                                             .max_h(px(150.))
                                             .overflow_y_scrollbar()
-                                            .font_family("monospace")
-                                            .text_xs()
-                                            .child(diff),
+                                            .child(Self::render_diff(&diff, cx)),
                                     )
                                     .child(
                                         h_flex()
@@ -1512,6 +1517,37 @@ impl Render for AgentPanel {
 }
 
 impl AgentPanel {
+    fn render_diff(diff: &str, cx: &Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .font_family("monospace")
+            .text_xs()
+            .children(
+                diff.lines()
+                    .filter(|line| {
+                        !(line.starts_with("--- ")
+                            || line.starts_with("+++ ")
+                            || line.starts_with("@@"))
+                    })
+                    .map(|line| {
+                        let text = match line.split_at_checked(1) {
+                            Some((sign @ ("+" | "-"), rest)) => format!("{sign} {rest}"),
+                            _ => line.to_string(),
+                        };
+                        let row = div().w_full().px_1().rounded(cx.theme().radius).child(text);
+                        if line.starts_with('+') {
+                            row.text_color(cx.theme().success)
+                                .bg(cx.theme().success.opacity(0.1))
+                        } else if line.starts_with('-') {
+                            row.text_color(cx.theme().danger)
+                                .bg(cx.theme().danger.opacity(0.1))
+                        } else {
+                            row.text_color(cx.theme().muted_foreground)
+                        }
+                    }),
+            )
+    }
+
     fn render_tool(&self, id: &str, cx: &mut Context<Self>) -> AnyElement {
         let Some((tool_index, tool)) = self
             .update
@@ -1583,12 +1619,7 @@ impl AgentPanel {
                             .bg(cx.theme().group_box)
                             .rounded(cx.theme().radius)
                             .child(div().text_xs().child(path.clone()))
-                            .child(
-                                div()
-                                    .font_family("monospace")
-                                    .text_xs()
-                                    .child(agent::simple_diff(path, old, new)),
-                            )
+                            .child(Self::render_diff(&agent::simple_diff(path, old, new), cx))
                             .into_any_element()
                     } else {
                         div()

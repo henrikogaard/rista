@@ -1147,7 +1147,15 @@ impl Workspace {
             );
         }
         let details = if kind == Kind::Folder {
-            format!("{} {}", card.count, self.tr("pages", "sider"))
+            format!(
+                "{} {}",
+                card.count,
+                if card.count == 1 {
+                    self.tr("page", "side")
+                } else {
+                    self.tr("pages", "sider")
+                }
+            )
         } else if !card.metadata.status.is_empty() {
             card.metadata.status.clone()
         } else {

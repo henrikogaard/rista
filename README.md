@@ -14,6 +14,13 @@
 
 ---
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/agent-review-dark.png" />
+  <img src="docs/screenshots/agent-review-light.png" alt="Rísta with a project brief in split view, its local graph, and an agent proposing a reviewable change" />
+</picture>
+
+<p align="center"><sub>Write in Markdown, see how notes connect, and review every change an agent proposes before it lands.</sub></p>
+
 Rísta is a local-first Markdown editor built in Rust with
 [GPUI](https://gpui.rs) and [gpui-kit](https://gpui-kit.com).
 Open a single note or a folder of notes. Write in source, read in preview,
@@ -24,6 +31,14 @@ No account is required. There is no built-in cloud sync or telemetry.
 Remote images and packaged update checks can still make network requests.
 
 ## Write, connect, organise
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/folder-dashboard-dark.png" />
+  <img src="docs/screenshots/folder-dashboard-light.png" alt="A folder dashboard with pinned notes, project folders, filters, and open tasks" />
+</picture>
+
+<p align="center"><sub>Every folder is a page: pinned notes, subfolders, filters, and open tasks, all read from plain files.</sub></p>
+
 
 - **A native writing workspace.** Multiple tabs, a file tree, search,
   command palette, autosave, session restoration, and a distraction-free zen mode.
