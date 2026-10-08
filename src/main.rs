@@ -9,6 +9,7 @@ mod decorations;
 mod document;
 mod emoji;
 mod extensions;
+mod file_preview;
 mod folder;
 mod graph;
 mod history;

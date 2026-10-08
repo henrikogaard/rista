@@ -1,6 +1,13 @@
 use super::*;
 use crate::extensions::{self, Launcher, Localized, WorkingDirectory};
 
+pub(super) struct TerminalTab {
+    pub id: usize,
+    pub terminal: Entity<crate::terminal::Terminal>,
+    pub name: String,
+    pub cwd: PathBuf,
+}
+
 impl Workspace {
     pub(super) fn on_toggle_terminal(
         &mut self,
@@ -8,10 +15,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = &self.terminal {
+        if let Some(tab) = self.active_terminal.and_then(|ix| self.terminals.get(ix)) {
             self.terminal_visible = !self.terminal_visible;
             if self.terminal_visible {
-                terminal.focus_handle(cx).focus(window, cx);
+                tab.terminal.focus_handle(cx).focus(window, cx);
             } else {
                 self.focus_handle.focus(window, cx);
             }
@@ -107,6 +114,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.confirm_tool_in(tool, None, window, cx);
+    }
+
+    pub(super) fn open_terminal_here(
+        &mut self,
+        folder: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_tool_in(self.shell_launcher(), Some(folder), window, cx);
+    }
+
+    fn confirm_tool_in(
+        &mut self,
+        tool: Launcher,
+        folder: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(root) = self.vault.read(cx).root.clone() else {
             self.note_status(
                 self.tr(
@@ -117,16 +143,17 @@ impl Workspace {
             );
             return;
         };
-        let folder = self
-            .folder
-            .as_ref()
-            .map(|p| p.path.clone())
-            .or_else(|| {
-                self.active_doc()
-                    .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf))
-            })
-            .filter(|p| p.starts_with(&root))
-            .unwrap_or_else(|| root.clone());
+        let folder = folder.unwrap_or_else(|| {
+            self.folder
+                .as_ref()
+                .map(|p| p.path.clone())
+                .or_else(|| {
+                    self.active_doc()
+                        .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf))
+                })
+                .filter(|p| p.starts_with(&root))
+                .unwrap_or_else(|| root.clone())
+        });
         let cwd = match tool.working_directory {
             WorkingDirectory::Vault => root.clone(),
             WorkingDirectory::Folder => folder.clone(),
@@ -168,7 +195,6 @@ impl Workspace {
         let program = tool.program.clone();
         let title = tool.name.text(self.settings.language).to_string();
         let language = self.settings.language;
-        let has_terminal = self.terminal.is_some();
         let view = cx.entity();
         let command = serde_json::to_string(
             &std::iter::once(program.clone())
@@ -179,12 +205,11 @@ impl Workspace {
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let cwd = cwd.clone(); let program = program.clone(); let args = args.clone(); let title = title.clone(); let root = root.clone(); let view = view.clone();
             dialog.title(format!("{} {title}?", language.text("Launch", "Starte")))
-                .description(format!("{}\n\n{}\n{}\n\n{}{}", language.text(
+                .description(format!("{}\n\n{}\n{}\n\n{}", language.text(
                     "This process runs with your user permissions, including file and network access. The working folder is NOT a sandbox. Only run tools and extensions you trust.",
                     "Prosessen kjører med brukerrettighetene dine, inkludert fil- og nettverkstilgang. Arbeidsmappen er IKKE en sandkasse. Kjør bare verktøy og utvidelser du stoler på."),
                     cwd.display(), command,
-                    language.text("Changes made by tools appear in the vault automatically.", "Endringer fra verktøy vises automatisk i hvelvet."),
-                    if has_terminal { language.text(" The existing terminal process will be stopped.", " Den eksisterende terminalprosessen blir stoppet.") } else { "" }))
+                    language.text("Opens in a new terminal tab. Changes made by tools appear in the vault automatically.", "Åpnes i en ny terminalfane. Endringer fra verktøy vises automatisk i hvelvet.")))
                 .show_cancel(true).ok_text(language.text("Launch tool", "Start verktøy"))
                 .on_ok(move |_, window, cx| {
                     // Avoid the animated close restoring focus after the terminal opens.
@@ -196,8 +221,12 @@ impl Workspace {
                                 let terminal = cx.new(|cx| crate::terminal::Terminal::new(session, language, cx));
                                 let focus = terminal.focus_handle(cx);
                                 window.on_next_frame(move |window, cx| focus.focus(window, cx));
-                                this.terminal = Some(terminal); this.terminal_visible = true;
-                                this.terminal_name = title.clone(); this.terminal_cwd = Some(cwd.clone()); cx.notify();
+                                this.next_terminal_id += 1;
+                                this.terminals.push(TerminalTab { id: this.next_terminal_id, terminal, name: title.clone(), cwd: cwd.clone() });
+                                this.active_terminal = Some(this.terminals.len() - 1);
+                                this.terminal_visible = true;
+                                this.zen = false;
+                                cx.notify();
                             },
                             Err(_) => this.note_status(this.tr("Could not launch tool. Check that it is installed and its executable path is correct.", "Kunne ikke starte verktøyet. Kontroller at det er installert og at programstien er riktig."), cx),
                         }
@@ -207,9 +236,34 @@ impl Workspace {
     }
 
     pub(super) fn render_terminal_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(terminal) = self.terminal.clone() else {
+        let Some(active) = self.active_terminal.and_then(|ix| self.terminals.get(ix)) else {
             return div().into_any_element();
         };
+        let terminal = active.terminal.clone();
+        let tabs = self.terminals.iter().map(|tab| {
+            let id = tab.id;
+            Tab::new()
+                .label(format!(
+                    "{} {} · {}",
+                    tab.name,
+                    id,
+                    tab.cwd.file_name().unwrap_or_default().to_string_lossy()
+                ))
+                .suffix(
+                    Button::new(("close-terminal", id))
+                        .ghost()
+                        .xsmall()
+                        .icon(assets::IconName::X)
+                        .tooltip(self.tr(
+                            "Close terminal (stops process)",
+                            "Lukk terminalen (stopper prosessen)",
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_terminal(id, window, cx);
+                        })),
+                )
+        });
         v_flex()
             .size_full()
             .bg(cx.theme().group_box)
@@ -222,20 +276,31 @@ impl Workspace {
                     .gap_2()
                     .items_center()
                     .child(Icon::new(assets::IconName::Terminal).size_4())
-                    .child(div().text_xs().child(self.terminal_name.clone()))
                     .child(
-                        div()
-                            .text_xs()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(
-                                self.terminal_cwd
-                                    .as_ref()
-                                    .map(|p| p.display().to_string())
-                                    .unwrap_or_default(),
-                            ),
+                        div().flex_1().min_w_0().child(
+                            TabBar::new("terminal-tabs")
+                                .segmented()
+                                .small()
+                                .selected_index(self.active_terminal.unwrap_or(0))
+                                .children(tabs)
+                                .on_click(cx.listener(|this, &ix, window, cx| {
+                                    if let Some(tab) = this.terminals.get(ix) {
+                                        this.active_terminal = Some(ix);
+                                        tab.terminal.focus_handle(cx).focus(window, cx);
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
+                    )
+                    .child(
+                        Button::new("terminal-new")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Plus)
+                            .tooltip(self.tr("New terminal", "Ny terminal"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm_tool(this.shell_launcher(), window, cx);
+                            })),
                     )
                     .child(
                         Button::new("terminal-tools")
@@ -274,10 +339,11 @@ impl Workspace {
                             .icon(assets::IconName::Square)
                             .tooltip(self.tr("Stop process", "Stopp prosessen"))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.terminal = None;
-                                this.terminal_visible = false;
-                                this.focus_handle.focus(window, cx);
-                                cx.notify();
+                                if let Some(tab) =
+                                    this.active_terminal.and_then(|ix| this.terminals.get(ix))
+                                {
+                                    this.close_terminal(tab.id, window, cx);
+                                }
                             })),
                     )
                     .child(
@@ -294,8 +360,40 @@ impl Workspace {
                             })),
                     ),
             )
+            .child(
+                div()
+                    .px_3()
+                    .text_xs()
+                    .truncate()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(active.cwd.display().to_string()),
+            )
             .child(div().flex_1().min_h_0().px_3().pb_2().child(terminal))
             .into_any_element()
+    }
+
+    fn close_terminal(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.terminals.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        self.terminals.remove(ix);
+        self.active_terminal =
+            active_after_close(self.active_terminal.unwrap_or(0), ix, self.terminals.len());
+        if let Some(tab) = self.active_terminal.and_then(|ix| self.terminals.get(ix)) {
+            tab.terminal.focus_handle(cx).focus(window, cx);
+        } else {
+            self.terminal_visible = false;
+            self.focus_handle.focus(window, cx);
+        }
+        cx.notify();
+    }
+}
+
+fn active_after_close(active: usize, removed: usize, remaining: usize) -> Option<usize> {
+    if remaining == 0 {
+        None
+    } else {
+        Some(if removed < active { active - 1 } else { active }.min(remaining - 1))
     }
 }
 
@@ -326,6 +424,14 @@ fn expand_tool_args(
 mod tests {
     use super::expand_tool_args;
     use std::path::Path;
+    #[test]
+    fn closing_tabs_preserves_selection_or_selects_a_neighbor() {
+        assert_eq!(super::active_after_close(2, 0, 2), Some(1));
+        assert_eq!(super::active_after_close(0, 2, 2), Some(0));
+        assert_eq!(super::active_after_close(1, 1, 2), Some(1));
+        assert_eq!(super::active_after_close(2, 2, 2), Some(1));
+        assert_eq!(super::active_after_close(0, 0, 0), None);
+    }
     #[test]
     fn context_remains_literal_arguments_and_requires_active_file() {
         let args = vec!["{{file}}".into(), "{{vault}}".into()];

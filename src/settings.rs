@@ -55,11 +55,13 @@ pub enum TreeSort {
     #[default]
     Name,
     Modified,
+    Type,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub show_other_files: bool,
     pub language: Language,
     pub inspector_open: bool,
     pub active_folder: Option<PathBuf>,
@@ -169,6 +171,7 @@ impl Default for SidebarPanes {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            show_other_files: false,
             language: Language::default(),
             inspector_open: false,
             active_folder: None,
@@ -266,12 +269,17 @@ mod tests {
             PropertiesVisibility::Expanded
         );
         assert_eq!(settings.dark_theme, crate::theme::NIGHT_THEME_NAME);
+        assert!(!settings.show_other_files);
+        settings.show_other_files = true;
+        settings.tree_sort = TreeSort::Type;
         settings.dark_theme = "Rose Night".into();
         settings.light_theme = "Fjord Day".into();
         settings.properties_visibility = PropertiesVisibility::Hidden;
         let restored: Settings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(restored.dark_theme, "Rose Night");
+        assert!(restored.show_other_files);
+        assert_eq!(restored.tree_sort, TreeSort::Type);
         assert_eq!(restored.light_theme, "Fjord Day");
         assert_eq!(restored.properties_visibility, PropertiesVisibility::Hidden);
     }

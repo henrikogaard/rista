@@ -63,6 +63,7 @@ pub struct Vault {
     expanded: std::collections::BTreeSet<String>,
     /// File ordering inside each folder — dirs stay alphabetical.
     pub tree_sort: TreeSort,
+    pub show_other_files: bool,
     /// Templates folder relative to the root — its notes stay visible
     /// and linkable but their scaffolding (`{{cursor}}` tasks, tags,
     /// aliases) doesn't pollute the vault indexes. Mirrors
@@ -98,6 +99,7 @@ impl Vault {
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
             tree_sort: TreeSort::default(),
+            show_other_files: false,
             templates_dir: "templates".to_string(),
             _tree_sub: tree_sub,
         }
@@ -131,7 +133,10 @@ impl Vault {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let items = mark_expanded(build_items(&root, 0, self.tree_sort), &self.expanded);
+        let items = mark_expanded(
+            build_items(&root, 0, self.tree_sort, self.show_other_files),
+            &self.expanded,
+        );
         let (notes, images) = collect_files(&root);
         // Template files are scaffolding, not notes — they stay in the
         // tree and resolve as links, but their tags/tasks/aliases don't
@@ -691,7 +696,7 @@ pub(crate) fn should_skip(entry: &std::fs::DirEntry) -> bool {
     name.starts_with('.') || (entry.path().is_dir() && SKIP_DIRS.iter().any(|d| name == *d))
 }
 
-fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
+fn build_items(dir: &Path, depth: usize, sort: TreeSort, show_other_files: bool) -> Vec<TreeItem> {
     if depth > 12 {
         return Vec::new();
     }
@@ -701,7 +706,7 @@ fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     for entry in read.flatten() {
-        if should_skip(&entry) {
+        if should_skip(&entry) || entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
             continue;
         }
         let path = entry.path();
@@ -712,23 +717,23 @@ fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
                     &path,
                     depth + 1,
                     sort,
+                    show_other_files,
                 )),
             );
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| {
-                let e = e.to_lowercase();
-                e == "md" || e == "base" || IMAGE_EXTS.contains(&e.as_str())
-            })
-            .unwrap_or(false)
-        {
+        } else if path.is_file() && crate::file_preview::visible(&path, show_other_files) {
             files.push(TreeItem::new(path.to_string_lossy().to_string(), label));
         }
     }
     dirs.sort_by(|a, b| a.label.cmp(&b.label));
     match sort {
         TreeSort::Name => files.sort_by(|a, b| a.label.cmp(&b.label)),
+        TreeSort::Type => files.sort_by_key(|f| {
+            (
+                crate::file_preview::extension(Path::new(f.id.as_str())),
+                f.label.to_lowercase(),
+                f.id.clone(),
+            )
+        }),
         TreeSort::Modified => files.sort_by_key(|f| {
             std::cmp::Reverse(
                 std::fs::metadata(f.id.as_str())

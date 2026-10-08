@@ -73,9 +73,13 @@ shell starts in the current folder with the normal login-shell configuration.
 The native renderer supports ANSI colors, a cursor, alternate-screen apps,
 interactive input, Unicode composition, resize, keyboard controls, bracketed
 paste, and bounded scrollback. **Ctrl+C** interrupts; **Stop** terminates the
-session. **Copy**/⌘C copies visible output. A hidden panel keeps its process alive.
-Starting another tool asks to replace the current session. Closing/switching the
-vault or closing the app stops the session; terminal sessions are not restored.
+active session. **Copy**/⌘C copies visible output. Hidden and inactive tabs keep
+their processes alive. Use **+** to start a new shell, or right-click a folder in
+the tree or dashboard and choose **Open terminal here**. The launch confirmation
+shows that folder, even when another page is selected. Every tool opens in a new
+tab without replacing existing sessions. Each tab has a close button that stops
+only its process. Closing/switching the vault or closing the app stops all
+sessions; terminal tabs are not restored.
 Rísta does not persist terminal output or commands; the shell may save its normal
 history. Mouse reporting, text-range selection, terminal images, and advanced
 keyboard protocols are not implemented in this first version.

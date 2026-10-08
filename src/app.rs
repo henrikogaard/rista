@@ -115,10 +115,10 @@ pub struct Workspace {
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
     folder_search: Entity<InputState>,
-    terminal: Option<Entity<crate::terminal::Terminal>>,
+    terminals: Vec<tools_panel::TerminalTab>,
+    active_terminal: Option<usize>,
+    next_terminal_id: usize,
     terminal_visible: bool,
-    terminal_name: String,
-    terminal_cwd: Option<PathBuf>,
     settings: Settings,
     zen: bool,
     palette_state: Entity<CommandState>,
@@ -721,10 +721,10 @@ impl Workspace {
             active: None,
             folder: None,
             folder_search,
-            terminal: None,
+            terminals: Vec::new(),
+            active_terminal: None,
+            next_terminal_id: 0,
             terminal_visible: false,
-            terminal_name: String::new(),
-            terminal_cwd: None,
             zen: false,
             palette_state,
             palette_sections: Vec::new(),
@@ -857,12 +857,13 @@ impl Workspace {
         self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
+            vault.show_other_files = self.settings.show_other_files;
             vault.templates_dir = self.settings.templates_dir.clone();
             vault.open(root.clone(), cx);
         });
-        self.terminal = None;
+        self.terminals.clear();
+        self.active_terminal = None;
         self.terminal_visible = false;
-        self.terminal_cwd = None;
         self.settings.last_vault = Some(root.clone());
         self.settings.save();
         self.status_note = None;
@@ -883,9 +884,9 @@ impl Workspace {
         self.nav_pos = 0;
         self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| vault.close(cx));
-        self.terminal = None;
+        self.terminals.clear();
+        self.active_terminal = None;
         self.terminal_visible = false;
-        self.terminal_cwd = None;
         self.settings.last_vault = None;
         self.settings.save();
         cx.notify();
@@ -910,11 +911,12 @@ impl Workspace {
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
         let starred_list = self.settings.starred.clone();
+        let language = self.settings.language;
         let view = cx.entity();
         self.clear_file_menu();
 
         let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
-            Self::build_file_menu(menu, path, is_folder, starred_list, view)
+            Self::build_file_menu(menu, path, is_folder, starred_list, language, view)
                 .action_context(action_context)
         });
         menu.focus_handle(cx).focus(window, cx);
@@ -935,6 +937,7 @@ impl Workspace {
         path: PathBuf,
         is_folder: bool,
         starred_list: Vec<String>,
+        language: crate::settings::Language,
         view: Entity<Self>,
     ) -> PopupMenu {
         let dir = if is_folder {
@@ -960,7 +963,23 @@ impl Workspace {
             .separator();
         // Files can be pinned into the Starred group.
         let menu = if is_folder {
-            menu
+            menu.item(
+                PopupMenuItem::new(language.text("Open terminal here", "Åpne terminal her"))
+                    .icon(assets::IconName::Terminal)
+                    .on_click({
+                        let view = view.clone();
+                        let path = path.clone();
+                        move |_, window, _cx| {
+                            let view = view.clone();
+                            let path = path.clone();
+                            window.on_next_frame(move |window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_terminal_here(path, window, cx);
+                                });
+                            });
+                        }
+                    }),
+            )
         } else {
             let starred = starred_list.contains(&path.to_string_lossy().to_string());
             menu.item(
@@ -1541,7 +1560,8 @@ impl Workspace {
         // Focus the editor once the frame settles. Preview mode and
         // image docs mount no editor — the workspace takes focus so
         // ⌘ bindings keep working (same dead-handle fix as refocus).
-        let focus_editor = !doc.read(cx).is_image && self.settings.view_mode != ViewMode::Preview;
+        let focus_editor =
+            !doc.read(cx).is_read_only() && self.settings.view_mode != ViewMode::Preview;
         let view = cx.entity();
         let doc = doc.clone();
         window.defer(cx, move |window, cx| {
@@ -2036,7 +2056,8 @@ impl Workspace {
     fn toggle_tree_sort(&mut self, cx: &mut Context<Self>) {
         self.settings.tree_sort = match self.settings.tree_sort {
             TreeSort::Name => TreeSort::Modified,
-            TreeSort::Modified => TreeSort::Name,
+            TreeSort::Modified => TreeSort::Type,
+            TreeSort::Type => TreeSort::Name,
         };
         self.settings.save();
         self.vault.update(cx, |vault, cx| {
@@ -2085,7 +2106,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Open a Markdown file".into()),
+            prompt: Some(self.tr("Open a file", "Åpne en fil").into()),
         });
         cx.spawn_in(window, async move |view, window| {
             if let Ok(Ok(Some(paths))) = receiver.await {
@@ -3372,7 +3393,18 @@ impl Workspace {
                 });
             }
         }
+        let files_changed = self.settings.show_other_files != settings.show_other_files;
         self.settings = settings.clone();
+        if files_changed {
+            self.vault.update(cx, |vault, cx| {
+                vault.show_other_files = settings.show_other_files;
+                vault.refresh(cx);
+            });
+            if let Some(page) = &self.folder {
+                self.folder =
+                    Some(self.load_folder_page(page.path.clone(), page.scroll.clone(), cx));
+            }
+        }
         theme::apply(&settings, cx);
         crate::apply_ui_settings(&settings, cx);
         for doc in &self.docs {
@@ -6150,10 +6182,12 @@ impl Workspace {
                                     .icon(match self.settings.tree_sort {
                                         TreeSort::Name => assets::IconName::ListOrdered,
                                         TreeSort::Modified => assets::IconName::FileClock,
+                                        TreeSort::Type => assets::IconName::File,
                                     })
                                     .tooltip(match self.settings.tree_sort {
-                                        TreeSort::Name => "Sorted by name",
-                                        TreeSort::Modified => "Sorted by modified",
+                                        TreeSort::Name => self.tr("Sorted by name", "Sortert etter navn"),
+                                        TreeSort::Modified => self.tr("Sorted by modified", "Sortert etter endring"),
+                                        TreeSort::Type => self.tr("Sorted by type", "Sortert etter filtype"),
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_tree_sort(cx);
@@ -6378,7 +6412,9 @@ impl Workspace {
             std::collections::HashMap::new();
         for doc in &self.docs {
             let doc = doc.entity.read(cx);
-            let title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base") {
+            let title = if doc.is_read_only()
+                || doc.path.extension().and_then(|e| e.to_str()) == Some("base")
+            {
                 doc.file_name()
             } else {
                 doc.title()
@@ -6394,7 +6430,8 @@ impl Workspace {
                     let doc = doc.entity.read(cx);
                     // .base tabs keep their extension so `tasks` and
                     // `tasks.base` don't look like the same document.
-                    let mut title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base")
+                    let mut title = if doc.is_read_only()
+                        || doc.path.extension().and_then(|e| e.to_str()) == Some("base")
                     {
                         doc.file_name()
                     } else {
@@ -6675,7 +6712,7 @@ impl Workspace {
     /// text editor)? Hides the Source/Split/Preview switcher.
     fn active_doc_is_image(&self, cx: &App) -> bool {
         self.active_doc()
-            .map(|d| d.read(cx).is_image)
+            .map(|d| d.read(cx).is_read_only())
             .unwrap_or(false)
     }
 
@@ -6830,6 +6867,9 @@ impl Workspace {
         if doc.read(cx).is_image {
             return self.render_image_view(&doc, cx).into_any_element();
         }
+        if doc.read(cx).file_preview.is_some() {
+            return self.render_file_preview(&doc, cx);
+        }
 
         // `.base` files render their live view in Preview/Split; Source
         // stays the raw YAML so the spec stays editable.
@@ -6929,6 +6969,91 @@ impl Workspace {
 
     /// Image document: the picture centered in the editor area with a
     /// `name.ext · N KB` caption — the breadcrumb stays on top.
+    fn render_file_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> AnyElement {
+        use crate::file_preview::Preview;
+        let document = doc.read(cx);
+        let path = document.path.clone();
+        let text = match &document.file_preview {
+            Some(Preview::Text(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let message = match &document.file_preview {
+            Some(Preview::TooLarge) => self.tr(
+                "Too large for inline preview (256 KB limit). Open in another app.",
+                "For stor for forhåndsvisning (grense på 256 KB). Åpne i en annen app.",
+            ),
+            _ => self.tr(
+                "No inline preview for this format. Open in another app.",
+                "Ingen forhåndsvisning for dette formatet. Åpne i en annen app.",
+            ),
+        };
+        let mut toolbar = h_flex()
+            .px_4()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().min_w_0().truncate().text_xs().child(format!(
+                "{} · {}",
+                document.file_name(),
+                self.tr("Read-only preview", "Skrivebeskyttet forhåndsvisning")
+            )))
+            .child(
+                Button::new("file-open-external")
+                    .ghost()
+                    .small()
+                    .label(self.tr("Open in default app", "Åpne i standardappen"))
+                    .on_click({
+                        let path = path.clone();
+                        move |_, _, _| open_in_default_app(&path)
+                    }),
+            );
+        if let Some(text) = &text {
+            let text = text.clone();
+            toolbar = toolbar.child(
+                Button::new("file-preview-copy")
+                    .ghost()
+                    .small()
+                    .icon(assets::IconName::Copy)
+                    .tooltip(self.tr("Copy text", "Kopier tekst"))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                    }),
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            toolbar = toolbar.child(
+                Button::new("file-quick-look")
+                    .ghost()
+                    .small()
+                    .label(self.tr("Quick Look", "Hurtigvisning"))
+                    .on_click(move |_, _, _| {
+                        let _ = std::process::Command::new("/usr/bin/qlmanage")
+                            .arg("-p")
+                            .arg(&path)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }),
+            );
+        }
+        v_flex()
+            .size_full()
+            .child(toolbar)
+            .child(
+                div()
+                    .id("file-preview-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_4()
+                    .text_sm()
+                    .font_family("monospace")
+                    .child(text.unwrap_or_else(|| message.into())),
+            )
+            .into_any_element()
+    }
+
     fn render_image_view(
         &self,
         doc: &Entity<Document>,

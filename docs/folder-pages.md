@@ -1,5 +1,23 @@
 # Folder pages
 
+## Other files
+
+Enable **Show non-Markdown files** in Settings to list images and other regular
+files in the tree and folder dashboards. It is off by default; Markdown notes
+and `.base` database views remain visible. Hiding files does not delete them,
+close their open tabs, or prevent embedded images from rendering.
+
+The folder sort control cycles through name, recently edited, and file type.
+The tree sort control also offers file type; folders stay first. Gallery shows
+image thumbnails. Non-note filenames retain their extensions.
+
+Images open in the image viewer. UTF-8 text files up to 256 KB have a read-only
+plain-text preview with Copy text. Binary, unsupported, and larger files get an
+**Open in default app** action. On macOS, **Quick Look** opens the system preview
+for formats such as PDF, office documents, audio, and video when a system
+preview provider is available. These are not inline document editors. Other
+files are not added to the Markdown task, tag, or link indexes.
+
 Click a folder name to open its dashboard; use the disclosure arrow separately.
 The page reads ordinary child folders, Markdown notes, `.base` databases, and
 images. It refreshes when vault files change. Single-click previews a note;

@@ -53,7 +53,13 @@ impl Workspace {
         scroll: ScrollHandle,
         cx: &mut Context<Self>,
     ) -> FolderPage {
-        let contents = folder::read(&path);
+        let contents = folder::read(&path).map(|mut contents| {
+            contents.entries.retain(|entry| {
+                entry.kind == Kind::Folder
+                    || crate::file_preview::visible(&entry.path, self.settings.show_other_files)
+            });
+            contents
+        });
         let mut introduction = None;
         let mut introduction_error = false;
         let mut banner = None;
@@ -117,16 +123,17 @@ impl Workspace {
                         } else {
                             String::new()
                         };
-                        let fallback = if entry.kind == Kind::Folder {
-                            entry.name.clone()
-                        } else {
-                            entry
-                                .path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned()
-                        };
+                        let fallback =
+                            if matches!(entry.kind, Kind::Folder | Kind::Other | Kind::Image) {
+                                entry.name.clone()
+                            } else {
+                                entry
+                                    .path
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned()
+                            };
                         FolderCard {
                             path: entry.path.clone(),
                             kind: entry.kind,
@@ -462,6 +469,7 @@ impl Workspace {
                     (Kind::Note, false, "Notes", "Notater"),
                     (Kind::Database, false, "Databases", "Databaser"),
                     (Kind::Image, false, "Images", "Bilder"),
+                    (Kind::Other, false, "Other files", "Andre filer"),
                 ] {
                     let mut entries: Vec<_> = page
                         .cards
@@ -475,6 +483,16 @@ impl Workspace {
                             pinned(a).cmp(&pinned(b))
                         } else if page.config.sort == folder::Sort::Modified {
                             b.modified.cmp(&a.modified).then(a.path.cmp(&b.path))
+                        } else if page.config.sort == folder::Sort::Type {
+                            crate::file_preview::extension(&a.path)
+                                .cmp(&crate::file_preview::extension(&b.path))
+                                .then(
+                                    a.metadata
+                                        .title
+                                        .to_lowercase()
+                                        .cmp(&b.metadata.title.to_lowercase()),
+                                )
+                                .then(a.path.cmp(&b.path))
                         } else {
                             a.metadata
                                 .title
@@ -627,18 +645,18 @@ impl Workspace {
                 .ghost()
                 .small()
                 .icon(assets::IconName::ArrowDownWideNarrow)
-                .label(if page.config.sort == folder::Sort::Modified {
-                    self.tr("Recently edited", "Sist redigert")
-                } else {
-                    self.tr("Name", "Navn")
+                .label(match page.config.sort {
+                    folder::Sort::Modified => self.tr("Recently edited", "Sist redigert"),
+                    folder::Sort::Name => self.tr("Name", "Navn"),
+                    folder::Sort::Type => self.tr("File type", "Filtype"),
                 })
                 .on_click(cx.listener(|this, _, window, cx| {
                     if let Some(page) = &this.folder {
                         let mut config = page.config.clone();
-                        config.sort = if config.sort == folder::Sort::Name {
-                            folder::Sort::Modified
-                        } else {
-                            folder::Sort::Name
+                        config.sort = match config.sort {
+                            folder::Sort::Name => folder::Sort::Modified,
+                            folder::Sort::Modified => folder::Sort::Type,
+                            folder::Sort::Type => folder::Sort::Name,
                         };
                         this.save_folder_view(config, window, cx);
                     }
@@ -802,6 +820,7 @@ impl Workspace {
             Kind::Note => assets::IconName::FileText,
             Kind::Database => assets::IconName::Database,
             Kind::Image => assets::IconName::FileImage,
+            Kind::Other => assets::IconName::File,
         };
         let list = page.config.layout == folder::Layout::List && kind != Kind::Folder;
         let mut header = h_flex()
@@ -925,6 +944,19 @@ impl Workspace {
                 },
             )
             .child(body)
+            .on_mouse_down(MouseButton::Right, {
+                let path = target.clone();
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.show_file_menu(
+                        path.clone(),
+                        kind == Kind::Folder,
+                        event.position,
+                        window,
+                        cx,
+                    );
+                })
+            })
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 if kind == Kind::Database {
                     this.set_view_mode(ViewMode::Preview, window, cx);

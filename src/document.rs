@@ -30,6 +30,7 @@ pub struct Document {
     /// Image file — the editor stays empty and the workspace renders
     /// the picture itself instead of the source/preview panes.
     pub is_image: bool,
+    pub file_preview: Option<crate::file_preview::Preview>,
     pub editor: Entity<EditorState>,
     /// Collapsible-callout fold state, keyed by callout source offset.
     pub callout_folds: preview::CalloutFolds,
@@ -89,6 +90,7 @@ pub(crate) struct InitialDocument {
     disk_bytes: Option<Vec<u8>>,
     mtime: Option<SystemTime>,
     is_image: bool,
+    file_preview: Option<crate::file_preview::Preview>,
 }
 
 impl Document {
@@ -97,13 +99,24 @@ impl Document {
         let mtime = std::fs::metadata(path)
             .and_then(|meta| meta.modified())
             .ok();
-        if is_image {
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Not a regular file",
+            ));
+        }
+        if is_image || !crate::file_preview::is_document(path) {
             return Ok(InitialDocument {
                 path: path.to_path_buf(),
                 content: String::new(),
                 disk_bytes: None,
                 mtime,
                 is_image,
+                file_preview: if is_image {
+                    None
+                } else {
+                    Some(crate::file_preview::load(path)?)
+                },
             });
         }
         let disk_bytes = std::fs::read(path)?;
@@ -115,6 +128,7 @@ impl Document {
             disk_bytes: Some(disk_bytes),
             mtime,
             is_image,
+            file_preview: None,
         })
     }
 
@@ -133,6 +147,7 @@ impl Document {
             disk_bytes,
             mtime,
             is_image,
+            file_preview,
         } = initial;
 
         let completions_vault = vault.clone();
@@ -162,6 +177,7 @@ impl Document {
 
         let mut this = Self {
             is_image,
+            file_preview,
             path,
             editor,
             callout_folds: preview::CalloutFolds::default(),
@@ -251,7 +267,7 @@ impl Document {
     }
 
     fn on_edited(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.reloading {
+        if self.reloading || self.is_read_only() {
             return;
         }
         if !self.dirty
@@ -524,7 +540,7 @@ impl Document {
     }
 
     pub fn flush_and_save(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
-        if !self.is_image
+        if !self.is_read_only()
             && !self.dirty
             && self
                 .disk_bytes
@@ -544,10 +560,10 @@ impl Document {
 
     /// Save the current editor text to a new path; repoints the document at it.
     pub fn save_as(&mut self, path: PathBuf, cx: &mut Context<Self>) -> std::io::Result<()> {
-        if self.is_image {
+        if self.is_read_only() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Image documents cannot be saved as text",
+                "Read-only files cannot be saved as text",
             ));
         }
         if same_existing_path(&self.path, &path) {
@@ -1224,6 +1240,20 @@ impl Document {
 
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_preview.is_some() {
+            let mtime = std::fs::metadata(&self.path)
+                .and_then(|m| m.modified())
+                .ok();
+            if mtime != self.mtime {
+                self.file_preview = Some(
+                    crate::file_preview::load(&self.path)
+                        .unwrap_or(crate::file_preview::Preview::Binary),
+                );
+                self.mtime = mtime;
+                cx.notify();
+            }
+            return;
+        }
         let Some(baseline) = self.disk_bytes.as_deref() else {
             return;
         };
@@ -1252,6 +1282,9 @@ impl Document {
     }
 
     pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) -> io::Result<()> {
+        if self.is_read_only() {
+            return Ok(());
+        }
         let bytes = std::fs::read(&self.path)?;
         let content = String::from_utf8(bytes.clone())
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -1272,6 +1305,10 @@ impl Document {
         cx.emit(DocumentEvent::Changed);
         cx.notify();
         Ok(())
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.is_image || self.file_preview.is_some()
     }
 
     /// Move the lines covered by the selection up or down by one line,
@@ -2588,6 +2625,26 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn other_files_never_load_into_a_writable_text_buffer() {
+        let path = test_path().with_extension("txt");
+        std::fs::write(&path, b"Read-only text").unwrap();
+        let initial = super::Document::load_initial(&path).unwrap();
+        assert!(initial.disk_bytes.is_none());
+        assert!(initial.content.is_empty());
+        assert_eq!(
+            initial.file_preview,
+            Some(crate::file_preview::Preview::Text("Read-only text".into()))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"Read-only text");
+        std::fs::write(&path, [0, 255, 0]).unwrap();
+        assert_eq!(
+            super::Document::load_initial(&path).unwrap().file_preview,
+            Some(crate::file_preview::Preview::Binary)
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

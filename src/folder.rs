@@ -19,6 +19,7 @@ pub enum Sort {
     #[default]
     Name,
     Modified,
+    Type,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -197,6 +198,7 @@ pub enum Kind {
     Note,
     Database,
     Image,
+    Other,
 }
 
 pub struct Entry {
@@ -228,6 +230,9 @@ pub fn read(dir: &Path) -> io::Result<Contents> {
         let kind = if entry.file_type()?.is_dir() {
             Kind::Folder
         } else {
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
             match path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -238,7 +243,7 @@ pub fn read(dir: &Path) -> io::Result<Contents> {
                 "md" | "markdown" => Kind::Note,
                 "base" => Kind::Database,
                 ext if crate::vault::IMAGE_EXTS.contains(&ext) => Kind::Image,
-                _ => continue,
+                _ => Kind::Other,
             }
         };
         entries.push(Entry {
@@ -307,7 +312,7 @@ mod tests {
             "A.markdown",
             "Tasks.base",
             "cover.png",
-            "ignore.txt",
+            "details.txt",
             "README.md",
         ] {
             std::fs::write(dir.join(name), "").unwrap();
@@ -325,7 +330,8 @@ mod tests {
                 "README.md",
                 "z.md",
                 "Tasks.base",
-                "cover.png"
+                "cover.png",
+                "details.txt"
             ]
         );
         assert_eq!(contents.introduction, Some(dir.join("README.md")));

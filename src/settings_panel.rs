@@ -568,6 +568,13 @@ impl Render for SettingsView {
                                 this.update_setting(cx, |s| s.soft_wrap = checked, window);
                             })),
                     ))
+                    .child(Self::row(cx, settings.language.text("Show non-Markdown files", "Vis andre filer enn Markdown"),
+                        Switch::new("show-other-files")
+                            .checked(settings.show_other_files)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                let checked = *checked;
+                                this.update_setting(cx, |s| s.show_other_files = checked, window);
+                            }))))
                     .child(Self::row(cx, settings.language.text("Properties", "Egenskaper"),
                         TabBar::new("properties-default").segmented()
                             .selected_index(match settings.properties_visibility {
