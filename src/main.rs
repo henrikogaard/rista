@@ -8,6 +8,7 @@ mod bases;
 mod decorations;
 mod document;
 mod emoji;
+mod extensions;
 mod folder;
 mod graph;
 mod history;
@@ -19,6 +20,8 @@ mod search;
 mod settings;
 mod settings_panel;
 mod slash;
+mod terminal;
+mod terminal_session;
 mod theme;
 mod updater;
 mod vault;
@@ -185,6 +188,7 @@ fn keymap() -> Vec<KeyBinding> {
         KeyBinding::new("escape", CloseGraph, Some("RistaGraph")),
         // App
         KeyBinding::new("cmd-k", OpenCommandPalette, None),
+        KeyBinding::new("cmd-j", ToggleTerminal, None),
         // the reference editor muscle memory — same palette as ⌘K.
         KeyBinding::new("cmd-p", OpenCommandPalette, None),
         // ⌘F reaches the editor when focused; the workspace handler

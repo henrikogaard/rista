@@ -38,6 +38,8 @@ use std::time::SystemTime;
 
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "tools_panel.rs"]
+mod tools_panel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
@@ -108,6 +110,11 @@ pub struct Workspace {
     docs: Vec<OpenDoc>,
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
+    folder_search: Entity<InputState>,
+    terminal: Option<Entity<crate::terminal::Terminal>>,
+    terminal_visible: bool,
+    terminal_name: String,
+    terminal_cwd: Option<PathBuf>,
     settings: Settings,
     zen: bool,
     palette_state: Entity<CommandState>,
@@ -231,6 +238,7 @@ impl Focusable for Workspace {
 enum PaletteEntry {
     File(PathBuf),
     Command(PaletteCmd),
+    Tool(crate::extensions::Launcher),
 }
 
 #[derive(Clone)]
@@ -684,6 +692,16 @@ impl Workspace {
         let tag_input = cx.new(|cx| InputState::new(window, cx).placeholder("new-name"));
         let prop_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Property name"));
         let settings = Settings::load();
+        let folder_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(
+                settings
+                    .language
+                    .text("Search this folder…", "Søk i denne mappen…"),
+            )
+        });
+        let folder_search_sub = cx.subscribe(&folder_search, |_, _, _: &input::InputEvent, cx| {
+            cx.notify()
+        });
         let weak = cx.weak_entity();
         let settings_view = cx.new(|cx| SettingsView::new(weak, &settings, window, cx));
         let focus_handle = cx.focus_handle();
@@ -698,6 +716,11 @@ impl Workspace {
             docs: Vec::new(),
             active: None,
             folder: None,
+            folder_search,
+            terminal: None,
+            terminal_visible: false,
+            terminal_name: String::new(),
+            terminal_cwd: None,
             zen: false,
             palette_state,
             palette_sections: Vec::new(),
@@ -742,7 +765,7 @@ impl Workspace {
             focus_fallback_pending: false,
             focus_handle,
             settings,
-            _subscriptions: vec![vault_sub, appearance_sub],
+            _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub],
         };
 
         // `.base` `file.starred` reads this set — `toggle_star` keeps
@@ -833,6 +856,9 @@ impl Workspace {
             vault.templates_dir = self.settings.templates_dir.clone();
             vault.open(root.clone(), cx);
         });
+        self.terminal = None;
+        self.terminal_visible = false;
+        self.terminal_cwd = None;
         self.settings.last_vault = Some(root.clone());
         self.settings.save();
         self.status_note = None;
@@ -853,6 +879,9 @@ impl Workspace {
         self.nav_pos = 0;
         self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| vault.close(cx));
+        self.terminal = None;
+        self.terminal_visible = false;
+        self.terminal_cwd = None;
         self.settings.last_vault = None;
         self.settings.save();
         cx.notify();
@@ -2947,9 +2976,22 @@ impl Workspace {
             .iter()
             .map(|entry| match entry {
                 PaletteEntry::File(path) => file_item(path),
-                PaletteEntry::Command(_) => CommandItem::new().label(""),
+                _ => CommandItem::new().label(""),
             })
             .collect();
+        let (tools, _) = self.tool_launchers(cx);
+        let tool_items: Vec<_> = tools
+            .iter()
+            .map(|tool| {
+                CommandItem::new()
+                    .icon(assets::IconName::Terminal)
+                    .label(tool.name.text(self.settings.language).to_string())
+                    .keywords([tool.program.clone()])
+            })
+            .collect();
+        self.palette_sections
+            .push(tools.into_iter().map(PaletteEntry::Tool).collect());
+        let tools_label = self.tr("Tools", "Verktøy");
 
         let state = self.palette_state.clone();
         let view = cx.entity();
@@ -2973,6 +3015,11 @@ impl Workspace {
             }
             palette = palette
                 .group(CommandGroup::new().label("Notes").items(note_items.clone()))
+                .group(
+                    CommandGroup::new()
+                        .label(tools_label)
+                        .items(tool_items.clone()),
+                )
                 .max_h(px(440.));
             dialog
                 .w(px(560.))
@@ -2983,12 +3030,10 @@ impl Workspace {
                         .on_confirm({
                             let view = view.clone();
                             move |index, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.on_palette_pick(index, window, cx);
-                                });
                                 window.close_dialog(cx);
                                 view.update(cx, |this, cx| {
                                     this.refocus(window, cx);
+                                    this.on_palette_pick(index, window, cx);
                                 });
                             }
                         })
@@ -3023,6 +3068,7 @@ impl Workspace {
         match entry {
             Some(PaletteEntry::File(path)) => self.open_document(path, window, cx),
             Some(PaletteEntry::Command(cmd)) => self.run_command(cmd, window, cx),
+            Some(PaletteEntry::Tool(tool)) => self.confirm_tool(tool, window, cx),
             None => {}
         }
     }
@@ -7480,6 +7526,27 @@ impl Workspace {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(mode_label),
+                    )
+                    .child(
+                        Button::new("workspace-tools")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Blocks)
+                            .label(self.tr("Tools", "Verktøy"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_open_tools(&OpenTools, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("workspace-terminal")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Terminal)
+                            .label(self.tr("Terminal", "Terminal"))
+                            .selected(self.terminal_visible)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_terminal(&ToggleTerminal, window, cx)
+                            })),
                     ),
             )
     }
@@ -7580,6 +7647,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_toggle_terminal))
+            .on_action(cx.listener(Self::on_open_tools))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_check_for_updates))
@@ -7627,28 +7696,49 @@ impl Render for Workspace {
                                             .when(!self.zen, |this| {
                                                 this.child(self.render_tab_bar(cx))
                                             })
-                                            .child(div().flex_1().min_h_0().child({
-                                                if let Some(graph) = self.graph.clone() {
-                                                    graph.into_any_element()
-                                                } else {
-                                                    let content = self.render_editor_area(cx);
-                                                    if self.zen {
-                                                        h_flex()
-                                                            .size_full()
-                                                            .justify_center()
-                                                            .child(
-                                                                div()
-                                                                    .h_full()
-                                                                    .w_full()
-                                                                    .max_w(px(920.))
-                                                                    .child(content),
-                                                            )
-                                                            .into_any_element()
-                                                    } else {
-                                                        content
-                                                    }
-                                                }
-                                            })),
+                                            .child(
+                                                gpui_kit::component::resizable::v_resizable(
+                                                    "editor-terminal",
+                                                )
+                                                .child(resizable_panel().child(
+                                                    div().flex_1().min_h_0().child({
+                                                        if let Some(graph) = self.graph.clone() {
+                                                            graph.into_any_element()
+                                                        } else {
+                                                            let content =
+                                                                self.render_editor_area(cx);
+                                                            if self.zen {
+                                                                h_flex()
+                                                                    .size_full()
+                                                                    .justify_center()
+                                                                    .child(
+                                                                        div()
+                                                                            .h_full()
+                                                                            .w_full()
+                                                                            .max_w(px(920.))
+                                                                            .child(content),
+                                                                    )
+                                                                    .into_any_element()
+                                                            } else {
+                                                                content
+                                                            }
+                                                        }
+                                                    }),
+                                                ))
+                                                .when(
+                                                    self.terminal_visible && !self.zen,
+                                                    |panels| {
+                                                        panels.child(
+                                                            resizable_panel()
+                                                                .size(px(270.))
+                                                                .size_range(px(140.)..px(600.))
+                                                                .child(
+                                                                    self.render_terminal_panel(cx),
+                                                                ),
+                                                        )
+                                                    },
+                                                ),
+                                            ),
                                     ),
                                 ),
                             )

@@ -65,7 +65,25 @@ pub enum WorkingDirectory {
 #[derive(Debug, Default)]
 pub struct Registry {
     pub plugins: Vec<Manifest>,
-    pub errors: Vec<String>,
+    pub errors: Vec<RegistryError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryError {
+    pub path: PathBuf,
+    pub message: Localized,
+    pub detail: Option<String>,
+}
+
+impl RegistryError {
+    pub fn text(&self, language: crate::settings::Language) -> String {
+        let mut text = format!("{}: {}", self.path.display(), self.message.text(language));
+        if let Some(detail) = &self.detail {
+            text.push_str(": ");
+            text.push_str(detail);
+        }
+        text
+    }
 }
 
 impl Registry {
@@ -396,8 +414,140 @@ fn validate_text(
 
 fn push_error(registry: &mut Registry, error: String) {
     if registry.errors.len() < MAX_ERRORS {
-        registry.errors.push(error);
+        let (path, detail) = error
+            .split_once(": ")
+            .map(|(path, detail)| (PathBuf::from(path), detail))
+            .unwrap_or_else(|| (PathBuf::new(), error.as_str()));
+        let (message, technical_detail) = localize_diagnostic(detail);
+        registry.errors.push(RegistryError {
+            path,
+            message,
+            detail: technical_detail,
+        });
     }
+}
+
+fn localize_diagnostic(detail: &str) -> (Localized, Option<String>) {
+    let (en, nb, technical_detail) = if detail.starts_with("could not inspect vault root") {
+        (
+            "Could not inspect vault root",
+            "Kunne ikke undersøke hvelvroten",
+            detail.strip_prefix("could not inspect vault root: "),
+        )
+    } else if detail.starts_with("could not inspect vault plugin parent") {
+        (
+            "Could not inspect the vault plugin folder",
+            "Kunne ikke undersøke hvelvets utvidelsesmappe",
+            detail.strip_prefix("could not inspect vault plugin parent: "),
+        )
+    } else if detail.starts_with("could not inspect plugin directory") {
+        (
+            "Could not inspect the extension folder",
+            "Kunne ikke undersøke utvidelsesmappen",
+            detail.strip_prefix("could not inspect plugin directory: "),
+        )
+    } else if detail.starts_with("could not read plugin directory entry") {
+        (
+            "Could not read an extension entry",
+            "Kunne ikke lese en utvidelsesoppføring",
+            detail.strip_prefix("could not read plugin directory entry: "),
+        )
+    } else if detail.starts_with("could not read plugin directory") {
+        (
+            "Could not read the extension folder",
+            "Kunne ikke lese utvidelsesmappen",
+            detail.strip_prefix("could not read plugin directory: "),
+        )
+    } else if detail.starts_with("plugin directory exceeds") {
+        (
+            "The extension folder contains too many manifests",
+            "Utvidelsesmappen inneholder for mange manifester",
+            None,
+        )
+    } else if detail.starts_with("registry exceeds") {
+        (
+            "Too many extensions were found",
+            "For mange utvidelser ble funnet",
+            None,
+        )
+    } else if detail.starts_with("could not inspect manifest") {
+        (
+            "Could not inspect an extension manifest",
+            "Kunne ikke undersøke et utvidelsesmanifest",
+            detail.strip_prefix("could not inspect manifest: "),
+        )
+    } else if detail.starts_with("manifest exceeds") {
+        (
+            "The extension manifest is too large",
+            "Utvidelsesmanifestet er for stort",
+            None,
+        )
+    } else if detail.starts_with("could not read manifest") {
+        (
+            "Could not read an extension manifest",
+            "Kunne ikke lese et utvidelsesmanifest",
+            detail.strip_prefix("could not read manifest: "),
+        )
+    } else if detail.starts_with("invalid manifest JSON") {
+        (
+            "The extension manifest contains invalid JSON",
+            "Utvidelsesmanifestet inneholder ugyldig JSON",
+            detail.strip_prefix("invalid manifest JSON: "),
+        )
+    } else if detail.starts_with("unsupported api_version") {
+        (
+            "The extension API version is unsupported",
+            "API-versjonen for utvidelsen støttes ikke",
+            None,
+        )
+    } else if detail.starts_with("duplicate manifest id") {
+        (
+            "The extension ID is already registered",
+            "Utvidelses-ID-en er allerede registrert",
+            None,
+        )
+    } else if detail.starts_with("duplicate command id") {
+        (
+            "The command ID is duplicated",
+            "Kommando-ID-en er duplisert",
+            None,
+        )
+    } else if detail.starts_with("program must") {
+        (
+            "The launcher program is invalid",
+            "Startprogrammet er ugyldig",
+            None,
+        )
+    } else if detail.starts_with("command ") && detail.contains("exceeds") {
+        (
+            "The launcher command exceeds a limit",
+            "Startkommandoen overskrider en grense",
+            None,
+        )
+    } else if detail.contains("must not be empty")
+        || detail.contains("must be nonempty")
+        || detail.contains("must not contain NUL")
+        || detail.contains("exceeds the")
+    {
+        (
+            "A manifest value is invalid",
+            "En manifestverdi er ugyldig",
+            None,
+        )
+    } else {
+        (
+            "The extension manifest could not be loaded",
+            "Utvidelsesmanifestet kunne ikke lastes inn",
+            None,
+        )
+    };
+    (
+        Localized {
+            en: en.to_string(),
+            nb: nb.to_string(),
+        },
+        technical_detail.map(str::to_string),
+    )
 }
 
 #[cfg(test)]
@@ -506,8 +656,9 @@ mod tests {
 
         assert!(registry.plugins.is_empty());
         assert_eq!(registry.errors.len(), 2);
-        assert!(registry.errors[0].contains("unsupported api_version"));
-        assert!(registry.errors[1].contains("unknown field"));
+        let english = crate::settings::Language::English;
+        assert!(registry.errors[0].text(english).contains("unsupported"));
+        assert!(registry.errors[1].text(english).contains("invalid JSON"));
     }
 
     #[test]
@@ -525,10 +676,11 @@ mod tests {
 
         assert!(registry.plugins.is_empty());
         assert_eq!(registry.errors.len(), 2);
-        assert!(registry.errors[0].contains("broken.json"));
-        assert!(registry.errors[0].contains("invalid manifest JSON"));
-        assert!(registry.errors[1].contains("oversized.json"));
-        assert!(registry.errors[1].contains("manifest exceeds"));
+        let english = crate::settings::Language::English;
+        assert!(registry.errors[0].text(english).contains("broken.json"));
+        assert!(registry.errors[0].text(english).contains("invalid JSON"));
+        assert!(registry.errors[1].text(english).contains("oversized.json"));
+        assert!(registry.errors[1].text(english).contains("too large"));
     }
 
     #[test]
@@ -554,8 +706,28 @@ mod tests {
         assert_eq!(registry.plugins.len(), 1);
         assert_eq!(registry.plugins[0].name.en, "Alpha");
         assert_eq!(registry.errors.len(), 2);
-        assert!(registry.errors[0].contains("z.json"));
-        assert!(registry.errors[1].contains("vault.json"));
+        let english = crate::settings::Language::English;
+        assert!(registry.errors[0].text(english).contains("z.json"));
+        assert!(registry.errors[1].text(english).contains("vault.json"));
+    }
+
+    #[test]
+    fn diagnostics_have_localized_headings_and_technical_details() {
+        let temp = TempDir::new();
+        fs::create_dir_all(temp.path()).expect("create plugin directory");
+        fs::write(
+            temp.path().join("invalid.json"),
+            r#"{"api_version":2,"id":"sample","name":{"en":"Sample","nb":"Eksempel"},"commands":[]}"#,
+        )
+        .expect("write invalid fixture");
+
+        let registry = Registry::load(temp.path(), None);
+
+        let english = registry.errors[0].text(crate::settings::Language::English);
+        let norwegian = registry.errors[0].text(crate::settings::Language::Norwegian);
+        assert!(english.contains("unsupported"));
+        assert!(norwegian.contains("støttes ikke"));
+        assert_ne!(english, norwegian);
     }
 
     #[cfg(unix)]

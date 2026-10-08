@@ -1,11 +1,12 @@
 use anyhow::{anyhow, bail, Context, Result};
-use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
+use std::time::Duration;
 
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
@@ -40,10 +41,15 @@ impl Shared {
     }
 }
 
+struct ProcessState {
+    child: Option<Box<dyn Child + Send + Sync>>,
+    pid: Option<u32>,
+}
+
 pub struct Session {
     shared: Arc<Shared>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
-    child_killer: Option<Box<dyn ChildKiller + Send + Sync>>,
+    process: Arc<Mutex<ProcessState>>,
     writer: SyncSender<Vec<u8>>,
 }
 
@@ -85,15 +91,17 @@ impl Session {
             .slave
             .spawn_command(command)
             .context("spawn terminal process")?;
-        let child_killer = child.clone_killer();
-        let child_slot = Arc::new(Mutex::new(Some(child)));
+        let process = Arc::new(Mutex::new(ProcessState {
+            pid: child.process_id(),
+            child: Some(child),
+        }));
 
         let writer_shared = Arc::clone(&shared);
         let writer_thread = thread::Builder::new()
             .name("rista-terminal-writer".to_string())
             .spawn(move || writer_loop(writer, writer_rx, writer_shared));
         if let Err(error) = writer_thread {
-            terminate_child(&child_slot);
+            terminate_process(&*pair.master, &process);
             bail!("start terminal PTY writer thread: {error}");
         }
 
@@ -103,36 +111,24 @@ impl Session {
             .name("rista-terminal-reader".to_string())
             .spawn(move || reader_loop(reader, reader_writer, reader_shared));
         if let Err(error) = reader_thread {
-            terminate_child(&child_slot);
+            terminate_process(&*pair.master, &process);
             bail!("start terminal PTY reader thread: {error}");
         }
 
-        let waiter_slot = Arc::clone(&child_slot);
+        let waiter_process = Arc::clone(&process);
         let waiter_shared = Arc::clone(&shared);
         let waiter = thread::Builder::new()
             .name("rista-terminal-reaper".to_string())
-            .spawn(move || {
-                let child = lock_recover(&waiter_slot).take();
-                if let Some(mut child) = child {
-                    if let Err(error) = child.wait() {
-                        record_error(
-                            &waiter_shared,
-                            format!("terminal process wait failed: {error}"),
-                        );
-                    }
-                }
-                waiter_shared.exited.store(true, Ordering::Release);
-                waiter_shared.generation.fetch_add(1, Ordering::AcqRel);
-            });
+            .spawn(move || reap_process(waiter_process, waiter_shared));
         if let Err(error) = waiter {
-            terminate_child(&child_slot);
+            terminate_process(&*pair.master, &process);
             bail!("start terminal process reaper thread: {error}");
         }
 
         Ok(Self {
             shared,
             master: Mutex::new(Some(pair.master)),
-            child_killer: Some(child_killer),
+            process,
             writer: writer_tx,
         })
     }
@@ -211,8 +207,14 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.shared.closing.store(true, Ordering::Release);
-        if let Some(killer) = self.child_killer.as_mut() {
-            let _ = killer.kill();
+        {
+            let mut process = lock_recover(&self.process);
+            if process.child.is_some() {
+                let master = lock_recover(&self.master);
+                if let Some(master) = master.as_ref() {
+                    request_process_stop(&**master, &mut process);
+                }
+            }
         }
         let master = self
             .master
@@ -231,11 +233,89 @@ fn pty_size(rows: u16, cols: u16) -> PtySize {
     }
 }
 
-fn terminate_child(child_slot: &Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>) {
-    if let Some(mut child) = lock_recover(child_slot).take() {
-        let _ = child.kill();
-        let _ = child.wait();
+fn reap_process(process: Arc<Mutex<ProcessState>>, shared: Arc<Shared>) {
+    loop {
+        let finished = {
+            let mut process = lock_recover(&process);
+            let Some(child) = process.child.as_mut() else {
+                return;
+            };
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    process.child.take();
+                    true
+                }
+                Ok(None) => false,
+                Err(error) => {
+                    record_error(&shared, format!("terminal process wait failed: {error}"));
+                    false
+                }
+            }
+        };
+        if finished {
+            shared.exited.store(true, Ordering::Release);
+            shared.generation.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn request_process_stop(master: &dyn MasterPty, process: &mut ProcessState) {
+    let Some(child) = process.child.as_mut() else {
+        return;
+    };
+    stop_owned_process(master, &mut **child, process.pid);
+}
+
+#[cfg(unix)]
+fn stop_owned_process(master: &dyn MasterPty, child: &mut dyn Child, pid: Option<u32>) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        let _ = child.kill();
+        return;
+    };
+    let child_session = unsafe { libc::getsid(pid) };
+    let child_group = owned_process_group(pid, child_session);
+    let foreground_group = master
+        .process_group_leader()
+        .filter(|group| owned_process_group(*group, child_session).is_some());
+    let mut signalled_group = false;
+    for group in [child_group, foreground_group].into_iter().flatten() {
+        if !signalled_group || Some(group) != child_group {
+            let result = unsafe { libc::kill(-group, libc::SIGKILL) };
+            signalled_group |= result == 0;
+        }
+    }
+    if !signalled_group {
+        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+#[cfg(unix)]
+fn owned_process_group(pid: libc::pid_t, session: libc::pid_t) -> Option<libc::pid_t> {
+    if pid <= 0 || session <= 0 {
+        return None;
+    }
+    let group = unsafe { libc::getpgid(pid) };
+    if group <= 0 {
+        return None;
+    }
+    let group_session = unsafe { libc::getsid(group) };
+    (group_session == session).then_some(group)
+}
+
+#[cfg(not(unix))]
+fn stop_owned_process(_master: &dyn MasterPty, child: &mut dyn Child, _pid: Option<u32>) {
+    let _ = child.kill();
+}
+
+fn terminate_process(master: &dyn MasterPty, process: &Arc<Mutex<ProcessState>>) {
+    let mut process = lock_recover(process);
+    let Some(mut child) = process.child.take() else {
+        return;
+    };
+    stop_owned_process(master, &mut *child, process.pid);
+    let _ = child.wait();
 }
 
 fn writer_loop(
@@ -520,5 +600,60 @@ mod tests {
         assert!(session.snapshot().contents().contains("PTY_ROUNDTRIP"));
         assert!(session.exited());
         assert_eq!(session.error(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_shell_kills_owned_foreground_job_and_reaps_children() {
+        let marker = std::env::temp_dir().join(format!(
+            "rista-terminal-session-{}-{}.pid",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let marker_text = marker.to_string_lossy().replace('\'', "'\\''");
+        let script = format!("trap '' HUP; sleep 30 & echo $! > '{marker_text}'; wait");
+        let args = vec!["-c".to_string(), script];
+        let session = super::Session::spawn("/bin/sh", &args, Path::new("/"))
+            .expect("spawn shell through a PTY");
+        let shell_pid = super::lock_recover(&session.process)
+            .pid
+            .expect("shell should expose its process id") as libc::pid_t;
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !marker.exists() {
+            drop(session);
+            let _ = std::fs::remove_file(&marker);
+            panic!("shell did not report its foreground child pid");
+        }
+        let job_pid = std::fs::read_to_string(&marker)
+            .expect("read foreground child pid")
+            .trim()
+            .parse::<libc::pid_t>()
+            .expect("parse foreground child pid");
+        assert!(process_exists(job_pid));
+
+        drop(session);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while (process_exists(shell_pid) || process_exists(job_pid)) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_file(&marker);
+        assert!(!process_exists(shell_pid), "shell process was not reaped");
+        assert!(
+            !process_exists(job_pid),
+            "foreground child survived shutdown"
+        );
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: libc::pid_t) -> bool {
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 }

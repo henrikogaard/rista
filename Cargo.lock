@@ -5684,6 +5684,7 @@ dependencies = [
  "chrono",
  "directories",
  "gpui-kit",
+ "libc",
  "lsp-types",
  "markdown",
  "notify",

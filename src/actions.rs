@@ -47,6 +47,8 @@ actions!(
         OpenCommandPalette,
         OpenProjectSearch,
         OpenSettings,
+        ToggleTerminal,
+        OpenTools,
         ToggleTheme,
         CheckForUpdates,
         Quit,
