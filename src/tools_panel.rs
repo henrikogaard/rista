@@ -269,28 +269,29 @@ impl Workspace {
         let terminal = active.terminal.clone();
         let tabs = self.terminals.iter().map(|tab| {
             let id = tab.id;
-            Tab::new()
-                .label(format!(
+            Self::content_tab(
+                format!(
                     "{} {} · {}",
                     tab.name,
                     id,
                     tab.cwd.file_name().unwrap_or_default().to_string_lossy()
-                ))
-                .prefix(Icon::new(assets::IconName::Terminal).size_3p5())
-                .suffix(
-                    Button::new(("close-terminal", id))
-                        .ghost()
-                        .xsmall()
-                        .icon(assets::IconName::Close)
-                        .tooltip(self.tr(
-                            "Close terminal (stops process)",
-                            "Lukk terminalen (stopper prosessen)",
-                        ))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.close_terminal(id, window, cx);
-                        })),
-                )
+                ),
+                assets::IconName::Terminal,
+            )
+            .suffix(
+                Button::new(("close-terminal", id))
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Close)
+                    .tooltip(self.tr(
+                        "Close terminal (stops process)",
+                        "Lukk terminalen (stopper prosessen)",
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_terminal(id, window, cx);
+                    })),
+            )
         });
         v_flex()
             .size_full()

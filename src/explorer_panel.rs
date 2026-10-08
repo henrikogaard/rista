@@ -33,7 +33,28 @@ impl Workspace {
             .px_2()
             .gap_1()
             .pb_2()
-            .child(Input::new(&self.explorer_search).small())
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .bg(cx.theme().muted)
+                    .rounded(cx.theme().radius)
+                    .child(
+                        Icon::new(assets::IconName::Search)
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        Input::new(&self.explorer_search)
+                            .small()
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .flex_1()
+                            .min_w_0(),
+                    ),
+            )
             .child(filters)
             .child(
                 h_flex()

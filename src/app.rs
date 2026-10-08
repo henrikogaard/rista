@@ -1282,9 +1282,11 @@ impl Workspace {
             graph.update(cx, |g, cx| g.focus_filter(window, cx));
             return;
         }
-        if let Some(graph) = self.graph_dock.clone() {
-            graph.update(cx, |g, cx| g.focus_filter(window, cx));
-            return;
+        if self.settings.graph_dock_open {
+            if let Some(graph) = self.graph_dock.clone() {
+                graph.update(cx, |g, cx| g.focus_filter(window, cx));
+                return;
+            }
         }
         if self.settings.view_mode != ViewMode::Source {
             if let Some(base) = self
@@ -6691,16 +6693,12 @@ impl Workspace {
                     (title, doc.dirty, icon)
                 };
                 let view = cx.entity();
-                let tab = Tab::new()
-                    .when(doc.preview, |tab| tab.italic())
-                    .label(if dirty {
-                        format!("{} •", title.clone())
-                    } else {
-                        title.clone()
-                    })
-                    // Icon goes in `prefix`: the vendored Tab renders the
-                    // `icon` slot INSTEAD of the label, not beside it.
-                    .prefix(Icon::new(icon).size_3p5());
+                let label = if dirty {
+                    format!("{} •", title.clone())
+                } else {
+                    title.clone()
+                };
+                let tab = Self::content_tab(label, icon).when(doc.preview, |tab| tab.italic());
                 let pinned = {
                     let doc = doc.entity.read(cx);
                     let s = doc.path.display().to_string();
@@ -7796,43 +7794,29 @@ impl Workspace {
         )
     }
 
+    fn content_tab(label: String, icon: assets::IconName) -> Tab {
+        Tab::new().aria_label(label.clone()).child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .min_w_0()
+                .child(Icon::new(icon).size_3p5().flex_shrink_0())
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(label),
+                ),
+        )
+    }
+
     fn render_graph_dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
             .rounded(cx.theme().radius_lg)
             .overflow_hidden()
-            .child(
-                h_flex()
-                    .h_10()
-                    .px_3()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Icon::new(assets::IconName::Waypoints)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .font_medium()
-                            .child(self.tr("Local graph", "Lokal graf")),
-                    )
-                    .child(
-                        Button::new("close-local-graph-panel")
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::Close)
-                            .tooltip(self.tr("Hide local graph", "Skjul lokal graf"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings.graph_dock_open = false;
-                                this.settings.save();
-                                cx.notify();
-                            })),
-                    ),
-            )
             .child(
                 div()
                     .flex_1()
