@@ -7,7 +7,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -57,6 +57,7 @@ pub struct GraphView {
     dist: Option<Vec<usize>>,
     /// The workspace's active document — painted with a halo ring.
     pub(crate) active: Option<PathBuf>,
+    docked: bool,
     /// Graph search — non-matching nodes fade out.
     filter: String,
     filter_input: Entity<InputState>,
@@ -284,6 +285,7 @@ impl GraphView {
             local: None,
             dist: None,
             active: None,
+            docked: false,
             filter: String::new(),
             filter_input,
             _filter_sub,
@@ -330,6 +332,7 @@ impl GraphView {
             local,
             dist,
             active: Some(center.to_path_buf()),
+            docked: false,
             filter: String::new(),
             filter_input,
             _filter_sub,
@@ -346,6 +349,56 @@ impl GraphView {
         }
         view.kick(window, cx);
         view
+    }
+
+    pub fn new_docked(
+        workspace: WeakEntity<Workspace>,
+        vault: Entity<crate::vault::Vault>,
+        center: Option<&std::path::Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = if let Some(center) = center {
+            Self::new_local(workspace, vault, center, window, cx)
+        } else {
+            Self::new(workspace, vault, window, cx)
+        };
+        view.docked = true;
+        view
+    }
+
+    pub(crate) fn set_local_center(
+        &mut self,
+        path: Option<&std::path::Path>,
+        cx: &mut Context<Self>,
+    ) {
+        let next = path.and_then(|path| {
+            self.nodes
+                .iter()
+                .position(|node| node.path.as_deref() == Some(path))
+        });
+        if self.local == next && self.active.as_deref() == path {
+            return;
+        }
+        for node in &mut self.nodes {
+            node.pinned = false;
+        }
+        if let Some(ix) = next {
+            let center = self.nodes[ix].pos;
+            for node in &mut self.nodes {
+                node.pos.x -= center.x;
+                node.pos.y -= center.y;
+            }
+            self.nodes[ix].pos = point(0., 0.);
+            self.nodes[ix].pinned = true;
+        }
+        self.local = next;
+        self.active = path.map(Path::to_path_buf);
+        self.dist = self.local.map(|center| bfs_dist(center, &self.adjacent));
+        if self.docked {
+            self.offset = point(0., 0.);
+        }
+        cx.notify();
     }
 
     /// Rebuild the node set after vault changes — positions carry over
@@ -390,6 +443,10 @@ impl GraphView {
         self.adjacent = adjacent;
         self.mutual = mutual;
         self.dist = self.local.map(|c| bfs_dist(c, &self.adjacent));
+        if self.docked {
+            let active = self.active.clone();
+            self.set_local_center(active.as_deref(), cx);
+        }
         self.steps = STEPS_INIT;
         for _ in 0..self.steps {
             self.step();
@@ -568,6 +625,31 @@ struct Painted {
 
 impl Render for GraphView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.docked && self.local.is_none() {
+            let message = self
+                .workspace
+                .upgrade()
+                .map(|workspace| {
+                    workspace
+                        .read(cx)
+                        .tr(
+                            "Open a note in this vault to see its local graph",
+                            "Åpne et notat i dette hvelvet for å se den lokale grafen",
+                        )
+                        .to_string()
+                })
+                .unwrap_or_else(|| "Open a note to see its local graph".to_string());
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message)
+                .into_any_element();
+        }
         let theme = cx.theme();
         let this = cx.entity();
         let bounds_slot = self.bounds.clone();
@@ -812,8 +894,10 @@ impl Render for GraphView {
             .track_focus(&self.focus_handle)
             .key_context("RistaGraph")
             .on_action(cx.listener(|this, _: &CloseGraph, window, cx| {
-                if let Some(ws) = this.workspace.upgrade() {
-                    ws.update(cx, |ws, cx| ws.close_graph(window, cx));
+                if !this.docked {
+                    if let Some(ws) = this.workspace.upgrade() {
+                        ws.update(cx, |ws, cx| ws.close_graph(window, cx));
+                    }
                 }
             }))
             .on_mouse_down(gpui::MouseButton::Left, {
@@ -878,7 +962,7 @@ impl Render for GraphView {
                     // same entity update and panic.
                     let open = this.update(cx, |view, cx| {
                         let drag = view.drag.take();
-                        match drag {
+                        let path = match drag {
                             Some(Drag::Node { ix, moved: false }) => {
                                 view.nodes.get(ix).and_then(|n| {
                                     n.path.clone().or_else(|| {
@@ -902,17 +986,18 @@ impl Render for GraphView {
                                 })
                             }
                             _ => None,
-                        }
+                        };
+                        path.map(|path| (path, view.docked))
                     });
-                    if let Some(path) = open {
+                    if let Some((path, docked)) = open {
                         let _ = std::fs::File::create_new(&path);
                         let ws = this.read(cx).workspace.upgrade();
                         if let Some(ws) = ws {
                             ws.update(cx, |ws, cx| {
-                                // Click = jump to the note — the graph
-                                // hands the editor back afterwards.
                                 ws.open_document_pub(path, window, cx);
-                                ws.close_graph(window, cx);
+                                if !docked {
+                                    ws.close_graph(window, cx);
+                                }
                             });
                         }
                     }
@@ -972,6 +1057,14 @@ impl Render for GraphView {
                         )
                     } else {
                         match self.local {
+                            Some(_c) if self.docked => format!(
+                                "{} notes · {} links",
+                                self.nodes
+                                    .iter()
+                                    .filter(|n| !n.ghost && !n.attachment)
+                                    .count(),
+                                self.edges.len()
+                            ),
                             Some(c) => format!(
                                 "local graph · {} · {} notes · {} links",
                                 self.nodes[c].label,
@@ -1001,19 +1094,22 @@ impl Render for GraphView {
                     .w(px(170.))
                     .child(Input::new(&self.filter_input).appearance(true).xsmall()),
             )
-            .child(
-                div().absolute().top_2().right_3().child(
-                    Button::new("graph-close")
-                        .ghost()
-                        .xsmall()
-                        .icon(assets::IconName::Close)
-                        .tooltip("Close graph (Esc)")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if let Some(ws) = this.workspace.upgrade() {
-                                ws.update(cx, |ws, cx| ws.close_graph(window, cx));
-                            }
-                        })),
-                ),
-            )
+            .when(!self.docked, |this| {
+                this.child(
+                    div().absolute().top_2().right_3().child(
+                        Button::new("graph-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Close)
+                            .tooltip("Close graph (Esc)")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(ws) = this.workspace.upgrade() {
+                                    ws.update(cx, |ws, cx| ws.close_graph(window, cx));
+                                }
+                            })),
+                    ),
+                )
+            })
+            .into_any_element()
     }
 }

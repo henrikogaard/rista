@@ -3,6 +3,7 @@
 //! Nordic restraint: quiet surfaces, honest files, no chrome you didn't ask for.
 
 mod actions;
+mod agent;
 mod app;
 mod bases;
 mod decorations;
@@ -102,7 +103,7 @@ fn main() {
         apply_ui_settings(&settings, cx);
 
         cx.bind_keys(keymap());
-        cx.set_menus(menus());
+        cx.set_menus(menus(settings.language));
         cx.on_action(|_: &Quit, cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -217,7 +218,7 @@ fn keymap() -> Vec<KeyBinding> {
     ]
 }
 
-fn menus() -> Vec<Menu> {
+fn menus(language: settings::Language) -> Vec<Menu> {
     let mut app_items = vec![
         MenuItem::separator(),
         MenuItem::Action {
@@ -435,6 +436,24 @@ fn menus() -> Vec<Menu> {
             MenuItem::Action {
                 name: "Local Graph".into(),
                 action: Box::new(OpenLocalGraph),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: language
+                    .text("Toggle local graph panel", "Vis/skjul lokalt grafpanel")
+                    .into(),
+                action: Box::new(ToggleLocalGraphPanel),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: language
+                    .text("Toggle agent panel", "Vis/skjul agentpanel")
+                    .into(),
+                action: Box::new(ToggleAgentPanel),
                 os_action: None,
                 checked: false,
                 disabled: false,

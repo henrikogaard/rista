@@ -43,6 +43,8 @@ actions!(
         OpenGraph,
         OpenLocalGraph,
         CloseGraph,
+        ToggleLocalGraphPanel,
+        ToggleAgentPanel,
         // App
         OpenCommandPalette,
         QuickOpen,

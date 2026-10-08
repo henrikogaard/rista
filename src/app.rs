@@ -36,6 +36,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[path = "agent_panel.rs"]
+mod agent_panel;
 #[path = "explorer_panel.rs"]
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
@@ -185,6 +187,8 @@ pub struct Workspace {
     file_menu_sub: Option<Subscription>,
     /// Vault link graph — open as a full editor-area view (⌘G).
     graph: Option<Entity<crate::graph::GraphView>>,
+    graph_dock: Option<Entity<crate::graph::GraphView>>,
+    agent_panel: Entity<agent_panel::AgentPanel>,
     needs_fs_check: bool,
     needs_standalone_fs_check: bool,
     standalone_fs_task: Option<Task<()>>,
@@ -325,6 +329,8 @@ enum PaletteCmd {
     Quit,
     Graph,
     LocalGraph,
+    ToggleLocalGraphPanel,
+    ToggleAgentPanel,
 }
 
 impl PaletteCmd {
@@ -677,6 +683,16 @@ impl PaletteCmd {
                 "Open local graph",
                 &["graph", "local", "neighborhood", "links", "current"],
             ),
+            ToggleLocalGraphPanel => (
+                assets::IconName::Waypoints,
+                "Toggle local graph panel",
+                &["dock", "graph", "local", "panel"],
+            ),
+            ToggleAgentPanel => (
+                assets::IconName::MessageSquareQuote,
+                "Toggle agent panel",
+                &["agent", "assistant", "panel", "dock"],
+            ),
         }
     }
 }
@@ -730,6 +746,9 @@ impl Workspace {
         );
         let weak = cx.weak_entity();
         let settings_view = cx.new(|cx| SettingsView::new(weak, &settings, window, cx));
+        let panel_workspace = cx.weak_entity();
+        let agent_panel = cx
+            .new(|cx| agent_panel::AgentPanel::new(panel_workspace, settings.language, window, cx));
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
@@ -787,6 +806,8 @@ impl Workspace {
             file_menu: None,
             file_menu_sub: None,
             graph: None,
+            graph_dock: None,
+            agent_panel,
             needs_fs_check: false,
             needs_standalone_fs_check: false,
             standalone_fs_task: None,
@@ -838,7 +859,10 @@ impl Workspace {
         let workspace = cx.entity();
         window.on_window_should_close(cx, move |_, cx| {
             workspace.update(cx, |this, cx| match this.save_all(cx) {
-                Ok(()) => true,
+                Ok(()) => {
+                    this.stop_agent_process(cx);
+                    true
+                }
                 Err(err) => {
                     this.note_status(format!("Could not save before closing: {err}"), cx);
                     false
@@ -862,6 +886,8 @@ impl Workspace {
             self.note_status(format!("Could not switch folders: {err}"), cx);
             return false;
         }
+        self.agent_panel
+            .update(cx, |panel, cx| panel.vault_changed(cx));
         let root = match root.canonicalize() {
             Ok(root) if root.is_dir() => root,
             Ok(_) => {
@@ -876,6 +902,7 @@ impl Workspace {
         self.close_all_docs(window, cx);
         self.clear_file_menu();
         self.graph = None;
+        self.graph_dock = None;
         self.nav_stack.clear();
         self.nav_pos = 0;
         self.nav_suppress = false;
@@ -904,6 +931,8 @@ impl Workspace {
             self.note_status(format!("Could not close folder: {err}"), cx);
             return false;
         }
+        self.agent_panel
+            .update(cx, |panel, cx| panel.vault_changed(cx));
         self.close_all_docs(window, cx);
         self.clear_file_menu();
         self.graph = None;
@@ -988,6 +1017,29 @@ impl Workspace {
                                 view.update(cx, |this, cx| {
                                     this.open_tools_for(Some(path), window, cx)
                                 })
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(language.text("Ask agent about this", "Spør agenten om dette"))
+                    .icon(assets::IconName::MessageSquareQuote)
+                    .on_click({
+                        let view = view.clone();
+                        let path = path.clone();
+                        move |_, window, _| {
+                            let view = view.clone();
+                            let path = path.clone();
+                            window.on_next_frame(move |window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.settings.agent_open = true;
+                                    this.settings.save();
+                                    this.agent_panel.update(cx, |panel, cx| {
+                                        panel.add_context(path, cx);
+                                        panel.focus_composer(window, cx);
+                                    });
+                                    cx.notify();
+                                });
                             });
                         }
                     }),
@@ -1210,6 +1262,9 @@ impl Workspace {
         if let Some(graph) = self.graph.clone() {
             graph.update(cx, |g, cx| g.rebuild(cx));
         }
+        if let Some(graph) = self.graph_dock.clone() {
+            graph.update(cx, |g, cx| g.rebuild(cx));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1223,6 +1278,10 @@ impl Workspace {
     fn on_find(&mut self, _: &input::Search, window: &mut Window, cx: &mut Context<Self>) {
         // Graph open → ⌘F is the node filter, not the note find bar.
         if let Some(graph) = self.graph.clone() {
+            graph.update(cx, |g, cx| g.focus_filter(window, cx));
+            return;
+        }
+        if let Some(graph) = self.graph_dock.clone() {
             graph.update(cx, |g, cx| g.focus_filter(window, cx));
             return;
         }
@@ -1735,6 +1794,50 @@ impl Workspace {
         cx.notify();
     }
 
+    fn ensure_graph_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.graph_dock.is_some() {
+            return;
+        }
+        let workspace = cx.weak_entity();
+        let vault = self.vault.clone();
+        let active = self
+            .active
+            .and_then(|ix| self.docs.get(ix))
+            .map(|doc| doc.entity.read(cx).path.clone());
+        self.graph_dock = Some(cx.new(|cx| {
+            crate::graph::GraphView::new_docked(workspace, vault, active.as_deref(), window, cx)
+        }));
+    }
+
+    fn on_toggle_local_graph_panel(
+        &mut self,
+        _: &ToggleLocalGraphPanel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.graph_dock_open = !self.settings.graph_dock_open;
+        if self.settings.graph_dock_open {
+            self.ensure_graph_dock(window, cx);
+        }
+        self.settings.save();
+        cx.notify();
+    }
+
+    fn on_toggle_agent_panel(
+        &mut self,
+        _: &ToggleAgentPanel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.agent_open = !self.settings.agent_open;
+        self.settings.save();
+        if self.settings.agent_open {
+            self.agent_panel
+                .update(cx, |panel, cx| panel.focus_composer(window, cx));
+        }
+        cx.notify();
+    }
+
     /// Palette "Open local graph" — neighbourhood view pinned on the
     /// current note (the local graph).
     fn on_open_local_graph(
@@ -1772,13 +1875,18 @@ impl Workspace {
 
     /// Point an open graph's halo at the currently active doc.
     fn sync_graph_active(&mut self, cx: &mut Context<Self>) {
+        let path = self
+            .active
+            .and_then(|i| self.docs.get(i))
+            .map(|d| d.entity.read(cx).path.clone());
         if let Some(graph) = self.graph.clone() {
-            let path = self
-                .active
-                .and_then(|i| self.docs.get(i))
-                .map(|d| d.entity.read(cx).path.clone());
-            graph.update(cx, |g, _cx| g.active = path);
+            graph.update(cx, |g, _cx| g.active = path.clone());
         }
+        if let Some(graph) = self.graph_dock.clone() {
+            graph.update(cx, |g, cx| g.set_local_center(path.as_deref(), cx));
+        }
+        self.agent_panel
+            .update(cx, |panel, cx| panel.sync_active_path(path, cx));
     }
 
     /// Close the graph pane and hand focus back to the editor surface.
@@ -2901,7 +3009,10 @@ impl Workspace {
 
     pub(crate) fn quit(&mut self, cx: &mut Context<Self>) {
         match self.save_all(cx) {
-            Ok(()) => cx.quit(),
+            Ok(()) => {
+                self.stop_agent_process(cx);
+                cx.quit();
+            }
             Err(err) => self.note_status(format!("Could not save before quitting: {err}"), cx),
         }
     }
@@ -2951,6 +3062,8 @@ impl Workspace {
             PaletteCmd::ProjectSearch,
             PaletteCmd::Graph,
             PaletteCmd::LocalGraph,
+            PaletteCmd::ToggleLocalGraphPanel,
+            PaletteCmd::ToggleAgentPanel,
             PaletteCmd::MoveLineUp,
             PaletteCmd::MoveLineDown,
             PaletteCmd::ToggleCheckbox,
@@ -3061,7 +3174,15 @@ impl Workspace {
                 let (icon, label, keywords) = cmd.spec();
                 CommandItem::new()
                     .icon(icon)
-                    .label(label)
+                    .label(match cmd {
+                        PaletteCmd::ToggleLocalGraphPanel => {
+                            self.tr("Toggle local graph panel", "Vis/skjul lokalt grafpanel")
+                        }
+                        PaletteCmd::ToggleAgentPanel => {
+                            self.tr("Toggle agent panel", "Vis/skjul agentpanel")
+                        }
+                        _ => label,
+                    })
                     .keywords(keywords.iter().copied())
             })
             .collect();
@@ -3195,6 +3316,12 @@ impl Workspace {
             ),
             PaletteCmd::Graph => self.on_open_graph(&OpenGraph, window, cx),
             PaletteCmd::LocalGraph => self.on_open_local_graph(&OpenLocalGraph, window, cx),
+            PaletteCmd::ToggleLocalGraphPanel => {
+                self.on_toggle_local_graph_panel(&ToggleLocalGraphPanel, window, cx)
+            }
+            PaletteCmd::ToggleAgentPanel => {
+                self.on_toggle_agent_panel(&ToggleAgentPanel, window, cx)
+            }
             PaletteCmd::MoveLineUp => self.on_move_line_up(&MoveLineUp, window, cx),
             PaletteCmd::MoveLineDown => self.on_move_line_down(&MoveLineDown, window, cx),
             PaletteCmd::ToggleCheckbox => self.on_toggle_checkbox(&ToggleCheckbox, window, cx),
@@ -5047,6 +5174,34 @@ impl Workspace {
                     // pads the left (traffic lights), so icons here sat
                     // flush against the window corner.
                     .pr_3()
+                    .child(
+                        Button::new("toggle-local-graph-panel")
+                            .ghost()
+                            .small()
+                            .tooltip(
+                                self.tr("Toggle local graph panel", "Vis/skjul lokalt grafpanel"),
+                            )
+                            .icon(assets::IconName::Waypoints)
+                            .selected(self.settings.graph_dock_open)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_local_graph_panel(
+                                    &ToggleLocalGraphPanel,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("toggle-agent-panel")
+                            .ghost()
+                            .small()
+                            .tooltip(self.tr("Toggle agent panel", "Vis/skjul agentpanel"))
+                            .icon(assets::IconName::MessageSquareQuote)
+                            .selected(self.settings.agent_open)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_agent_panel(&ToggleAgentPanel, window, cx);
+                            })),
+                    )
                     .child(
                         Button::new("toggle-inspector")
                             .ghost()
@@ -7640,6 +7795,51 @@ impl Workspace {
         )
     }
 
+    fn render_graph_dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .bg(cx.theme().sidebar)
+            .rounded(cx.theme().radius_lg)
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .h_10()
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::new(assets::IconName::Waypoints)
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .font_medium()
+                            .child(self.tr("Local graph", "Lokal graf")),
+                    )
+                    .child(
+                        Button::new("close-local-graph-panel")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Close)
+                            .tooltip(self.tr("Hide local graph", "Skjul lokal graf"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.graph_dock_open = false;
+                                this.settings.save();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .when_some(self.graph_dock.clone(), |this, graph| this.child(graph)),
+            )
+    }
+
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let doc = self.active_doc();
         let (rel_path, words, dirty, conflict, cursor, selected) = doc
@@ -7782,6 +7982,28 @@ impl Workspace {
                         },
                     )
                     .child(
+                        Button::new("workspace-local-graph")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Waypoints)
+                            .label(self.tr("Local graph", "Lokal graf"))
+                            .selected(self.settings.graph_dock_open)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_local_graph_panel(&ToggleLocalGraphPanel, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("workspace-agent")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::MessageSquareQuote)
+                            .label(self.tr("Agent", "Agent"))
+                            .selected(self.settings.agent_open)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_agent_panel(&ToggleAgentPanel, window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("workspace-tools")
                             .ghost()
                             .xsmall()
@@ -7808,6 +8030,9 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.settings.graph_dock_open && self.graph_dock.is_none() {
+            self.ensure_graph_dock(window, cx);
+        }
         for (index, tab) in self.terminals.iter().enumerate() {
             tab.terminal.update(cx, |terminal, _| {
                 terminal.visible = self.terminal_visible && self.active_terminal == Some(index)
@@ -7896,6 +8121,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_edit_preview))
             .on_action(cx.listener(Self::on_open_graph))
             .on_action(cx.listener(Self::on_open_local_graph))
+            .on_action(cx.listener(Self::on_toggle_local_graph_panel))
+            .on_action(cx.listener(Self::on_toggle_agent_panel))
             .on_action(cx.listener(Self::on_duplicate_block))
             .on_action(cx.listener(Self::on_delete_line))
             .on_action(cx.listener(Self::on_toggle_comment))
@@ -8001,23 +8228,77 @@ impl Render for Workspace {
                                         }),
                                 ),
                             )
-                            .when(!self.zen && self.settings.inspector_open, |columns| {
+                            .when(
+                                !self.zen
+                                    && (self.settings.graph_dock_open
+                                        || self.settings.agent_open
+                                        || self.settings.inspector_open),
+                                |columns| {
                                 columns.child(
                                     resizable_panel()
-                                        .size(px(268.))
-                                        .size_range(px(220.)..px(380.))
+                                        .size(px(310.))
+                                        .size_range(px(220.)..px(520.))
                                         .child(
                                             div().size_full().p_1().child(
-                                                div()
-                                                    .size_full()
-                                                    .bg(cx.theme().sidebar)
-                                                    .rounded(cx.theme().radius_lg)
-                                                    .overflow_hidden()
-                                                    .child(self.render_inspector(cx)),
+                                                canvas_panels("right-dock", Axis::Vertical)
+                                                    .when(self.settings.graph_dock_open, |panes| {
+                                                        panes.child(
+                                                            resizable_panel()
+                                                                .size(px(220.))
+                                                                .size_range(px(150.)..px(440.))
+                                                                .child(
+                                                                    div()
+                                                                        .size_full()
+                                                                        .p_1()
+                                                                        .child(self.render_graph_dock_panel(cx)),
+                                                                ),
+                                                        )
+                                                    })
+                                                    .when(self.settings.agent_open, |panes| {
+                                                        panes.child(
+                                                            resizable_panel()
+                                                                .size(px(300.))
+                                                                .size_range(px(220.)..px(600.))
+                                                                .child(
+                                                                    div()
+                                                                        .size_full()
+                                                                        .p_1()
+                                                                        .child(
+                                                                            div()
+                                                                                .size_full()
+                                                                                .bg(cx.theme().sidebar)
+                                                                                .rounded(cx.theme().radius_lg)
+                                                                                .overflow_hidden()
+                                                                                .child(self.agent_panel.clone()),
+                                                                        ),
+                                                                ),
+                                                        )
+                                                    })
+                                                    .when(self.settings.inspector_open, |panes| {
+                                                        panes.child(
+                                                            resizable_panel()
+                                                                .size(px(240.))
+                                                                .size_range(px(170.)..px(440.))
+                                                                .child(
+                                                                    div()
+                                                                        .size_full()
+                                                                        .p_1()
+                                                                        .child(
+                                                                            div()
+                                                                                .size_full()
+                                                                                .bg(cx.theme().sidebar)
+                                                                                .rounded(cx.theme().radius_lg)
+                                                                                .overflow_hidden()
+                                                                                .child(self.render_inspector(cx)),
+                                                                        ),
+                                                                ),
+                                                        )
+                                                    }),
                                             ),
                                         ),
                                 )
-                            })
+                            },
+                            )
                             .into_any_element()
                     }),
             )

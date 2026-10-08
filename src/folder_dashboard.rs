@@ -43,7 +43,7 @@ fn folder_icon(metadata: &folder::Metadata, fallback: assets::IconName, cx: &App
 }
 
 impl Workspace {
-    pub(super) fn tr(&self, en: &'static str, nb: &'static str) -> &'static str {
+    pub(crate) fn tr(&self, en: &'static str, nb: &'static str) -> &'static str {
         self.settings.language.text(en, nb)
     }
 
