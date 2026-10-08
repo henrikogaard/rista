@@ -6736,7 +6736,7 @@ impl Workspace {
                             })),
                     )
                 };
-                tab.on_mouse_down(gpui::MouseButton::Left, {
+                tab.on_mouse_up(gpui::MouseButton::Left, {
                     let view = view.clone();
                     move |event, _, cx| {
                         if event.click_count == 2 {
@@ -6847,7 +6847,7 @@ impl Workspace {
                             .bg(cx.theme().transparent)
                             .selected_index(self.active.unwrap_or(usize::MAX))
                             .children(tabs)
-                            .on_click(cx.listener(|this, &ix, _window, cx| {
+                            .on_click(cx.listener(|this, &ix, window, cx| {
                                 // The × suffix button closes a tab but its
                                 // click still lands here — skip reselecting
                                 // an index that no longer exists, which
@@ -6861,7 +6861,7 @@ impl Workspace {
                                     this.record_nav(&path);
                                     this.persist_tabs(cx);
                                     this.reveal_active_file(cx);
-                                    cx.notify();
+                                    this.refocus(window, cx);
                                 }
                             })),
                     )
@@ -7872,6 +7872,9 @@ impl Workspace {
         };
 
         StatusBar::new()
+            .px_4()
+            .py_2()
+            .flex_shrink_0()
             .left(
                 h_flex()
                     .gap_3()
