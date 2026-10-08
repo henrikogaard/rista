@@ -12,6 +12,7 @@ mod folder;
 mod graph;
 mod history;
 mod http;
+mod note_icons;
 mod preview;
 mod properties;
 mod search;
@@ -92,7 +93,7 @@ fn main() {
         theme::install_themes(cx);
 
         let settings = settings::Settings::load();
-        theme::set_theme_mode(settings.theme_mode(cx), cx);
+        theme::apply(&settings, cx);
         apply_ui_settings(&settings, cx);
 
         cx.bind_keys(keymap());

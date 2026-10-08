@@ -42,6 +42,15 @@ pub enum ViewMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum PropertiesVisibility {
+    #[default]
+    Expanded,
+    Collapsed,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum TreeSort {
     #[default]
     Name,
@@ -55,6 +64,9 @@ pub struct Settings {
     pub inspector_open: bool,
     pub active_folder: Option<PathBuf>,
     pub appearance: Appearance,
+    pub dark_theme: String,
+    pub light_theme: String,
+    pub properties_visibility: PropertiesVisibility,
     /// Editor font family — a writing-first set, resolved by name.
     pub editor_font_family: String,
     pub editor_font_size: f32,
@@ -161,6 +173,9 @@ impl Default for Settings {
             inspector_open: false,
             active_folder: None,
             appearance: Appearance::Dark,
+            dark_theme: crate::theme::NIGHT_THEME_NAME.to_string(),
+            light_theme: crate::theme::DAY_THEME_NAME.to_string(),
+            properties_visibility: PropertiesVisibility::default(),
             editor_font_family: "SF Mono".to_string(),
             editor_font_size: 14.0,
             ui_font_size: 13.0,
@@ -238,3 +253,26 @@ pub const EDITOR_FONTS: &[&str] = &[
     "New York",
     "Charter",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_keep_defaults_and_new_preferences_roundtrip() {
+        let mut settings: Settings = serde_json::from_str(r#"{"appearance":"light"}"#).unwrap();
+        assert_eq!(
+            settings.properties_visibility,
+            PropertiesVisibility::Expanded
+        );
+        assert_eq!(settings.dark_theme, crate::theme::NIGHT_THEME_NAME);
+        settings.dark_theme = "Rose Night".into();
+        settings.light_theme = "Fjord Day".into();
+        settings.properties_visibility = PropertiesVisibility::Hidden;
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.dark_theme, "Rose Night");
+        assert_eq!(restored.light_theme, "Fjord Day");
+        assert_eq!(restored.properties_visibility, PropertiesVisibility::Hidden);
+    }
+}

@@ -32,6 +32,8 @@ use std::path::{Path, PathBuf};
 /// recursion depth (capped so cyclic `![[a]]`/`![[b]]` embeds terminate).
 #[derive(Clone)]
 pub struct PreviewCtx {
+    pub properties_visibility: crate::settings::PropertiesVisibility,
+    pub language: crate::settings::Language,
     pub vault: Entity<crate::vault::Vault>,
     pub workspace: WeakEntity<crate::app::Workspace>,
     pub views: EmbedViews,
@@ -62,6 +64,7 @@ pub fn extensions(
             ctx: ctx.cloned(),
         })
         .plugin(LocalImagePlugin)
+        .plugin(NoteIconPlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin)
         .plugin(FootnoteRefPlugin { ctx: ctx.cloned() })
@@ -250,6 +253,14 @@ fn rewrite_line(
             *in_comment = true;
             i += 2;
             continue;
+        }
+
+        if ch == ':' && (i == 0 || bytes[i - 1] != b'\\') {
+            if let Some((len, path)) = crate::note_icons::shortcode(&line[i..]) {
+                out.push_str(&format!("![{}](rista-icon:{path})", &line[i..i + len]));
+                i += len;
+                continue;
+            }
         }
 
         if line[i..].starts_with("![[") {
@@ -629,6 +640,42 @@ struct LocalImage {
 
 pub struct LocalImagePlugin;
 
+struct NoteIconPlugin;
+
+impl MarkdownPlugin for NoteIconPlugin {
+    fn name(&self) -> &str {
+        "note-icon"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Image(image) = node else {
+            return None;
+        };
+        let path = image.url.strip_prefix("rista-icon:")?;
+        let expected = crate::note_icons::shortcode(&image.alt)?.1;
+        (path == expected).then(|| MarkdownNode::new("note-icon", expected).text(image.alt.clone()))
+    }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        context: &InlineRenderContext,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<InlineElement> {
+        let path = node.data::<String>()?;
+        Some(
+            InlineElement::new(
+                svg()
+                    .path(path.clone())
+                    .size(context.font_size())
+                    .text_color(context.text_style().color),
+            )
+            .with_baseline(context.font_size() * 0.85),
+        )
+    }
+}
+
 impl MarkdownPlugin for LocalImagePlugin {
     fn name(&self) -> &str {
         "local-image"
@@ -893,7 +940,21 @@ impl MarkdownPlugin for PropertiesPlugin {
         if entries.is_empty() {
             return div().into_any_element();
         }
-        let folded = self.folds.is_folded(*key, false);
+        let visibility = self
+            .ctx
+            .as_ref()
+            .map(|ctx| ctx.properties_visibility)
+            .unwrap_or_default();
+        let language = self
+            .ctx
+            .as_ref()
+            .map(|ctx| ctx.language)
+            .unwrap_or_default();
+        if visibility == crate::settings::PropertiesVisibility::Hidden {
+            return div().into_any_element();
+        }
+        let default_folded = visibility == crate::settings::PropertiesVisibility::Collapsed;
+        let folded = self.folds.is_folded(*key, default_folded);
         let folds = self.folds.clone();
         let key = *key;
         // Rows open the property-edit dialog only on the document's own
@@ -1151,7 +1212,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("+ Add property"),
+                                .child(language.text("+ Add property", "+ Legg til egenskap")),
                         )
                         .on_click(move |_, window, cx| {
                             let Some(workspace) = workspace.upgrade() else {
@@ -1181,7 +1242,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                     .items_center()
                     .cursor_pointer()
                     .on_click(move |_, window, _cx| {
-                        folds.toggle(key, false);
+                        folds.toggle(key, default_folded);
                         window.refresh();
                     })
                     .child(
@@ -1198,7 +1259,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                             .text_xs()
                             .font_semibold()
                             .text_color(theme.muted_foreground)
-                            .child("Properties"),
+                            .child(language.text("Properties", "Egenskaper")),
                     )
                     .child(
                         div()
@@ -2461,7 +2522,7 @@ impl MarkdownPlugin for TranscludePlugin {
                 div()
                     .id(SharedString::from(format!("transclude-{target}")))
                     .text_sm()
-                    .text_color(theme.accent)
+                    .text_color(theme.info)
                     .cursor_pointer()
                     .child(embed.target.clone())
                     .on_click(move |ev, window, cx| {

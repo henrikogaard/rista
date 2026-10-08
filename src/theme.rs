@@ -4,12 +4,10 @@
 //! Colors live in the JSON theme configs below; application code reads only
 //! semantic tokens from `cx.theme()`.
 
-use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeSet};
 use gpui_kit::*;
 
-#[allow(dead_code)]
 pub const NIGHT_THEME_NAME: &str = "Rísta Night";
-#[allow(dead_code)]
 pub const DAY_THEME_NAME: &str = "Rísta Day";
 
 const RISTA_THEMES: &str = r##"{
@@ -217,37 +215,307 @@ const RISTA_THEMES: &str = r##"{
   ]
 }"##;
 
-/// Register Rísta's palettes as the app's light and dark defaults.
-///
-/// Call after `gpui_kit::init`, then use [`set_theme_mode`] to apply.
-pub fn install_themes(cx: &mut App) {
-    let set: gpui_kit::component::theme::ThemeSet =
-        serde_json::from_str(RISTA_THEMES).expect("rista theme JSON must parse");
+const RISTA_PALETTES: &str = r##"[
+  {"name":"Fjord Night","mode":"dark","canvas":"#0d121b","surface":"#141c29","popover":"#1a2535","muted":"#202d40","border":"#2c3b50","accent":"#92bcf4","selection":"#293f60","on_accent":"#101d30"},
+  {"name":"Fjord Day","mode":"light","canvas":"#edf3fa","surface":"#f9fbfe","popover":"#ffffff","muted":"#e0eaf7","border":"#ccd9eb","accent":"#315f9d","selection":"#cdddf4","on_accent":"#ffffff"},
+  {"name":"Rose Night","mode":"dark","canvas":"#181216","surface":"#211a20","popover":"#2b212a","muted":"#342630","border":"#493440","accent":"#e5a1b5","selection":"#50303d","on_accent":"#2d1520"},
+  {"name":"Rose Day","mode":"light","canvas":"#faf1f3","surface":"#fffafb","popover":"#ffffff","muted":"#f1e2e7","border":"#e4cdd5","accent":"#994963","selection":"#efd1dc","on_accent":"#ffffff"}
+]"##;
 
-    let mut night: Option<std::rc::Rc<ThemeConfig>> = None;
-    let mut day: Option<std::rc::Rc<ThemeConfig>> = None;
-    for theme in set.themes {
-        match theme.mode {
-            ThemeMode::Dark => night = Some(std::rc::Rc::new(theme)),
-            _ => day = Some(std::rc::Rc::new(theme)),
+pub fn builtin_json() -> serde_json::Value {
+    let mut set: serde_json::Value = serde_json::from_str(RISTA_THEMES).unwrap();
+    let originals = set["themes"].as_array().unwrap().clone();
+    let palettes: Vec<serde_json::Value> = serde_json::from_str(RISTA_PALETTES).unwrap();
+    for palette in palettes {
+        let mut theme = originals
+            .iter()
+            .find(|t| t["mode"] == palette["mode"])
+            .unwrap()
+            .clone();
+        theme["name"] = palette["name"].clone();
+        for (key, value) in [
+            ("background", "canvas"),
+            ("title_bar.background", "canvas"),
+            ("title_bar.border", "canvas"),
+            ("status_bar.background", "canvas"),
+            ("status_bar.border", "canvas"),
+            ("sidebar.background", "surface"),
+            ("tab_bar.background", "surface"),
+            ("group_box.background", "surface"),
+            ("list.head.background", "surface"),
+            ("list.even.background", "surface"),
+            ("popover.background", "popover"),
+            ("input.background", "surface"),
+            ("border", "border"),
+            ("sidebar.border", "border"),
+            ("input.border", "border"),
+            ("popover.border", "border"),
+            ("muted.background", "muted"),
+            ("secondary.background", "muted"),
+            ("secondary.hover.background", "border"),
+            ("secondary.active.background", "selection"),
+            ("tab.active.background", "muted"),
+            ("list.hover.background", "muted"),
+            ("accent.background", "muted"),
+            ("selection", "selection"),
+            ("list.active.background", "selection"),
+            ("list.active.border", "accent"),
+            ("ring", "accent"),
+            ("caret", "accent"),
+            ("primary.background", "accent"),
+            ("primary.hover.background", "accent"),
+            ("primary.active.background", "accent"),
+            ("primary.foreground", "on_accent"),
+            ("info.background", "accent"),
+            ("info.foreground", "on_accent"),
+            ("base.blue", "accent"),
+        ] {
+            theme["colors"][key] = palette[value].clone();
+        }
+        theme["highlight"]["editor.background"] = palette["surface"].clone();
+        theme["highlight"]["editor.active_line.background"] = palette["muted"].clone();
+        theme["highlight"]["editor.active_line_number"] = palette["accent"].clone();
+        theme["highlight"]["info"] = palette["accent"].clone();
+        for key in ["keyword", "property", "link_text", "title"] {
+            theme["highlight"]["syntax"][key]["color"] = palette["accent"].clone();
+        }
+        set["themes"].as_array_mut().unwrap().push(theme);
+    }
+    set
+}
+
+pub struct ThemeCatalog {
+    pub themes: Vec<std::rc::Rc<ThemeConfig>>,
+    pub errors: Vec<String>,
+}
+impl Global for ThemeCatalog {}
+
+pub fn themes_dir() -> std::path::PathBuf {
+    crate::settings::config_dir().join("themes")
+}
+
+pub fn install_themes(cx: &mut App) {
+    let set: ThemeSet = serde_json::from_value(builtin_json()).expect("bundled themes must parse");
+    let mut themes: Vec<_> = set.themes.into_iter().map(std::rc::Rc::new).collect();
+    let mut errors = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(themes_dir()) {
+        let mut paths: Vec<_> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let loaded = std::fs::read_to_string(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|raw| parse_custom(&raw));
+            match loaded {
+                Ok(set)
+                    if set
+                        .themes
+                        .iter()
+                        .all(|candidate| !themes.iter().any(|t| t.name == candidate.name)) =>
+                {
+                    themes.extend(set.themes.into_iter().map(std::rc::Rc::new));
+                }
+                _ => errors.push(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+            }
         }
     }
+    cx.set_global(ThemeCatalog { themes, errors });
+}
 
+fn parse_custom(raw: &str) -> anyhow::Result<ThemeSet> {
+    let json: serde_json::Value = serde_json::from_str(raw)?;
+    for theme in json["themes"].as_array().into_iter().flatten() {
+        for value in theme["colors"]
+            .as_object()
+            .into_iter()
+            .flat_map(|colors| colors.values())
+        {
+            if let Some(color) = value.as_str() {
+                anyhow::ensure!(valid_hex(color), "Invalid colour");
+            }
+        }
+    }
+    let set: ThemeSet = serde_json::from_str(raw)?;
+    anyhow::ensure!(!set.themes.is_empty(), "No themes");
+    let mut names = std::collections::HashSet::new();
+    for theme in &set.themes {
+        anyhow::ensure!(
+            !theme.name.trim().is_empty() && names.insert(theme.name.clone()),
+            "Invalid name"
+        );
+    }
+    Ok(set)
+}
+
+fn valid_hex(color: &str) -> bool {
+    color
+        .strip_prefix('#')
+        .is_some_and(|hex| matches!(hex.len(), 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+pub fn theme_names(mode: ThemeMode, cx: &App) -> Vec<String> {
+    cx.global::<ThemeCatalog>()
+        .themes
+        .iter()
+        .filter(|t| t.mode == mode)
+        .map(|t| t.name.to_string())
+        .collect()
+}
+
+pub fn apply(settings: &crate::settings::Settings, cx: &mut App) {
+    let catalog = cx.global::<ThemeCatalog>();
+    let select = |name: &str, mode| {
+        catalog
+            .themes
+            .iter()
+            .find(|t| t.name.as_ref() == name && t.mode == mode)
+            .or_else(|| catalog.themes.iter().find(|t| t.mode == mode))
+            .unwrap()
+            .clone()
+    };
+    let dark = select(&settings.dark_theme, ThemeMode::Dark);
+    let light = select(&settings.light_theme, ThemeMode::Light);
     Theme::update(cx, |theme| {
-        if let Some(day) = day {
-            theme.light_theme = day;
-        }
-        if let Some(night) = night {
-            theme.dark_theme = night;
-        }
+        theme.dark_theme = dark;
+        theme.light_theme = light;
     });
+    set_theme_mode(settings.theme_mode(cx), cx);
+}
 
-    // Keep the registry in step so theme pickers list Rísta's pair.
-    let registry = ThemeRegistry::global_mut(cx);
-    let _ = registry.load_themes_from_str(RISTA_THEMES);
+pub fn create_custom(
+    settings: &crate::settings::Settings,
+    cx: &mut App,
+) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write;
+    let mode = settings.theme_mode(cx);
+    let name = if mode == ThemeMode::Dark {
+        &settings.dark_theme
+    } else {
+        &settings.light_theme
+    };
+    let catalog = cx.global::<ThemeCatalog>();
+    let selected = catalog
+        .themes
+        .iter()
+        .find(|t| t.name.as_ref() == name && t.mode == mode)
+        .or_else(|| catalog.themes.iter().find(|t| t.mode == mode))
+        .unwrap();
+    let mut theme = selected.as_ref().clone();
+    std::fs::create_dir_all(themes_dir())?;
+    for index in 1..10000 {
+        let path = themes_dir().join(format!("custom-{index}.json"));
+        let name = format!("Custom {index}");
+        if catalog.themes.iter().any(|t| t.name.as_ref() == name) {
+            continue;
+        }
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        };
+        theme.name = name.into();
+        theme.is_default = false;
+        let set = ThemeSet {
+            name: "Custom".into(),
+            themes: vec![theme],
+            ..Default::default()
+        };
+        file.write_all(serde_json::to_string_pretty(&set)?.as_bytes())?;
+        return Ok(path);
+    }
+    anyhow::bail!("No available theme filename")
 }
 
 /// Apply a mode from settings. `system` follows macOS appearance.
 pub fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
     Theme::change(mode, None, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{builtin_json, parse_custom};
+
+    fn exported_theme(theme: &serde_json::Value) -> serde_json::Value {
+        let mut colors = theme["colors"].as_object().unwrap().clone();
+        for (key, value) in theme["highlight"].as_object().unwrap() {
+            if key != "syntax" {
+                colors.insert(format!("highlight.{key}"), value.clone());
+            }
+        }
+        for (key, value) in theme["highlight"]["syntax"].as_object().unwrap() {
+            colors.insert(format!("syntax.{key}"), value["color"].clone());
+        }
+        serde_json::json!({"name": theme["name"], "colors": colors})
+    }
+
+    #[test]
+    fn builtin_palettes_have_distinct_accents_and_exportable_colours() {
+        let json = builtin_json();
+        let themes = json["themes"].as_array().unwrap();
+        assert_eq!(themes.len(), 6);
+        for mode in ["dark", "light"] {
+            let matching: Vec<_> = themes.iter().filter(|t| t["mode"] == mode).collect();
+            let accents: std::collections::HashSet<_> = matching
+                .iter()
+                .map(|t| t["colors"]["primary.background"].as_str().unwrap())
+                .collect();
+            assert_eq!(accents.len(), 3);
+        }
+        assert_eq!(parse_custom(&json.to_string()).unwrap().themes.len(), 6);
+
+        let exports: serde_json::Value =
+            serde_json::from_str(include_str!("../design/tokens.json")).unwrap();
+        for theme in &themes[..2] {
+            let mode = theme["mode"].as_str().unwrap();
+            assert_eq!(exports["rista"]["themes"][mode], exported_theme(theme));
+        }
+        for theme in themes {
+            let name = theme["name"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .replace('í', "i")
+                .replace(' ', "-");
+            let mut expected = exported_theme(theme);
+            expected["mode"] = theme["mode"].clone();
+            assert_eq!(exports["rista"]["palettes"][name], expected);
+        }
+
+        let css = include_str!("../design/tokens.css");
+        for selector in [
+            "dark",
+            "light",
+            "rista-night",
+            "rista-day",
+            "fjord-night",
+            "fjord-day",
+            "rose-night",
+            "rose-day",
+        ] {
+            assert!(css.contains(&format!(r#"[data-rista-theme="{selector}"]"#)));
+        }
+    }
+
+    #[test]
+    fn custom_themes_reject_invalid_colours_and_duplicate_names() {
+        assert!(
+            parse_custom(r##"{"themes":[{"name":"Bad","colors":{"background":"nope"}}]}"##)
+                .is_err()
+        );
+        assert!(parse_custom(r#"{"themes":[{"name":"Same"},{"name":"Same"}]}"#).is_err());
+        assert!(parse_custom(r#"{"themes":[]}"#).is_err());
+        assert!(parse_custom(r##"{"themes":[{"name":"Mine","mode":"dark","colors":{"primary.background":"#88aacc"}}]}"##).is_ok());
+    }
 }

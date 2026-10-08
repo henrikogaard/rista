@@ -78,6 +78,23 @@ The titlebar inspector button shows or hides properties, outline, links, tasks,
 calendar, and tags on the right. Settings preserve the inspector and active folder.
 New navigation labels support English and Norwegian through **Navigation language**
 in Settings; translation of older app-wide controls is not yet complete.
+
+Single-click a file in the tree to browse in a reusable italic preview tab.
+Double-click the file or tab to keep it; editing keeps it automatically.
+Cmd-click opens a separate tab. Unsaved, conflicted, and pinned notes are never
+replaced by browsing.
+
+### Personalise notes and colours
+
+- Use `:LiInbox:` or `:lucide-inbox:` in headings and prose for bundled note
+  icons. Unknown icons stay readable as text; Markdown source stays unchanged.
+- Settings → **Properties** controls whether frontmatter starts expanded,
+  collapsed, or hidden. The inspector still provides editing when hidden.
+- Choose independent light and dark palettes: Rísta, Fjord, or Rose. Each palette
+  changes surfaces and accent colours together.
+- **Create theme…** copies the active palette to an editable JSON file.
+  Edit the colours, choose **Reload themes**, then select your palette.
+  See [custom palette documentation](DESIGN.md#custom-palettes).
 Finder’s **Open With → Rísta** also opens `.md` and `.markdown` files.
 
 Use **Split** (`⌘2`) to see how a note renders. With `cover.jpg` next to

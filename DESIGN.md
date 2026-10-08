@@ -4,7 +4,7 @@ Quiet, modern-mythic. Nordic restraint: mineral surfaces, restrained accents,
 terse type, nothing ornamental. Files are the product; chrome recedes.
 
 The source of truth for UI tokens is `src/theme.rs`
-(Rísta Night / Rísta Day), exported framework-agnostically:
+(Rísta, Fjord, and Rose light/dark palettes), exported framework-agnostically:
 
 - `design/tokens.json` — generated values
 - `design/tokens.css` — CSS custom properties (`--rista-*`), usable by any web surface
@@ -41,6 +41,27 @@ Palette intent per token group (values in `design/tokens.json`):
 | `success` / `warning` / `danger` | muted green/amber/red | — | Semantic only |
 
 Night uses a restrained teal accent; Day uses blue-grey.
+Fjord uses cool blue surfaces and accents; Rose uses warm plum surfaces and
+rose accents. Light and dark palettes are selected independently in Settings.
+Accent tokens apply to controls, links, selection, the caret, and syntax accents.
+
+### Custom palettes
+
+Settings → **Create theme…** copies the active palette into a JSON file in the
+app configuration directory's `themes/` folder and reveals it in the file manager.
+On macOS this is `~/Library/Application Support/no.ogard.rista/themes/`.
+Edit the file in a text editor, then choose **Reload themes** and select its name.
+Reload also picks up edits and removals; invalid files are reported without
+discarding valid palettes. An unavailable selected palette falls back to the
+built-in palette for that mode.
+
+Each file is a theme set with `themes: [...]`. Each theme needs a unique `name`
+and `mode` (`dark` or `light`). Use `#RRGGBB` or `#RRGGBBAA` for `colors`.
+Start from the generated copy to retain all semantic and syntax tokens.
+Useful keys: `background`, `sidebar.background`, `foreground`,
+`primary.background`, `primary.foreground`, `info.background`, `ring`, `caret`,
+`selection`, and `accent.background` (a **fill**, not a text colour).
+Syntax colours live under `highlight.syntax`; retain that nested object.
 
 ## Typography
 
@@ -63,7 +84,10 @@ Night uses a restrained teal accent; Day uses blue-grey.
   beside the sidebar toggle, and right-side search, theme, and settings actions.
 - **File tree** — `TreeItem` folders before files, depth ≤ 12, dotfiles and
   `.git/node_modules/target/dist` hidden. Context menu: New file here / Rename / Delete.
-- **Tabs** — one per open note, close on click; dirty state implicit (autosave).
+- **Tabs** — single-click tree browsing reuses an italic preview tab. Double-click
+  the file or tab to keep it; editing and pinning also keep it. Cmd-click opens a
+  separate tab. Dirty, conflicted, and pinned documents cannot be replaced.
+  Preview status is session-local; restored tabs are retained.
 - **Command palette** — centered `Command` dialog, Commands then Notes sections.
 - **Dialogs** — `open_dialog` for palette/search; `open_alert_dialog` for
   destructive confirms; `open_sheet_at(Placement::Right)` for settings.
@@ -78,6 +102,13 @@ note content, while `![[image]]` renders an inline image. Callouts become
 titled, collapsible boxes. `^block-id` markers are hidden from prose.
 Database embeds reuse native `.base` views. Math supports a Unicode-rendered
 subset, not a full TeX engine. See `src/preview.rs` for the rendering pipeline.
+
+Properties can default to expanded, collapsed, or hidden in Settings. This is
+presentation only: hidden properties remain editable through the inspector.
+Note icons use `:LiInbox:`, `:li-inbox:`, or `:lucide-inbox:` shortcodes. Bundled
+SVGs inherit the surrounding text size and colour, including headings. Unknown
+shortcodes remain text; code and frontmatter are not rewritten. Source files
+are never converted to image markup.
 
 ## Brand identity
 
@@ -115,44 +146,9 @@ shipping. Do not regenerate the app's UI tokens when only brand assets change.
 ## Generating token exports
 
 ```bash
-python3 - <<'EOF'
-import re, json
-from pathlib import Path
-src = open('src/theme.rs').read()
-j = re.search(r'const RISTA_THEMES: &str = r##"(.*?)"##;', src, re.S).group(1)
-themes = {
-    t["mode"]: {
-        "name": t["name"],
-        "colors": {
-            **t["colors"],
-            **{
-                f"highlight.{name}": value
-                for name, value in t["highlight"].items()
-                if name != "syntax"
-            },
-            **{
-                f"syntax.{name}": value["color"]
-                for name, value in t["highlight"]["syntax"].items()
-            },
-        },
-    }
-    for t in json.loads(j)["themes"]
-}
-tokens = {"themes": themes}
-Path("design/tokens.json").write_text(json.dumps({"rista": tokens}, indent=2) + "\n")
-header = "Rísta design tokens — generated from src/theme.rs. Do not edit by hand."
-Path("design/tokens.ts").write_text(
-    f"// {header}\n\nexport const rista = "
-    + json.dumps(tokens, indent=2)
-    + " as const;\n\nexport default rista;\n"
-)
-css = [f"/* {header} */", ""]
-for mode, theme in themes.items():
-    selector = ':root, ' if mode == "dark" else ''
-    css.append(selector + f'[data-rista-theme="{mode}"] {{')
-    for name, value in theme["colors"].items():
-        css.append(f'  --rista-{name.replace(".", "-")}: {value};')
-    css.extend(["}", ""])
-Path("design/tokens.css").write_text("\n".join(css))
-EOF
+python3 scripts/export-theme-tokens.py
 ```
+
+The existing `themes.dark`/`themes.light` exports and CSS selectors remain
+compatible. `palettes` adds all six named variants, selectable in CSS with e.g.
+`data-rista-theme="fjord-night"`.
