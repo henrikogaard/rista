@@ -123,8 +123,9 @@ the look and feel of the Mac.
 
 ### Make it yours
 
-- Independent light and dark palettes — Rísta, Fjord, Rose, Graphite, and Mono —
-  each with its own accent colour.
+- Independent light and dark palettes — Graphite (default), Slate, Fjord, Rose,
+  Mono, Gruvbox, Nord, Solarized, and Catppuccin — each with its own accent
+  colour.
 - **Create theme…** exports the active palette as JSON; edit it, reload, done.
   See [custom palettes](DESIGN.md#custom-palettes).
 - Adjustable fonts and sizes for the editor, interface, and terminal.
@@ -175,8 +176,8 @@ replaced by browsing.
   icons. Unknown icons stay readable as text; Markdown source stays unchanged.
 - Settings → **Properties** controls whether frontmatter starts expanded,
   collapsed, or hidden. The inspector still provides editing when hidden.
-- Choose independent light and dark palettes: Rísta, Fjord, Rose, Graphite, or
-  Mono. Each palette changes surfaces and accent colours together.
+- Choose independent light and dark palettes: Graphite (default), Slate, Fjord,
+  Rose, Mono, Gruvbox, Nord, Solarized, or Catppuccin.
 - **Create theme…** copies the active palette to an editable JSON file.
   Edit the colours, choose **Reload themes**, then select your palette.
   See [custom palette documentation](DESIGN.md#custom-palettes).

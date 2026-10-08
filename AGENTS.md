@@ -29,9 +29,9 @@ No cloud. No accounts. No telemetry. Files are just files.
 
 ## Design principles
 
-- **Paired palettes** — Rísta Night/Day, Fjord Night/Day, Rose Night/Day,
-  Graphite Night/Day, and Mono Night/Day, defined in `src/theme.rs`, with user
-  JSON themes. All colors are theme tokens.
+- **Paired palettes** — Graphite, Slate, Fjord, Rose, Mono, Gruvbox, Nord,
+  Solarized, and Catppuccin Night/Day, defined in `src/theme.rs`, with user JSON
+  themes. All colors are theme tokens.
 - **Compact density** — tight spacing, small type (11–14px), nothing wastes vertical space.
 - **No gradients in UI chrome** — flat mineral surfaces only.
 - **Quiet chrome** — borderless toolbar controls, one-pixel separators, text-only status bar.

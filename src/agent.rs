@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -119,6 +119,7 @@ pub fn model_state_from_session(result: &Value) -> ModelState {
         return ModelState::default();
     };
     let mut choices = Vec::new();
+    let mut seen = HashSet::new();
     for model in available {
         let (Some(value), Some(name)) = (
             model.get("modelId").and_then(Value::as_str),
@@ -126,7 +127,7 @@ pub fn model_state_from_session(result: &Value) -> ModelState {
         ) else {
             continue;
         };
-        push_model_choice(&mut choices, value, name);
+        push_model_choice(&mut choices, &mut seen, value, name);
     }
     ModelState {
         config_id: None,
@@ -146,8 +147,9 @@ pub fn model_state_from_config_options(options: &[Value]) -> Option<ModelState> 
     })?;
     let config_id = config.get("id").and_then(Value::as_str)?.to_owned();
     let mut choices = Vec::new();
+    let mut seen = HashSet::new();
     if let Some(options) = config.get("options").and_then(Value::as_array) {
-        flatten_model_options(options, &mut choices);
+        flatten_model_options(options, &mut choices, &mut seen);
     }
     Some(ModelState {
         config_id: Some(config_id),
@@ -159,28 +161,30 @@ pub fn model_state_from_config_options(options: &[Value]) -> Option<ModelState> 
     })
 }
 
-fn flatten_model_options(options: &[Value], choices: &mut Vec<ModelChoice>) {
+fn flatten_model_options(
+    options: &[Value],
+    choices: &mut Vec<ModelChoice>,
+    seen: &mut HashSet<String>,
+) {
     for option in options {
-        if choices.len() >= MAX_MODEL_CHOICES {
-            return;
-        }
         if let (Some(value), Some(name)) = (
             option.get("value").and_then(Value::as_str),
             option.get("name").and_then(Value::as_str),
         ) {
-            push_model_choice(choices, value, name);
+            push_model_choice(choices, seen, value, name);
         } else if let Some(grouped) = option.get("options").and_then(Value::as_array) {
-            flatten_model_options(grouped, choices);
+            flatten_model_options(grouped, choices, seen);
         }
     }
 }
 
-fn push_model_choice(choices: &mut Vec<ModelChoice>, value: &str, name: &str) {
-    if !value.is_empty()
-        && !name.is_empty()
-        && choices.len() < MAX_MODEL_CHOICES
-        && !choices.iter().any(|choice| choice.value == value)
-    {
+fn push_model_choice(
+    choices: &mut Vec<ModelChoice>,
+    seen: &mut HashSet<String>,
+    value: &str,
+    name: &str,
+) {
+    if !value.is_empty() && !name.is_empty() && seen.insert(value.to_owned()) {
         choices.push(ModelChoice {
             value: value.to_owned(),
             name: name.to_owned(),
@@ -193,6 +197,7 @@ pub fn allowed_model_choices(state: &ModelState, xai_only: bool) -> Vec<ModelCho
         .choices
         .iter()
         .filter(|choice| !xai_only || choice.value.starts_with("xai/"))
+        .take(MAX_MODEL_CHOICES)
         .cloned()
         .collect()
 }
@@ -204,6 +209,15 @@ pub fn has_usable_model(state: &ModelState, xai_only: bool) -> bool {
                 choice.value.as_str() == selected.as_str() && choice.value.starts_with("xai/")
             })
         })
+}
+
+pub fn selected_model_name(state: &ModelState, xai_only: bool) -> Option<&str> {
+    let selected = state.selected.as_deref()?;
+    state
+        .choices
+        .iter()
+        .find(|choice| choice.value == selected && (!xai_only || choice.value.starts_with("xai/")))
+        .map(|choice| choice.name.as_str())
 }
 
 pub fn model_switch_request(
@@ -248,6 +262,24 @@ pub fn config_result_model_value(result: &Value, config_id: &str) -> Option<Stri
         .or_else(|| option.get("value"))
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+pub fn session_update<'a>(params: &'a Value, session_id: &str) -> Option<&'a Value> {
+    if params.get("sessionId").and_then(Value::as_str) != Some(session_id) {
+        return None;
+    }
+    params.get("update")
+}
+
+pub fn config_options_update(update: &Value) -> Option<&[Value]> {
+    (update.get("sessionUpdate").and_then(Value::as_str) == Some("config_option_update"))
+        .then(|| {
+            update
+                .get("configOptions")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+        })
+        .flatten()
 }
 
 pub struct AgentProcess {
@@ -848,6 +880,7 @@ mod tests {
                         {"name":"Vendor A","value":"vendor/a"},
                         {"groupName":"Other","options":[
                             {"name":"Vendor B","value":"vendor/b"},
+                            {"name":"Duplicate vendor A","value":"vendor/a"},
                             {"name":"Malformed","id":"missing-value"},
                             {"name":"Vendor C","value":"vendor/c"}
                         ]}
@@ -870,13 +903,16 @@ mod tests {
             "models": {
                 "availableModels": [
                     {"modelId":"legacy/a","name":"Legacy A"},
+                    {"modelId":"legacy/a","name":"Duplicate legacy A"},
                     {"name":"Malformed"}
                 ],
                 "currentModelId":"legacy/a"
             }
         }));
         assert_eq!(legacy.config_id, None);
+        assert_eq!(legacy.choices.len(), 1);
         assert_eq!(legacy.choices[0].value, "legacy/a");
+        assert_eq!(legacy.choices[0].name, "Legacy A");
         assert_eq!(legacy.selected.as_deref(), Some("legacy/a"));
         assert_eq!(
             model_state_from_session(&json!({"models":{"other":true}})),
@@ -906,11 +942,85 @@ mod tests {
         assert!(allowed_model_choices(&ModelState::default(), true).is_empty());
         assert!(!has_usable_model(&state, true));
         assert!(!has_usable_model(&ModelState::default(), true));
+        let no_xai = model_state_from_session(&json!({
+            "models":{"availableModels":[{"modelId":"openai/gpt-4o","name":"Other"}],
+                "currentModelId":"openai/gpt-4o"}
+        }));
+        assert!(allowed_model_choices(&no_xai, true).is_empty());
+        assert!(!has_usable_model(&no_xai, true));
         assert!(has_usable_model(&ModelState::default(), false));
         let mut selected_xai = state.clone();
         selected_xai.selected = Some("xai/grok-3".into());
         assert!(has_usable_model(&selected_xai, true));
         assert_eq!(allowed_model_choices(&state, false).len(), 2);
+    }
+
+    #[test]
+    fn xai_filter_precedes_display_cap_and_keeps_full_selection_validation() {
+        let many: Vec<_> = (0..70)
+            .map(
+                |index| json!({"modelId":format!("other/{index}"),"name":format!("Other {index}")}),
+            )
+            .chain(std::iter::once(json!({"modelId":"xai/last","name":"Grok"})))
+            .collect();
+        let state = model_state_from_session(&json!({
+            "models":{"availableModels":many,"currentModelId":"xai/last"}
+        }));
+        assert_eq!(allowed_model_choices(&state, true).len(), 1);
+        assert!(has_usable_model(&state, true));
+        let grouped: Vec<_> = (0..70)
+            .map(|index| json!({"name":format!("Other {index}"),"value":format!("other/{index}")}))
+            .chain(std::iter::once(json!({"name":"Grok","value":"xai/last"})))
+            .collect();
+        let config = model_state_from_config_options(&[json!({
+            "id":"model","type":"select","category":"model","currentValue":"xai/last",
+            "options":[{"name":"Providers","options":grouped}]
+        })])
+        .unwrap();
+        assert_eq!(allowed_model_choices(&config, true).len(), 1);
+        let many_xai = ModelState {
+            choices: (0..70)
+                .map(|index| ModelChoice {
+                    value: format!("xai/{index}"),
+                    name: format!("Grok {index}"),
+                })
+                .collect(),
+            selected: Some("xai/69".into()),
+            ..ModelState::default()
+        };
+        assert_eq!(
+            allowed_model_choices(&many_xai, true).len(),
+            MAX_MODEL_CHOICES
+        );
+        assert!(has_usable_model(&many_xai, true));
+        assert_eq!(selected_model_name(&many_xai, true), Some("Grok 69"));
+    }
+
+    #[test]
+    fn config_option_update_uses_documented_session_update_envelope() {
+        let params = json!({
+            "sessionId":"active",
+            "update":{"sessionUpdate":"config_option_update","configOptions":[
+                {"id":"model","type":"select","category":"model","currentValue":"xai/grok",
+                 "options":[{"name":"Grok","value":"xai/grok"}]}
+            ]}
+        });
+        let update = session_update(&params, "active").unwrap();
+        let options = config_options_update(update).unwrap();
+        let replacement = model_state_from_config_options(options).unwrap();
+        assert_eq!(replacement.selected.as_deref(), Some("xai/grok"));
+        assert!(session_update(&params, "other").is_none());
+        let stream = json!({"sessionId":"active","update":{
+            "sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}
+        }});
+        let stream_update = session_update(&stream, "active").unwrap();
+        assert!(config_options_update(stream_update).is_none());
+        let mut stream_state = UpdateState::default();
+        reduce_update(&mut stream_state, stream_update);
+        assert_eq!(
+            stream_state.transcript,
+            vec![TranscriptItem::Message("hello".into())]
+        );
     }
 
     #[test]
@@ -973,12 +1083,25 @@ mod tests {
 
     #[test]
     fn config_option_response_supplies_the_selected_model() {
+        let mut old_state = model_state_from_session(&json!({
+            "configOptions":[{"id":"model","type":"select","category":"model","currentValue":"old/model",
+                "options":[{"name":"Old model","value":"old/model"},{"name":"Removed model","value":"removed/model"}]}]
+        }));
+        assert_eq!(old_state.choices.len(), 2);
         let result = json!({
             "configOptions": [
                 {"id":"other","currentValue":"unrelated"},
-                {"id":"model","currentValue":"xai/grok-3"}
+                {"id":"model","category":"model","type":"select","currentValue":"xai/grok-3",
+                 "options":[{"name":"Grok 3","value":"xai/grok-3"}]}
             ]
         });
+        old_state = model_state_from_session(&result);
+        assert_eq!(old_state.choices.len(), 1);
+        assert_eq!(old_state.choices[0].value, "xai/grok-3");
+        assert!(!old_state
+            .choices
+            .iter()
+            .any(|choice| choice.value == "removed/model"));
         assert_eq!(
             config_result_model_value(&result, "model").as_deref(),
             Some("xai/grok-3")

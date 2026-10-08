@@ -474,32 +474,22 @@ impl AgentPanel {
 
     fn handle_message(&mut self, message: Value, cx: &mut Context<Self>) {
         if let Some(method) = message.get("method").and_then(Value::as_str) {
-            if method == "session/config_option_update" {
+            if method == "session/update" {
                 let Some(params) = message.get("params") else {
                     return;
                 };
-                if params.get("sessionId").and_then(Value::as_str) != self.session_id.as_deref() {
-                    return;
-                }
-                let Some(config_options) = params.get("configOptions").and_then(Value::as_array)
+                let Some(update) =
+                    agent::session_update(params, self.session_id.as_deref().unwrap_or_default())
                 else {
                     return;
                 };
-                self.model_selection.state = agent::model_state_from_session(&json!({
-                    "configOptions": config_options
-                }));
-                self.model_error = None;
-                cx.notify();
-                return;
-            }
-            if method == "session/update" {
-                if let Some(update) = message
-                    .get("params")
-                    .and_then(|params| params.get("update"))
-                {
-                    agent::reduce_update(&mut self.update, update);
-                    cx.notify();
+                if let Some(options) = agent::config_options_update(update) {
+                    self.model_selection.state =
+                        agent::model_state_from_session(&json!({"configOptions": options}));
+                    self.model_error = None;
                 }
+                agent::reduce_update(&mut self.update, update);
+                cx.notify();
                 return;
             }
             let Some(id) = message.get("id").cloned() else {
@@ -563,10 +553,15 @@ impl AgentPanel {
             } else {
                 let confirmed_by_update = self.model_selection.state.selected.as_deref()
                     == Some(pending.requested_model_id.as_str());
+                let result = message.get("result").unwrap_or(&Value::Null);
+                if pending.config_id.is_some() {
+                    if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
+                        self.model_selection.state =
+                            agent::model_state_from_session(&json!({"configOptions": options}));
+                    }
+                }
                 let selected = if let Some(config_id) = pending.config_id.as_deref() {
-                    message
-                        .get("result")
-                        .and_then(|result| agent::config_result_model_value(result, config_id))
+                    agent::config_result_model_value(result, config_id)
                 } else {
                     Some(pending.requested_model_id)
                 };
@@ -1221,18 +1216,14 @@ impl Render for AgentPanel {
         let is_grok =
             current_choice.is_some_and(|choice| extensions::is_grok_agent(&choice.agent.id));
         let model_choices = self.allowed_models();
-        let selected_model_name = model_choices
-            .iter()
-            .find(|choice| self.model_selection.state.selected.as_deref() == Some(&choice.value))
-            .map(|choice| choice.name.clone())
+        let selected_model_name = agent::selected_model_name(&self.model_selection.state, is_grok)
+            .map(str::to_owned)
             .unwrap_or_else(|| self.tr(cx, "Choose model", "Velg modell").to_string());
         let show_model_picker = is_grok || !self.model_selection.state.choices.is_empty();
         let can_select_model = self.status == AgentStatus::Ready
             && self.prompt_id.is_none()
             && self.model_selection.pending.is_none();
-        let grok_model_selected = model_choices
-            .iter()
-            .any(|choice| self.model_selection.state.selected.as_deref() == Some(&choice.value));
+        let grok_model_selected = agent::has_usable_model(&self.model_selection.state, is_grok);
         let show_picker = choices.is_empty() || self.picker_open;
 
         v_flex()
