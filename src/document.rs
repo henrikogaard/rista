@@ -225,6 +225,10 @@ impl Document {
                     cx.emit(DocumentEvent::Selection);
                 }
             }),
+            cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
+                this.refresh_decorations(cx);
+                cx.notify();
+            }),
         ];
 
         this
