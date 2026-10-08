@@ -21,6 +21,7 @@ pub enum DocumentEvent {
     Saved,
     /// Caret moved — the status bar's Ln/Col display tracks it.
     Selection,
+    SourceScrolled,
 }
 
 impl EventEmitter<DocumentEvent> for Document {}
@@ -69,6 +70,7 @@ pub struct Document {
     /// Last caret offset broadcast as `DocumentEvent::Selection` —
     /// dedupes so unchanged cursors don't re-render the workspace.
     status_cursor: Option<usize>,
+    source_scroll_offset: Point<Pixels>,
     /// Vault for link-graph lookups (linked mentions). Absent for
     /// documents opened outside a vault.
     vault: Option<Entity<crate::vault::Vault>>,
@@ -208,6 +210,7 @@ impl Document {
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
+            source_scroll_offset: Point::default(),
             vault,
             linked_mentions: Vec::new(),
             outgoing_links: Vec::new(),
@@ -229,6 +232,11 @@ impl Document {
             // later '/' at an earlier offset would be ignored. While the menu
             // is closed, keep the trigger anchor pinned to the cursor instead.
             cx.observe(&this.editor, |this, editor, cx| {
+                let offset = editor.read(cx).scroll_offset();
+                if this.source_scroll_offset != offset {
+                    this.source_scroll_offset = offset;
+                    cx.emit(DocumentEvent::SourceScrolled);
+                }
                 let cursor = editor.update(cx, |editor, cx| {
                     let menu = editor.completion_menu_state();
                     let cursor = editor.cursor();

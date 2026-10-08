@@ -1529,7 +1529,7 @@ impl Workspace {
         let sub = cx.subscribe_in(
             &doc,
             window,
-            |this, changed_doc, event, _window, cx| match event {
+            |this, changed_doc, event, window, cx| match event {
                 DocumentEvent::Saved | DocumentEvent::Changed => {
                     if matches!(event, DocumentEvent::Changed) && changed_doc.read(cx).dirty {
                         if let Some(tab) = this.docs.iter_mut().find(|d| d.entity == *changed_doc) {
@@ -1540,6 +1540,20 @@ impl Workspace {
                     cx.notify();
                 }
                 DocumentEvent::Selection => cx.notify(),
+                DocumentEvent::SourceScrolled => {
+                    if this.settings.preview_follows_source
+                        && this.settings.view_mode == ViewMode::Split
+                        && this.active_doc() == Some(changed_doc)
+                    {
+                        let doc = changed_doc.clone();
+                        // Read visible rows after the editor has laid out its new viewport.
+                        window.on_next_frame(move |window, _| {
+                            window.on_next_frame(move |_, cx| {
+                                doc.update(cx, |doc, cx| doc.follow_source_scroll(cx))
+                            });
+                        });
+                    }
+                }
             },
         );
         let base = is_base_file.then(|| {
@@ -7266,19 +7280,6 @@ impl Workspace {
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
         div()
             .size_full()
-            .on_scroll_wheel(cx.listener({
-                let doc = doc.clone();
-                move |this, _, window, _cx| {
-                    if this.settings.preview_follows_source
-                        && this.settings.view_mode == ViewMode::Split
-                    {
-                        let doc = doc.clone();
-                        window.on_next_frame(move |_, cx| {
-                            doc.update(cx, |doc, cx| doc.follow_source_scroll(cx))
-                        });
-                    }
-                }
-            }))
             .px_3()
             .py_4()
             // Scoped key context — the auto-pair bindings only fire when the
