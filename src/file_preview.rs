@@ -42,6 +42,9 @@ fn decode(bytes: Vec<u8>) -> Preview {
     if bytes.len() > MAX_TEXT_BYTES as usize {
         return Preview::TooLarge;
     }
+    if bytes.starts_with(b"%PDF-") {
+        return Preview::Binary;
+    }
     match String::from_utf8(bytes) {
         Ok(text)
             if !text
@@ -78,6 +81,7 @@ mod tests {
         );
         assert_eq!(decode(vec![0, 1]), Preview::Binary);
         assert_eq!(decode(vec![255]), Preview::Binary);
+        assert_eq!(decode(b"%PDF-1.4\n1 0 obj".to_vec()), Preview::Binary);
         assert_eq!(
             decode(vec![b'a'; MAX_TEXT_BYTES as usize + 1]),
             Preview::TooLarge

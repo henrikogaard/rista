@@ -64,12 +64,16 @@ targets, not verified v0.1.0 distributions. See the
 
 ## Your first page
 
-Choose **Open File** (`⌘O`) for a standalone Markdown document, or
+Choose **Open File** (`⌘O`) for a standalone document, or
 **Open Folder** (`⌘⇧O`) for a vault: a normal folder of notes and attachments.
 
 Folder names open live dashboards; the disclosure chevrons expand or collapse
 the sidebar independently. Each dashboard lists its immediate folders, notes,
-databases, and images. Use Home, breadcrumbs, or Back/Forward to navigate.
+and databases. Enable **Show non-Markdown files** in Settings to include images
+and other files, with file-type sorting, read-only text/image previews, and
+default-app opening. macOS also offers Quick Look for supported formats such
+as PDF. See [other-file previews](docs/folder-pages.md#other-files).
+Use Home, breadcrumbs, or Back/Forward to navigate.
 An optional `<folder>/<folder>.md` introduction (or `README.md` fallback) supports
 Markdown and local images, including frontmatter covers. **Edit introduction**
 opens the ordinary Markdown file; no separate dashboard format is created.
