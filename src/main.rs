@@ -2,6 +2,8 @@
 //!
 //! Nordic restraint: quiet surfaces, honest files, no chrome you didn't ask for.
 
+#[cfg(target_os = "macos")]
+mod about;
 mod actions;
 mod agent;
 mod app;
@@ -104,6 +106,10 @@ fn main() {
 
         cx.bind_keys(keymap());
         cx.set_menus(menus(settings.language));
+        #[cfg(target_os = "macos")]
+        cx.on_action(|_: &About, _cx| {
+            about::show();
+        });
         cx.on_action(|_: &Quit, cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -222,7 +228,7 @@ fn menus(language: settings::Language) -> Vec<Menu> {
     let mut app_items = vec![
         MenuItem::separator(),
         MenuItem::Action {
-            name: "About Rísta".into(),
+            name: language.text("About Rísta", "Om Rísta").into(),
             action: Box::new(About),
             os_action: None,
             checked: false,
