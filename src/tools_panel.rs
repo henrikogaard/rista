@@ -187,6 +187,8 @@ impl Workspace {
                     if has_terminal { language.text(" The existing terminal process will be stopped.", " Den eksisterende terminalprosessen blir stoppet.") } else { "" }))
                 .show_cancel(true).ok_text(language.text("Launch tool", "Start verktøy"))
                 .on_ok(move |_, window, cx| {
+                    // Avoid the animated close restoring focus after the terminal opens.
+                    window.close_dialog(cx);
                     view.update(cx, |this, cx| {
                         if this.vault.read(cx).root.as_ref() != Some(&root) { return; }
                         match crate::terminal_session::Session::spawn(&program, &args, &cwd) {
@@ -199,7 +201,7 @@ impl Workspace {
                             },
                             Err(_) => this.note_status(this.tr("Could not launch tool. Check that it is installed and its executable path is correct.", "Kunne ikke starte verktøyet. Kontroller at det er installert og at programstien er riktig."), cx),
                         }
-                    }); true
+                    }); false
                 })
         });
     }
