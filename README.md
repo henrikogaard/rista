@@ -30,7 +30,8 @@ Remote images and packaged update checks can still make network requests.
 - **Pages with presence.** Headings, cover images, image embeds, callouts,
   editable properties, and tables in a live Markdown preview.
 - **Connected notes.** Wikilinks and aliases, note transclusion, backlinks,
-  outgoing links, tags, an outline, and local/global graph views.
+  outgoing links, tags, an outline, and local/global graph views. Dock the local
+  graph above the Agent panel to keep note context visible while working.
 - **Databases without a server.** `.base` YAML files query your notes and
   frontmatter. View the same notes as a table, cards, a board, or a calendar;
   add filters, formulas, relations, and rollups.
@@ -56,10 +57,13 @@ local note and image targets are checked, excluding code samples and external UR
 Wikilink and image completion remain available with `[[` and `![[`.
 
 Right-click a file/folder → **Tools here…** passes that selection to a confirmed
-JSON command. The terminal uses your existing shell configuration, supports
-independent tabs, and has font/size/shell preferences. See [extensions and terminal
-tools](docs/extensions.md) for capabilities and limits. These features are included
-in v0.1.4.
+JSON command. Configure ACP agents in an extension manifest to use the native
+Agent panel, which streams responses and reviews protocol-mediated file changes
+before applying them. Agent processes are not sandboxed, and their own tools can
+change files without that review. The terminal uses your existing shell
+configuration, supports independent tabs, and has font/size/shell preferences.
+See [extensions, agents, and terminal tools](docs/extensions.md) for capabilities
+and limits.
 
 ## Get Rísta
 
