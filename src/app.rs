@@ -3033,6 +3033,7 @@ impl Workspace {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn on_about(&mut self, _: &About, _w: &mut Window, cx: &mut Context<Self>) {
         self.note_status("Rísta — a quiet place for words.", cx);
     }
@@ -8089,7 +8090,7 @@ impl Render for Workspace {
         let sidebar_visible = vault_open && !self.settings.sidebar_collapsed && !self.zen;
         let background = cx.theme().background;
 
-        v_flex()
+        let root = v_flex()
             .size_full()
             .relative()
             .bg(background)
@@ -8137,8 +8138,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_toggle_terminal))
             .on_action(cx.listener(Self::on_open_tools))
-            .on_action(cx.listener(Self::on_toggle_theme))
-            .on_action(cx.listener(Self::on_about))
+            .on_action(cx.listener(Self::on_toggle_theme));
+        #[cfg(not(target_os = "macos"))]
+        let root = root.on_action(cx.listener(Self::on_about));
+        root
             .on_action(cx.listener(Self::on_check_for_updates))
             .when(!self.zen, |this| {
                 this.child(self.render_title_bar(window, cx))
@@ -8240,13 +8243,13 @@ impl Render for Workspace {
                                         .size(px(310.))
                                         .size_range(px(220.)..px(520.))
                                         .child(
-                                            div().size_full().p_1().child(
+                                            div().size_full().child(
                                                 canvas_panels("right-dock", Axis::Vertical)
                                                     .when(self.settings.graph_dock_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
-                                                                .size(px(220.))
-                                                                .size_range(px(150.)..px(440.))
+                                                                .when(self.settings.agent_open || self.settings.inspector_open, |panel| panel.size(px(220.)))
+                                                                .size_range(px(150.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
                                                                         .size_full()
@@ -8258,8 +8261,8 @@ impl Render for Workspace {
                                                     .when(self.settings.agent_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
-                                                                .size(px(300.))
-                                                                .size_range(px(220.)..px(600.))
+                                                                .when(self.settings.inspector_open, |panel| panel.size(px(300.)))
+                                                                .size_range(px(220.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
                                                                         .size_full()
@@ -8278,8 +8281,7 @@ impl Render for Workspace {
                                                     .when(self.settings.inspector_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
-                                                                .size(px(240.))
-                                                                .size_range(px(170.)..px(440.))
+                                                                .size_range(px(170.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
                                                                         .size_full()

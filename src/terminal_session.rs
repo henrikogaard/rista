@@ -511,21 +511,49 @@ fn packaged_macos_path() -> Option<std::ffi::OsString> {
     {
         return None;
     }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    build_macos_path(
+        &std::env::var_os("PATH").unwrap_or_default(),
+        &home,
+        Path::is_dir,
+    )
+}
 
-    let mut paths =
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
+#[cfg(target_os = "macos")]
+pub(crate) fn build_macos_path(
+    inherited: &std::ffi::OsStr,
+    home: &Path,
+    is_dir: impl Fn(&Path) -> bool,
+) -> Option<std::ffi::OsString> {
+    let mut paths = Vec::new();
+    for path in std::env::split_paths(inherited).filter(|path| path.is_absolute()) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
     let mut candidates = vec![
         Path::new("/opt/homebrew/bin").to_path_buf(),
         Path::new("/opt/homebrew/sbin").to_path_buf(),
         Path::new("/usr/local/bin").to_path_buf(),
         Path::new("/usr/local/sbin").to_path_buf(),
     ];
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        candidates.push(home.join(".local/bin"));
-        candidates.push(home.join("bin"));
-    }
+    candidates.extend(
+        [
+            ".local/bin",
+            "bin",
+            ".opencode/bin",
+            ".npm-global/bin",
+            ".volta/bin",
+            ".asdf/shims",
+            ".cargo/bin",
+        ]
+        .into_iter()
+        .map(|path| home.join(path)),
+    );
     for candidate in candidates {
-        if candidate.is_dir() && !paths.iter().any(|path| path == &candidate) {
+        if candidate.is_absolute() && is_dir(&candidate) && !paths.contains(&candidate) {
             paths.push(candidate);
         }
     }
@@ -538,6 +566,92 @@ mod tests {
     use std::path::Path;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_child_path_preserves_absolute_inherited_order_and_adds_existing_fallbacks() {
+        use super::build_macos_path;
+        use std::ffi::OsStr;
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let home = std::env::temp_dir().join(format!(
+            "rista-agent-path-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&home).expect("create home");
+        let home_entries = [
+            ".local/bin",
+            "bin",
+            ".opencode/bin",
+            ".npm-global/bin",
+            ".volta/bin",
+            ".asdf/shims",
+            ".cargo/bin",
+        ];
+        for entry in home_entries {
+            fs::create_dir_all(home.join(entry)).expect("create fallback directory");
+        }
+        let inherited_first = home.join("inherited-first");
+        let inherited_duplicate = home.join(".local/bin");
+        fs::create_dir_all(&inherited_first).expect("create inherited directory");
+        let inherited = std::env::join_paths([
+            inherited_first.clone(),
+            Path::new("relative-entry").to_path_buf(),
+            inherited_duplicate.clone(),
+            inherited_first.clone(),
+        ])
+        .expect("join inherited PATH");
+        let path = build_macos_path(&inherited, &home, |candidate| {
+            candidate.starts_with(&home) || candidate == Path::new("/opt/homebrew/bin")
+        })
+        .expect("build child PATH");
+        let paths = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        assert_eq!(paths[0], inherited_first);
+        assert_eq!(paths[1], inherited_duplicate);
+        assert_eq!(
+            paths,
+            vec![
+                inherited_first.clone(),
+                inherited_duplicate.clone(),
+                Path::new("/opt/homebrew/bin").to_path_buf(),
+                home.join("bin"),
+                home.join(".opencode/bin"),
+                home.join(".npm-global/bin"),
+                home.join(".volta/bin"),
+                home.join(".asdf/shims"),
+                home.join(".cargo/bin"),
+            ]
+        );
+        assert!(!paths.iter().any(|path| path == Path::new("relative-entry")));
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| **path == inherited_duplicate)
+                .count(),
+            1
+        );
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| **path == inherited_first)
+                .count(),
+            1
+        );
+        assert!(paths.contains(&Path::new("/opt/homebrew/bin").to_path_buf()));
+        for entry in home_entries {
+            assert!(paths.contains(&home.join(entry)));
+        }
+        assert!(!paths.contains(&std::env::current_dir().expect("current directory")));
+        let _ = fs::remove_dir_all(home);
+
+        assert!(
+            build_macos_path(OsStr::new("relative-only"), Path::new("/tmp"), |_| false).is_some()
+        );
+    }
 
     #[test]
     fn parser_handles_ansi_split_across_reads_and_tracks_modes() {

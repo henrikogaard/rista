@@ -1,4 +1,4 @@
-//! Rísta theme: two carved palettes — Night (default) and Day.
+//! Rísta theme palettes and shared theme helpers.
 //!
 //! Mineral panes on a dark canvas, a teal accent, and warm paper light.
 //! Colors live in the JSON theme configs below; application code reads only
@@ -7,15 +7,15 @@
 use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeSet};
 use gpui_kit::*;
 
-pub const NIGHT_THEME_NAME: &str = "Rísta Night";
-pub const DAY_THEME_NAME: &str = "Rísta Day";
+pub const NIGHT_THEME_NAME: &str = "Graphite Night";
+pub const DAY_THEME_NAME: &str = "Graphite Day";
 
 const RISTA_THEMES: &str = r##"{
-  "name": "Rísta",
+  "name": "Slate",
   "author": "Rísta",
   "themes": [
     {
-      "name": "Rísta Night",
+      "name": "Slate Night",
       "mode": "dark",
       "radius": 8,
       "radius.lg": 12,
@@ -114,7 +114,7 @@ const RISTA_THEMES: &str = r##"{
       }
     },
     {
-      "name": "Rísta Day",
+      "name": "Slate Day",
       "mode": "light",
       "radius": 8,
       "radius.lg": 12,
@@ -218,6 +218,14 @@ const RISTA_THEMES: &str = r##"{
 const RISTA_PALETTES: &str = r##"[
   {"name":"Fjord Night","mode":"dark","canvas":"#0d121b","surface":"#141c29","popover":"#1a2535","muted":"#202d40","border":"#2c3b50","accent":"#92bcf4","selection":"#293f60","on_accent":"#101d30"},
   {"name":"Fjord Day","mode":"light","canvas":"#edf3fa","surface":"#f9fbfe","popover":"#ffffff","muted":"#e0eaf7","border":"#ccd9eb","accent":"#315f9d","selection":"#cdddf4","on_accent":"#ffffff"},
+  {"name":"Gruvbox Night","mode":"dark","canvas":"#1d2021","surface":"#282828","popover":"#3c3836","muted":"#3c3836","border":"#504945","accent":"#fabd2f","selection":"#504945","on_accent":"#282828","foreground":"#ebdbb2","secondary":"#d5c4a1","muted_foreground":"#a89984","red":"#fb4934","green":"#b8bb26","yellow":"#fabd2f","blue":"#83a598","magenta":"#d3869b","cyan":"#8ec07c","orange":"#fe8019"},
+  {"name":"Gruvbox Day","mode":"light","canvas":"#f2e5bc","surface":"#fbf1c7","popover":"#f9f5d7","muted":"#ebdbb2","border":"#d5c4a1","accent":"#9d6a00","selection":"#d5c4a1","on_accent":"#ffffff","foreground":"#3c3836","secondary":"#504945","muted_foreground":"#665c54","red":"#9d0006","green":"#79740e","yellow":"#b57614","blue":"#076678","magenta":"#8f3f71","cyan":"#427b58","orange":"#af3a03"},
+  {"name":"Nord Night","mode":"dark","canvas":"#242933","surface":"#2e3440","popover":"#3b4252","muted":"#3b4252","border":"#434c5e","accent":"#88c0d0","selection":"#434c5e","on_accent":"#2e3440","foreground":"#eceff4","secondary":"#e5e9f0","muted_foreground":"#a5b1c2","red":"#bf616a","green":"#a3be8c","yellow":"#ebcb8b","blue":"#81a1c1","magenta":"#b48ead","cyan":"#8fbcbb","orange":"#d08770"},
+  {"name":"Nord Day","mode":"light","canvas":"#e5e9f0","surface":"#eceff4","popover":"#ffffff","muted":"#d8dee9","border":"#bbc5d5","accent":"#466b94","selection":"#cbd5e3","on_accent":"#ffffff","foreground":"#2e3440","secondary":"#3b4252","muted_foreground":"#59677c","red":"#a33b48","green":"#4f6b35","yellow":"#8c651c","blue":"#466b94","magenta":"#825f85","cyan":"#327273","orange":"#a65638"},
+  {"name":"Solarized Night","mode":"dark","canvas":"#00212b","surface":"#002b36","popover":"#073642","muted":"#073642","border":"#27535e","accent":"#2aa198","selection":"#164956","on_accent":"#002b36","foreground":"#93a1a1","secondary":"#93a1a1","muted_foreground":"#839496","red":"#dc322f","green":"#859900","yellow":"#b58900","blue":"#268bd2","magenta":"#d33682","cyan":"#2aa198","orange":"#cb4b16"},
+  {"name":"Solarized Day","mode":"light","canvas":"#eee8d5","surface":"#fdf6e3","popover":"#fffaf0","muted":"#eee8d5","border":"#cfc8b7","accent":"#007d75","selection":"#d8e1d8","on_accent":"#ffffff","foreground":"#586e75","secondary":"#586e75","muted_foreground":"#657b83","red":"#c32a28","green":"#667b00","yellow":"#946b00","blue":"#006eaf","magenta":"#b52b70","cyan":"#007d75","orange":"#af4011"},
+  {"name":"Catppuccin Night","mode":"dark","canvas":"#11111b","surface":"#1e1e2e","popover":"#313244","muted":"#313244","border":"#45475a","accent":"#cba6f7","selection":"#45475a","on_accent":"#1e1e2e","foreground":"#cdd6f4","secondary":"#bac2de","muted_foreground":"#a6adc8","red":"#f38ba8","green":"#a6e3a1","yellow":"#f9e2af","blue":"#89b4fa","magenta":"#f5c2e7","cyan":"#94e2d5","orange":"#fab387"},
+  {"name":"Catppuccin Day","mode":"light","canvas":"#dce0e8","surface":"#eff1f5","popover":"#ffffff","muted":"#e6e9ef","border":"#bcc0cc","accent":"#8839ef","selection":"#ccd0da","on_accent":"#ffffff","foreground":"#4c4f69","secondary":"#5c5f77","muted_foreground":"#6c6f85","red":"#d20f39","green":"#407515","yellow":"#91610a","blue":"#1e66f5","magenta":"#a92bbb","cyan":"#087e91","orange":"#ba4806"},
   {"name":"Rose Night","mode":"dark","canvas":"#181216","surface":"#211a20","popover":"#2b212a","muted":"#342630","border":"#493440","accent":"#e5a1b5","selection":"#50303d","on_accent":"#2d1520"},
   {"name":"Rose Day","mode":"light","canvas":"#faf1f3","surface":"#fffafb","popover":"#ffffff","muted":"#f1e2e7","border":"#e4cdd5","accent":"#994963","selection":"#efd1dc","on_accent":"#ffffff"},
   {"name":"Graphite Night","mode":"dark","canvas":"#161618","surface":"#1e1e20","popover":"#2a2a2c","muted":"#2c2c2e","border":"#38383a","accent":"#f5f5f7","selection":"#3a3a3c","on_accent":"#1d1d1f","colors":{"foreground":"#e5e5ea","popover.foreground":"#e5e5ea","sidebar.foreground":"#d1d1d6","tab.active.foreground":"#f5f5f7","group_box.foreground":"#d1d1d6","secondary.foreground":"#d1d1d6","accent.foreground":"#d1d1d6","muted.foreground":"#8e8e93","input.background":"#1a1a1c","list.even.background":"#1b1b1d","primary.hover.background":"#ffffff","primary.active.background":"#d1d1d6","scrollbar.thumb.background":"#48484aaa","danger.background":"#ff453a","danger.foreground":"#ffffff","danger.hover.background":"#ff6961","warning.background":"#ffd60a","warning.foreground":"#1d1d1f","success.background":"#30d158","success.foreground":"#1d1d1f","base.red":"#ff453a","base.yellow":"#ffd60a","base.blue":"#0a84ff","base.green":"#30d158","base.magenta":"#bf5af2","base.cyan":"#64d2ff","base.orange":"#ff9f0a"},"highlight":{"editor.foreground":"#e5e5ea","editor.active_line.background":"#2c2c2e80","editor.line_number":"#48484a","editor.active_line_number":"#8e8e93","editor.invisible":"#3a3a3c66","warning":"#ffd60a","error":"#ff453a","success":"#30d158"},"syntax":{"comment":"#6c6c70","string":"#c7c7cc","number":"#d1d1d6","function":"#f5f5f7","type":"#d1d1d6","operator":"#aeaeb2","property":"#e5e5ea","constant":"#d1d1d6","punctuation":"#8e8e93","link_text":"#f5f5f7","link_uri":"#8e8e93","emphasis":"#e5e5ea","emphasis.strong":"#ffffff","title":"#ffffff","hint":"#8e8e93","predictive":"#48484a"}},
@@ -296,6 +304,61 @@ pub fn builtin_json() -> serde_json::Value {
         if let Some(overrides) = palette["syntax"].as_object() {
             for (key, value) in overrides {
                 theme["highlight"]["syntax"][key.as_str()]["color"] = value.clone();
+            }
+        }
+        if let Some(foreground) = palette.get("foreground") {
+            for (key, value) in [
+                ("foreground", foreground),
+                ("popover.foreground", foreground),
+                ("sidebar.foreground", &palette["secondary"]),
+                ("tab.active.foreground", foreground),
+                ("group_box.foreground", &palette["secondary"]),
+                ("secondary.foreground", &palette["secondary"]),
+                ("accent.foreground", &palette["secondary"]),
+                ("muted.foreground", &palette["muted_foreground"]),
+                ("danger.background", &palette["red"]),
+                ("danger.foreground", &palette["on_accent"]),
+                ("danger.hover.background", &palette["red"]),
+                ("warning.background", &palette["yellow"]),
+                ("warning.foreground", &palette["on_accent"]),
+                ("success.background", &palette["green"]),
+                ("success.foreground", &palette["on_accent"]),
+                ("base.red", &palette["red"]),
+                ("base.green", &palette["green"]),
+                ("base.yellow", &palette["yellow"]),
+                ("base.blue", &palette["blue"]),
+                ("base.magenta", &palette["magenta"]),
+                ("base.cyan", &palette["cyan"]),
+                ("base.orange", &palette["orange"]),
+            ] {
+                theme["colors"][key] = value.clone();
+            }
+            theme["highlight"]["editor.foreground"] = foreground.clone();
+            theme["highlight"]["editor.line_number"] = palette["border"].clone();
+            theme["highlight"]["editor.invisible"] = palette["border"].clone();
+            theme["highlight"]["error"] = palette["red"].clone();
+            theme["highlight"]["warning"] = palette["yellow"].clone();
+            theme["highlight"]["success"] = palette["green"].clone();
+            for (key, value) in [
+                ("comment", &palette["muted_foreground"]),
+                ("string", &palette["green"]),
+                ("number", &palette["yellow"]),
+                ("function", &palette["blue"]),
+                ("type", &palette["cyan"]),
+                ("operator", &palette["secondary"]),
+                ("property", &palette["accent"]),
+                ("constant", &palette["orange"]),
+                ("punctuation", &palette["secondary"]),
+                ("keyword", &palette["accent"]),
+                ("title", &palette["accent"]),
+                ("link_text", &palette["accent"]),
+                ("link_uri", &palette["muted_foreground"]),
+                ("emphasis", &palette["yellow"]),
+                ("emphasis.strong", foreground),
+                ("hint", &palette["muted_foreground"]),
+                ("predictive", &palette["muted_foreground"]),
+            ] {
+                theme["highlight"]["syntax"][key]["color"] = value.clone();
             }
         }
         set["themes"].as_array_mut().unwrap().push(theme);
@@ -381,27 +444,53 @@ fn valid_hex(color: &str) -> bool {
 }
 
 pub fn theme_names(mode: ThemeMode, cx: &App) -> Vec<String> {
-    cx.global::<ThemeCatalog>()
+    let mut names = cx
+        .global::<ThemeCatalog>()
         .themes
         .iter()
         .filter(|t| t.mode == mode)
         .map(|t| t.name.to_string())
-        .collect()
+        .collect::<Vec<_>>();
+    let preferred = if mode == ThemeMode::Dark {
+        NIGHT_THEME_NAME
+    } else {
+        DAY_THEME_NAME
+    };
+    names.sort_by_key(|name| name != preferred);
+    names
+}
+
+fn selected_theme(catalog: &ThemeCatalog, name: &str, mode: ThemeMode) -> std::rc::Rc<ThemeConfig> {
+    let name = match name {
+        "Rísta Night" => "Slate Night",
+        "Rísta Day" => "Slate Day",
+        other => other,
+    };
+    let preferred = if mode == ThemeMode::Dark {
+        NIGHT_THEME_NAME
+    } else {
+        DAY_THEME_NAME
+    };
+    catalog
+        .themes
+        .iter()
+        .find(|theme| theme.name.as_ref() == name && theme.mode == mode)
+        .or_else(|| {
+            catalog
+                .themes
+                .iter()
+                .find(|theme| theme.name.as_ref() == preferred && theme.mode == mode)
+        })
+        .or_else(|| catalog.themes.iter().find(|theme| theme.mode == mode))
+        .or_else(|| catalog.themes.first())
+        .expect("theme catalog must not be empty")
+        .clone()
 }
 
 pub fn apply(settings: &crate::settings::Settings, cx: &mut App) {
     let catalog = cx.global::<ThemeCatalog>();
-    let select = |name: &str, mode| {
-        catalog
-            .themes
-            .iter()
-            .find(|t| t.name.as_ref() == name && t.mode == mode)
-            .or_else(|| catalog.themes.iter().find(|t| t.mode == mode))
-            .unwrap()
-            .clone()
-    };
-    let dark = select(&settings.dark_theme, ThemeMode::Dark);
-    let light = select(&settings.light_theme, ThemeMode::Light);
+    let dark = selected_theme(catalog, &settings.dark_theme, ThemeMode::Dark);
+    let light = selected_theme(catalog, &settings.light_theme, ThemeMode::Light);
     Theme::update(cx, |theme| {
         theme.dark_theme = dark;
         theme.light_theme = light;
@@ -421,12 +510,7 @@ pub fn create_custom(
         &settings.light_theme
     };
     let catalog = cx.global::<ThemeCatalog>();
-    let selected = catalog
-        .themes
-        .iter()
-        .find(|t| t.name.as_ref() == name && t.mode == mode)
-        .or_else(|| catalog.themes.iter().find(|t| t.mode == mode))
-        .unwrap();
+    let selected = selected_theme(catalog, name, mode);
     let mut theme = selected.as_ref().clone();
     std::fs::create_dir_all(themes_dir())?;
     for index in 1..10000 {
@@ -464,7 +548,7 @@ pub fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_json, parse_custom};
+    use super::{builtin_json, parse_custom, ThemeMode, ThemeSet};
 
     fn exported_theme(theme: &serde_json::Value) -> serde_json::Value {
         let mut colors = theme["colors"].as_object().unwrap().clone();
@@ -479,20 +563,35 @@ mod tests {
         serde_json::json!({"name": theme["name"], "colors": colors})
     }
 
+    fn css_variables(css: &str, selector: &str) -> std::collections::HashMap<String, String> {
+        let selector_start = css.find(selector).unwrap();
+        let block_start = selector_start + css[selector_start..].find('{').unwrap();
+        let block_end = block_start + css[block_start..].find('}').unwrap();
+        css[block_start + 1..block_end]
+            .lines()
+            .filter_map(|line| {
+                let (name, value) = line.trim().strip_prefix("--rista-")?.split_once(": ")?;
+                Some((
+                    name.trim_end_matches(';').to_owned(),
+                    value.trim_end_matches(';').to_owned(),
+                ))
+            })
+            .collect()
+    }
+
     #[test]
-    fn builtin_palettes_have_distinct_accents_and_exportable_colours() {
+    fn builtin_palettes_are_complete_and_exportable() {
         let json = builtin_json();
         let themes = json["themes"].as_array().unwrap();
-        assert_eq!(themes.len(), 10);
+        assert_eq!(themes.len(), 18);
+        let names: std::collections::HashSet<_> =
+            themes.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names.len(), 18);
         for mode in ["dark", "light"] {
             let matching: Vec<_> = themes.iter().filter(|t| t["mode"] == mode).collect();
-            let accents: std::collections::HashSet<_> = matching
-                .iter()
-                .map(|t| t["colors"]["primary.background"].as_str().unwrap())
-                .collect();
-            assert_eq!(accents.len(), 5);
+            assert_eq!(matching.len(), 9);
         }
-        assert_eq!(parse_custom(&json.to_string()).unwrap().themes.len(), 10);
+        assert_eq!(parse_custom(&json.to_string()).unwrap().themes.len(), 18);
 
         let graphite_night = themes
             .iter()
@@ -516,9 +615,34 @@ mod tests {
 
         let exports: serde_json::Value =
             serde_json::from_str(include_str!("../design/tokens.json")).unwrap();
-        for theme in &themes[..2] {
-            let mode = theme["mode"].as_str().unwrap();
+        let ts = include_str!("../design/tokens.ts");
+        let ts_body = ts
+            .split_once("export const rista = ")
+            .unwrap()
+            .1
+            .split_once(" as const;")
+            .unwrap()
+            .0;
+        let ts_exports: serde_json::Value = serde_json::from_str(ts_body).unwrap();
+        assert_eq!(ts_exports, exports["rista"]);
+        for (mode, name) in [("dark", "Graphite Night"), ("light", "Graphite Day")] {
+            let theme = themes.iter().find(|theme| theme["name"] == name).unwrap();
             assert_eq!(exports["rista"]["themes"][mode], exported_theme(theme));
+        }
+        let css = include_str!("../design/tokens.css");
+        for (selector, mode, name) in [
+            (":root", "dark", "Graphite Night"),
+            (r#"[data-rista-theme="dark"]"#, "dark", "Graphite Night"),
+            (r#"[data-rista-theme="light"]"#, "light", "Graphite Day"),
+        ] {
+            let theme = themes.iter().find(|theme| theme["name"] == name).unwrap();
+            let expected = exported_theme(theme)["colors"].as_object().unwrap().clone();
+            let actual = css_variables(css, selector);
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(exports["rista"]["themes"][mode], exported_theme(theme));
+            for (key, value) in expected {
+                assert_eq!(actual[&key.replace('.', "-")], value.as_str().unwrap());
+            }
         }
         for theme in themes {
             let name = theme["name"]
@@ -529,15 +653,80 @@ mod tests {
                 .replace(' ', "-");
             let mut expected = exported_theme(theme);
             expected["mode"] = theme["mode"].clone();
-            assert_eq!(exports["rista"]["palettes"][name], expected);
+            assert_eq!(exports["rista"]["palettes"][&name], expected);
+            let selector = format!(
+                r#"[data-rista-theme="{}"]"#,
+                name.to_lowercase().replace('í', "i").replace(' ', "-")
+            );
+            let css_palette = css_variables(css, &selector);
+            let expected_colors = exported_theme(theme)["colors"].as_object().unwrap().clone();
+            assert_eq!(css_palette.len(), expected_colors.len());
+            for (key, value) in expected_colors {
+                assert_eq!(
+                    css_palette[&key.replace('.', "-")],
+                    value.as_str().unwrap(),
+                    "{name} CSS token {key}"
+                );
+            }
+        }
+        for (alias, name) in [("rista-night", "Slate Night"), ("rista-day", "Slate Day")] {
+            let theme = themes.iter().find(|theme| theme["name"] == name).unwrap();
+            let mut expected = exported_theme(theme);
+            expected["mode"] = theme["mode"].clone();
+            assert_eq!(exports["rista"]["palettes"][alias], expected);
+            let alias_css = css_variables(css, &format!(r#"[data-rista-theme="{alias}"]"#));
+            let expected_colors = exported_theme(theme)["colors"].as_object().unwrap().clone();
+            assert_eq!(alias_css.len(), expected_colors.len());
+            for (key, value) in expected_colors {
+                assert_eq!(
+                    alias_css[&key.replace('.', "-")],
+                    value.as_str().unwrap(),
+                    "{alias} CSS token {key}"
+                );
+            }
+        }
+        for (name, accent, red, syntax_string) in [
+            ("Gruvbox Night", "#fabd2f", "#fb4934", "#b8bb26"),
+            ("Nord Day", "#466b94", "#a33b48", "#4f6b35"),
+            ("Solarized Night", "#2aa198", "#dc322f", "#859900"),
+            ("Catppuccin Day", "#8839ef", "#d20f39", "#407515"),
+        ] {
+            let theme = themes.iter().find(|theme| theme["name"] == name).unwrap();
+            assert_eq!(theme["colors"]["primary.background"], accent);
+            assert_eq!(theme["colors"]["base.red"], red);
+            assert_eq!(
+                theme["highlight"]["syntax"]["string"]["color"],
+                syntax_string
+            );
+        }
+        for name in [
+            "Gruvbox Night",
+            "Gruvbox Day",
+            "Nord Night",
+            "Nord Day",
+            "Solarized Night",
+            "Solarized Day",
+            "Catppuccin Night",
+            "Catppuccin Day",
+        ] {
+            let theme = themes.iter().find(|theme| theme["name"] == name).unwrap();
+            assert_eq!(
+                theme["colors"]["warning.foreground"], theme["colors"]["primary.foreground"],
+                "{name}"
+            );
         }
 
-        let css = include_str!("../design/tokens.css");
+        assert!(css.contains(
+            ":root, [data-rista-theme=\"dark\"], [data-rista-theme=\"graphite-night\"] {"
+        ));
+        assert!(css.contains("[data-rista-theme=\"light\"], [data-rista-theme=\"graphite-day\"] {"));
         for selector in [
             "dark",
             "light",
             "rista-night",
             "rista-day",
+            "slate-night",
+            "slate-day",
             "fjord-night",
             "fjord-day",
             "rose-night",
@@ -546,9 +735,61 @@ mod tests {
             "graphite-day",
             "mono-night",
             "mono-day",
+            "gruvbox-night",
+            "gruvbox-day",
+            "nord-night",
+            "nord-day",
+            "solarized-night",
+            "solarized-day",
+            "catppuccin-night",
+            "catppuccin-day",
+            "dark",
+            "light",
         ] {
             assert!(css.contains(&format!(r#"[data-rista-theme="{selector}"]"#)));
         }
+    }
+
+    #[test]
+    fn theme_selection_uses_exact_mode_and_graphite_fallback() {
+        let set: ThemeSet = serde_json::from_value(builtin_json()).unwrap();
+        let catalog = super::ThemeCatalog {
+            themes: set.themes.into_iter().map(std::rc::Rc::new).collect(),
+            errors: Vec::new(),
+        };
+        assert_eq!(
+            super::selected_theme(&catalog, "Rísta Night", ThemeMode::Dark)
+                .name
+                .as_ref(),
+            "Slate Night"
+        );
+        assert_eq!(
+            super::selected_theme(&catalog, "Fjord Night", ThemeMode::Light)
+                .name
+                .as_ref(),
+            "Graphite Day"
+        );
+        assert_eq!(
+            super::selected_theme(&catalog, "Removed custom", ThemeMode::Dark)
+                .name
+                .as_ref(),
+            "Graphite Night"
+        );
+        let incomplete = super::ThemeCatalog {
+            themes: vec![catalog
+                .themes
+                .iter()
+                .find(|theme| theme.name.as_ref() == "Fjord Night")
+                .unwrap()
+                .clone()],
+            errors: Vec::new(),
+        };
+        assert_eq!(
+            super::selected_theme(&incomplete, "Missing", ThemeMode::Light)
+                .name
+                .as_ref(),
+            "Fjord Night"
+        );
     }
 
     #[test]

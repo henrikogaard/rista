@@ -40,6 +40,18 @@ fn merge_active_context(
     }
 }
 
+fn setup_help_text(choice: &AgentChoice, language: crate::settings::Language) -> String {
+    if let Some(help) = extensions::builtin_setup_help(&choice.agent.id) {
+        return help.text(language).to_string();
+    }
+    language
+        .text(
+            "Custom agents must be installed separately. Set `program` to an executable name on the app PATH or an absolute executable path; Rísta does not install or authenticate tools.",
+            "Egendefinerte agenter må installeres separat. Sett `program` til et program i appens PATH eller en absolutt filbane; Rísta installerer ikke verktøy eller logger inn.",
+        )
+        .to_string()
+}
+
 #[derive(Clone)]
 struct PermissionOption {
     id: String,
@@ -77,6 +89,9 @@ pub(super) struct AgentPanel {
     focus_handle: FocusHandle,
     selected: Option<AgentChoice>,
     picker_open: bool,
+    model_selection: agent::ModelSelection,
+    model_selector_open: bool,
+    model_error: Option<String>,
     context: Vec<PathBuf>,
     explicit_context: HashSet<PathBuf>,
     dismissed_context: HashSet<PathBuf>,
@@ -119,6 +134,9 @@ impl AgentPanel {
             focus_handle: cx.focus_handle(),
             selected: None,
             picker_open: false,
+            model_selection: agent::ModelSelection::default(),
+            model_selector_open: false,
+            model_error: None,
             context: Vec::new(),
             explicit_context: HashSet::new(),
             dismissed_context: HashSet::new(),
@@ -149,6 +167,31 @@ impl AgentPanel {
 
     fn tr(&self, cx: &App, en: &'static str, nb: &'static str) -> &'static str {
         self.language(cx).text(en, nb)
+    }
+
+    fn allowed_models(&self) -> Vec<agent::ModelChoice> {
+        let xai_only = self
+            .selected
+            .as_ref()
+            .is_some_and(|choice| extensions::is_grok_agent(&choice.agent.id));
+        agent::allowed_model_choices(&self.model_selection.state, xai_only)
+    }
+
+    fn can_prompt(&self, prompt: &str) -> bool {
+        let is_grok = self
+            .selected
+            .as_ref()
+            .is_some_and(|choice| extensions::is_grok_agent(&choice.agent.id));
+        let has_usable_model = agent::has_usable_model(&self.model_selection.state, is_grok);
+        agent::can_prompt(
+            self.status == AgentStatus::Ready,
+            self.process.is_some(),
+            self.session_id.is_some(),
+            self.stopping,
+            self.model_selection.pending.is_some(),
+            has_usable_model,
+            prompt,
+        )
     }
 
     pub(super) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -202,6 +245,9 @@ impl AgentPanel {
         self.dismissed_context.clear();
         self.active_context = None;
         self.selected = None;
+        self.model_selection.reset();
+        self.model_selector_open = false;
+        self.model_error = None;
         cx.notify();
     }
 
@@ -230,6 +276,33 @@ impl AgentPanel {
         (choices, errors)
     }
 
+    fn show_setup(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.language(cx);
+        let setup = self
+            .selected
+            .as_ref()
+            .map(|choice| setup_help_text(choice, language))
+            .unwrap_or_else(|| {
+                language
+                    .text(
+                        "Choose a preset to see its setup instructions, or add a custom agent manifest with an absolute executable path.",
+                        "Velg et forhåndsvalg for å se oppsettinstruksjonene, eller legg til et egendefinert agentmanifest med en absolutt filbane.",
+                    )
+                    .to_string()
+            });
+        let details = language.text(
+            "Adapters and providers are not bundled. Rísta never installs or authenticates them; credentials stay with the configured tools.",
+            "Adaptere og leverandører følger ikke med. Rísta installerer dem aldri eller logger inn; legitimasjon forblir hos de konfigurerte verktøyene.",
+        );
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(language.text("Agent setup", "Agentoppsett"))
+                .description(format!("{setup}\n\n{details}"))
+                .show_cancel(false)
+                .ok_text(language.text("Done", "Ferdig"))
+        });
+    }
+
     fn confirm_launch(
         &mut self,
         choice: AgentChoice,
@@ -241,6 +314,7 @@ impl AgentPanel {
         let name = choice.agent.name.text(language).to_string();
         let args = serde_json::to_string(&choice.agent.args).unwrap_or_else(|_| "[]".into());
         let program = choice.agent.program.clone();
+        let setup = setup_help_text(&choice, language);
         let view = cx.entity();
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let view = view.clone();
@@ -248,16 +322,22 @@ impl AgentPanel {
             let root = root.clone();
             let program = program.clone();
             let args = args.clone();
+            let setup = setup.clone();
             dialog
                 .title(format!("{} {name}?", language.text("Start", "Start")))
                 .description(format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n\n{}",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n\n{}\n\n{}\n\n{}",
                     language.text("Executable:", "Kjørbar fil:"),
                     program,
                     language.text("Arguments:", "Argumenter:"),
                     args,
                     language.text("Working directory:", "Arbeidsmappe:"),
                     root.display(),
+                    setup,
+                    language.text(
+                        "Adapters and providers are not bundled. Rísta does not install or authenticate them; credentials remain with the tools.",
+                        "Adaptere og leverandører følger ikke med. Rísta installerer dem ikke eller logger inn; legitimasjon forblir hos verktøyene."
+                    ),
                     language.text(
                         "Runs with your user permissions and is not sandboxed. It can access files and the network. Approval applies only to file writes requested through ACP; the agent and its tools may change files directly.",
                         "Kjører med brukerrettighetene dine og er ikke sandkasseisolert. Den kan få tilgang til filer og nettverk. Godkjenning gjelder bare filskriving via ACP; agenten og verktøyene kan endre filer direkte."
@@ -268,7 +348,12 @@ impl AgentPanel {
                 .on_ok(move |_, window, cx| {
                     window.close_dialog(cx);
                     view.update(cx, |panel, cx| {
-                        panel.start(choice.clone(), root.clone(), window, cx)
+                        if !matches!(
+                            panel.status,
+                            AgentStatus::Working | AgentStatus::Stopping
+                        ) {
+                            panel.start(choice.clone(), root.clone(), window, cx)
+                        }
                     });
                     false
                 })
@@ -282,8 +367,14 @@ impl AgentPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(self.status, AgentStatus::Working | AgentStatus::Stopping) {
+            return;
+        }
         self.stop(cx);
         self.selected = Some(choice.clone());
+        self.model_selection.reset();
+        self.model_selector_open = false;
+        self.model_error = None;
         self.conversation_root = Some(root.clone());
         self.session_id = None;
         self.stopping = false;
@@ -294,20 +385,16 @@ impl AgentPanel {
         self.status = AgentStatus::Connecting;
         let process = match AgentProcess::spawn(&choice.agent.program, &choice.agent.args, &root) {
             Ok(process) => process,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && choice.agent.id == extensions::BUILTIN_VIBE_AGENT_ID =>
-            {
-                let hint = self.tr(
-                    cx,
-                    "Install Vibe with `uv tool install mistral-vibe`, then run `vibe` once in Terminal to sign in and configure it.",
-                    "Installer Vibe med `uv tool install mistral-vibe`, og kjør deretter `vibe` én gang i Terminal for å logge inn og konfigurere.",
-                );
-                self.set_process_error(format!("{hint}\n{error}"), cx);
-                return;
-            }
             Err(error) => {
-                self.set_process_error(error.to_string(), cx);
+                let detail = extensions::launch_error_text(
+                    &choice.agent.id,
+                    &choice.agent.program,
+                    error.kind(),
+                    &error.to_string(),
+                    self.language(cx),
+                    choice.manifest_id.is_some(),
+                );
+                self.set_process_error(detail, cx);
                 return;
             }
         };
@@ -388,13 +475,21 @@ impl AgentPanel {
     fn handle_message(&mut self, message: Value, cx: &mut Context<Self>) {
         if let Some(method) = message.get("method").and_then(Value::as_str) {
             if method == "session/update" {
-                if let Some(update) = message
-                    .get("params")
-                    .and_then(|params| params.get("update"))
-                {
-                    agent::reduce_update(&mut self.update, update);
-                    cx.notify();
+                let Some(params) = message.get("params") else {
+                    return;
+                };
+                let Some(update) =
+                    agent::session_update(params, self.session_id.as_deref().unwrap_or_default())
+                else {
+                    return;
+                };
+                if let Some(options) = agent::config_options_update(update) {
+                    self.model_selection.state =
+                        agent::model_state_from_session(&json!({"configOptions": options}));
+                    self.model_error = None;
                 }
+                agent::reduce_update(&mut self.update, update);
+                cx.notify();
                 return;
             }
             let Some(id) = message.get("id").cloned() else {
@@ -438,15 +533,65 @@ impl AgentPanel {
                 return;
             }
             self.create_session(cx);
+        } else if let Some(pending) = self
+            .model_selection
+            .pending
+            .clone()
+            .filter(|pending| pending.request_id == id)
+        {
+            if let Some(error) = message.get("error") {
+                self.model_selection.fail(id);
+                let unknown_error = self.tr(cx, "Unknown model error", "Ukjent modellfeil");
+                let detail = error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| error.as_str().unwrap_or(unknown_error));
+                self.model_error = Some(format!(
+                    "{}: {detail}",
+                    self.tr(cx, "Could not change model", "Kunne ikke endre modell")
+                ));
+            } else {
+                let confirmed_by_update = self.model_selection.state.selected.as_deref()
+                    == Some(pending.requested_model_id.as_str());
+                let result = message.get("result").unwrap_or(&Value::Null);
+                if pending.config_id.is_some() {
+                    if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
+                        self.model_selection.state =
+                            agent::model_state_from_session(&json!({"configOptions": options}));
+                    }
+                }
+                let selected = if let Some(config_id) = pending.config_id.as_deref() {
+                    agent::config_result_model_value(result, config_id)
+                } else {
+                    Some(pending.requested_model_id)
+                };
+                let missing_confirmation = selected.is_none() && !confirmed_by_update;
+                self.model_selection.complete(id, selected);
+                self.model_error = if missing_confirmation {
+                    Some(
+                        self.tr(
+                            cx,
+                            "The agent did not confirm the selected model.",
+                            "Agenten bekreftet ikke den valgte modellen.",
+                        )
+                        .to_string(),
+                    )
+                } else {
+                    None
+                };
+            }
+            cx.notify();
         } else if self.session_id_request == Some(id) {
             self.session_id_request = None;
             if let Some(error) = message.get("error") {
                 self.set_protocol_error(error, cx);
                 return;
             }
-            self.session_id = message
-                .get("result")
-                .and_then(|result| result.get("sessionId"))
+            let result = message.get("result").unwrap_or(&Value::Null);
+            self.model_selection.state = agent::model_state_from_session(result);
+            self.model_error = None;
+            self.session_id = result
+                .get("sessionId")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             if self.session_id.is_some() {
@@ -707,9 +852,51 @@ impl AgentPanel {
         cx.notify();
     }
 
+    fn select_model(&mut self, model_id: String, cx: &mut Context<Self>) {
+        if self.status != AgentStatus::Ready
+            || self.prompt_id.is_some()
+            || self.model_selection.pending.is_some()
+        {
+            return;
+        }
+        let Some(choice) = self.selected.as_ref() else {
+            return;
+        };
+        let xai_only = extensions::is_grok_agent(&choice.agent.id);
+        if !self.allowed_models().iter().any(|choice| {
+            choice.value == model_id && (!xai_only || choice.value.starts_with("xai/"))
+        }) || self.model_selection.state.selected.as_deref() == Some(&model_id)
+        {
+            return;
+        }
+        let (Some(process), Some(session_id)) = (&self.process, &self.session_id) else {
+            return;
+        };
+        let request_id = process.next_id();
+        if !self.model_selection.begin(request_id, model_id.clone()) {
+            return;
+        }
+        let config_id = self.model_selection.state.config_id.clone();
+        self.model_selector_open = false;
+        self.model_error = None;
+        if let Err(error) = process.send(agent::model_switch_request(
+            request_id,
+            session_id,
+            config_id.as_deref(),
+            &model_id,
+        )) {
+            self.model_selection.fail(request_id);
+            self.model_error = Some(format!(
+                "{}: {error}",
+                self.tr(cx, "Could not change model", "Kunne ikke endre modell")
+            ));
+        }
+        cx.notify();
+    }
+
     fn send_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim();
-        if prompt.is_empty() || self.status == AgentStatus::Working || self.stopping {
+        if !self.can_prompt(prompt) {
             return;
         }
         let (Some(process), Some(session_id)) = (&self.process, &self.session_id) else {
@@ -739,12 +926,7 @@ impl AgentPanel {
 
     fn send_from_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = self.composer.read(cx).value().to_string();
-        if prompt.trim().is_empty()
-            || self.status == AgentStatus::Working
-            || self.stopping
-            || self.process.is_none()
-            || self.session_id.is_none()
-        {
+        if !self.can_prompt(&prompt) {
             return;
         }
         self.composer.update(cx, |composer, cx| {
@@ -881,6 +1063,9 @@ impl AgentPanel {
         self.prompt_id = None;
         self.stopping = false;
         self.status = AgentStatus::Idle;
+        self.model_selection.reset();
+        self.model_selector_open = false;
+        self.model_error = None;
         self.error = None;
         cx.notify();
     }
@@ -893,6 +1078,9 @@ impl AgentPanel {
     }
 
     fn start_new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.status, AgentStatus::Working | AgentStatus::Stopping) {
+            return;
+        }
         let Some(choice) = self.selected.clone() else {
             self.picker_open = true;
             cx.notify();
@@ -1022,11 +1210,20 @@ impl Render for AgentPanel {
         let current_name = current_choice
             .map(|choice| choice.agent.name.text(language))
             .unwrap_or(self.tr(cx, "Choose an agent", "Velg en agent"));
-        let can_send = self.process.is_some()
-            && self.session_id.is_some()
-            && self.status != AgentStatus::Working
-            && !self.stopping
-            && !self.composer.read(cx).value().to_string().trim().is_empty();
+        let can_send = self.can_prompt(self.composer.read(cx).value().as_ref());
+        let can_start_conversation =
+            !matches!(self.status, AgentStatus::Working | AgentStatus::Stopping);
+        let is_grok =
+            current_choice.is_some_and(|choice| extensions::is_grok_agent(&choice.agent.id));
+        let model_choices = self.allowed_models();
+        let selected_model_name = agent::selected_model_name(&self.model_selection.state, is_grok)
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.tr(cx, "Choose model", "Velg modell").to_string());
+        let show_model_picker = is_grok || !self.model_selection.state.choices.is_empty();
+        let can_select_model = self.status == AgentStatus::Ready
+            && self.prompt_id.is_none()
+            && self.model_selection.pending.is_none();
+        let grok_model_selected = agent::has_usable_model(&self.model_selection.state, is_grok);
         let show_picker = choices.is_empty() || self.picker_open;
 
         v_flex()
@@ -1074,6 +1271,7 @@ impl Render for AgentPanel {
                             .xsmall()
                             .icon(assets::IconName::Plus)
                             .tooltip(self.tr(cx, "New conversation", "Ny samtale"))
+                            .disabled(!can_start_conversation)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.start_new_conversation(window, cx)
                             })),
@@ -1124,9 +1322,35 @@ impl Render for AgentPanel {
                                     .xsmall()
                                     .icon(assets::IconName::ChevronDown)
                                     .label(current_name)
+                                    .tooltip(if self.process.is_some() {
+                                        self.tr(
+                                            cx,
+                                            "Stop the agent before choosing another",
+                                            "Stopp agenten før du velger en annen",
+                                        )
+                                    } else {
+                                        self.tr(cx, "Choose an agent", "Velg en agent")
+                                    })
+                                    .disabled(self.process.is_some())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.picker_open = !this.picker_open;
-                                        cx.notify();
+                                        if agent::can_select_agent(this.process.is_some()) {
+                                            this.picker_open = !this.picker_open;
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("agent-setup")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(self.tr(cx, "Setup", "Oppsett"))
+                                    .tooltip(self.tr(
+                                        cx,
+                                        "Show setup instructions",
+                                        "Vis oppsettinstruksjoner",
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_setup(window, cx)
                                     })),
                             )
                             .child(
@@ -1153,8 +1377,8 @@ impl Render for AgentPanel {
                                             .text_color(cx.theme().muted_foreground)
                                             .child(self.tr(
                                                 cx,
-                                                "Vibe is built in. Add other agents with an extension manifest.",
-                                                "Vibe er innebygd. Legg til andre agenter med et utvidelsesmanifest.",
+                                                "Built-in presets need their agent tools installed separately. Add custom agents with a manifest.",
+                                                "Innebygde forhåndsvalg krever at agentverktøy installeres separat. Legg til egendefinerte agenter med et manifest.",
                                             )),
                                     )
                                 })
@@ -1173,12 +1397,18 @@ impl Render for AgentPanel {
                                             "{source} · {}",
                                             choice.agent.id
                                         ))
+                                        .disabled(self.process.is_some())
                                         .on_click(cx.listener({
                                             let choice = choice.clone();
                                             move |this, _, _, cx| {
-                                                this.selected = Some(choice.clone());
-                                                this.picker_open = false;
-                                                cx.notify();
+                                                if agent::can_select_agent(this.process.is_some()) {
+                                                    this.selected = Some(choice.clone());
+                                                    this.model_selection.reset();
+                                                    this.model_selector_open = false;
+                                                    this.model_error = None;
+                                                    this.picker_open = false;
+                                                    cx.notify();
+                                                }
                                             }
                                         }))
                                 })),
@@ -1218,6 +1448,118 @@ impl Render for AgentPanel {
                             );
                         }
                         content
+                    })
+                    .when(show_model_picker, |content| {
+                        content.child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(self.tr(cx, "Model", "Modell")),
+                                        )
+                                        .child(
+                                            Button::new("agent-model-picker")
+                                                .ghost()
+                                                .xsmall()
+                                                .label(selected_model_name.clone())
+                                                .tooltip(self.tr(
+                                                    cx,
+                                                    "Choose a model advertised by the agent",
+                                                    "Velg en modell som agenten har oppgitt",
+                                                ))
+                                                .disabled(!can_select_model)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if this.status == AgentStatus::Ready
+                                                        && this.prompt_id.is_none()
+                                                        && this.model_selection.pending.is_none()
+                                                    {
+                                                        this.model_selector_open =
+                                                            !this.model_selector_open;
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        ),
+                                )
+                                .when(self.model_selector_open, |selector| {
+                                    selector.child(
+                                        v_flex()
+                                            .gap_1()
+                                            .max_h(px(120.))
+                                            .overflow_y_scrollbar()
+                                            .bg(cx.theme().group_box)
+                                            .rounded(cx.theme().radius)
+                                            .p_1()
+                                            .children(model_choices.iter().enumerate().map(
+                                                |(index, choice)| {
+                                                    let value = choice.value.clone();
+                                                    Button::new(("agent-model-choice", index))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .w_full()
+                                                        .justify_start()
+                                                        .label(choice.name.clone())
+                                                        .disabled(!can_select_model)
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.select_model(
+                                                                    value.clone(),
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                },
+                                            )),
+                                    )
+                                })
+                                .when(is_grok && model_choices.is_empty(), |model_ui| {
+                                    model_ui.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(self.tr(
+                                                cx,
+                                                "No xAI models available. Configure xAI in OpenCode and restart the conversation.",
+                                                "Ingen xAI-modeller er tilgjengelige. Konfigurer xAI i OpenCode og start samtalen på nytt.",
+                                            )),
+                                    )
+                                })
+                                .when(is_grok && !model_choices.is_empty() && !grok_model_selected, |model_ui| {
+                                    model_ui.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(self.tr(
+                                                cx,
+                                                "Choose an available xAI model to continue; the current model is from another provider.",
+                                                "Velg en tilgjengelig xAI-modell for å fortsette; den gjeldende modellen kommer fra en annen leverandør.",
+                                            )),
+                                    )
+                                })
+                                .when(self.model_error.is_some(), |model_ui| {
+                                    model_ui.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().warning)
+                                            .child(self.model_error.clone().unwrap_or_default()),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(self.tr(
+                                            cx,
+                                            "Model choices come from the agent. For Grok, only advertised xAI models can be selected.",
+                                            "Modellvalg kommer fra agenten. For Grok kan bare oppgitte xAI-modeller velges.",
+                                        )),
+                                ),
+                        )
                     })
                     .when(!self.context.is_empty(), |content| {
                         content.child(h_flex().flex_wrap().gap_1().children(
