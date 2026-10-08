@@ -32,8 +32,9 @@ Folder dashboards use a single identity header, quiet breadcrumb/action rows,
 and compact bordered content cards. Gallery media belongs to documents rather
 than chrome. Pins keep a stable order; layout/filter controls remain local to the
 folder. The terminal is a collapsible, resizable lower pane, not a competing
-sidebar. Its default/ANSI semantic colors follow the selected palette; explicit
-256-color and true-color escape sequences remain process-supplied content.
+sidebar. ANSI red, green, and yellow use the selected palette's semantic colors,
+while blue, magenta, and cyan use its base colors; explicit 256-color and
+true-color escape sequences remain process-supplied content.
 
 Palette intent per token group (values in `design/tokens.json`):
 
