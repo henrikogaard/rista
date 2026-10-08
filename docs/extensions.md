@@ -4,7 +4,8 @@ Rísta reads declarative JSON extensions without recompiling. Extensions can add
 commands to **Tools** and the command palette, and configure external agents for
 the native Agent panel. Commands launch an installed executable in the native
 PTY terminal. Agents communicate through ACP over newline-delimited JSON-RPC;
-there is no built-in agent or JavaScript/WASM runtime.
+the Agent panel includes a built-in Vibe preset and supports manifest agents.
+There is no JavaScript/WASM runtime.
 
 Create and inspect a manifest, then choose **Tools → Reload**. No process runs
 on discovery, reload, startup, or vault opening. Launching an agent requires
@@ -53,9 +54,13 @@ without preventing valid extensions from loading. Manifests are bounded to 64 Ki
 
 The `agents` array is optional. Each entry requires a unique `id`, localized
 `name`, and `program`; `args` defaults to an empty array. The Agent picker lists
-configured agents. When none are available, **Open extensions folder** opens
-the vault extension directory (or the user extension directory without a vault).
-The executable receives the vault root as its working directory.
+the built-in Vibe preset followed by configured agents. The ID `vibe` is
+reserved for the preset and cannot be used by a manifest agent. Vibe uses
+`vibe-acp`; install it with `uv tool install mistral-vibe`, then run `vibe` once
+in Terminal to sign in and configure it. If no manifest agents are configured,
+**Open extensions folder** opens the vault extension directory (or the user
+extension directory without a vault). Configured executables receive the vault
+root as their working directory.
 
 `program` is an installed executable name or absolute path. `args` defaults to
 `[]`. `working_directory` is `vault` (default) or `folder` (current dashboard or
@@ -70,11 +75,12 @@ rather than the open tab. A selected file supplies `{{file}}` and its parent
 supplies `{{folder}}`; a selected folder/dashboard has no current file, so a
 command requiring `{{file}}` will not launch. Reload preserves this context.
 
-To launch an AI CLI, change `program` and `args` to its documented executable and
-options. Built-in launchers cover `claude`, `codex`, `vibe`, `pi`, `omp`, and
-`opencode`; they do not install, authenticate, or call a hosted provider by
-themselves. Tool versions, account access, and provider charges belong to the CLI.
-Use an absolute path if the command is not on the app's inherited PATH.
+To launch another AI CLI, change `program` and `args` to its documented
+executable and options. Terminal launchers cover `claude`, `codex`, `vibe`,
+`pi`, `omp`, and `opencode`; they do not install, authenticate, or call a hosted
+provider by themselves. Tool versions, account access, and provider charges
+belong to the CLI. Use an absolute path if the command is not on the app's
+inherited PATH.
 
 ## Agent protocol and security boundary
 

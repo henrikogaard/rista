@@ -855,6 +855,7 @@ impl Workspace {
                 this.open_path(path, window, cx);
             }
         }
+        this.sync_graph_active(cx);
 
         let workspace = cx.entity();
         window.on_window_should_close(cx, move |_, cx| {

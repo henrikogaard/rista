@@ -57,12 +57,14 @@ local note and image targets are checked, excluding code samples and external UR
 Wikilink and image completion remain available with `[[` and `![[`.
 
 Right-click a file/folder → **Tools here…** passes that selection to a confirmed
-JSON command. Configure ACP agents in an extension manifest to use the native
-Agent panel, which streams responses and reviews protocol-mediated file changes
-before applying them. Agent processes are not sandboxed, and their own tools can
-change files without that review. The terminal uses your existing shell
-configuration, supports independent tabs, and has font/size/shell preferences.
-See [extensions, agents, and terminal tools](docs/extensions.md) for capabilities
+JSON command. The native Agent panel includes the Vibe ACP preset; install it
+with `uv tool install mistral-vibe` and run `vibe` once in Terminal to sign in.
+Other agents can be configured in an extension manifest. The panel streams
+responses and reviews protocol-mediated file changes before applying them.
+Agent processes are not sandboxed, and their own tools can change files without
+that review. The terminal uses your existing shell configuration, supports
+independent tabs, and has font/size/shell preferences. See
+[extensions, agents, and terminal tools](docs/extensions.md) for capabilities
 and limits.
 
 ## Get Rísta

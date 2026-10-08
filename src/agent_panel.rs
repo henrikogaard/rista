@@ -13,8 +13,31 @@ use std::time::Duration;
 
 #[derive(Clone)]
 struct AgentChoice {
-    manifest_id: String,
+    manifest_id: Option<String>,
     agent: Agent,
+}
+
+fn normalize_context_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn merge_active_context(
+    context: &mut Vec<PathBuf>,
+    previous: Option<&Path>,
+    next: Option<&Path>,
+    explicit: &HashSet<PathBuf>,
+    dismissed: &HashSet<PathBuf>,
+) {
+    if let Some(previous) = previous {
+        if !explicit.contains(previous) {
+            context.retain(|path| path != previous);
+        }
+    }
+    if let Some(next) = next {
+        if !dismissed.contains(next) && !context.iter().any(|path| path == next) {
+            context.insert(0, next.to_path_buf());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -56,6 +79,7 @@ pub(super) struct AgentPanel {
     picker_open: bool,
     context: Vec<PathBuf>,
     explicit_context: HashSet<PathBuf>,
+    dismissed_context: HashSet<PathBuf>,
     active_context: Option<PathBuf>,
     conversation_root: Option<PathBuf>,
     process: Option<Arc<AgentProcess>>,
@@ -97,6 +121,7 @@ impl AgentPanel {
             picker_open: false,
             context: Vec::new(),
             explicit_context: HashSet::new(),
+            dismissed_context: HashSet::new(),
             active_context: None,
             conversation_root: None,
             process: None,
@@ -132,26 +157,25 @@ impl AgentPanel {
     }
 
     pub(super) fn sync_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
-        let allowed = path;
-        if self.active_context == allowed {
+        let next = path.map(|path| normalize_context_path(&path));
+        if self.active_context == next {
             return;
         }
-        if let Some(previous) = self.active_context.take() {
-            if !self.explicit_context.contains(&previous) {
-                self.context.retain(|path| path != &previous);
-            }
-        }
-        self.active_context = allowed.clone();
-        if let Some(path) = allowed {
-            if !self.context.contains(&path) {
-                self.context.insert(0, path);
-            }
-        }
+        merge_active_context(
+            &mut self.context,
+            self.active_context.as_deref(),
+            next.as_deref(),
+            &self.explicit_context,
+            &self.dismissed_context,
+        );
+        self.active_context = next;
         cx.notify();
     }
 
     pub(super) fn add_context(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let path = normalize_context_path(&path);
         if self.is_vault_path(&path, cx) {
+            self.dismissed_context.remove(&path);
             self.explicit_context.insert(path.clone());
             if !self.context.contains(&path) {
                 self.context.push(path);
@@ -160,10 +184,22 @@ impl AgentPanel {
         }
     }
 
+    fn remove_context(&mut self, index: usize) {
+        if index >= self.context.len() {
+            return;
+        }
+        let path = self.context.remove(index);
+        self.explicit_context.remove(&path);
+        if self.active_context.as_ref() == Some(&path) {
+            self.dismissed_context.insert(path);
+        }
+    }
+
     pub(super) fn vault_changed(&mut self, cx: &mut Context<Self>) {
         self.stop(cx);
         self.context.clear();
         self.explicit_context.clear();
+        self.dismissed_context.clear();
         self.active_context = None;
         self.selected = None;
         cx.notify();
@@ -182,16 +218,9 @@ impl AgentPanel {
             .upgrade()
             .and_then(|workspace| workspace.read(cx).vault.read(cx).root.clone());
         let registry = extensions::Registry::load(&extensions::user_dir(), root.as_deref());
-        let choices = registry
-            .plugins
+        let choices = extensions::registered_agents(registry.plugins)
             .into_iter()
-            .flat_map(|manifest| {
-                let manifest_id = manifest.id;
-                manifest.agents.into_iter().map(move |agent| AgentChoice {
-                    manifest_id: manifest_id.clone(),
-                    agent,
-                })
-            })
+            .map(|(manifest_id, agent)| AgentChoice { manifest_id, agent })
             .collect();
         let errors = registry
             .errors
@@ -265,6 +294,18 @@ impl AgentPanel {
         self.status = AgentStatus::Connecting;
         let process = match AgentProcess::spawn(&choice.agent.program, &choice.agent.args, &root) {
             Ok(process) => process,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && choice.agent.id == extensions::BUILTIN_VIBE_AGENT_ID =>
+            {
+                let hint = self.tr(
+                    cx,
+                    "Install Vibe with `uv tool install mistral-vibe`, then run `vibe` once in Terminal to sign in and configure it.",
+                    "Installer Vibe med `uv tool install mistral-vibe`, og kjør deretter `vibe` én gang i Terminal for å logge inn og konfigurere.",
+                );
+                self.set_process_error(format!("{hint}\n{error}"), cx);
+                return;
+            }
             Err(error) => {
                 self.set_process_error(error.to_string(), cx);
                 return;
@@ -969,6 +1010,7 @@ impl Render for AgentPanel {
             .workspace
             .upgrade()
             .and_then(|workspace| workspace.read(cx).vault.read(cx).root.clone());
+        let has_configured_agents = choices.iter().any(|choice| choice.manifest_id.is_some());
         let current_choice = self.selected.as_ref();
         let current_name = current_choice
             .map(|choice| choice.agent.name.text(language))
@@ -1097,19 +1139,23 @@ impl Render for AgentPanel {
                                 .gap_1()
                                 .max_h(px(150.))
                                 .overflow_y_scrollbar()
-                                .when(choices.is_empty(), |list| {
+                                .when(!has_configured_agents, |list| {
                                     list.child(
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(self.tr(
                                                 cx,
-                                                "No agents are configured for this vault.",
-                                                "Ingen agenter er konfigurert for dette hvelvet.",
+                                                "Vibe is built in. Add other agents with an extension manifest.",
+                                                "Vibe er innebygd. Legg til andre agenter med et utvidelsesmanifest.",
                                             )),
                                     )
                                 })
                                 .children(choices.iter().enumerate().map(|(index, choice)| {
+                                    let source = choice
+                                        .manifest_id
+                                        .as_deref()
+                                        .unwrap_or(self.tr(cx, "Built-in", "Innebygd"));
                                     Button::new(("agent-choice", index))
                                         .ghost()
                                         .xsmall()
@@ -1117,8 +1163,8 @@ impl Render for AgentPanel {
                                         .justify_start()
                                         .label(choice.agent.name.text(language).to_string())
                                         .tooltip(format!(
-                                            "{} · {}",
-                                            choice.manifest_id, choice.agent.id
+                                            "{source} · {}",
+                                            choice.agent.id
                                         ))
                                         .on_click(cx.listener({
                                             let choice = choice.clone();
@@ -1138,7 +1184,7 @@ impl Render for AgentPanel {
                                     .child(error.clone()),
                             );
                         }
-                        if choices.is_empty() {
+                        if !has_configured_agents {
                             let extensions_dir = self
                                 .workspace
                                 .upgrade()
@@ -1189,8 +1235,7 @@ impl Render for AgentPanel {
                                             .icon(assets::IconName::Close)
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if index < this.context.len() {
-                                                    let path = this.context.remove(index);
-                                                    this.explicit_context.remove(&path);
+                                                    this.remove_context(index);
                                                     cx.notify();
                                                 }
                                             })),
@@ -1215,8 +1260,17 @@ impl Render for AgentPanel {
                                 .p_2()
                                 .bg(cx.theme().group_box)
                                 .rounded(cx.theme().radius)
-                                .text_sm()
-                                .child(text.clone())
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(self.tr(cx, "You", "Du")),
+                                        )
+                                        .child(div().text_sm().child(text.clone())),
+                                )
                                 .into_any_element(),
                             TranscriptItem::Message(text) => div()
                                 .w_full()
@@ -1470,30 +1524,55 @@ impl AgentPanel {
         };
         let expanded = self.expanded_tools.contains(id);
         let tool = tool.clone();
+        let (status_icon, status_label) = match tool.status.as_str() {
+            "in_progress" => (assets::IconName::Loader, self.tr(cx, "Running", "Kjører")),
+            "completed" => (assets::IconName::Check, self.tr(cx, "Done", "Ferdig")),
+            "failed" | "cancelled" => (assets::IconName::X, self.tr(cx, "Failed", "Feilet")),
+            _ => (assets::IconName::Circle, self.tr(cx, "Pending", "Venter")),
+        };
         v_flex()
             .w_full()
             .gap_1()
             .child(
-                Button::new(("agent-tool", tool_index))
-                    .ghost()
-                    .xsmall()
+                h_flex()
                     .w_full()
-                    .justify_start()
-                    .icon(if expanded {
-                        assets::IconName::ChevronDown
-                    } else {
-                        assets::IconName::ChevronRight
-                    })
-                    .label(format!("{} · {}", tool.title, tool.status))
-                    .on_click(cx.listener({
-                        let id = id.to_string();
-                        move |this, _, _, cx| {
-                            if !this.expanded_tools.insert(id.clone()) {
-                                this.expanded_tools.remove(&id);
-                            }
-                            cx.notify();
-                        }
-                    })),
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Button::new(("agent-tool", tool_index))
+                            .ghost()
+                            .xsmall()
+                            .flex_1()
+                            .min_w_0()
+                            .justify_start()
+                            .icon(if expanded {
+                                assets::IconName::ChevronDown
+                            } else {
+                                assets::IconName::ChevronRight
+                            })
+                            .label(tool.title)
+                            .on_click(cx.listener({
+                                let id = id.to_string();
+                                move |this, _, _, cx| {
+                                    if !this.expanded_tools.insert(id.clone()) {
+                                        this.expanded_tools.remove(&id);
+                                    }
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        Icon::new(status_icon)
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(status_label),
+                    ),
             )
             .when(expanded, |details| {
                 details.children(tool.content.iter().map(|content| {
@@ -1556,10 +1635,51 @@ impl Focusable for AgentPanel {
 
 #[cfg(test)]
 mod tests {
+    use super::merge_active_context;
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
     #[test]
     fn only_protocol_mediated_writes_are_described_as_reviewed() {
         let notice = "Approval applies only to file writes requested through ACP; the agent and its tools may change files directly.";
         assert!(notice.contains("only"));
         assert!(notice.contains("directly"));
+    }
+
+    #[test]
+    fn active_context_follows_tabs_and_keeps_dismissed_notes_removed() {
+        let opening = PathBuf::from("/vault/Opening.md");
+        let neighbor = PathBuf::from("/vault/Neighbor.md");
+        let extra = PathBuf::from("/vault/Extra.md");
+        let explicit = HashSet::from([extra.clone()]);
+        let dismissed = HashSet::from([opening.clone()]);
+        let mut context = vec![opening.clone(), extra.clone()];
+
+        merge_active_context(
+            &mut context,
+            Some(Path::new(&opening)),
+            Some(Path::new(&neighbor)),
+            &explicit,
+            &dismissed,
+        );
+        assert_eq!(context, vec![neighbor.clone(), extra.clone()]);
+
+        merge_active_context(
+            &mut context,
+            Some(Path::new(&neighbor)),
+            Some(Path::new(&opening)),
+            &explicit,
+            &dismissed,
+        );
+        assert_eq!(context, vec![extra.clone()]);
+
+        merge_active_context(
+            &mut context,
+            Some(Path::new(&opening)),
+            Some(Path::new(&neighbor)),
+            &explicit,
+            &dismissed,
+        );
+        assert_eq!(context, vec![neighbor, extra]);
     }
 }
