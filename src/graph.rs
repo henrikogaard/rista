@@ -10,14 +10,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::actions::CloseGraph;
+use crate::actions::{CloseGraph, ToggleLocalGraphPanel};
 use crate::app::Workspace;
+use crate::settings::Language;
 
 /// One simulated node — `path` is `None` for ghosts (unresolved link
 /// targets, which the reference editor shows too).
@@ -58,6 +60,7 @@ pub struct GraphView {
     /// The workspace's active document — painted with a halo ring.
     pub(crate) active: Option<PathBuf>,
     docked: bool,
+    filter_visible: bool,
     /// Graph search — non-matching nodes fade out.
     filter: String,
     filter_input: Entity<InputState>,
@@ -244,13 +247,22 @@ impl GraphView {
         }
     }
 
+    fn localized(&self, cx: &App, en: &'static str, nb: &'static str) -> String {
+        self.workspace
+            .upgrade()
+            .map(|workspace| workspace.read(cx).tr(en, nb).to_string())
+            .unwrap_or_else(|| en.to_string())
+    }
+
     /// The filter input + its change subscription — every graph owns
     /// one; non-matching nodes fade out like the graph search.
     fn make_filter(
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Entity<InputState>, gpui::Subscription) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter…"));
+        let placeholder = language.text("Filter graph…", "Filtrer grafen…");
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let sub = cx.subscribe(&input, |this, input, event, cx| {
             if matches!(event, InputEvent::Change) {
                 this.filter = input.read(cx).value().to_lowercase();
@@ -262,18 +274,153 @@ impl GraphView {
 
     /// ⌘F while the graph is open — focus the filter field.
     pub(crate) fn focus_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.filter_input
-            .update(cx, |input, cx| input.focus(window, cx));
+        if !self.filter_visible {
+            self.filter_visible = true;
+            cx.notify();
+            let filter_input = self.filter_input.clone();
+            cx.on_next_frame(window, move |_, window, cx| {
+                filter_input.update(cx, |input, cx| input.focus(window, cx));
+            });
+        } else {
+            self.filter_input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
+    }
+
+    pub(crate) fn toggle_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter_visible {
+            self.hide_filter(window, cx);
+        } else {
+            self.focus_filter(window, cx);
+        }
+    }
+
+    fn hide_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter_visible = false;
+        self.filter.clear();
+        let filter_input = self.filter_input.clone();
+        cx.on_next_frame(window, move |_, window, cx| {
+            filter_input.update(cx, |input, cx| input.set_value("", window, cx));
+        });
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn render_header(&self, cx: &mut Context<Self>) -> Div {
+        let title = if self.docked || self.local.is_some() {
+            self.localized(cx, "Local graph", "Lokal graf")
+        } else {
+            self.localized(cx, "Graph", "Graf")
+        };
+        let search_label = self.localized(cx, "Search graph", "Søk i grafen");
+        let hide_label = self.localized(cx, "Hide local graph", "Skjul lokal graf");
+        let close_label = self.localized(cx, "Close graph (Esc)", "Lukk graf (Esc)");
+        h_flex()
+            .h_10()
+            .flex_shrink_0()
+            .px_3()
+            .gap_2()
+            .items_center()
+            .child(
+                Icon::new(assets::IconName::Waypoints)
+                    .size_3p5()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .font_medium()
+                    .child(title),
+            )
+            .child(
+                Button::new("graph-filter")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Search)
+                    .tooltip(search_label)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_filter(window, cx);
+                    })),
+            )
+            .when(self.docked, |this| {
+                this.child(
+                    Button::new("close-local-graph-panel")
+                        .ghost()
+                        .xsmall()
+                        .icon(assets::IconName::Close)
+                        .tooltip(hide_label)
+                        .on_click(cx.listener(|_, _, window, cx| {
+                            window.dispatch_action(ToggleLocalGraphPanel.boxed_clone(), cx);
+                        })),
+                )
+            })
+            .when(!self.docked, |this| {
+                this.child(
+                    Button::new("graph-close")
+                        .ghost()
+                        .xsmall()
+                        .icon(assets::IconName::Close)
+                        .tooltip(close_label)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(ws) = this.workspace.upgrade() {
+                                ws.update(cx, |ws, cx| ws.close_graph(window, cx));
+                            }
+                        })),
+                )
+            })
+    }
+
+    fn render_filter_row(&self, cx: &mut Context<Self>) -> Div {
+        let input_label = self.localized(cx, "Filter graph", "Filtrer grafen");
+        let close_label = self.localized(cx, "Close graph search", "Lukk grafsøk");
+        h_flex()
+            .h_8()
+            .flex_shrink_0()
+            .mx_3()
+            .mb_2()
+            .px_2()
+            .gap_2()
+            .items_center()
+            .bg(cx.theme().muted)
+            .rounded(cx.theme().radius)
+            .child(
+                Icon::new(assets::IconName::Search)
+                    .size_3p5()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Input::new(&self.filter_input)
+                    .small()
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .aria_label(input_label)
+                    .flex_1()
+                    .min_w_0(),
+            )
+            .child(
+                Button::new("close-graph-filter")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Close)
+                    .tooltip(close_label)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.hide_filter(window, cx);
+                    })),
+            )
     }
 
     pub fn new(
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (nodes, _by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
-        let (filter_input, _filter_sub) = Self::make_filter(window, cx);
+        let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -286,6 +433,7 @@ impl GraphView {
             dist: None,
             active: None,
             docked: false,
+            filter_visible: true,
             filter: String::new(),
             filter_input,
             _filter_sub,
@@ -310,11 +458,12 @@ impl GraphView {
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
         center: &std::path::Path,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (mut nodes, by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
-        let (filter_input, _filter_sub) = Self::make_filter(window, cx);
+        let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
         let local = by_path.get(center).copied();
         if let Some(ix) = local {
             nodes[ix].pos = point(0., 0.);
@@ -333,6 +482,7 @@ impl GraphView {
             dist,
             active: Some(center.to_path_buf()),
             docked: false,
+            filter_visible: true,
             filter: String::new(),
             filter_input,
             _filter_sub,
@@ -355,15 +505,17 @@ impl GraphView {
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
         center: Option<&std::path::Path>,
+        language: Language,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = if let Some(center) = center {
-            Self::new_local(workspace, vault, center, window, cx)
+            Self::new_local(workspace, vault, center, language, window, cx)
         } else {
-            Self::new(workspace, vault, window, cx)
+            Self::new(workspace, vault, language, window, cx)
         };
         view.docked = true;
+        view.filter_visible = false;
         view
     }
 
@@ -625,33 +777,50 @@ struct Painted {
 
 impl Render for GraphView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity();
+        let filter_visible = self.filter_visible;
+        let header = self.render_header(cx);
+        let filter_row = self.render_filter_row(cx);
+        let mut root = v_flex()
+            .id("graph-view")
+            .size_full()
+            .track_focus(&self.focus_handle)
+            .key_context("RistaGraph")
+            .on_action(cx.listener(|this, _: &CloseGraph, window, cx| {
+                if this.filter_visible {
+                    this.hide_filter(window, cx);
+                } else if !this.docked {
+                    if let Some(ws) = this.workspace.upgrade() {
+                        ws.update(cx, |ws, cx| ws.close_graph(window, cx));
+                    }
+                }
+            }))
+            .child(header);
+        if filter_visible {
+            root = root.child(filter_row);
+        }
         if self.docked && self.local.is_none() {
-            let message = self
-                .workspace
-                .upgrade()
-                .map(|workspace| {
-                    workspace
-                        .read(cx)
-                        .tr(
-                            "Open a note in this vault to see its local graph",
-                            "Åpne et notat i dette hvelvet for å se den lokale grafen",
-                        )
-                        .to_string()
-                })
-                .unwrap_or_else(|| "Open a note to see its local graph".to_string());
-            return div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(message)
+            let message = self.localized(
+                cx,
+                "Open a note in this vault to see its local graph",
+                "Åpne et notat i dette hvelvet for å se den lokale grafen",
+            );
+            return root
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_4()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(message),
+                )
                 .into_any_element();
         }
         let theme = cx.theme();
-        let this = cx.entity();
         let bounds_slot = self.bounds.clone();
         let scale = self.scale;
         let offset = self.offset;
@@ -886,20 +1055,12 @@ impl Render for GraphView {
             })
             .collect::<Vec<_>>();
 
-        div()
-            .id("graph-view")
-            .size_full()
+        let canvas_view = div()
+            .id("graph-canvas")
+            .flex_1()
+            .min_h_0()
             .relative()
             .overflow_hidden()
-            .track_focus(&self.focus_handle)
-            .key_context("RistaGraph")
-            .on_action(cx.listener(|this, _: &CloseGraph, window, cx| {
-                if !this.docked {
-                    if let Some(ws) = this.workspace.upgrade() {
-                        ws.update(cx, |ws, cx| ws.close_graph(window, cx));
-                    }
-                }
-            }))
             .on_mouse_down(gpui::MouseButton::Left, {
                 let this = this.clone();
                 move |ev: &gpui::MouseDownEvent, _window, cx| {
@@ -1029,7 +1190,8 @@ impl Render for GraphView {
                         cx.notify();
                     });
                 }
-            })
+            });
+        let canvas_view = canvas_view
             .child(canvas.size_full())
             .children(label_layer)
             .child(
@@ -1084,32 +1246,7 @@ impl Render for GraphView {
                             ),
                         }
                     }),
-            )
-            .child(
-                // Filter — top-left, small and quiet; ⌘F focuses it.
-                div()
-                    .absolute()
-                    .top_2()
-                    .left_3()
-                    .w(px(170.))
-                    .child(Input::new(&self.filter_input).appearance(true).xsmall()),
-            )
-            .when(!self.docked, |this| {
-                this.child(
-                    div().absolute().top_2().right_3().child(
-                        Button::new("graph-close")
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::Close)
-                            .tooltip("Close graph (Esc)")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(ws) = this.workspace.upgrade() {
-                                    ws.update(cx, |ws, cx| ws.close_graph(window, cx));
-                                }
-                            })),
-                    ),
-                )
-            })
-            .into_any_element()
+            );
+        root.child(canvas_view).into_any_element()
     }
 }

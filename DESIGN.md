@@ -4,7 +4,8 @@ Quiet, modern-mythic. Nordic restraint: mineral surfaces, restrained accents,
 terse type, nothing ornamental. Files are the product; chrome recedes.
 
 The source of truth for UI tokens is `src/theme.rs`
-(Rísta, Fjord, and Rose light/dark palettes), exported framework-agnostically:
+(Rísta, Fjord, Rose, Graphite, and Mono light/dark palettes),
+exported framework-agnostically:
 
 - `design/tokens.json` — generated values
 - `design/tokens.css` — CSS custom properties (`--rista-*`), usable by any web surface
@@ -31,8 +32,9 @@ Folder dashboards use a single identity header, quiet breadcrumb/action rows,
 and compact bordered content cards. Gallery media belongs to documents rather
 than chrome. Pins keep a stable order; layout/filter controls remain local to the
 folder. The terminal is a collapsible, resizable lower pane, not a competing
-sidebar. Its default/ANSI semantic colors follow the selected palette; explicit
-256-color and true-color escape sequences remain process-supplied content.
+sidebar. ANSI red, green, and yellow use the selected palette's semantic colors,
+while blue, magenta, and cyan use its base colors; explicit 256-color and
+true-color escape sequences remain process-supplied content.
 
 Palette intent per token group (values in `design/tokens.json`):
 
@@ -49,7 +51,10 @@ Palette intent per token group (values in `design/tokens.json`):
 
 Night uses a restrained teal accent; Day uses blue-grey.
 Fjord uses cool blue surfaces and accents; Rose uses warm plum surfaces and
-rose accents. Light and dark palettes are selected independently in Settings.
+rose accents. Graphite and Mono are monochrome: neutral grey (Graphite) or pure
+black-and-white (Mono) surfaces with a near-black/white accent; semantic and
+terminal ANSI colours use the system palette. Light and dark palettes are
+selected independently in Settings.
 Accent tokens apply to controls, links, selection, the caret, and syntax accents.
 
 ### Custom palettes
@@ -159,5 +164,5 @@ python3 scripts/export-theme-tokens.py
 ```
 
 The existing `themes.dark`/`themes.light` exports and CSS selectors remain
-compatible. `palettes` adds all six named variants, selectable in CSS with e.g.
+compatible. `palettes` adds all ten named variants, selectable in CSS with e.g.
 `data-rista-theme="fjord-night"`.

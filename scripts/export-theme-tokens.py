@@ -26,6 +26,12 @@ for palette in constant("RISTA_PALETTES"):
     syntax_keys = re.search(r'for key in \[(.*?)\] \{\s*theme\["highlight"\]\["syntax"\]', source, re.S)[1]
     for key in re.findall(r'"([^"]+)"', syntax_keys):
         theme["highlight"]["syntax"][key]["color"] = palette["accent"]
+    for key, value in palette.get("colors", {}).items():
+        theme["colors"][key] = value
+    for key, value in palette.get("highlight", {}).items():
+        theme["highlight"][key] = value
+    for key, value in palette.get("syntax", {}).items():
+        theme["highlight"]["syntax"][key]["color"] = value
     themes.append(theme)
 
 

@@ -219,7 +219,11 @@ const RISTA_PALETTES: &str = r##"[
   {"name":"Fjord Night","mode":"dark","canvas":"#0d121b","surface":"#141c29","popover":"#1a2535","muted":"#202d40","border":"#2c3b50","accent":"#92bcf4","selection":"#293f60","on_accent":"#101d30"},
   {"name":"Fjord Day","mode":"light","canvas":"#edf3fa","surface":"#f9fbfe","popover":"#ffffff","muted":"#e0eaf7","border":"#ccd9eb","accent":"#315f9d","selection":"#cdddf4","on_accent":"#ffffff"},
   {"name":"Rose Night","mode":"dark","canvas":"#181216","surface":"#211a20","popover":"#2b212a","muted":"#342630","border":"#493440","accent":"#e5a1b5","selection":"#50303d","on_accent":"#2d1520"},
-  {"name":"Rose Day","mode":"light","canvas":"#faf1f3","surface":"#fffafb","popover":"#ffffff","muted":"#f1e2e7","border":"#e4cdd5","accent":"#994963","selection":"#efd1dc","on_accent":"#ffffff"}
+  {"name":"Rose Day","mode":"light","canvas":"#faf1f3","surface":"#fffafb","popover":"#ffffff","muted":"#f1e2e7","border":"#e4cdd5","accent":"#994963","selection":"#efd1dc","on_accent":"#ffffff"},
+  {"name":"Graphite Night","mode":"dark","canvas":"#161618","surface":"#1e1e20","popover":"#2a2a2c","muted":"#2c2c2e","border":"#38383a","accent":"#f5f5f7","selection":"#3a3a3c","on_accent":"#1d1d1f","colors":{"foreground":"#e5e5ea","popover.foreground":"#e5e5ea","sidebar.foreground":"#d1d1d6","tab.active.foreground":"#f5f5f7","group_box.foreground":"#d1d1d6","secondary.foreground":"#d1d1d6","accent.foreground":"#d1d1d6","muted.foreground":"#8e8e93","input.background":"#1a1a1c","list.even.background":"#1b1b1d","primary.hover.background":"#ffffff","primary.active.background":"#d1d1d6","scrollbar.thumb.background":"#48484aaa","danger.background":"#ff453a","danger.foreground":"#ffffff","danger.hover.background":"#ff6961","warning.background":"#ffd60a","warning.foreground":"#1d1d1f","success.background":"#30d158","success.foreground":"#1d1d1f","base.red":"#ff453a","base.yellow":"#ffd60a","base.blue":"#0a84ff","base.green":"#30d158","base.magenta":"#bf5af2","base.cyan":"#64d2ff","base.orange":"#ff9f0a"},"highlight":{"editor.foreground":"#e5e5ea","editor.active_line.background":"#2c2c2e80","editor.line_number":"#48484a","editor.active_line_number":"#8e8e93","editor.invisible":"#3a3a3c66","warning":"#ffd60a","error":"#ff453a","success":"#30d158"},"syntax":{"comment":"#6c6c70","string":"#c7c7cc","number":"#d1d1d6","function":"#f5f5f7","type":"#d1d1d6","operator":"#aeaeb2","property":"#e5e5ea","constant":"#d1d1d6","punctuation":"#8e8e93","link_text":"#f5f5f7","link_uri":"#8e8e93","emphasis":"#e5e5ea","emphasis.strong":"#ffffff","title":"#ffffff","hint":"#8e8e93","predictive":"#48484a"}},
+  {"name":"Graphite Day","mode":"light","canvas":"#f5f5f7","surface":"#ffffff","popover":"#ffffff","muted":"#ededf0","border":"#d2d2d7","accent":"#1d1d1f","selection":"#dcdce0","on_accent":"#ffffff","colors":{"foreground":"#1d1d1f","popover.foreground":"#1d1d1f","sidebar.foreground":"#3a3a3c","tab.active.foreground":"#1d1d1f","group_box.foreground":"#3a3a3c","secondary.foreground":"#3a3a3c","accent.foreground":"#3a3a3c","muted.foreground":"#6e6e73","input.background":"#ffffff","list.even.background":"#fafafa","primary.hover.background":"#3a3a3c","primary.active.background":"#000000","scrollbar.thumb.background":"#c7c7ccaa","danger.background":"#d70015","danger.foreground":"#ffffff","danger.hover.background":"#e5332a","warning.background":"#b25000","warning.foreground":"#ffffff","success.background":"#248a3d","success.foreground":"#ffffff","base.red":"#d70015","base.yellow":"#9a6700","base.blue":"#0066cc","base.green":"#248a3d","base.magenta":"#8944ab","base.cyan":"#0071a4","base.orange":"#c93400"},"highlight":{"editor.foreground":"#1d1d1f","editor.active_line.background":"#f5f5f7","editor.line_number":"#c7c7cc","editor.active_line_number":"#6e6e73","editor.invisible":"#d1d1d666","warning":"#b25000","error":"#d70015","success":"#248a3d"},"syntax":{"comment":"#8e8e93","string":"#3a3a3c","number":"#48484a","function":"#1d1d1f","type":"#48484a","operator":"#6e6e73","property":"#1d1d1f","constant":"#48484a","punctuation":"#8e8e93","link_text":"#1d1d1f","link_uri":"#8e8e93","emphasis":"#3a3a3c","emphasis.strong":"#000000","title":"#000000","hint":"#8e8e93","predictive":"#c7c7cc"}},
+  {"name":"Mono Night","mode":"dark","canvas":"#000000","surface":"#0a0a0a","popover":"#1c1c1e","muted":"#1c1c1e","border":"#2c2c2e","accent":"#ffffff","selection":"#333336","on_accent":"#000000","colors":{"foreground":"#f2f2f7","popover.foreground":"#f2f2f7","sidebar.foreground":"#d1d1d6","tab.active.foreground":"#ffffff","group_box.foreground":"#d1d1d6","secondary.foreground":"#d1d1d6","accent.foreground":"#d1d1d6","muted.foreground":"#8e8e93","input.background":"#000000","list.even.background":"#0d0d0d","primary.hover.background":"#e5e5ea","primary.active.background":"#d1d1d6","scrollbar.thumb.background":"#3a3a3caa","danger.background":"#ff453a","danger.foreground":"#ffffff","danger.hover.background":"#ff6961","warning.background":"#ffd60a","warning.foreground":"#000000","success.background":"#30d158","success.foreground":"#000000","base.red":"#ff453a","base.yellow":"#ffd60a","base.blue":"#0a84ff","base.green":"#30d158","base.magenta":"#bf5af2","base.cyan":"#64d2ff","base.orange":"#ff9f0a"},"highlight":{"editor.foreground":"#f2f2f7","editor.active_line.background":"#1c1c1e80","editor.line_number":"#3a3a3c","editor.active_line_number":"#8e8e93","editor.invisible":"#2c2c2e66","warning":"#ffd60a","error":"#ff453a","success":"#30d158"},"syntax":{"comment":"#636366","string":"#c7c7cc","number":"#d1d1d6","function":"#ffffff","type":"#d1d1d6","operator":"#aeaeb2","property":"#f2f2f7","constant":"#d1d1d6","punctuation":"#8e8e93","link_text":"#ffffff","link_uri":"#8e8e93","emphasis":"#f2f2f7","emphasis.strong":"#ffffff","title":"#ffffff","hint":"#8e8e93","predictive":"#3a3a3c"}},
+  {"name":"Mono Day","mode":"light","canvas":"#fafafa","surface":"#ffffff","popover":"#ffffff","muted":"#f2f2f2","border":"#e0e0e0","accent":"#000000","selection":"#e3e3e3","on_accent":"#ffffff","colors":{"foreground":"#111111","popover.foreground":"#111111","sidebar.foreground":"#333333","tab.active.foreground":"#000000","group_box.foreground":"#333333","secondary.foreground":"#333333","accent.foreground":"#333333","muted.foreground":"#6e6e73","input.background":"#ffffff","list.even.background":"#fcfcfc","primary.hover.background":"#333333","primary.active.background":"#1d1d1f","scrollbar.thumb.background":"#c7c7ccaa","danger.background":"#d70015","danger.foreground":"#ffffff","danger.hover.background":"#e5332a","warning.background":"#b25000","warning.foreground":"#ffffff","success.background":"#248a3d","success.foreground":"#ffffff","base.red":"#d70015","base.yellow":"#9a6700","base.blue":"#0066cc","base.green":"#248a3d","base.magenta":"#8944ab","base.cyan":"#0071a4","base.orange":"#c93400"},"highlight":{"editor.foreground":"#111111","editor.active_line.background":"#f7f7f7","editor.line_number":"#c7c7cc","editor.active_line_number":"#6e6e73","editor.invisible":"#d1d1d666","warning":"#b25000","error":"#d70015","success":"#248a3d"},"syntax":{"comment":"#8e8e93","string":"#333333","number":"#48484a","function":"#111111","type":"#48484a","operator":"#6e6e73","property":"#111111","constant":"#48484a","punctuation":"#8e8e93","link_text":"#000000","link_uri":"#8e8e93","emphasis":"#333333","emphasis.strong":"#000000","title":"#000000","hint":"#8e8e93","predictive":"#c7c7cc"}}
 ]"##;
 
 pub fn builtin_json() -> serde_json::Value {
@@ -278,6 +282,21 @@ pub fn builtin_json() -> serde_json::Value {
         theme["highlight"]["info"] = palette["accent"].clone();
         for key in ["keyword", "property", "link_text", "title"] {
             theme["highlight"]["syntax"][key]["color"] = palette["accent"].clone();
+        }
+        if let Some(overrides) = palette["colors"].as_object() {
+            for (key, value) in overrides {
+                theme["colors"][key.as_str()] = value.clone();
+            }
+        }
+        if let Some(overrides) = palette["highlight"].as_object() {
+            for (key, value) in overrides {
+                theme["highlight"][key.as_str()] = value.clone();
+            }
+        }
+        if let Some(overrides) = palette["syntax"].as_object() {
+            for (key, value) in overrides {
+                theme["highlight"]["syntax"][key.as_str()]["color"] = value.clone();
+            }
         }
         set["themes"].as_array_mut().unwrap().push(theme);
     }
@@ -464,16 +483,36 @@ mod tests {
     fn builtin_palettes_have_distinct_accents_and_exportable_colours() {
         let json = builtin_json();
         let themes = json["themes"].as_array().unwrap();
-        assert_eq!(themes.len(), 6);
+        assert_eq!(themes.len(), 10);
         for mode in ["dark", "light"] {
             let matching: Vec<_> = themes.iter().filter(|t| t["mode"] == mode).collect();
             let accents: std::collections::HashSet<_> = matching
                 .iter()
                 .map(|t| t["colors"]["primary.background"].as_str().unwrap())
                 .collect();
-            assert_eq!(accents.len(), 3);
+            assert_eq!(accents.len(), 5);
         }
-        assert_eq!(parse_custom(&json.to_string()).unwrap().themes.len(), 6);
+        assert_eq!(parse_custom(&json.to_string()).unwrap().themes.len(), 10);
+
+        let graphite_night = themes
+            .iter()
+            .find(|theme| theme["name"] == "Graphite Night")
+            .unwrap();
+        assert_eq!(graphite_night["colors"]["base.blue"], "#0a84ff");
+        assert_eq!(
+            graphite_night["highlight"]["syntax"]["title"]["color"],
+            "#ffffff"
+        );
+
+        let fjord_night = themes
+            .iter()
+            .find(|theme| theme["name"] == "Fjord Night")
+            .unwrap();
+        assert_eq!(fjord_night["colors"]["base.red"], "#c47a7a");
+        assert_eq!(
+            fjord_night["highlight"]["syntax"]["string"]["color"],
+            "#9db883"
+        );
 
         let exports: serde_json::Value =
             serde_json::from_str(include_str!("../design/tokens.json")).unwrap();
@@ -503,6 +542,10 @@ mod tests {
             "fjord-day",
             "rose-night",
             "rose-day",
+            "graphite-night",
+            "graphite-day",
+            "mono-night",
+            "mono-day",
         ] {
             assert!(css.contains(&format!(r#"[data-rista-theme="{selector}"]"#)));
         }

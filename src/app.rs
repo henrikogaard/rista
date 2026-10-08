@@ -1282,9 +1282,11 @@ impl Workspace {
             graph.update(cx, |g, cx| g.focus_filter(window, cx));
             return;
         }
-        if let Some(graph) = self.graph_dock.clone() {
-            graph.update(cx, |g, cx| g.focus_filter(window, cx));
-            return;
+        if self.settings.graph_dock_open {
+            if let Some(graph) = self.graph_dock.clone() {
+                graph.update(cx, |g, cx| g.focus_filter(window, cx));
+                return;
+            }
         }
         if self.settings.view_mode != ViewMode::Source {
             if let Some(base) = self
@@ -1788,7 +1790,8 @@ impl Workspace {
             .active
             .and_then(|i| self.docs.get(i))
             .map(|d| d.entity.read(cx).path.clone());
-        let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, window, cx));
+        let language = self.settings.language;
+        let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, language, window, cx));
         graph.update(cx, |g, _cx| g.active = active);
         graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
@@ -1805,8 +1808,16 @@ impl Workspace {
             .active
             .and_then(|ix| self.docs.get(ix))
             .map(|doc| doc.entity.read(cx).path.clone());
+        let language = self.settings.language;
         self.graph_dock = Some(cx.new(|cx| {
-            crate::graph::GraphView::new_docked(workspace, vault, active.as_deref(), window, cx)
+            crate::graph::GraphView::new_docked(
+                workspace,
+                vault,
+                active.as_deref(),
+                language,
+                window,
+                cx,
+            )
         }));
     }
 
@@ -1819,6 +1830,8 @@ impl Workspace {
         self.settings.graph_dock_open = !self.settings.graph_dock_open;
         if self.settings.graph_dock_open {
             self.ensure_graph_dock(window, cx);
+        } else {
+            self.refocus(window, cx);
         }
         self.settings.save();
         cx.notify();
@@ -1868,7 +1881,9 @@ impl Workspace {
     ) {
         let weak = cx.weak_entity();
         let vault = self.vault.clone();
-        let graph = cx.new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, window, cx));
+        let language = self.settings.language;
+        let graph = cx
+            .new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, language, window, cx));
         graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
         cx.notify();
@@ -6691,16 +6706,12 @@ impl Workspace {
                     (title, doc.dirty, icon)
                 };
                 let view = cx.entity();
-                let tab = Tab::new()
-                    .when(doc.preview, |tab| tab.italic())
-                    .label(if dirty {
-                        format!("{} •", title.clone())
-                    } else {
-                        title.clone()
-                    })
-                    // Icon goes in `prefix`: the vendored Tab renders the
-                    // `icon` slot INSTEAD of the label, not beside it.
-                    .prefix(Icon::new(icon).size_3p5());
+                let label = if dirty {
+                    format!("{} •", title.clone())
+                } else {
+                    title.clone()
+                };
+                let tab = Self::content_tab(label, icon).when(doc.preview, |tab| tab.italic());
                 let pinned = {
                     let doc = doc.entity.read(cx);
                     let s = doc.path.display().to_string();
@@ -6725,7 +6736,7 @@ impl Workspace {
                             })),
                     )
                 };
-                tab.on_mouse_down(gpui::MouseButton::Left, {
+                tab.on_mouse_up(gpui::MouseButton::Left, {
                     let view = view.clone();
                     move |event, _, cx| {
                         if event.click_count == 2 {
@@ -6836,7 +6847,7 @@ impl Workspace {
                             .bg(cx.theme().transparent)
                             .selected_index(self.active.unwrap_or(usize::MAX))
                             .children(tabs)
-                            .on_click(cx.listener(|this, &ix, _window, cx| {
+                            .on_click(cx.listener(|this, &ix, window, cx| {
                                 // The × suffix button closes a tab but its
                                 // click still lands here — skip reselecting
                                 // an index that no longer exists, which
@@ -6850,7 +6861,7 @@ impl Workspace {
                                     this.record_nav(&path);
                                     this.persist_tabs(cx);
                                     this.reveal_active_file(cx);
-                                    cx.notify();
+                                    this.refocus(window, cx);
                                 }
                             })),
                     )
@@ -7796,43 +7807,29 @@ impl Workspace {
         )
     }
 
+    fn content_tab(label: String, icon: assets::IconName) -> Tab {
+        Tab::new().aria_label(label.clone()).child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .min_w_0()
+                .child(Icon::new(icon).size_3p5().flex_shrink_0())
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(label),
+                ),
+        )
+    }
+
     fn render_graph_dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
             .rounded(cx.theme().radius_lg)
             .overflow_hidden()
-            .child(
-                h_flex()
-                    .h_10()
-                    .px_3()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Icon::new(assets::IconName::Waypoints)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .font_medium()
-                            .child(self.tr("Local graph", "Lokal graf")),
-                    )
-                    .child(
-                        Button::new("close-local-graph-panel")
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::Close)
-                            .tooltip(self.tr("Hide local graph", "Skjul lokal graf"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings.graph_dock_open = false;
-                                this.settings.save();
-                                cx.notify();
-                            })),
-                    ),
-            )
             .child(
                 div()
                     .flex_1()
@@ -7875,6 +7872,9 @@ impl Workspace {
         };
 
         StatusBar::new()
+            .px_4()
+            .py_2()
+            .flex_shrink_0()
             .left(
                 h_flex()
                     .gap_3()
