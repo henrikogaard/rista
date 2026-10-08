@@ -8248,8 +8248,8 @@ impl Render for Workspace {
                                                     .when(self.settings.graph_dock_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
-                                                                .size(px(220.))
-                                                                .size_range(px(150.)..px(440.))
+                                                                .when(self.settings.agent_open || self.settings.inspector_open, |panel| panel.size(px(220.)))
+                                                                .size_range(px(150.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
                                                                         .size_full()
@@ -8261,8 +8261,8 @@ impl Render for Workspace {
                                                     .when(self.settings.agent_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
-                                                                .size(px(300.))
-                                                                .size_range(px(220.)..px(600.))
+                                                                .when(self.settings.inspector_open, |panel| panel.size(px(300.)))
+                                                                .size_range(px(220.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
                                                                         .size_full()
@@ -8281,8 +8281,7 @@ impl Render for Workspace {
                                                     .when(self.settings.inspector_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
-                                                                .size(px(240.))
-                                                                .size_range(px(170.)..px(440.))
+                                                                .size_range(px(170.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
                                                                         .size_full()
