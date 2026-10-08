@@ -1,15 +1,17 @@
 # Local extensions and terminal tools (API v1)
 
-Rísta reads declarative JSON extensions without recompiling. This first API adds
-commands to **Tools** and the command palette. Each command launches an installed
-executable in the native PTY terminal. It is not a JavaScript/WASM runtime or a
-sandbox, and does not yet inject arbitrary native UI, intercept editor events,
-or provide a unified AI chat protocol.
+Rísta reads declarative JSON extensions without recompiling. Extensions can add
+commands to **Tools** and the command palette, and configure external agents for
+the native Agent panel. Commands launch an installed executable in the native
+PTY terminal. Agents communicate through ACP over newline-delimited JSON-RPC;
+the Agent panel includes a built-in Vibe preset and supports manifest agents.
+There is no JavaScript/WASM runtime.
 
-Use an AI coding agent to create a manifest, inspect it, then choose **Tools →
-Reload**. No process runs on discovery, reload, startup, or vault opening.
-The confirmation displays the actual executable, argument array, and working
-directory. Commands launch directly with an argument vector, not through `sh -c`.
+Create and inspect a manifest, then choose **Tools → Reload**. No process runs
+on discovery, reload, startup, or vault opening. Launching an agent requires
+explicit confirmation showing its executable, arguments, vault working
+directory, and unsandboxed permissions. Processes launch directly with an
+argument vector, not through a shell.
 
 ## Locations
 
@@ -21,7 +23,7 @@ Only direct JSON files are loaded; symlinks, invalid manifests, unknown fields,
 unsupported API versions, and duplicate plugin IDs are rejected. User extensions
 load first; a vault cannot replace one by reusing its ID. Errors appear in Tools
 without preventing valid extensions from loading. Manifests are bounded to 64 KiB,
-64 commands each, and 128 files per scope.
+64 commands and 64 agents each, and 128 files per scope.
 
 ## Manifest
 
@@ -38,9 +40,27 @@ without preventing valid extensions from loading. Manifests are bounded to 64 Ki
       "args": ["{{file}}"],
       "working_directory": "folder"
     }
+  ],
+  "agents": [
+    {
+      "id": "my-agent",
+      "name": { "en": "My agent", "nb": "Min agent" },
+      "program": "/usr/local/bin/my-agent",
+      "args": ["--stdio"]
+    }
   ]
 }
 ```
+
+The `agents` array is optional. Each entry requires a unique `id`, localized
+`name`, and `program`; `args` defaults to an empty array. The Agent picker lists
+the built-in Vibe preset followed by configured agents. The ID `vibe` is
+reserved for the preset and cannot be used by a manifest agent. Vibe uses
+`vibe-acp`; install it with `uv tool install mistral-vibe`, then run `vibe` once
+in Terminal to sign in and configure it. If no manifest agents are configured,
+**Open extensions folder** opens the vault extension directory (or the user
+extension directory without a vault). Configured executables receive the vault
+root as their working directory.
 
 `program` is an installed executable name or absolute path. `args` defaults to
 `[]`. `working_directory` is `vault` (default) or `folder` (current dashboard or
@@ -55,21 +75,36 @@ rather than the open tab. A selected file supplies `{{file}}` and its parent
 supplies `{{folder}}`; a selected folder/dashboard has no current file, so a
 command requiring `{{file}}` will not launch. Reload preserves this context.
 
-To launch an AI CLI, change `program` and `args` to its documented executable and
-options. Built-in launchers cover `claude`, `codex`, `vibe`, `pi`, `omp`, and
-`opencode`; they do not install, authenticate, or call a hosted provider by
-themselves. Tool versions, account access, and provider charges belong to the CLI.
-Use an absolute path if the command is not on the app's inherited PATH.
+To launch another AI CLI, change `program` and `args` to its documented
+executable and options. Terminal launchers cover `claude`, `codex`, `vibe`,
+`pi`, `omp`, and `opencode`; they do not install, authenticate, or call a hosted
+provider by themselves. Tool versions, account access, and provider charges
+belong to the CLI. Use an absolute path if the command is not on the app's
+inherited PATH.
 
-## Security boundary
+## Agent protocol and security boundary
 
-The only executable capability in v1 is **launch a local process**, granted for
-one launch by an explicit confirmation. It includes all the process's normal
-filesystem, environment, and network access. A vault working directory is NOT
-a sandbox: a process may read outside it, change files, access credentials from
-the environment, or contact a paid service. JSON cannot constrain these rights.
-Only run trusted extensions and programs; do not place secrets in manifests.
-No persistent “trust this vault” grant or background lifecycle hook exists.
+Agent support currently implements ACP initialization and new sessions,
+streaming prompts and updates, tool calls and plans, permission requests, and
+the `fs/read_text_file` / `fs/write_text_file` methods. Context files are sent
+as resource links. Authentication is managed by the configured agent; if setup
+reports an authentication error, complete authentication using that agent's
+own setup and start a new conversation. Rísta does not request or store agent
+credentials.
+
+Protocol-mediated file reads and writes are restricted to the open vault;
+symlink escapes are rejected. Reads prefer unsaved contents of open buffers and
+support line-range requests. Every ACP write is shown as a proposed change and
+must be accepted before it is applied. Accept updates an open buffer or writes
+a non-open file; Reject returns an error to the agent.
+
+The agent process runs with your normal user permissions and is **not sandboxed**.
+It inherits the app's environment and may access files and the network. The
+review step applies only to writes requested through ACP: the agent itself or
+its tools may modify files directly, bypassing protocol-mediated review. A vault
+working directory is not a sandbox and cannot constrain those rights. Only
+launch trusted programs; do not put secrets in manifests. No persistent “trust
+this vault” grant or background lifecycle hook exists.
 
 ## Terminal
 
@@ -99,7 +134,8 @@ history. Mouse reporting, text-range selection, terminal images, and advanced
 keyboard protocols are not implemented in this first version.
 
 External note edits go through the existing vault watcher and conflict detection;
-an agent must not assume it can overwrite an unsaved editor buffer. Rich graphical
-agent integrations need a documented structured protocol; terminal launchers do
-not pretend to be such integrations. macOS is the initial target; Linux/Windows
-terminal behavior and keyboard mappings are not verified.
+the Agent panel reads unsaved open-buffer contents and reviews its own
+protocol-mediated writes. The terminal and Agent panel are separate: launching a
+terminal command does not give it ACP streaming, permission prompts, or review
+cards. macOS is the initial target; Linux/Windows terminal behavior and keyboard
+mappings are not verified.

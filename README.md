@@ -4,9 +4,9 @@
 
 <h1 align="center">Rísta</h1>
 <p align="center"><strong>A quiet place for your notes.</strong></p>
-<p align="center">Native Markdown. Beautiful pages. Databases made from your own files.</p>
+<p align="center">A native Markdown workspace for writing, organising, and thinking with your own files.</p>
 <p align="center">
-  <a href="https://github.com/henrikogaard/rista/releases">Releases</a> ·
+  <a href="https://github.com/henrikogaard/rista/releases/latest">Download for macOS</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="DESIGN.md">Design system</a> ·
   <a href="LICENSE">MIT license</a>
@@ -14,75 +14,120 @@
 
 ---
 
-Rísta is a local-first Markdown editor built in Rust with
-[GPUI](https://gpui.rs) and [gpui-kit](https://gpui-kit.com).
-Open a single note or a folder of notes. Write in source, read in preview,
-or keep both side by side. Your work stays in ordinary Markdown files,
-with images alongside them and properties in YAML frontmatter.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/agent-review-dark.png" />
+  <img src="docs/screenshots/agent-review-light.png" alt="Rísta with a project brief in split view, its local graph, and an agent proposing a reviewable change" />
+</picture>
 
-No account is required. There is no built-in cloud sync or telemetry.
-Remote images and packaged update checks can still make network requests.
+<p align="center"><sub>Write in Markdown, see how notes connect, and review every change an agent proposes before it lands.</sub></p>
 
-## Write, connect, organise
+Rísta turns a folder of Markdown files into a calm, fast workspace. Folders become
+pages, notes link into a graph, frontmatter becomes databases, and an agent can
+help with your writing — without your notes ever leaving ordinary files on disk.
 
-- **A native writing workspace.** Multiple tabs, a file tree, search,
-  command palette, autosave, session restoration, and a distraction-free zen mode.
-- **Pages with presence.** Headings, cover images, image embeds, callouts,
-  editable properties, and tables in a live Markdown preview.
-- **Connected notes.** Wikilinks and aliases, note transclusion, backlinks,
-  outgoing links, tags, an outline, and local/global graph views.
-- **Databases without a server.** `.base` YAML files query your notes and
-  frontmatter. View the same notes as a table, cards, a board, or a calendar;
-  add filters, formulas, relations, and rollups.
-- **Everyday organisation.** Daily notes, templates, tasks, starred notes,
-  local page history, and a recoverable vault trash.
-- **Quiet by design.** Rísta Night and Rísta Day, compact controls, adjustable
-  typography, and resizable panes.
+It is a native app written in Rust, not a web page in a window, and it follows
+the look and feel of the Mac.
 
-### Exploring and writing
+## Why Rísta
 
-Filter the explorer by filename/path or file type; folders stay first. Expansion
-is remembered per vault. **Files** offers a compact Name/Type/Modified/Size table
-alongside the curated **Dashboard**. Drag files or folders to move them, then use
-**Undo last move** if needed; existing destinations are never overwritten.
-**⌘P** switches files/folders; breadcrumb menus browse siblings. Single-click
-previews a file, while double-click or editing keeps its tab open.
+- **Your files, always.** Notes are plain `.md` files, properties are YAML
+  frontmatter, images sit next to your notes. No database, no lock-in, no account.
+- **Native and quiet.** Compact controls, paired light and dark palettes, and no
+  visual noise between you and the page.
+- **Organised by folders, not by rules.** Every folder is a living page that shows
+  what is inside it — subfolders, pinned notes, tasks, and databases.
+- **Help that asks first.** The Agent panel shows what it reads, asks before it
+  acts, and proposes edits you accept or reject.
+- **Private by default.** No cloud sync, no telemetry, no sign-in.
 
-The outline supports ATX and Setext headings and moves both source and preview
-to the selected section. In Split mode, the link control in the status bar lets
-the preview follow source scrolling at Markdown-block boundaries (not pixel-exact
-bidirectional scrolling). A missing-links indicator opens the outgoing panel;
-local note and image targets are checked, excluding code samples and external URLs.
-Wikilink and image completion remain available with `[[` and `![[`.
+## Features
 
-Right-click a file/folder → **Tools here…** passes that selection to a confirmed
-JSON command. The terminal uses your existing shell configuration, supports
-independent tabs, and has font/size/shell preferences. See [extensions and terminal
-tools](docs/extensions.md) for capabilities and limits. These features are included
-in v0.1.4.
+### Write in Markdown, beautifully
+
+- Source, live preview, or both side by side (`⌘1` / `⌘2` / `⌘3`), with the
+  preview following your place as you write.
+- Cover images, image embeds, callouts, tables, task lists, and note icons such
+  as `:LiInbox:` — all from standard Markdown.
+- An outline for every note, link and image completion with `[[` and `![[`,
+  and gentle warnings for links that point nowhere.
+- Tabs that behave like a code editor's: single-click to preview, double-click or
+  start typing to keep it open.
+- Autosave, session restore, local page history, and a zen mode for focused writing.
+
+### Folders that feel like pages
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/folder-dashboard-dark.png" />
+  <img src="docs/screenshots/folder-dashboard-light.png" alt="A folder dashboard with pinned notes, project folders, filters, and open tasks" />
+</picture>
+
+<p align="center"><sub>Every folder is a page: pinned notes, subfolders, filters, and open tasks, all read from plain files.</sub></p>
+
+- Click a folder to open its dashboard: an introduction written in Markdown,
+  pinned notes, subfolder cards, notes, databases, and open tasks.
+- Switch between **List**, **Cards**, and **Gallery**, search inside the folder,
+  filter by tag or status, and sort by name or recent edits.
+- Prefer a plain view? **Files** shows a compact Name / Type / Modified / Size table.
+- Turn on **Show non-Markdown files** to browse images, PDFs, and other files
+  alongside your notes, with previews and *Open in default app*.
+- Layout and pins are stored in the folder's own Markdown frontmatter, so they
+  travel with your vault.
+
+### Notes that connect
+
+- Wikilinks, aliases, note embeds, backlinks, outgoing links, and tags.
+- A local graph docked beside your note that follows you from page to page,
+  plus a full vault graph (`⌘G`) with search, zoom, and drag.
+- A right-hand inspector for properties, outline, links, tasks, and calendar.
+
+### Databases from your own files
+
+- A `.base` file turns notes and their frontmatter into a table, cards, a board,
+  or a calendar.
+- Filters, formulas, relations, and rollups — with every value still living in
+  the notes themselves.
+
+### An agent that works with you
+
+- Open the Agent panel next to your note. The active note is attached as context
+  automatically; add more files or folders when you need them.
+- Responses stream in as they are written, with clear steps for each action.
+- The agent asks permission before it acts, and edits arrive as a clear diff you
+  **Accept** or **Reject**. Accepted edits to open notes go through the editor,
+  so autosave and conflict checks still apply.
+- Works with agents that speak the open Agent Client Protocol. A Vibe preset is
+  built in, and you can add your own in a small JSON file.
+  See [extensions and agents](docs/extensions.md).
+
+### A real terminal, inside your vault
+
+- A native terminal with independent tabs that look just like your page tabs.
+- Right-click any folder → **Open terminal here**.
+- Uses your own shell, prompt, and configuration — nothing is rewritten.
+- Add your own commands and tool launchers with reloadable JSON extensions,
+  then run them on any file or folder from **Tools here…**.
+
+### Make it yours
+
+- Independent light and dark palettes — Rísta, Fjord, and Rose — each with its
+  own accent colour.
+- **Create theme…** exports the active palette as JSON; edit it, reload, done.
+  See [custom palettes](DESIGN.md#custom-palettes).
+- Adjustable fonts and sizes for the editor, interface, and terminal.
+- Navigation available in English and Norwegian.
 
 ## Get Rísta
 
-The [latest release](https://github.com/henrikogaard/rista/releases/latest)
-is an early **macOS 13+ / Apple Silicon** build. The v0.1.0 and v0.1.1 ZIP
-packages are ad-hoc signed and not notarized.
+[Download the latest release](https://github.com/henrikogaard/rista/releases/latest)
+for **macOS 13+ on Apple Silicon**. Releases are signed with Developer ID,
+notarized by Apple, and include signed automatic updates.
 
-Releases from v0.1.2 use Developer ID signing, notarization, and stapled ZIP/DMG
-packages. The release workflow requires these checks before publishing.
+macOS is the primary, tested platform. Linux and Windows are planned but not yet
+verified. See the [roadmap and limitations](docs/PRODUCT-ROADMAP.md).
 
-**Updating older installs:** The accented bundle filename in v0.1.0–v0.1.2
-can prevent Sparkle from recognizing the running app. An update may install
-without restarting and report the old version. Quit and reopen if that happens.
-Before your next update, quit the app and rename only its outer bundle to
-`Rista.app` in Finder; leave its contents untouched. The published v0.1.1 →
-v0.1.2 update successfully terminated and relaunched with that filename.
-Packages built from this source use `Rista.app` while retaining **Rísta** as
-the display name. Installing the current DMG instead also requires removing the
-old accented-name copy after quitting it, so you do not keep launching it.
-
-macOS is the primary development and tested platform. Linux and Windows are
-targets, not verified distributions. See the
-[roadmap and limitations](docs/PRODUCT-ROADMAP.md).
+**Updating from v0.1.0–v0.1.2:** quit Rísta and rename the app to `Rista.app` in
+Finder before updating, or install the latest DMG and remove the old copy.
+Later versions do not need this step.
 
 ## Your first page
 

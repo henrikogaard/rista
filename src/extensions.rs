@@ -9,6 +9,7 @@ const MAX_MANIFESTS_PER_DIRECTORY: usize = 128;
 const MAX_MANIFESTS_TOTAL: usize = 256;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_COMMANDS: usize = 64;
+const MAX_AGENTS: usize = 64;
 const MAX_ID_BYTES: usize = 128;
 const MAX_NAME_BYTES: usize = 256;
 const MAX_PROGRAM_BYTES: usize = 2 * 1024;
@@ -16,6 +17,7 @@ const MAX_ARGUMENT_BYTES: usize = 4 * 1024;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENTS_TOTAL_BYTES: usize = 16 * 1024;
 const MAX_ERRORS: usize = 512;
+pub const BUILTIN_VIBE_AGENT_ID: &str = "vibe";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +42,41 @@ pub struct Manifest {
     pub id: String,
     pub name: Localized,
     pub commands: Vec<Launcher>,
+    #[serde(default)]
+    pub agents: Vec<Agent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agent {
+    pub id: String,
+    pub name: Localized,
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+pub fn registered_agents(plugins: Vec<Manifest>) -> Vec<(Option<String>, Agent)> {
+    let mut agents = vec![(
+        None,
+        Agent {
+            id: BUILTIN_VIBE_AGENT_ID.to_string(),
+            name: Localized {
+                en: "Vibe".into(),
+                nb: "Vibe".into(),
+            },
+            program: "vibe-acp".into(),
+            args: Vec::new(),
+        },
+    )];
+    agents.extend(plugins.into_iter().flat_map(|manifest| {
+        let manifest_id = manifest.id;
+        manifest
+            .agents
+            .into_iter()
+            .map(move |agent| (Some(manifest_id.clone()), agent))
+    }));
+    agents
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +407,45 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
             }
         }
     }
+
+    if manifest.agents.len() > MAX_AGENTS {
+        return Err(format!("manifest exceeds the {MAX_AGENTS}-agent limit"));
+    }
+    let mut agent_ids = HashSet::new();
+    for agent in &manifest.agents {
+        validate_id("agent id", &agent.id)?;
+        if agent.id == BUILTIN_VIBE_AGENT_ID {
+            return Err(format!(
+                "agent id {:?} is reserved for the built-in agent",
+                agent.id
+            ));
+        }
+        if !agent_ids.insert(&agent.id) {
+            return Err(format!("duplicate agent id {:?}", agent.id));
+        }
+        validate_localized("agent name", &agent.name)?;
+        validate_text("agent program", &agent.program, MAX_PROGRAM_BYTES, false)?;
+        if agent.program.trim().is_empty() {
+            return Err("agent program must be nonempty".to_string());
+        }
+        if agent.args.len() > MAX_ARGUMENTS {
+            return Err(format!(
+                "agent {:?} exceeds the {MAX_ARGUMENTS}-argument limit",
+                agent.id
+            ));
+        }
+        let mut total_argument_bytes = 0;
+        for argument in &agent.args {
+            validate_text("agent argument", argument, MAX_ARGUMENT_BYTES, true)?;
+            total_argument_bytes += argument.len();
+            if total_argument_bytes > MAX_ARGUMENTS_TOTAL_BYTES {
+                return Err(format!(
+                    "agent {:?} exceeds the {MAX_ARGUMENTS_TOTAL_BYTES}-byte total argument limit",
+                    agent.id
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -553,7 +629,8 @@ fn localize_diagnostic(detail: &str) -> (Localized, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        bundled_launchers, user_dir, Launcher, Localized, Manifest, Registry, WorkingDirectory,
+        bundled_launchers, registered_agents, user_dir, validate_manifest, Agent, Launcher,
+        Localized, Manifest, Registry, WorkingDirectory, BUILTIN_VIBE_AGENT_ID,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -603,6 +680,7 @@ mod tests {
                 args: Vec::new(),
                 working_directory: WorkingDirectory::Vault,
             }],
+            agents: Vec::new(),
         }
     }
 
@@ -635,6 +713,71 @@ mod tests {
             registry.plugins[0].commands[0].working_directory,
             WorkingDirectory::Vault
         );
+        assert!(registry.plugins[0].agents.is_empty());
+    }
+
+    #[test]
+    fn loads_and_validates_configured_agents() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"api_version":1,"id":"sample","name":{"en":"Sample","nb":"Eksempel"},"commands":[],"agents":[{"id":"assistant","name":{"en":"Assistant","nb":"Assistent"},"program":"agent-cli","args":["--stdio"]}]}"#,
+        )
+        .expect("deserialize agent manifest");
+
+        validate_manifest(&manifest).expect("validate agent manifest");
+
+        assert_eq!(manifest.agents.len(), 1);
+        assert_eq!(manifest.agents[0].args, ["--stdio"]);
+    }
+
+    #[test]
+    fn lists_builtin_vibe_with_manifest_agents_and_reserves_its_id() {
+        let mut manifest = valid_manifest("sample", "Sample");
+        manifest.agents.push(Agent {
+            id: "assistant".into(),
+            name: Localized {
+                en: "Assistant".into(),
+                nb: "Assistent".into(),
+            },
+            program: "agent-cli".into(),
+            args: Vec::new(),
+        });
+        let agents = registered_agents(vec![manifest.clone()]);
+
+        assert_eq!(agents[0].0, None);
+        assert_eq!(agents[0].1.id, BUILTIN_VIBE_AGENT_ID);
+        assert_eq!(agents[0].1.name.en, "Vibe");
+        assert_eq!(agents[0].1.program, "vibe-acp");
+        assert!(agents[0].1.args.is_empty());
+        assert_eq!(agents[1].0.as_deref(), Some("sample"));
+        assert_eq!(agents[1].1.id, "assistant");
+
+        manifest.agents[0].id = BUILTIN_VIBE_AGENT_ID.into();
+        assert!(validate_manifest(&manifest)
+            .expect_err("reject reserved built-in agent id")
+            .contains("reserved"));
+    }
+
+    #[test]
+    fn rejects_duplicate_agent_ids_and_unknown_agent_fields() {
+        let mut manifest = valid_manifest("sample", "Sample");
+        let agent = Agent {
+            id: "assistant".into(),
+            name: Localized {
+                en: "Assistant".into(),
+                nb: "Assistent".into(),
+            },
+            program: "agent-cli".into(),
+            args: Vec::new(),
+        };
+        manifest.agents = vec![agent.clone(), agent];
+
+        assert!(validate_manifest(&manifest)
+            .expect_err("duplicate agent id")
+            .contains("duplicate agent id"));
+        assert!(serde_json::from_str::<Agent>(
+            r#"{"id":"assistant","name":{"en":"Assistant","nb":"Assistent"},"program":"agent-cli","extra":true}"#
+        )
+        .is_err());
     }
 
     #[test]
@@ -790,6 +933,7 @@ mod tests {
                 args: vec![marker.to_string_lossy().into_owned()],
                 working_directory: WorkingDirectory::Vault,
             }],
+            agents: Vec::new(),
         };
         write_manifest(&user_dir.join("declarative.json"), &manifest);
 
