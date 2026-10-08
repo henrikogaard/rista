@@ -231,6 +231,8 @@ impl Workspace {
         if let Some(intro) = &page.introduction {
             let view = cx.entity();
             let context = preview::PreviewCtx {
+                properties_visibility: self.settings.properties_visibility,
+                language: self.settings.language,
                 vault: self.vault.clone(),
                 workspace: cx.weak_entity(),
                 views: page.embeds.clone(),
@@ -367,8 +369,10 @@ impl Workspace {
                                             this.open_folder_page(target.clone(), window, cx);
                                         } else if ev.modifiers().platform {
                                             this.open_document_new_tab(target.clone(), window, cx);
-                                        } else {
+                                        } else if ev.click_count() == 2 {
                                             this.open_document(target.clone(), window, cx);
+                                        } else {
+                                            this.preview_document(target.clone(), window, cx);
                                         }
                                     },
                                 )),

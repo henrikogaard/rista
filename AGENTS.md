@@ -29,7 +29,7 @@ No cloud. No accounts. No telemetry. Files are just files.
 
 ## Design principles
 
-- **Two themes** — Rísta Night (dark, default) and Rísta Day (light), defined in `src/theme.rs`. All colors are theme tokens.
+- **Paired palettes** — Rísta Night/Day, Fjord Night/Day, and Rose Night/Day, defined in `src/theme.rs`, with user JSON themes. All colors are theme tokens.
 - **Compact density** — tight spacing, small type (11–14px), nothing wastes vertical space.
 - **No gradients in UI chrome** — flat mineral surfaces only.
 - **Quiet chrome** — borderless toolbar controls, one-pixel separators, text-only status bar.

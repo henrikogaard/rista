@@ -180,9 +180,14 @@ pub struct Workspace {
 
 struct OpenDoc {
     entity: Entity<Document>,
+    preview: bool,
     /// Present when the file is a `.base` — a live view over the vault.
     base: Option<Entity<bases::BaseView>>,
     _sub: Subscription,
+}
+
+fn preview_tab_is_replaceable(preview: bool, dirty: bool, conflict: bool, pinned: bool) -> bool {
+    preview && !dirty && !conflict && !pinned
 }
 
 /// Nested tag node for the sidebar Tags pane — `#a/b` hangs under `#a`.
@@ -662,6 +667,16 @@ impl PaletteCmd {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, initial_paths: Vec<PathBuf>) -> Self {
+        let workspace = cx.entity().downgrade();
+        let appearance_sub = window.observe_window_appearance(move |_, cx| {
+            let _ = workspace.update(cx, |this, cx| {
+                if this.settings.appearance == Appearance::System {
+                    theme::apply(&this.settings, cx);
+                    crate::apply_ui_settings(&this.settings, cx);
+                    cx.notify();
+                }
+            });
+        });
         let vault = cx.new(Vault::new);
         let palette_state = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
@@ -727,7 +742,7 @@ impl Workspace {
             focus_fallback_pending: false,
             focus_handle,
             settings,
-            _subscriptions: vec![vault_sub],
+            _subscriptions: vec![vault_sub, appearance_sub],
         };
 
         // `.base` `file.starred` reads this set — `toggle_star` keeps
@@ -1259,7 +1274,11 @@ impl Workspace {
     }
 
     fn open_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_document_impl(path, false, window, cx);
+        self.open_document_impl(path, false, false, window, cx);
+    }
+
+    fn preview_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_document_impl(path, false, true, window, cx);
     }
 
     pub(crate) fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -1328,6 +1347,7 @@ impl Workspace {
         &mut self,
         path: PathBuf,
         new_tab: bool,
+        preview: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1349,6 +1369,9 @@ impl Workspace {
                 .iter()
                 .position(|d| d.entity.read(cx).path == path)
             {
+                if !preview {
+                    self.docs[ix].preview = false;
+                }
                 self.active = Some(ix);
                 self.folder = None;
                 self.graph = None;
@@ -1397,13 +1420,22 @@ impl Workspace {
         let is_standalone = vault_root.is_none();
         let doc = cx
             .new(|cx| Document::open(vault_root, &settings, resolver, vault, initial, window, cx));
-        let sub = cx.subscribe_in(&doc, window, |this, _doc, event, _window, cx| match event {
-            DocumentEvent::Saved | DocumentEvent::Changed => {
-                this.status_note = None;
-                cx.notify();
-            }
-            DocumentEvent::Selection => cx.notify(),
-        });
+        let sub = cx.subscribe_in(
+            &doc,
+            window,
+            |this, changed_doc, event, _window, cx| match event {
+                DocumentEvent::Saved | DocumentEvent::Changed => {
+                    if matches!(event, DocumentEvent::Changed) && changed_doc.read(cx).dirty {
+                        if let Some(tab) = this.docs.iter_mut().find(|d| d.entity == *changed_doc) {
+                            tab.preview = false;
+                        }
+                    }
+                    this.status_note = None;
+                    cx.notify();
+                }
+                DocumentEvent::Selection => cx.notify(),
+            },
+        );
         let base = is_base_file.then(|| {
             let workspace = cx.entity().downgrade();
             let vault = self.vault.clone();
@@ -1437,12 +1469,33 @@ impl Workspace {
             })
         });
         doc.update(cx, |doc, cx| doc.set_focus_mode(self.focus_mode, cx));
-        self.docs.push(OpenDoc {
+        let replacement = preview
+            .then(|| {
+                self.docs.iter().position(|tab| {
+                    let doc = tab.entity.read(cx);
+                    preview_tab_is_replaceable(
+                        tab.preview,
+                        doc.dirty,
+                        doc.conflict,
+                        self.is_pinned(&doc.path),
+                    )
+                })
+            })
+            .flatten();
+        let opened = OpenDoc {
             entity: doc.clone(),
+            preview,
             base,
             _sub: sub,
-        });
-        self.active = Some(self.docs.len() - 1);
+        };
+        let ix = if let Some(ix) = replacement {
+            self.docs[ix] = opened;
+            ix
+        } else {
+            self.docs.push(opened);
+            self.docs.len() - 1
+        };
+        self.active = Some(ix);
         self.folder = None;
         self.graph = None;
         self.persist_tabs(cx);
@@ -1661,6 +1714,9 @@ impl Workspace {
 
     /// Pin/unpin the tab at `ix` (tab context menu + palette share this).
     fn toggle_pin_at(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Some(doc) = self.docs.get_mut(ix) {
+            doc.preview = false;
+        }
         let Some(doc) = self.docs.get(ix) else {
             return;
         };
@@ -2715,7 +2771,7 @@ impl Workspace {
             Appearance::Dark => Appearance::Light,
             _ => Appearance::Dark,
         };
-        theme::set_theme_mode(self.settings.theme_mode(cx), cx);
+        theme::apply(&self.settings, cx);
         self.settings.save();
         cx.notify();
     }
@@ -3259,8 +3315,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.settings.properties_visibility != settings.properties_visibility {
+            for doc in &self.docs {
+                doc.entity.update(cx, |doc, _| {
+                    doc.callout_folds = preview::CalloutFolds::default();
+                });
+            }
+        }
         self.settings = settings.clone();
-        theme::set_theme_mode(settings.theme_mode(cx), cx);
+        theme::apply(&settings, cx);
         crate::apply_ui_settings(&settings, cx);
         for doc in &self.docs {
             doc.entity
@@ -4591,7 +4654,7 @@ impl Workspace {
         };
         match resolved {
             Some(path) => {
-                self.open_document_impl(path, new_tab, window, cx);
+                self.open_document_impl(path, new_tab, false, window, cx);
                 if let Some(anchor) = anchor {
                     self.jump_to_anchor(&anchor, window, cx);
                 }
@@ -4751,7 +4814,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_document_impl(path, true, window, cx);
+        self.open_document_impl(path, true, false, window, cx);
     }
 
     /// Called by BaseView when its view tab changes — remembered per
@@ -6151,12 +6214,14 @@ impl Workspace {
                                                                 window,
                                                                 cx,
                                                             );
-                                                        } else {
+                                                        } else if ev.click_count() == 2 {
                                                             this.open_document(
                                                                 path.clone(),
                                                                 window,
                                                                 cx,
                                                             );
+                                                        } else {
+                                                            this.preview_document(path.clone(), window, cx);
                                                         }
                                                     }
                                                 }
@@ -6309,6 +6374,7 @@ impl Workspace {
                 };
                 let view = cx.entity();
                 let tab = Tab::new()
+                    .when(doc.preview, |tab| tab.italic())
                     .label(if dirty {
                         format!("{} •", title.clone())
                     } else {
@@ -6341,7 +6407,21 @@ impl Workspace {
                             })),
                     )
                 };
-                tab.on_drag(DraggedTab(ix), {
+                tab.on_mouse_down(gpui::MouseButton::Left, {
+                    let view = view.clone();
+                    move |event, _, cx| {
+                        if event.click_count == 2 {
+                            view.update(cx, |this, cx| {
+                                if let Some(tab) = this.docs.get_mut(ix) {
+                                    tab.preview = false;
+                                }
+                                this.persist_tabs(cx);
+                                cx.notify();
+                            });
+                        }
+                    }
+                })
+                .on_drag(DraggedTab(ix), {
                     let label = title.clone();
                     move |_, _, _, cx| {
                         cx.new(|_| TreeDragPreview {
@@ -6592,6 +6672,8 @@ impl Workspace {
             )
         };
         let base_ctx = preview::PreviewCtx {
+            properties_visibility: self.settings.properties_visibility,
+            language: self.settings.language,
             vault: self.vault.clone(),
             workspace: view.downgrade(),
             views: embeds,
@@ -6604,28 +6686,33 @@ impl Workspace {
             .size_full()
             .overflow_hidden()
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
-            .when(!has_frontmatter, |this| {
-                this.child(
-                    div()
-                        .id("properties-empty")
-                        .w_full()
-                        .px_6()
-                        .py_1()
-                        .my_2()
-                        .cursor_pointer()
-                        .rounded(theme.radius)
-                        .hover(|row| row.bg(theme.accent.opacity(0.4)))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child("+ Add property"),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.show_add_property_dialog(window, cx);
-                        })),
-                )
-            })
+            .when(
+                !has_frontmatter
+                    && self.settings.properties_visibility
+                        != crate::settings::PropertiesVisibility::Hidden,
+                |this| {
+                    this.child(
+                        div()
+                            .id("properties-empty")
+                            .w_full()
+                            .px_6()
+                            .py_1()
+                            .my_2()
+                            .cursor_pointer()
+                            .rounded(theme.radius)
+                            .hover(|row| row.bg(theme.accent.opacity(0.4)))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(self.tr("+ Add property", "+ Legg til egenskap")),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_add_property_dialog(window, cx);
+                            })),
+                    )
+                },
+            )
             .child(
                 TextView::new(&state)
                     .markdown_extensions(preview::extensions(&folds, Some(&base_ctx), true))
@@ -8064,5 +8151,19 @@ mod standalone_fs_check_tests {
             path,
             Some(recreated)
         ));
+    }
+}
+
+#[cfg(test)]
+mod preview_tab_tests {
+    use super::preview_tab_is_replaceable;
+
+    #[test]
+    fn only_clean_unconflicted_unpinned_preview_tabs_are_replaceable() {
+        assert!(preview_tab_is_replaceable(true, false, false, false));
+        assert!(!preview_tab_is_replaceable(false, false, false, false));
+        assert!(!preview_tab_is_replaceable(true, true, false, false));
+        assert!(!preview_tab_is_replaceable(true, false, true, false));
+        assert!(!preview_tab_is_replaceable(true, false, false, true));
     }
 }

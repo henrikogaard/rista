@@ -1,13 +1,20 @@
 //! Settings sheet — segmented controls and switches, applied live.
 
 use crate::app::Workspace;
-use crate::settings::{Appearance, Language, Settings, ViewMode, EDITOR_FONTS};
+use crate::settings::{
+    Appearance, Language, PropertiesVisibility, Settings, ViewMode, EDITOR_FONTS,
+};
+use crate::theme;
 use gpui_kit::base::StyledExt;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::theme::ThemeMode;
+use gpui_kit::component::Sizable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, IndexPath};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 pub struct SettingsView {
@@ -16,6 +23,9 @@ pub struct SettingsView {
     font_size_select: Entity<SelectState<SearchableVec<String>>>,
     ui_size_select: Entity<SelectState<SearchableVec<String>>>,
     tab_size_select: Entity<SelectState<SearchableVec<String>>>,
+    dark_theme_select: Entity<SelectState<SearchableVec<String>>>,
+    light_theme_select: Entity<SelectState<SearchableVec<String>>>,
+    theme_write_failed: bool,
     attachments_input: Entity<InputState>,
     templates_input: Entity<InputState>,
     daily_dir_input: Entity<InputState>,
@@ -35,6 +45,11 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = settings.clone();
+
+        let dark_theme_select =
+            Self::theme_select(ThemeMode::Dark, &settings.dark_theme, window, cx);
+        let light_theme_select =
+            Self::theme_select(ThemeMode::Light, &settings.light_theme, window, cx);
 
         let font_ix = EDITOR_FONTS
             .iter()
@@ -111,6 +126,27 @@ impl SettingsView {
         });
 
         let mut subs = Vec::new();
+        for (select, dark) in [(&dark_theme_select, true), (&light_theme_select, false)] {
+            subs.push(cx.subscribe_in(
+                select,
+                window,
+                move |this, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = event {
+                        this.update_setting(
+                            cx,
+                            |s| {
+                                if dark {
+                                    s.dark_theme = name.clone();
+                                } else {
+                                    s.light_theme = name.clone();
+                                }
+                            },
+                            window,
+                        );
+                    }
+                },
+            ));
+        }
         subs.push(cx.subscribe_in(
             &font_select,
             window,
@@ -213,6 +249,9 @@ impl SettingsView {
 
         Self {
             workspace,
+            dark_theme_select,
+            light_theme_select,
+            theme_write_failed: false,
             font_select,
             font_size_select,
             ui_size_select,
@@ -223,6 +262,53 @@ impl SettingsView {
             daily_format_input,
             _subscriptions: subs,
         }
+    }
+
+    fn theme_select(
+        mode: ThemeMode,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SelectState<SearchableVec<String>>> {
+        let names = theme::theme_names(mode, cx);
+        let index = names.iter().position(|n| n == name).unwrap_or(0);
+        cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(names),
+                Some(IndexPath::new(index)),
+                window,
+                cx,
+            )
+        })
+    }
+
+    fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        theme::install_themes(cx);
+        let Some(ws) = self.workspace.upgrade() else {
+            return;
+        };
+        let settings = ws.read(cx).settings().clone();
+        for (select, mode, name) in [
+            (
+                &self.dark_theme_select,
+                ThemeMode::Dark,
+                &settings.dark_theme,
+            ),
+            (
+                &self.light_theme_select,
+                ThemeMode::Light,
+                &settings.light_theme,
+            ),
+        ] {
+            let names = theme::theme_names(mode, cx);
+            let index = names.iter().position(|n| n == name).unwrap_or(0);
+            select.update(cx, |select, cx| {
+                select.set_items(SearchableVec::new(names), window, cx);
+                select.set_selected_index(Some(IndexPath::new(index)), window, cx);
+            });
+        }
+        ws.update(cx, |ws, cx| ws.apply_settings(settings, window, cx));
+        cx.notify();
     }
 
     /// Patch the workspace settings and flush to disk + live apply.
@@ -277,7 +363,9 @@ impl Render for SettingsView {
         };
 
         v_flex()
+            .id("settings-scroll")
             .size_full()
+            .overflow_y_scroll()
             .p_4()
             .gap_5()
             .child(
@@ -292,13 +380,13 @@ impl Render for SettingsView {
                     )
                     .child(Self::row(
                         cx,
-                        "Theme",
+                        settings.language.text("Appearance", "Utseende"),
                         TabBar::new("appearance")
                             .segmented()
                             .selected_index(appearance_ix)
                             .children([
-                                Tab::new().label("Dark"),
-                                Tab::new().label("Light"),
+                                Tab::new().label(settings.language.text("Dark", "Mørk")),
+                                Tab::new().label(settings.language.text("Light", "Lys")),
                                 Tab::new().label("System"),
                             ])
                             .on_click(cx.listener(|this, &ix, window, cx| {
@@ -315,6 +403,87 @@ impl Render for SettingsView {
                                 );
                             })),
                     ))
+                    .child(Self::row(cx, settings.language.text("Dark palette", "Mørk palett"),
+                        Select::new(&self.dark_theme_select).w(px(180.))))
+                    .child(Self::row(cx, settings.language.text("Light palette", "Lys palett"),
+                        Select::new(&self.light_theme_select).w(px(180.))))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("create-theme")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text("Create theme…", "Lag tema…"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let Some(ws) = this.workspace.upgrade() else {
+                                            return;
+                                        };
+                                        let settings = ws.read(cx).settings().clone();
+                                        match theme::create_custom(&settings, cx) {
+                                            Ok(path) => {
+                                                this.theme_write_failed = false;
+                                                this.reload_themes(window, cx);
+                                                cx.reveal_path(&path);
+                                            }
+                                            Err(_) => {
+                                                this.theme_write_failed = true;
+                                                cx.notify();
+                                            }
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("reload-themes")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text(
+                                        "Reload themes",
+                                        "Last inn temaer på nytt",
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.reload_themes(window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text(
+                                "Create a copy of the active palette, edit its JSON colours, then reload and select it above.",
+                                "Lag en kopi av den aktive paletten, rediger JSON-fargene, last inn på nytt og velg den over.",
+                            )),
+                    )
+                    .when(self.theme_write_failed, |view| {
+                        view.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(settings.language.text(
+                                    "Could not create theme file. Check folder permissions.",
+                                    "Kunne ikke opprette temafilen. Sjekk mappetillatelser.",
+                                )),
+                        )
+                    })
+                    .when(
+                        !cx.global::<theme::ThemeCatalog>().errors.is_empty(),
+                        |view| {
+                            view.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(format!(
+                                        "{}: {}",
+                                        settings.language.text(
+                                            "Invalid or duplicate theme files",
+                                            "Ugyldige eller dupliserte temafiler",
+                                        ),
+                                        cx.global::<theme::ThemeCatalog>().errors.join(", ")
+                                    )),
+                            )
+                        },
+                    )
                     .child(Self::row(
                         cx,
                         "Editor font",
@@ -399,6 +568,25 @@ impl Render for SettingsView {
                                 this.update_setting(cx, |s| s.soft_wrap = checked, window);
                             })),
                     ))
+                    .child(Self::row(cx, settings.language.text("Properties", "Egenskaper"),
+                        TabBar::new("properties-default").segmented()
+                            .selected_index(match settings.properties_visibility {
+                                PropertiesVisibility::Expanded => 0,
+                                PropertiesVisibility::Collapsed => 1,
+                                PropertiesVisibility::Hidden => 2,
+                            })
+                            .children([
+                                Tab::new().label(settings.language.text("Expanded", "Utvidet")),
+                                Tab::new().label(settings.language.text("Collapsed", "Sammenfoldet")),
+                                Tab::new().label(settings.language.text("Hidden", "Skjult")),
+                            ])
+                            .on_click(cx.listener(|this, &index, window, cx| this.update_setting(cx, |s| {
+                                s.properties_visibility = match index {
+                                    1 => PropertiesVisibility::Collapsed,
+                                    2 => PropertiesVisibility::Hidden,
+                                    _ => PropertiesVisibility::Expanded,
+                                };
+                            }, window)))))
                     .child(Self::row(
                         cx,
                         "Line numbers",
