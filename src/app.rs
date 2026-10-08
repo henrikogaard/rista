@@ -1830,6 +1830,8 @@ impl Workspace {
         self.settings.graph_dock_open = !self.settings.graph_dock_open;
         if self.settings.graph_dock_open {
             self.ensure_graph_dock(window, cx);
+        } else {
+            self.refocus(window, cx);
         }
         self.settings.save();
         cx.notify();
