@@ -99,6 +99,8 @@ Syntax colours live under `highlight.syntax`; retain that nested object.
 - **Dialogs** — `open_dialog` for palette/search; `open_alert_dialog` for
   destructive confirms; `open_sheet_at(Placement::Right)` for settings.
 - **Status bar** — relative path, word count, view mode. Text only, no chrome.
+- **Terminal** — independent rounded canvas below the editor, matching its
+  surface and gutters. The resize grip appears only on hover or drag.
 - **Zen mode** — hides everything but editor+preview.
 
 ## Markdown preview rendering

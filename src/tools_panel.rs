@@ -212,9 +212,9 @@ impl Workspace {
         };
         v_flex()
             .size_full()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().group_box)
+            .rounded(cx.theme().radius_lg)
+            .overflow_hidden()
             .child(
                 h_flex()
                     .h_9()

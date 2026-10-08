@@ -330,7 +330,7 @@ impl Render for Terminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let foreground = theme.foreground;
-        let background = theme.background;
+        let background = theme.group_box;
         let palette = [
             background,
             theme.danger,

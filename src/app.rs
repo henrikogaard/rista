@@ -81,8 +81,12 @@ fn update_observed_snapshot(
     changed
 }
 
-fn canvas_columns(id: &'static str) -> ResizablePanelGroup {
-    h_resizable(id).with_handle_appearance(std::rc::Rc::new(|handle, _, cx| {
+fn canvas_panels(id: &'static str, axis: Axis) -> ResizablePanelGroup {
+    let panels = match axis {
+        Axis::Horizontal => h_resizable(id),
+        Axis::Vertical => gpui_kit::component::resizable::v_resizable(id),
+    };
+    panels.with_handle_appearance(std::rc::Rc::new(move |handle, _, cx| {
         let engaged = handle.state() != gpui_kit::base::ResizeHandleState::Idle;
         Some(
             div()
@@ -94,8 +98,8 @@ fn canvas_columns(id: &'static str) -> ResizablePanelGroup {
                     this.child(
                         div()
                             .flex_none()
-                            .w(px(3.))
-                            .h(px(32.))
+                            .w(px(if axis == Axis::Horizontal { 3. } else { 32. }))
+                            .h(px(if axis == Axis::Horizontal { 32. } else { 3. }))
                             .rounded(cx.theme().radius)
                             .bg(cx.theme().muted_foreground),
                     )
@@ -6845,7 +6849,7 @@ impl Workspace {
             ViewMode::Split => div()
                 .size_full()
                 .child(
-                    canvas_columns("split")
+                    canvas_panels("split", Axis::Horizontal)
                         .child(
                             resizable_panel()
                                 .size_range(px(280.)..px(4000.))
@@ -7667,7 +7671,7 @@ impl Render for Workspace {
                             .child(self.render_empty_editor(cx))
                             .into_any_element()
                     } else {
-                        canvas_columns("workspace")
+                        canvas_panels("workspace", Axis::Horizontal)
                             .when(sidebar_visible, |this| {
                                 this.child(
                                     resizable_panel()
@@ -7687,59 +7691,58 @@ impl Render for Workspace {
                             })
                             .child(
                                 resizable_panel().child(
-                                    div().size_full().p_1().child(
-                                        v_flex()
-                                            .size_full()
-                                            .bg(cx.theme().group_box)
-                                            .rounded(cx.theme().radius_lg)
-                                            .overflow_hidden()
-                                            .when(!self.zen, |this| {
-                                                this.child(self.render_tab_bar(cx))
-                                            })
-                                            .child(
-                                                gpui_kit::component::resizable::v_resizable(
-                                                    "editor-terminal",
-                                                )
-                                                .child(resizable_panel().child(
-                                                    div().flex_1().min_h_0().child({
-                                                        if let Some(graph) = self.graph.clone() {
-                                                            graph.into_any_element()
-                                                        } else {
-                                                            let content =
-                                                                self.render_editor_area(cx);
-                                                            if self.zen {
-                                                                h_flex()
-                                                                    .size_full()
-                                                                    .justify_center()
-                                                                    .child(
-                                                                        div()
-                                                                            .h_full()
-                                                                            .w_full()
-                                                                            .max_w(px(920.))
-                                                                            .child(content),
-                                                                    )
-                                                                    .into_any_element()
+                                    canvas_panels("editor-terminal", Axis::Vertical)
+                                        .child(
+                                            resizable_panel().child(
+                                                div().size_full().p_1().child(
+                                                    v_flex()
+                                                        .size_full()
+                                                        .bg(cx.theme().group_box)
+                                                        .rounded(cx.theme().radius_lg)
+                                                        .overflow_hidden()
+                                                        .when(!self.zen, |this| {
+                                                            this.child(self.render_tab_bar(cx))
+                                                        })
+                                                        .child(div().flex_1().min_h_0().child({
+                                                            if let Some(graph) = self.graph.clone()
+                                                            {
+                                                                graph.into_any_element()
                                                             } else {
-                                                                content
+                                                                let content =
+                                                                    self.render_editor_area(cx);
+                                                                if self.zen {
+                                                                    h_flex()
+                                                                        .size_full()
+                                                                        .justify_center()
+                                                                        .child(
+                                                                            div()
+                                                                                .h_full()
+                                                                                .w_full()
+                                                                                .max_w(px(920.))
+                                                                                .child(content),
+                                                                        )
+                                                                        .into_any_element()
+                                                                } else {
+                                                                    content
+                                                                }
                                                             }
-                                                        }
-                                                    }),
-                                                ))
-                                                .when(
-                                                    self.terminal_visible && !self.zen,
-                                                    |panels| {
-                                                        panels.child(
-                                                            resizable_panel()
-                                                                .size(px(270.))
-                                                                .size_range(px(140.)..px(600.))
-                                                                .child(
-                                                                    self.render_terminal_panel(cx),
-                                                                ),
-                                                        )
-                                                    },
+                                                        })),
                                                 ),
                                             ),
-                                    ),
+                                        )
+                                        .when(self.terminal_visible && !self.zen, |panels| {
+                                            panels.child(
+                                                resizable_panel()
+                                                    .size(px(270.))
+                                                    .size_range(px(140.)..px(600.))
+                                                    .child(
+                                                        div()
+                                                            .size_full()
+                                                            .p_1()
+                                                            .child(self.render_terminal_panel(cx)),
+                                                    ),
+                                            )
+                                        }),
                                 ),
                             )
                             .when(!self.zen && self.settings.inspector_open, |columns| {
