@@ -251,11 +251,12 @@ impl Workspace {
                     id,
                     tab.cwd.file_name().unwrap_or_default().to_string_lossy()
                 ))
+                .prefix(Icon::new(assets::IconName::Terminal).size_3p5())
                 .suffix(
                     Button::new(("close-terminal", id))
                         .ghost()
                         .xsmall()
-                        .icon(assets::IconName::X)
+                        .icon(assets::IconName::Close)
                         .tooltip(self.tr(
                             "Close terminal (stops process)",
                             "Lukk terminalen (stopper prosessen)",
@@ -277,12 +278,12 @@ impl Workspace {
                     .px_3()
                     .gap_2()
                     .items_center()
-                    .child(Icon::new(assets::IconName::Terminal).size_4())
                     .child(
                         div().flex_1().min_w_0().child(
                             TabBar::new("terminal-tabs")
-                                .underline()
+                                .segmented()
                                 .small()
+                                .bg(cx.theme().transparent)
                                 .selected_index(self.active_terminal.unwrap_or(0))
                                 .children(tabs)
                                 .on_click(cx.listener(|this, &ix, window, cx| {
