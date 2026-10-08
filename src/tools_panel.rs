@@ -279,7 +279,7 @@ impl Workspace {
                     .child(
                         div().flex_1().min_w_0().child(
                             TabBar::new("terminal-tabs")
-                                .segmented()
+                                .underline()
                                 .small()
                                 .selected_index(self.active_terminal.unwrap_or(0))
                                 .children(tabs)
