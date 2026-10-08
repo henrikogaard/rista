@@ -36,8 +36,8 @@ the look and feel of the Mac.
   visual noise between you and the page.
 - **Organised by folders, not by rules.** Every folder is a living page that shows
   what is inside it — subfolders, pinned notes, tasks, and databases.
-- **Help that asks first.** The Agent panel shows what it reads, asks before it
-  acts, and proposes edits you accept or reject.
+- **Reviewable agent edits.** Writes requested through ACP are shown as diffs
+  for you to accept or reject. Agent tools may also modify files directly.
 - **Private by default.** No cloud sync, no telemetry, no sign-in.
 
 ## Features
@@ -92,11 +92,25 @@ the look and feel of the Mac.
 - Open the Agent panel next to your note. The active note is attached as context
   automatically; add more files or folders when you need them.
 - Responses stream in as they are written, with clear steps for each action.
-- The agent asks permission before it acts, and edits arrive as a clear diff you
-  **Accept** or **Reject**. Accepted edits to open notes go through the editor,
-  so autosave and conflict checks still apply.
-- Works with agents that speak the open Agent Client Protocol. A Vibe preset is
-  built in, and you can add your own in a small JSON file.
+- ACP-requested file writes arrive as a diff you **Accept** or **Reject**.
+  Accepted edits to open notes go through the editor, so autosave and conflict
+  checks still apply. This review does not cover changes made directly by an
+  agent or its tools.
+- Five presets launch ACP adapters: Vibe (`vibe-acp`), Codex (`codex-acp`),
+  Claude (`claude-agent-acp`), OpenCode (`opencode acp`), and Grok via OpenCode.
+  Install tools separately: Vibe uses `uv tool install mistral-vibe`; Codex
+  uses `npm install -g @agentclientprotocol/codex-acp`; Claude uses
+  `npm install -g @agentclientprotocol/claude-agent-acp` (Node.js 22+); OpenCode
+  and Grok use `npm install -g opencode-ai`. Complete sign-in in each tool
+  (`codex login` for Codex; `opencode auth login` for OpenCode). For Grok,
+  configure xAI access in OpenCode and choose an advertised `xai/` model.
+- Adapters and providers are not bundled. Rísta does not install or authenticate
+  them; credentials remain with each tool. On macOS, agent processes receive
+  the app PATH plus existing common install directories, not shell startup
+  configuration. NVM and other custom shell paths may require an absolute
+  executable path in a custom manifest.
+- Works with agents that speak the open Agent Client Protocol. Add custom
+  agents in a small JSON file.
   See [extensions and agents](docs/extensions.md).
 
 ### A real terminal, inside your vault

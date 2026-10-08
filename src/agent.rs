@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -10,6 +11,244 @@ use std::thread;
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
+pub const MAX_MODEL_CHOICES: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub value: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelState {
+    pub config_id: Option<String>,
+    pub choices: Vec<ModelChoice>,
+    pub selected: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingModelSwitch {
+    pub request_id: u64,
+    pub requested_model_id: String,
+    pub config_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelSelection {
+    pub state: ModelState,
+    pub pending: Option<PendingModelSwitch>,
+}
+
+impl ModelSelection {
+    pub fn begin(&mut self, request_id: u64, requested_model_id: String) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
+        self.pending = Some(PendingModelSwitch {
+            request_id,
+            requested_model_id,
+            config_id: self.state.config_id.clone(),
+        });
+        true
+    }
+
+    pub fn complete(&mut self, request_id: u64, selected: Option<String>) -> bool {
+        let Some(pending) = self.pending.as_ref() else {
+            return false;
+        };
+        if pending.request_id != request_id {
+            return false;
+        }
+        self.pending = None;
+        if let Some(selected) = selected {
+            self.state.selected = Some(selected);
+        }
+        true
+    }
+
+    pub fn fail(&mut self, request_id: u64) -> bool {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.request_id == request_id)
+        {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+pub fn can_prompt(
+    ready: bool,
+    has_process: bool,
+    has_session: bool,
+    stopping: bool,
+    model_switch_pending: bool,
+    has_usable_model: bool,
+    prompt: &str,
+) -> bool {
+    ready
+        && has_process
+        && has_session
+        && !stopping
+        && !model_switch_pending
+        && has_usable_model
+        && !prompt.trim().is_empty()
+}
+
+pub fn can_select_agent(has_process: bool) -> bool {
+    !has_process
+}
+
+pub fn model_state_from_session(result: &Value) -> ModelState {
+    if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
+        if let Some(state) = model_state_from_config_options(options) {
+            return state;
+        }
+    }
+    let Some(models) = result.get("models") else {
+        return ModelState::default();
+    };
+    let Some(available) = models.get("availableModels").and_then(Value::as_array) else {
+        return ModelState::default();
+    };
+    let mut choices = Vec::new();
+    for model in available {
+        let (Some(value), Some(name)) = (
+            model.get("modelId").and_then(Value::as_str),
+            model.get("name").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        push_model_choice(&mut choices, value, name);
+    }
+    ModelState {
+        config_id: None,
+        choices,
+        selected: models
+            .get("currentModelId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
+}
+
+pub fn model_state_from_config_options(options: &[Value]) -> Option<ModelState> {
+    let config = options.iter().find(|option| {
+        option.get("type").and_then(Value::as_str) == Some("select")
+            && (option.get("category").and_then(Value::as_str) == Some("model")
+                || option.get("id").and_then(Value::as_str) == Some("model"))
+    })?;
+    let config_id = config.get("id").and_then(Value::as_str)?.to_owned();
+    let mut choices = Vec::new();
+    if let Some(options) = config.get("options").and_then(Value::as_array) {
+        flatten_model_options(options, &mut choices);
+    }
+    Some(ModelState {
+        config_id: Some(config_id),
+        choices,
+        selected: config
+            .get("currentValue")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn flatten_model_options(options: &[Value], choices: &mut Vec<ModelChoice>) {
+    for option in options {
+        if choices.len() >= MAX_MODEL_CHOICES {
+            return;
+        }
+        if let (Some(value), Some(name)) = (
+            option.get("value").and_then(Value::as_str),
+            option.get("name").and_then(Value::as_str),
+        ) {
+            push_model_choice(choices, value, name);
+        } else if let Some(grouped) = option.get("options").and_then(Value::as_array) {
+            flatten_model_options(grouped, choices);
+        }
+    }
+}
+
+fn push_model_choice(choices: &mut Vec<ModelChoice>, value: &str, name: &str) {
+    if !value.is_empty()
+        && !name.is_empty()
+        && choices.len() < MAX_MODEL_CHOICES
+        && !choices.iter().any(|choice| choice.value == value)
+    {
+        choices.push(ModelChoice {
+            value: value.to_owned(),
+            name: name.to_owned(),
+        });
+    }
+}
+
+pub fn allowed_model_choices(state: &ModelState, xai_only: bool) -> Vec<ModelChoice> {
+    state
+        .choices
+        .iter()
+        .filter(|choice| !xai_only || choice.value.starts_with("xai/"))
+        .cloned()
+        .collect()
+}
+
+pub fn has_usable_model(state: &ModelState, xai_only: bool) -> bool {
+    !xai_only
+        || state.selected.as_ref().is_some_and(|selected| {
+            state.choices.iter().any(|choice| {
+                choice.value.as_str() == selected.as_str() && choice.value.starts_with("xai/")
+            })
+        })
+}
+
+pub fn model_switch_request(
+    request_id: u64,
+    session_id: &str,
+    config_id: Option<&str>,
+    model_id: &str,
+) -> Value {
+    match config_id {
+        Some(config_id) => rpc_request(
+            request_id,
+            "session/set_config_option",
+            json!({"sessionId":session_id,"configId":config_id,"value":model_id}),
+        ),
+        None => rpc_request(
+            request_id,
+            "session/set_model",
+            json!({"sessionId":session_id,"modelId":model_id}),
+        ),
+    }
+}
+
+pub fn config_result_model_value(result: &Value, config_id: &str) -> Option<String> {
+    let option = result
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+        })
+        .or_else(|| {
+            result
+                .get("configOption")
+                .filter(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+        })
+        .or_else(|| {
+            (result.get("id").and_then(Value::as_str) == Some(config_id)).then_some(result)
+        })?;
+    option
+        .get("currentValue")
+        .or_else(|| option.get("value"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
 
 pub struct AgentProcess {
     child: Mutex<Child>,
@@ -22,9 +261,17 @@ pub struct AgentProcess {
 
 impl AgentProcess {
     pub fn spawn(program: &str, args: &[String], cwd: &Path) -> io::Result<Arc<Self>> {
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
+        #[cfg(target_os = "macos")]
+        let path = {
+            let inherited = std::env::var_os("PATH").unwrap_or_default();
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            crate::terminal_session::build_macos_path(&inherited, &home, Path::is_dir)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let path = None;
+        let mut child = agent_command(program, args, cwd, path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -179,6 +426,15 @@ impl AgentProcess {
             let _ = child.wait();
         }
     }
+}
+
+fn agent_command(program: &str, args: &[String], cwd: &Path, path: Option<OsString>) -> Command {
+    let mut command = Command::new(program);
+    command.args(args).current_dir(cwd);
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command
 }
 
 impl Drop for AgentProcess {
@@ -579,6 +835,193 @@ mod tests {
         assert_eq!(prompt[0]["type"], "text");
         assert_eq!(prompt[1]["type"], "resource_link");
         assert!(prompt[1]["uri"].as_str().unwrap().starts_with("file:"));
+    }
+
+    #[test]
+    fn discovers_config_and_legacy_models_without_inventing_choices() {
+        let config = model_state_from_session(&json!({
+            "configOptions": [
+                {"id":"reasoning","type":"select","options":[{"name":"Fast","value":"fast"}]},
+                {
+                    "id":"model","category":"model","type":"select","currentValue":"vendor/a",
+                    "options":[
+                        {"name":"Vendor A","value":"vendor/a"},
+                        {"groupName":"Other","options":[
+                            {"name":"Vendor B","value":"vendor/b"},
+                            {"name":"Malformed","id":"missing-value"},
+                            {"name":"Vendor C","value":"vendor/c"}
+                        ]}
+                    ]
+                }
+            ]
+        }));
+        assert_eq!(config.config_id.as_deref(), Some("model"));
+        assert_eq!(config.selected.as_deref(), Some("vendor/a"));
+        assert_eq!(
+            config
+                .choices
+                .iter()
+                .map(|choice| choice.value.as_str())
+                .collect::<Vec<_>>(),
+            ["vendor/a", "vendor/b", "vendor/c"]
+        );
+
+        let legacy = model_state_from_session(&json!({
+            "models": {
+                "availableModels": [
+                    {"modelId":"legacy/a","name":"Legacy A"},
+                    {"name":"Malformed"}
+                ],
+                "currentModelId":"legacy/a"
+            }
+        }));
+        assert_eq!(legacy.config_id, None);
+        assert_eq!(legacy.choices[0].value, "legacy/a");
+        assert_eq!(legacy.selected.as_deref(), Some("legacy/a"));
+        assert_eq!(
+            model_state_from_session(&json!({"models":{"other":true}})),
+            ModelState::default()
+        );
+        assert_eq!(
+            model_state_from_session(&json!({"configOptions":[{"id":"unknown","type":"select"}]})),
+            ModelState::default()
+        );
+    }
+
+    #[test]
+    fn grok_model_filter_requires_an_advertised_xai_selection() {
+        let state = model_state_from_session(&json!({
+            "models":{
+                "availableModels":[
+                    {"modelId":"openai/gpt-4o","name":"Other provider"},
+                    {"modelId":"xai/grok-3","name":"Grok 3"}
+                ],
+                "currentModelId":"openai/gpt-4o"
+            }
+        }));
+        let choices = allowed_model_choices(&state, true);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].value, "xai/grok-3");
+        assert!(!choices.iter().any(|choice| choice.value == "openai/gpt-4o"));
+        assert!(allowed_model_choices(&ModelState::default(), true).is_empty());
+        assert!(!has_usable_model(&state, true));
+        assert!(!has_usable_model(&ModelState::default(), true));
+        assert!(has_usable_model(&ModelState::default(), false));
+        let mut selected_xai = state.clone();
+        selected_xai.selected = Some("xai/grok-3".into());
+        assert!(has_usable_model(&selected_xai, true));
+        assert_eq!(allowed_model_choices(&state, false).len(), 2);
+    }
+
+    #[test]
+    fn model_switch_requests_and_selection_state_are_safe() {
+        assert_eq!(
+            model_switch_request(4, "session", Some("model"), "xai/grok-3"),
+            rpc_request(
+                4,
+                "session/set_config_option",
+                json!({"sessionId":"session","configId":"model","value":"xai/grok-3"})
+            )
+        );
+        assert_eq!(
+            model_switch_request(5, "session", None, "legacy/model"),
+            rpc_request(
+                5,
+                "session/set_model",
+                json!({"sessionId":"session","modelId":"legacy/model"})
+            )
+        );
+        let mut selection = ModelSelection {
+            state: ModelState {
+                config_id: Some("model".into()),
+                choices: Vec::new(),
+                selected: Some("previous".into()),
+            },
+            pending: None,
+        };
+        assert!(selection.begin(8, "requested".into()));
+        assert!(!selection.begin(9, "other".into()));
+        assert!(!selection.complete(9, Some("wrong".into())));
+        assert!(selection.fail(8));
+        assert_eq!(selection.state.selected.as_deref(), Some("previous"));
+        assert!(selection.begin(10, "requested".into()));
+        assert_eq!(selection.state.selected.as_deref(), Some("previous"));
+        assert!(selection.complete(10, Some("agent-selected".into())));
+        assert_eq!(selection.state.selected.as_deref(), Some("agent-selected"));
+        assert!(selection.begin(11, "requested".into()));
+        selection.reset();
+        assert!(selection.pending.is_none());
+    }
+
+    #[test]
+    fn prompt_gate_blocks_unready_switching_and_missing_models() {
+        let can_send = |ready, pending, model| {
+            can_prompt(ready, true, true, false, pending, model, "keep this prompt")
+        };
+        assert!(can_send(true, false, true));
+        assert!(!can_send(false, false, true));
+        assert!(!can_send(true, true, true));
+        assert!(!can_send(true, false, false));
+        assert!(!can_prompt(true, true, true, false, false, true, " \n"));
+    }
+
+    #[test]
+    fn agent_selection_is_blocked_while_a_process_exists() {
+        assert!(can_select_agent(false));
+        assert!(!can_select_agent(true));
+    }
+
+    #[test]
+    fn config_option_response_supplies_the_selected_model() {
+        let result = json!({
+            "configOptions": [
+                {"id":"other","currentValue":"unrelated"},
+                {"id":"model","currentValue":"xai/grok-3"}
+            ]
+        });
+        assert_eq!(
+            config_result_model_value(&result, "model").as_deref(),
+            Some("xai/grok-3")
+        );
+        assert_eq!(
+            config_result_model_value(&result, "other").as_deref(),
+            Some("unrelated")
+        );
+        assert_eq!(config_result_model_value(&result, "missing"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_command_keeps_literal_args_and_explicit_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new();
+        let executable = temp.0.join("agent executable with spaces");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' \"$PATH\" \"$1\" \"$2\"\n",
+        )
+        .expect("write executable");
+        let mut permissions = fs::metadata(&executable).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).expect("make executable");
+        let child_path = OsString::from("/tmp/path with spaces");
+        let output = agent_command(
+            executable.to_str().expect("UTF-8 test path"),
+            &["argument with spaces".into(), "$(not-shell)".into()],
+            &temp.0,
+            Some(child_path.clone()),
+        )
+        .output()
+        .expect("spawn executable");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("UTF-8 output"),
+            format!(
+                "{}\nargument with spaces\n$(not-shell)\n",
+                child_path.to_string_lossy()
+            )
+        );
     }
 
     #[test]

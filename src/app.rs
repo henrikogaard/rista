@@ -8165,7 +8165,7 @@ impl Render for Workspace {
                                         .size(px(260.))
                                         .size_range(px(200.)..px(420.))
                                         .child(
-                                            div().size_full().child(
+                                            div().size_full().p_1().child(
                                                 div()
                                                     .size_full()
                                                     .bg(cx.theme().sidebar)
@@ -8243,7 +8243,7 @@ impl Render for Workspace {
                                         .size(px(310.))
                                         .size_range(px(220.)..px(520.))
                                         .child(
-                                            div().size_full().p_1().child(
+                                            div().size_full().child(
                                                 canvas_panels("right-dock", Axis::Vertical)
                                                     .when(self.settings.graph_dock_open, |panes| {
                                                         panes.child(
