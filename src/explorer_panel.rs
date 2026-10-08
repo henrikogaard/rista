@@ -86,9 +86,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let repoint = |path: &mut PathBuf| {
-            if let Ok(relative) = path.strip_prefix(source) {
-                *path = destination.join(relative);
-            }
+            crate::explorer::repoint_path(path, source, destination);
         };
         for doc in &self.docs {
             doc.entity.update(cx, |doc, _| repoint(&mut doc.path));

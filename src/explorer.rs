@@ -100,6 +100,16 @@ pub fn move_entry(root: &Path, source: &Path, destination: &Path) -> std::io::Re
     std::fs::rename(source, destination)
 }
 
+pub fn repoint_path(path: &mut PathBuf, source: &Path, destination: &Path) {
+    if let Ok(relative) = path.strip_prefix(source) {
+        *path = if relative.as_os_str().is_empty() {
+            destination.to_path_buf()
+        } else {
+            destination.join(relative)
+        };
+    }
+}
+
 pub fn size_label(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
@@ -148,8 +158,15 @@ mod tests {
         let source = root.join("note.md");
         let dest = root.join("folder/note.md");
         std::fs::write(&source, "original").unwrap();
+        let mut open_path = source.clone();
         move_entry(&root, &source, &dest).unwrap();
+        repoint_path(&mut open_path, &source, &dest);
+        assert_eq!(open_path.as_os_str(), dest.as_os_str());
+        assert_eq!(std::fs::read_to_string(&open_path).unwrap(), "original");
         move_entry(&root, &dest, &source).unwrap();
+        repoint_path(&mut open_path, &dest, &source);
+        assert_eq!(open_path.as_os_str(), source.as_os_str());
+        assert_eq!(std::fs::read_to_string(&open_path).unwrap(), "original");
         std::fs::write(&dest, "other").unwrap();
         assert_eq!(
             move_entry(&root, &source, &dest).unwrap_err().kind(),
@@ -171,5 +188,15 @@ mod tests {
         );
         assert!(filtered_tree(&items, &root, "folder", FileFilter::Images).is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repoint_preserves_nested_and_unrelated_paths() {
+        let mut nested = PathBuf::from("old/sub/note.md");
+        repoint_path(&mut nested, Path::new("old"), Path::new("new"));
+        assert_eq!(nested, PathBuf::from("new/sub/note.md"));
+        let mut unrelated = PathBuf::from("older/note.md");
+        repoint_path(&mut unrelated, Path::new("old"), Path::new("new"));
+        assert_eq!(unrelated, PathBuf::from("older/note.md"));
     }
 }
