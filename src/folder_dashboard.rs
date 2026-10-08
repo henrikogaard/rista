@@ -532,6 +532,7 @@ impl Workspace {
                 {
                     content = content.child(
                         v_flex()
+                            .items_start()
                             .gap_2()
                             .child(
                                 div()
@@ -544,7 +545,6 @@ impl Workspace {
                                 Button::new(("folder-task", ix))
                                     .ghost()
                                     .small()
-                                    .justify_start()
                                     .icon(assets::IconName::Square)
                                     .label(task.text)
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -852,7 +852,8 @@ impl Workspace {
         if !list && !card.metadata.description.is_empty() {
             body = body.child(
                 div()
-                    .h(px(42.))
+                    .h(px(36.))
+                    .line_height(px(18.))
                     .overflow_hidden()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
