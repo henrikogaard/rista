@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.7 — 2026-10-08
+
+- Make Graphite the default theme and rename the original palette Slate, preserving saved selections.
+- Add light and dark Gruvbox, Nord, Solarized, and Catppuccin palettes, bringing the total to 18 variants.
+- Show the native macOS About panel with the app logo, version, and Henrik Øgård's copyright credit.
+- Align the right dock with the editor and let remaining panes fill its height when other panes close.
+- Add Codex, Claude, OpenCode, and Grok-through-OpenCode agent presets alongside Vibe, with bilingual setup guidance and improved macOS executable discovery.
+- Support agent-advertised model selection, pending-switch safeguards, and recovery from rejected model changes. Agent tools and authentication remain separate installations; authenticated provider sessions are not verified in this release.
+
 ## v0.1.6 — 2026-10-08
 
 - Add paired Graphite and Mono monochrome palettes.
