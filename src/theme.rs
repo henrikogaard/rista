@@ -320,7 +320,7 @@ pub fn builtin_json() -> serde_json::Value {
                 ("danger.foreground", &palette["on_accent"]),
                 ("danger.hover.background", &palette["red"]),
                 ("warning.background", &palette["yellow"]),
-                ("warning.foreground", foreground),
+                ("warning.foreground", &palette["on_accent"]),
                 ("success.background", &palette["green"]),
                 ("success.foreground", &palette["on_accent"]),
                 ("base.red", &palette["red"]),
@@ -697,6 +697,22 @@ mod tests {
             assert_eq!(
                 theme["highlight"]["syntax"]["string"]["color"],
                 syntax_string
+            );
+        }
+        for name in [
+            "Gruvbox Night",
+            "Gruvbox Day",
+            "Nord Night",
+            "Nord Day",
+            "Solarized Night",
+            "Solarized Day",
+            "Catppuccin Night",
+            "Catppuccin Day",
+        ] {
+            let theme = themes.iter().find(|theme| theme["name"] == name).unwrap();
+            assert_eq!(
+                theme["colors"]["warning.foreground"], theme["colors"]["primary.foreground"],
+                "{name}"
             );
         }
 

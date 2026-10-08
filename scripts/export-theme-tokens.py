@@ -43,7 +43,7 @@ for palette in constant("RISTA_PALETTES"):
             "muted.foreground": palette["muted_foreground"],
             "danger.background": palette["red"], "danger.foreground": palette["on_accent"],
             "danger.hover.background": palette["red"],
-            "warning.background": palette["yellow"], "warning.foreground": foreground,
+            "warning.background": palette["yellow"], "warning.foreground": palette["on_accent"],
             "success.background": palette["green"], "success.foreground": palette["on_accent"],
             "base.red": palette["red"], "base.green": palette["green"],
             "base.yellow": palette["yellow"], "base.blue": palette["blue"],

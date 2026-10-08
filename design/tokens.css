@@ -402,7 +402,7 @@
   --rista-danger-foreground: #282828;
   --rista-danger-hover-background: #fb4934;
   --rista-warning-background: #fabd2f;
-  --rista-warning-foreground: #ebdbb2;
+  --rista-warning-foreground: #282828;
   --rista-success-background: #b8bb26;
   --rista-success-foreground: #282828;
   --rista-info-background: #fabd2f;
@@ -491,7 +491,7 @@
   --rista-danger-foreground: #ffffff;
   --rista-danger-hover-background: #9d0006;
   --rista-warning-background: #b57614;
-  --rista-warning-foreground: #3c3836;
+  --rista-warning-foreground: #ffffff;
   --rista-success-background: #79740e;
   --rista-success-foreground: #ffffff;
   --rista-info-background: #9d6a00;
@@ -580,7 +580,7 @@
   --rista-danger-foreground: #2e3440;
   --rista-danger-hover-background: #bf616a;
   --rista-warning-background: #ebcb8b;
-  --rista-warning-foreground: #eceff4;
+  --rista-warning-foreground: #2e3440;
   --rista-success-background: #a3be8c;
   --rista-success-foreground: #2e3440;
   --rista-info-background: #88c0d0;
@@ -669,7 +669,7 @@
   --rista-danger-foreground: #ffffff;
   --rista-danger-hover-background: #a33b48;
   --rista-warning-background: #8c651c;
-  --rista-warning-foreground: #2e3440;
+  --rista-warning-foreground: #ffffff;
   --rista-success-background: #4f6b35;
   --rista-success-foreground: #ffffff;
   --rista-info-background: #466b94;
@@ -758,7 +758,7 @@
   --rista-danger-foreground: #002b36;
   --rista-danger-hover-background: #dc322f;
   --rista-warning-background: #b58900;
-  --rista-warning-foreground: #93a1a1;
+  --rista-warning-foreground: #002b36;
   --rista-success-background: #859900;
   --rista-success-foreground: #002b36;
   --rista-info-background: #2aa198;
@@ -847,7 +847,7 @@
   --rista-danger-foreground: #ffffff;
   --rista-danger-hover-background: #c32a28;
   --rista-warning-background: #946b00;
-  --rista-warning-foreground: #586e75;
+  --rista-warning-foreground: #ffffff;
   --rista-success-background: #667b00;
   --rista-success-foreground: #ffffff;
   --rista-info-background: #007d75;
@@ -936,7 +936,7 @@
   --rista-danger-foreground: #1e1e2e;
   --rista-danger-hover-background: #f38ba8;
   --rista-warning-background: #f9e2af;
-  --rista-warning-foreground: #cdd6f4;
+  --rista-warning-foreground: #1e1e2e;
   --rista-success-background: #a6e3a1;
   --rista-success-foreground: #1e1e2e;
   --rista-info-background: #cba6f7;
@@ -1025,7 +1025,7 @@
   --rista-danger-foreground: #ffffff;
   --rista-danger-hover-background: #d20f39;
   --rista-warning-background: #91610a;
-  --rista-warning-foreground: #4c4f69;
+  --rista-warning-foreground: #ffffff;
   --rista-success-background: #407515;
   --rista-success-foreground: #ffffff;
   --rista-info-background: #8839ef;
