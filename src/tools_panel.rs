@@ -69,6 +69,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_tools_for(None, window, cx);
+    }
+
+    pub(super) fn open_tools_for(
+        &mut self,
+        context: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (tools, errors) = self.tool_launchers(cx);
         let view = cx.entity();
         let language = self.settings.language;
@@ -87,15 +96,18 @@ impl Workspace {
                         }}))
                     .child(Button::new("plugins-reload").ghost().small().icon(assets::IconName::RefreshCw)
                         .label(language.text("Reload", "Last på nytt"))
-                        .on_click({ let view = view.clone(); move |_, window, cx| { window.close_dialog(cx); view.update(cx, |this, cx| this.on_open_tools(&OpenTools, window, cx)); }})));
+                        .on_click({ let view = view.clone(); let context = context.clone(); move |_, window, cx| { window.close_dialog(cx); view.update(cx, |this, cx| this.open_tools_for(context.clone(), window, cx)); }})));
+            if let Some(context) = &context {
+                content = content.child(div().text_xs().text_color(cx.theme().muted_foreground).child(context.display().to_string()));
+            }
             for (ix, tool) in tools.iter().enumerate() {
                 content = content.child(h_flex().w_full().gap_3().items_center()
                     .child(Icon::new(assets::IconName::Terminal).size_4().text_color(cx.theme().muted_foreground))
                     .child(v_flex().flex_1().min_w_0().child(div().text_sm().child(tool.name.text(language).to_string()))
                         .child(div().text_xs().truncate().text_color(cx.theme().muted_foreground).child(tool.program.clone())))
                     .child(Button::new(("launch-tool", ix)).ghost().small().label(language.text("Launch…", "Start…"))
-                        .on_click({ let view = view.clone(); let tool = tool.clone(); move |_, window, cx| {
-                            window.close_dialog(cx); view.update(cx, |this, cx| this.confirm_tool(tool.clone(), window, cx));
+                        .on_click({ let view = view.clone(); let tool = tool.clone(); let context = context.clone(); move |_, window, cx| {
+                            window.close_dialog(cx); view.update(cx, |this, cx| this.confirm_tool_in(tool.clone(), context.clone(), window, cx));
                         }})));
             }
             if !errors.is_empty() {
@@ -131,7 +143,7 @@ impl Workspace {
     fn confirm_tool_in(
         &mut self,
         tool: Launcher,
-        folder: Option<PathBuf>,
+        context: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -145,17 +157,31 @@ impl Workspace {
             );
             return;
         };
-        let folder = folder.unwrap_or_else(|| {
-            self.folder
-                .as_ref()
-                .map(|p| p.path.clone())
-                .or_else(|| {
-                    self.active_doc()
-                        .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf))
-                })
-                .filter(|p| p.starts_with(&root))
-                .unwrap_or_else(|| root.clone())
-        });
+        let file = match &context {
+            Some(path) if path.is_file() => Some(path.clone()),
+            Some(_) => None,
+            None if self.folder.is_some() => None,
+            None => self.active_doc().map(|d| d.read(cx).path.clone()),
+        };
+        let folder = context
+            .map(|path| {
+                if path.is_file() {
+                    path.parent().unwrap_or(&root).to_path_buf()
+                } else {
+                    path
+                }
+            })
+            .unwrap_or_else(|| {
+                self.folder
+                    .as_ref()
+                    .map(|p| p.path.clone())
+                    .or_else(|| {
+                        self.active_doc()
+                            .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf))
+                    })
+                    .filter(|p| p.starts_with(&root))
+                    .unwrap_or_else(|| root.clone())
+            });
         let cwd = match tool.working_directory {
             WorkingDirectory::Vault => root.clone(),
             WorkingDirectory::Folder => folder.clone(),
@@ -180,14 +206,13 @@ impl Workspace {
             );
             return;
         }
-        let file = self.active_doc().map(|d| d.read(cx).path.clone());
         let args = match expand_tool_args(&tool.args, &root, &folder, file.as_deref()) {
             Some(args) => args,
             None => {
                 self.note_status(
                     self.tr(
-                        "This tool requires an open note",
-                        "Dette verktøyet krever et åpent notat",
+                        "This tool requires a selected or open file",
+                        "Dette verktøyet krever en valgt eller åpen fil",
                     ),
                     cx,
                 );
@@ -312,6 +337,22 @@ impl Workspace {
                             .label(self.tr("Tools…", "Verktøy…"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_open_tools(&OpenTools, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("terminal-start-folder")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::FolderOpen)
+                            .tooltip(self.tr(
+                                "Reveal launch folder (shell cd does not change this)",
+                                "Vis startmappe (cd i skallet endrer ikke denne)",
+                            ))
+                            .on_click(cx.listener({
+                                let cwd = active.cwd.clone();
+                                move |this, _, window, cx| {
+                                    this.open_folder_page(cwd.clone(), window, cx)
+                                }
                             })),
                     )
                     .child(

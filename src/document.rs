@@ -79,6 +79,10 @@ pub struct Document {
     pub outgoing_links: Vec<PathBuf>,
     /// `[[targets]]` that don't resolve — shown dimmed.
     pub outgoing_unresolved: Vec<String>,
+    preview_line_offsets: Vec<usize>,
+    preview_blocks: Vec<(usize, String)>,
+    preview_locations: Vec<(usize, usize)>,
+    mapped_preview: Option<gpui_kit::component::text::RenderedText>,
     /// Whether the preview's linked-mentions footer is expanded.
     pub mentions_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -170,12 +174,16 @@ impl Document {
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let preview_text =
-            preview::preprocess(&content, &path, vault_root.as_deref(), &*image_resolver);
+        let (preview_text, preview_line_offsets) =
+            preview::preprocess_mapped(&content, &path, vault_root.as_deref(), &*image_resolver);
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
         let mut this = Self {
+            preview_blocks: preview::navigation_blocks(&preview_text),
+            preview_locations: Vec::new(),
+            mapped_preview: None,
+            preview_line_offsets,
             is_image,
             file_preview,
             path,
@@ -310,7 +318,11 @@ impl Document {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
-        let text = preview::preprocess(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
+        let (text, offsets) =
+            preview::preprocess_mapped(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
+        self.preview_line_offsets = offsets;
+        self.preview_blocks = preview::navigation_blocks(&text);
+        self.mapped_preview = None;
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
         self.stats = word_stats(&raw);
         self.css_classes = crate::properties::frontmatter_cssclasses(&raw);
@@ -393,6 +405,7 @@ impl Document {
 
     /// Move the caret to the start of a 1-based line (outline jump).
     pub fn jump_to_line(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_preview_line(line.saturating_sub(1), cx);
         self.editor.update(cx, |editor, cx| {
             let text = editor.value();
             let at = text
@@ -404,6 +417,40 @@ impl Document {
             editor.set_selected_range(at..at, cx);
             editor.focus(window, cx);
         });
+    }
+
+    pub fn reveal_preview_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let Some(&source) = self.preview_line_offsets.get(line) else {
+            return;
+        };
+        let rendered = self.preview.read(cx).rendered_text();
+        if self.mapped_preview.as_ref() != Some(&rendered) {
+            self.preview_locations =
+                preview::match_navigation_blocks(&self.preview_blocks, rendered.as_str());
+            self.mapped_preview = Some(rendered);
+        }
+        let Some(&(_, start)) = self
+            .preview_locations
+            .iter()
+            .rev()
+            .find(|(offset, _)| *offset <= source)
+        else {
+            return;
+        };
+        self.preview.update(cx, |preview, cx| {
+            let _ = preview.reveal_range(start..start, cx);
+        });
+    }
+
+    pub fn follow_source_scroll(&mut self, cx: &mut Context<Self>) {
+        let line = self
+            .editor
+            .read(cx)
+            .visible_row_range()
+            .map(|range| range.start);
+        if let Some(line) = line {
+            self.reveal_preview_line(line, cx);
+        }
     }
 
     /// Append `line` at end of buffer (a leading newline is inserted

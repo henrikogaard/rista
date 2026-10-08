@@ -50,6 +50,11 @@ substitution; a missing current file prevents a `{{file}}` command from launchin
 Paths containing spaces remain one argument. Shell expansion is not performed.
 Names must include both `en` and `nb`. Use unique plugin and command IDs.
 
+Right-click a file or folder and choose **Tools here…** to use that selection
+rather than the open tab. A selected file supplies `{{file}}` and its parent
+supplies `{{folder}}`; a selected folder/dashboard has no current file, so a
+command requiring `{{file}}` will not launch. Reload preserves this context.
+
 To launch an AI CLI, change `program` and `args` to its documented executable and
 options. Built-in launchers cover `claude`, `codex`, `vibe`, `pi`, `omp`, and
 `opencode`; they do not install, authenticate, or call a hosted provider by
@@ -69,7 +74,13 @@ No persistent “trust this vault” grant or background lifecycle hook exists.
 ## Terminal
 
 **⌘J** or the status-bar **Terminal** button shows/hides the panel. The default
-shell starts in the current folder with the normal login-shell configuration.
+shell starts in the current folder as an interactive login shell on Unix/macOS.
+Settings → Terminal can select an executable (blank uses `$SHELL`), an installed
+monospace/Nerd Font, and font size. Shell changes affect new sessions; typography
+changes affect existing ones. zsh loads its normal startup files and Oh My Zsh
+configuration; Rísta never writes those files. A prompt that needs Nerd Font
+glyphs requires that font installed and selected. This is not a promise of full
+compatibility with every terminal protocol or prompt plugin.
 The native renderer supports ANSI colors, a cursor, alternate-screen apps,
 interactive input, Unicode composition, resize, keyboard controls, bracketed
 paste, and bounded scrollback. **Ctrl+C** interrupts; **Stop** terminates the
@@ -80,6 +91,9 @@ shows that folder, even when another page is selected. Every tool opens in a new
 tab without replacing existing sessions. Each tab has a close button that stops
 only its process. Closing/switching the vault or closing the app stops all
 sessions; terminal tabs are not restored.
+The folder button returns to the tab's **launch folder**; it does not track later
+`cd` commands. Screen snapshots are cached until output changes, and inactive tabs
+poll less often without requesting redraws; their processes still run normally.
 Rísta does not persist terminal output or commands; the shell may save its normal
 history. Mouse reporting, text-range selection, terminal images, and advanced
 keyboard protocols are not implemented in this first version.

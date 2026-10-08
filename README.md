@@ -39,6 +39,28 @@ Remote images and packaged update checks can still make network requests.
 - **Quiet by design.** Rísta Night and Rísta Day, compact controls, adjustable
   typography, and resizable panes.
 
+### Exploring and writing (current source)
+
+Filter the explorer by filename/path or file type; folders stay first. Expansion
+is remembered per vault. **Files** offers a compact Name/Type/Modified/Size table
+alongside the curated **Dashboard**. Drag files or folders to move them, then use
+**Undo last move** if needed; existing destinations are never overwritten.
+**⌘P** switches files/folders; breadcrumb menus browse siblings. Single-click
+previews a file, while double-click or editing keeps its tab open.
+
+The outline supports ATX and Setext headings and moves both source and preview
+to the selected section. In Split mode, the link control in the status bar lets
+the preview follow source scrolling at Markdown-block boundaries (not pixel-exact
+bidirectional scrolling). A missing-links indicator opens the outgoing panel;
+local note and image targets are checked, excluding code samples and external URLs.
+Wikilink and image completion remain available with `[[` and `![[`.
+
+Right-click a file/folder → **Tools here…** passes that selection to a confirmed
+JSON command. The terminal uses your existing shell configuration, supports
+independent tabs, and has font/size/shell preferences. See [extensions and terminal
+tools](docs/extensions.md) for capabilities and limits. These changes are not yet
+in the published v0.1.3 release.
+
 ## Get Rísta
 
 The [latest release](https://github.com/henrikogaard/rista/releases/latest)
@@ -148,7 +170,8 @@ not a promise of complete compatibility with other tools.
 | Save / Save as | `⌘S` / `⌘⇧S` |
 | Source / Split / Preview | `⌘1` / `⌘2` / `⌘3` |
 | Find / Search vault | `⌘F` / `⌘⇧F` |
-| Command palette | `⌘K` or `⌘P` |
+| Command palette | `⌘K` |
+| Quick open file/folder | `⌘P` |
 | Toggle sidebar / Zen mode | `⌘B` / `⌘⇧Enter` |
 | Daily note / Graph | `⌘⇧D` / `⌘G` |
 | Settings | `⌘,` |

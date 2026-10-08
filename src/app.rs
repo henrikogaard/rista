@@ -976,6 +976,23 @@ impl Workspace {
         };
         let menu = menu
             .item(
+                PopupMenuItem::new(language.text("Tools here…", "Verktøy her…"))
+                    .icon(assets::IconName::Blocks)
+                    .on_click({
+                        let view = view.clone();
+                        let path = path.clone();
+                        move |_, window, _| {
+                            let view = view.clone();
+                            let path = path.clone();
+                            window.on_next_frame(move |window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_tools_for(Some(path), window, cx)
+                                })
+                            });
+                        }
+                    }),
+            )
+            .item(
                 PopupMenuItem::new("New file here")
                     .icon(assets::IconName::FilePlus)
                     .on_click({
@@ -4510,23 +4527,7 @@ impl Workspace {
             return Vec::new();
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
-        let mut headings: Vec<(usize, usize, String)> = Vec::new();
-        let mut in_fence = false;
-        for (ix, line) in raw.split('\n').enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("```") {
-                in_fence = !in_fence;
-                continue;
-            }
-            if in_fence {
-                continue;
-            }
-            let level = trimmed.chars().take_while(|&c| c == '#').count();
-            if (1..=6).contains(&level) && trimmed.chars().nth(level) == Some(' ') {
-                headings.push((ix + 1, level, trimmed[level + 1..].trim().to_string()));
-            }
-        }
-        headings
+        crate::preview::headings(&raw)
     }
 
     fn show_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5556,7 +5557,11 @@ impl Workspace {
                                 .text_color(theme.muted_foreground),
                             )
                             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                                format!("Outgoing links · {}", links.len() + unresolved.len()),
+                                format!(
+                                    "{} · {}",
+                                    self.tr("Outgoing links", "Utgående lenker"),
+                                    links.len() + unresolved.len()
+                                ),
                             )),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -5574,7 +5579,10 @@ impl Workspace {
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("This note doesn't link anywhere"),
+                                .child(self.tr(
+                                    "This note doesn't link anywhere",
+                                    "Dette notatet har ingen lenker",
+                                )),
                         ),
                     );
                 }
@@ -5632,20 +5640,19 @@ impl Workspace {
                     );
                 }
                 for (ix, target) in unresolved.iter().enumerate() {
-                    rows = rows.child(
-                        div()
-                            .id(("outgoing-miss", ix))
-                            .w_full()
-                            .px_2()
-                            .py_0p5()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .truncate()
-                                    .text_color(theme.muted_foreground)
-                                    .child(target.clone()),
-                            ),
-                    );
+                    rows =
+                        rows.child(
+                            div()
+                                .id(("outgoing-miss", ix))
+                                .w_full()
+                                .px_2()
+                                .py_0p5()
+                                .child(
+                                    div().text_sm().truncate().text_color(theme.warning).child(
+                                        format!("{}: {target}", self.tr("Missing", "Mangler")),
+                                    ),
+                                ),
+                        );
                 }
                 this.child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
@@ -7259,6 +7266,19 @@ impl Workspace {
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
         div()
             .size_full()
+            .on_scroll_wheel(cx.listener({
+                let doc = doc.clone();
+                move |this, _, window, _cx| {
+                    if this.settings.preview_follows_source
+                        && this.settings.view_mode == ViewMode::Split
+                    {
+                        let doc = doc.clone();
+                        window.on_next_frame(move |_, cx| {
+                            doc.update(cx, |doc, cx| doc.follow_source_scroll(cx))
+                        });
+                    }
+                }
+            }))
             .px_3()
             .py_4()
             // Scoped key context — the auto-pair bindings only fire when the
@@ -7713,6 +7733,52 @@ impl Workspace {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(mode_label),
+                    )
+                    .when(
+                        self.settings.view_mode == ViewMode::Split && !self.active_doc_is_image(cx),
+                        |bar| {
+                            bar.child(
+                                Button::new("preview-follow-source")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::Link)
+                                    .selected(self.settings.preview_follows_source)
+                                    .tooltip(self.tr(
+                                        "Preview follows source scrolling",
+                                        "Forhåndsvisning følger rulling i kilden",
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.preview_follows_source =
+                                            !this.settings.preview_follows_source;
+                                        this.settings.save();
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    )
+                    .when(
+                        doc.is_some_and(|doc| !doc.read(cx).outgoing_unresolved.is_empty()),
+                        |bar| {
+                            bar.child(
+                                Button::new("link-diagnostics")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::TriangleAlert)
+                                    .label(format!(
+                                        "{} {}",
+                                        doc.map(|doc| doc.read(cx).outgoing_unresolved.len())
+                                            .unwrap_or(0),
+                                        self.tr("missing links", "manglende lenker")
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.inspector_open = true;
+                                        this.outgoing_open = true;
+                                        this.settings.panes.outgoing = true;
+                                        this.settings.save();
+                                        cx.notify();
+                                    })),
+                            )
+                        },
                     )
                     .child(
                         Button::new("workspace-tools")

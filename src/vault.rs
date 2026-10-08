@@ -438,37 +438,23 @@ impl Vault {
     pub fn outgoing_from(&self, text: &str, from_dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
         let mut resolved: Vec<PathBuf> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        let mut cursor = 0;
-        while let Some(at) = text[cursor..].find("[[").map(|i| cursor + i) {
-            let Some(end) = text[at + 2..].find("]]").map(|i| at + 2 + i) else {
-                break;
-            };
-            let target = text[at + 2..end].split('|').next().unwrap_or("").trim();
-            match self.resolve_link_target(target) {
+        for (target, wiki) in local_link_targets(text) {
+            match if wiki {
+                self.resolve_link_target(&target)
+            } else {
+                self.md_link_path(&target, from_dir)
+            } {
                 Some(p) => {
                     if !resolved.contains(&p) {
                         resolved.push(p);
                     }
                 }
                 None => {
-                    if !target.is_empty() && !unresolved.contains(&target.to_string()) {
-                        unresolved.push(target.to_string());
+                    if !target.is_empty() && !unresolved.contains(&target) {
+                        unresolved.push(target);
                     }
                 }
             }
-            cursor = end + 2;
-        }
-        let mut cursor = 0;
-        while let Some(at) = text[cursor..].find("](").map(|i| cursor + i) {
-            let Some(end) = text[at + 2..].find(')').map(|i| at + 2 + i) else {
-                break;
-            };
-            if let Some(p) = self.md_link_path(&text[at + 2..end], from_dir) {
-                if !resolved.contains(&p) {
-                    resolved.push(p);
-                }
-            }
-            cursor = end + 1;
         }
         (resolved, unresolved)
     }
@@ -866,6 +852,80 @@ pub(crate) fn plain_mention_offset(text: &str, needle: &str) -> Option<usize> {
         cur = end;
     }
     None
+}
+
+fn local_link_targets(text: &str) -> Vec<(String, bool)> {
+    use markdown::mdast::Node;
+    fn definitions(node: &Node, out: &mut std::collections::HashMap<String, String>) {
+        if let Node::Definition(def) = node {
+            out.entry(def.identifier.clone())
+                .or_insert_with(|| def.url.clone());
+        }
+        for child in node.children().into_iter().flatten() {
+            definitions(child, out);
+        }
+    }
+    fn walk(
+        node: &Node,
+        defs: &std::collections::HashMap<String, String>,
+        out: &mut Vec<(String, bool)>,
+    ) {
+        let url = match node {
+            Node::Link(link) => Some(&link.url),
+            Node::Image(image) => Some(&image.url),
+            Node::LinkReference(link) => defs.get(&link.identifier),
+            Node::ImageReference(image) => defs.get(&image.identifier),
+            _ => None,
+        };
+        if let Some(url) = url.filter(|url| {
+            !url.is_empty() && !url.starts_with('#') && !url.starts_with("//") && !url.contains(':')
+        }) {
+            out.push((url.clone(), false));
+        }
+        if let Node::Text(text) = node {
+            let mut rest = text.value.as_str();
+            while let Some((_, tail)) = rest.split_once("[[") {
+                let Some((target, tail)) = tail.split_once("]]") else {
+                    break;
+                };
+                let target = target.split('|').next().unwrap_or("").trim();
+                if !target.is_empty() && !target.starts_with('#') {
+                    out.push((target.to_string(), true));
+                }
+                rest = tail;
+            }
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, defs, out);
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let Ok(root) = markdown::to_mdast(text, &options) else {
+        return Vec::new();
+    };
+    let mut defs = std::collections::HashMap::new();
+    definitions(&root, &mut defs);
+    let mut out = Vec::new();
+    walk(&root, &defs, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod link_diagnostics_tests {
+    #[test]
+    fn links_and_images_ignore_code_frontmatter_urls_and_anchors() {
+        let source = "---\nexample: '[[metadata]]'\n---\n[[Note|Label]] ![[missing.png]] [file](missing.md) ![photo][pic]\n\n[pic]: photo.png\n\n`[[inline]]`\n~~~\n[[code]]\n~~~\n[web](https://example.com) [mail](mailto:a@b.com) [anchor](#here) [[#Heading]]";
+        assert_eq!(
+            super::local_link_targets(source),
+            vec![
+                ("Note".into(), true),
+                ("missing.png".into(), true),
+                ("missing.md".into(), false),
+                ("photo.png".into(), false)
+            ]
+        );
+    }
 }
 
 fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String, PathBuf>) {
