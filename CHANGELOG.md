@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.6 — 2026-10-08
+
+- Add paired Graphite and Mono monochrome palettes.
+- Preserve terminal ANSI blue, magenta, and cyan colors across palettes.
+- Refine explorer search and keep graph search outside the canvas.
+- Align document and terminal tab icon and label spacing.
+- Add bottom status-bar padding and fix preview-tab promotion and focus restoration.
+
 ## v0.1.5 — 2026-10-08
 
 - Dock the local graph beside the editor; it follows the active note.
