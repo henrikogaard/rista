@@ -495,7 +495,7 @@ impl Workspace {
                             .child(self.tr(en, nb))
                             .child(count.to_string()),
                     );
-                    let mut rows = h_flex().w_full().flex_wrap().gap_2();
+                    let mut rows = h_flex().w_full().items_stretch().flex_wrap().gap_2();
                     for entry in entries {
                         rows = rows.child(self.folder_card(entry, page, is_pinned, cx));
                     }
@@ -544,6 +544,7 @@ impl Workspace {
                                 Button::new(("folder-task", ix))
                                     .ghost()
                                     .small()
+                                    .justify_start()
                                     .icon(assets::IconName::Square)
                                     .label(task.text)
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -906,6 +907,19 @@ impl Workspace {
                             .w_full()
                             .h(px(110.))
                             .object_fit(ObjectFit::Cover),
+                    )
+                },
+            )
+            .when(
+                page.config.layout == folder::Layout::Gallery && card.banner.is_none(),
+                |d| {
+                    d.child(
+                        h_flex()
+                            .w_full()
+                            .h(px(110.))
+                            .justify_center()
+                            .bg(cx.theme().muted)
+                            .child(folder_icon(&card.metadata, icon, cx)),
                     )
                 },
             )

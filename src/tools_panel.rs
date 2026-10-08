@@ -192,7 +192,8 @@ impl Workspace {
                         match crate::terminal_session::Session::spawn(&program, &args, &cwd) {
                             Ok(session) => {
                                 let terminal = cx.new(|cx| crate::terminal::Terminal::new(session, language, cx));
-                                terminal.focus_handle(cx).focus(window, cx);
+                                let focus = terminal.focus_handle(cx);
+                                window.on_next_frame(move |window, cx| focus.focus(window, cx));
                                 this.terminal = Some(terminal); this.terminal_visible = true;
                                 this.terminal_name = title.clone(); this.terminal_cwd = Some(cwd.clone()); cx.notify();
                             },

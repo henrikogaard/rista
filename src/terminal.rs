@@ -350,7 +350,7 @@ impl Render for Terminal {
             foreground,
         ];
         let font = font(if cfg!(target_os = "macos") {
-            "SF Mono"
+            "Menlo"
         } else {
             "monospace"
         });

@@ -70,15 +70,7 @@ impl Metadata {
         };
         let description = text("description");
         let description = if description.is_empty() {
-            body.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty() && !l.starts_with(['#', '!', '`', '-', '|', '>']))
-                .take(2)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .take(180)
-                .collect()
+            excerpt(body)
         } else {
             description.chars().take(180).collect()
         };
@@ -121,6 +113,42 @@ impl Metadata {
             && (config.tag.is_empty() || self.tags.iter().any(|tag| tag == &config.tag))
             && (config.status.is_empty() || self.status == config.status)
     }
+}
+
+fn excerpt(body: &str) -> String {
+    fn plain(node: &markdown::mdast::Node, out: &mut String) {
+        match node {
+            markdown::mdast::Node::Text(text) => out.push_str(&text.value),
+            markdown::mdast::Node::InlineCode(code) => out.push_str(&code.value),
+            _ => {
+                if let Some(children) = node.children() {
+                    for child in children {
+                        plain(child, out);
+                    }
+                }
+            }
+        }
+    }
+    let Ok(root) = markdown::to_mdast(body, &markdown::ParseOptions::default()) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    if let Some(children) = root.children() {
+        for paragraph in children
+            .iter()
+            .filter(|n| matches!(n, markdown::mdast::Node::Paragraph(_)))
+            .take(2)
+        {
+            plain(paragraph, &mut text);
+            text.push(' ');
+        }
+    }
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(180)
+        .collect()
 }
 
 pub fn body(raw: &str) -> &str {
@@ -244,6 +272,11 @@ mod tests {
 
     #[test]
     fn dashboard_metadata_and_filters_are_portable() {
+        assert_eq!(
+            Metadata::parse("# Title\n\n**October** · Read [this](note.md).", "fallback")
+                .description,
+            "October · Read this."
+        );
         let raw = "---\ntitle: Home\nicon: LiHouse\ntags: [work, notes]\nstatus: Active\ndashboard:\n  layout: gallery\n  sort: modified\n  pinned: [Plan.md, Ideas.md]\n---\n# Home\n\nIntroduction\n";
         let metadata = Metadata::parse(raw, "fallback");
         assert_eq!(metadata.title, "Home");
