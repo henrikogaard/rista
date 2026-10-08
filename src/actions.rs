@@ -45,8 +45,11 @@ actions!(
         CloseGraph,
         // App
         OpenCommandPalette,
+        QuickOpen,
         OpenProjectSearch,
         OpenSettings,
+        ToggleTerminal,
+        OpenTools,
         ToggleTheme,
         CheckForUpdates,
         Quit,

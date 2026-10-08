@@ -36,8 +36,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[path = "explorer_panel.rs"]
+mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "tools_panel.rs"]
+mod tools_panel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
@@ -79,8 +83,12 @@ fn update_observed_snapshot(
     changed
 }
 
-fn canvas_columns(id: &'static str) -> ResizablePanelGroup {
-    h_resizable(id).with_handle_appearance(std::rc::Rc::new(|handle, _, cx| {
+fn canvas_panels(id: &'static str, axis: Axis) -> ResizablePanelGroup {
+    let panels = match axis {
+        Axis::Horizontal => h_resizable(id),
+        Axis::Vertical => gpui_kit::component::resizable::v_resizable(id),
+    };
+    panels.with_handle_appearance(std::rc::Rc::new(move |handle, _, cx| {
         let engaged = handle.state() != gpui_kit::base::ResizeHandleState::Idle;
         Some(
             div()
@@ -92,8 +100,8 @@ fn canvas_columns(id: &'static str) -> ResizablePanelGroup {
                     this.child(
                         div()
                             .flex_none()
-                            .w(px(3.))
-                            .h(px(32.))
+                            .w(px(if axis == Axis::Horizontal { 3. } else { 32. }))
+                            .h(px(if axis == Axis::Horizontal { 32. } else { 3. }))
                             .rounded(cx.theme().radius)
                             .bg(cx.theme().muted_foreground),
                     )
@@ -108,6 +116,13 @@ pub struct Workspace {
     docs: Vec<OpenDoc>,
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
+    folder_search: Entity<InputState>,
+    explorer_search: Entity<InputState>,
+    move_undo: Vec<(PathBuf, PathBuf)>,
+    terminals: Vec<tools_panel::TerminalTab>,
+    active_terminal: Option<usize>,
+    next_terminal_id: usize,
+    terminal_visible: bool,
     settings: Settings,
     zen: bool,
     palette_state: Entity<CommandState>,
@@ -231,6 +246,7 @@ impl Focusable for Workspace {
 enum PaletteEntry {
     File(PathBuf),
     Command(PaletteCmd),
+    Tool(crate::extensions::Launcher),
 }
 
 #[derive(Clone)]
@@ -684,6 +700,34 @@ impl Workspace {
         let tag_input = cx.new(|cx| InputState::new(window, cx).placeholder("new-name"));
         let prop_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Property name"));
         let settings = Settings::load();
+        let folder_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(
+                settings
+                    .language
+                    .text("Search this folder…", "Søk i denne mappen…"),
+            )
+        });
+        let folder_search_sub = cx.subscribe(&folder_search, |_, _, _: &input::InputEvent, cx| {
+            cx.notify()
+        });
+        let explorer_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(
+                settings
+                    .language
+                    .text("Find files or paths…", "Finn filer eller stier…"),
+            )
+        });
+        let explorer_sub = cx.subscribe(
+            &explorer_search,
+            |this, input, _: &input::InputEvent, cx| {
+                let query = input.read(cx).value().to_string();
+                this.vault.update(cx, |vault, cx| {
+                    vault.explorer_query = query;
+                    vault.filter_tree(cx);
+                });
+                cx.notify();
+            },
+        );
         let weak = cx.weak_entity();
         let settings_view = cx.new(|cx| SettingsView::new(weak, &settings, window, cx));
         let focus_handle = cx.focus_handle();
@@ -698,6 +742,13 @@ impl Workspace {
             docs: Vec::new(),
             active: None,
             folder: None,
+            folder_search,
+            explorer_search,
+            move_undo: Vec::new(),
+            terminals: Vec::new(),
+            active_terminal: None,
+            next_terminal_id: 0,
+            terminal_visible: false,
             zen: false,
             palette_state,
             palette_sections: Vec::new(),
@@ -742,7 +793,7 @@ impl Workspace {
             focus_fallback_pending: false,
             focus_handle,
             settings,
-            _subscriptions: vec![vault_sub, appearance_sub],
+            _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
         };
 
         // `.base` `file.starred` reads this set — `toggle_star` keeps
@@ -828,11 +879,18 @@ impl Workspace {
         self.nav_stack.clear();
         self.nav_pos = 0;
         self.nav_suppress = false;
+        self.move_undo.clear();
+        self.explorer_search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
+            vault.show_other_files = self.settings.show_other_files;
             vault.templates_dir = self.settings.templates_dir.clone();
             vault.open(root.clone(), cx);
         });
+        self.terminals.clear();
+        self.active_terminal = None;
+        self.terminal_visible = false;
         self.settings.last_vault = Some(root.clone());
         self.settings.save();
         self.status_note = None;
@@ -853,6 +911,9 @@ impl Workspace {
         self.nav_pos = 0;
         self.nav_suppress = false;
         self.vault.update(cx, |vault, cx| vault.close(cx));
+        self.terminals.clear();
+        self.active_terminal = None;
+        self.terminal_visible = false;
         self.settings.last_vault = None;
         self.settings.save();
         cx.notify();
@@ -877,11 +938,12 @@ impl Workspace {
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
         let starred_list = self.settings.starred.clone();
+        let language = self.settings.language;
         let view = cx.entity();
         self.clear_file_menu();
 
         let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
-            Self::build_file_menu(menu, path, is_folder, starred_list, view)
+            Self::build_file_menu(menu, path, is_folder, starred_list, language, view)
                 .action_context(action_context)
         });
         menu.focus_handle(cx).focus(window, cx);
@@ -902,6 +964,7 @@ impl Workspace {
         path: PathBuf,
         is_folder: bool,
         starred_list: Vec<String>,
+        language: crate::settings::Language,
         view: Entity<Self>,
     ) -> PopupMenu {
         let dir = if is_folder {
@@ -912,6 +975,23 @@ impl Workspace {
                 .unwrap_or_else(|| path.clone())
         };
         let menu = menu
+            .item(
+                PopupMenuItem::new(language.text("Tools here…", "Verktøy her…"))
+                    .icon(assets::IconName::Blocks)
+                    .on_click({
+                        let view = view.clone();
+                        let path = path.clone();
+                        move |_, window, _| {
+                            let view = view.clone();
+                            let path = path.clone();
+                            window.on_next_frame(move |window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_tools_for(Some(path), window, cx)
+                                })
+                            });
+                        }
+                    }),
+            )
             .item(
                 PopupMenuItem::new("New file here")
                     .icon(assets::IconName::FilePlus)
@@ -927,7 +1007,23 @@ impl Workspace {
             .separator();
         // Files can be pinned into the Starred group.
         let menu = if is_folder {
-            menu
+            menu.item(
+                PopupMenuItem::new(language.text("Open terminal here", "Åpne terminal her"))
+                    .icon(assets::IconName::Terminal)
+                    .on_click({
+                        let view = view.clone();
+                        let path = path.clone();
+                        move |_, window, _cx| {
+                            let view = view.clone();
+                            let path = path.clone();
+                            window.on_next_frame(move |window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.open_terminal_here(path, window, cx);
+                                });
+                            });
+                        }
+                    }),
+            )
         } else {
             let starred = starred_list.contains(&path.to_string_lossy().to_string());
             menu.item(
@@ -1094,7 +1190,17 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_vault_event(&mut self, _event: &VaultEvent, cx: &mut Context<Self>) {
+    fn on_vault_event(&mut self, event: &VaultEvent, cx: &mut Context<Self>) {
+        if matches!(event, VaultEvent::TreeExpansionChanged) {
+            let vault = self.vault.read(cx);
+            if let Some(root) = &vault.root {
+                self.settings
+                    .expanded_folders
+                    .insert(root.to_string_lossy().to_string(), vault.expanded_folders());
+                self.settings.save();
+            }
+            return;
+        }
         // Flag docs whose files changed underneath; they reload themselves on
         // the next frame where a window handle is available.
         self.needs_fs_check = true;
@@ -1423,7 +1529,7 @@ impl Workspace {
         let sub = cx.subscribe_in(
             &doc,
             window,
-            |this, changed_doc, event, _window, cx| match event {
+            |this, changed_doc, event, window, cx| match event {
                 DocumentEvent::Saved | DocumentEvent::Changed => {
                     if matches!(event, DocumentEvent::Changed) && changed_doc.read(cx).dirty {
                         if let Some(tab) = this.docs.iter_mut().find(|d| d.entity == *changed_doc) {
@@ -1434,6 +1540,20 @@ impl Workspace {
                     cx.notify();
                 }
                 DocumentEvent::Selection => cx.notify(),
+                DocumentEvent::SourceScrolled => {
+                    if this.settings.preview_follows_source
+                        && this.settings.view_mode == ViewMode::Split
+                        && this.active_doc() == Some(changed_doc)
+                    {
+                        let doc = changed_doc.clone();
+                        // Read visible rows after the editor has laid out its new viewport.
+                        window.on_next_frame(move |window, _| {
+                            window.on_next_frame(move |_, cx| {
+                                doc.update(cx, |doc, cx| doc.follow_source_scroll(cx))
+                            });
+                        });
+                    }
+                }
             },
         );
         let base = is_base_file.then(|| {
@@ -1508,7 +1628,8 @@ impl Workspace {
         // Focus the editor once the frame settles. Preview mode and
         // image docs mount no editor — the workspace takes focus so
         // ⌘ bindings keep working (same dead-handle fix as refocus).
-        let focus_editor = !doc.read(cx).is_image && self.settings.view_mode != ViewMode::Preview;
+        let focus_editor =
+            !doc.read(cx).is_read_only() && self.settings.view_mode != ViewMode::Preview;
         let view = cx.entity();
         let doc = doc.clone();
         window.defer(cx, move |window, cx| {
@@ -2003,7 +2124,9 @@ impl Workspace {
     fn toggle_tree_sort(&mut self, cx: &mut Context<Self>) {
         self.settings.tree_sort = match self.settings.tree_sort {
             TreeSort::Name => TreeSort::Modified,
-            TreeSort::Modified => TreeSort::Name,
+            TreeSort::Modified => TreeSort::Type,
+            TreeSort::Type => TreeSort::Size,
+            TreeSort::Size => TreeSort::Name,
         };
         self.settings.save();
         self.vault.update(cx, |vault, cx| {
@@ -2052,7 +2175,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Open a Markdown file".into()),
+            prompt: Some(self.tr("Open a file", "Åpne en fil").into()),
         });
         cx.spawn_in(window, async move |view, window| {
             if let Ok(Ok(Some(paths))) = receiver.await {
@@ -2947,9 +3070,22 @@ impl Workspace {
             .iter()
             .map(|entry| match entry {
                 PaletteEntry::File(path) => file_item(path),
-                PaletteEntry::Command(_) => CommandItem::new().label(""),
+                _ => CommandItem::new().label(""),
             })
             .collect();
+        let (tools, _) = self.tool_launchers(cx);
+        let tool_items: Vec<_> = tools
+            .iter()
+            .map(|tool| {
+                CommandItem::new()
+                    .icon(assets::IconName::Terminal)
+                    .label(tool.name.text(self.settings.language).to_string())
+                    .keywords([tool.program.clone()])
+            })
+            .collect();
+        self.palette_sections
+            .push(tools.into_iter().map(PaletteEntry::Tool).collect());
+        let tools_label = self.tr("Tools", "Verktøy");
 
         let state = self.palette_state.clone();
         let view = cx.entity();
@@ -2973,6 +3109,11 @@ impl Workspace {
             }
             palette = palette
                 .group(CommandGroup::new().label("Notes").items(note_items.clone()))
+                .group(
+                    CommandGroup::new()
+                        .label(tools_label)
+                        .items(tool_items.clone()),
+                )
                 .max_h(px(440.));
             dialog
                 .w(px(560.))
@@ -2983,12 +3124,10 @@ impl Workspace {
                         .on_confirm({
                             let view = view.clone();
                             move |index, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.on_palette_pick(index, window, cx);
-                                });
                                 window.close_dialog(cx);
                                 view.update(cx, |this, cx| {
                                     this.refocus(window, cx);
+                                    this.on_palette_pick(index, window, cx);
                                 });
                             }
                         })
@@ -3023,6 +3162,7 @@ impl Workspace {
         match entry {
             Some(PaletteEntry::File(path)) => self.open_document(path, window, cx),
             Some(PaletteEntry::Command(cmd)) => self.run_command(cmd, window, cx),
+            Some(PaletteEntry::Tool(tool)) => self.confirm_tool(tool, window, cx),
             None => {}
         }
     }
@@ -3322,8 +3462,23 @@ impl Workspace {
                 });
             }
         }
+        let files_changed = self.settings.show_other_files != settings.show_other_files;
         self.settings = settings.clone();
+        if files_changed {
+            self.vault.update(cx, |vault, cx| {
+                vault.show_other_files = settings.show_other_files;
+                vault.refresh(cx);
+            });
+            if let Some(page) = &self.folder {
+                self.folder =
+                    Some(self.load_folder_page(page.path.clone(), page.scroll.clone(), cx));
+            }
+        }
         theme::apply(&settings, cx);
+        for tab in &self.terminals {
+            tab.terminal
+                .update(cx, |terminal, cx| terminal.apply_settings(&settings, cx));
+        }
         crate::apply_ui_settings(&settings, cx);
         for doc in &self.docs {
             doc.entity
@@ -4062,20 +4217,29 @@ impl Workspace {
             );
             return;
         }
-        match std::fs::rename(&src, &dest) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        match crate::explorer::move_entry(&root, &src, &dest) {
             Ok(()) => {
-                self.note_status(format!("Moved {}", name.to_string_lossy()), cx);
-                for doc in &self.docs {
-                    doc.entity.update(cx, |doc, _cx| {
-                        if let Ok(rel) = doc.path.strip_prefix(&src) {
-                            doc.path = dest.join(rel);
-                        }
-                    });
-                }
-                self.vault.update(cx, |vault, cx| vault.refresh(cx));
+                self.repoint_moved_entry(&src, &dest, cx);
+                self.move_undo.push((src, dest));
+                self.note_status(
+                    self.tr(
+                        "Moved · Undo available in explorer",
+                        "Flyttet · Angre er tilgjengelig i filutforskeren",
+                    ),
+                    cx,
+                );
             }
-            Err(err) => {
-                self.note_status(format!("Move failed: {err}"), cx);
+            Err(_) => {
+                self.note_status(
+                    self.tr(
+                        "Could not move. Check the destination and permissions.",
+                        "Kunne ikke flytte. Kontroller målmappen og tilganger.",
+                    ),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -4377,23 +4541,7 @@ impl Workspace {
             return Vec::new();
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
-        let mut headings: Vec<(usize, usize, String)> = Vec::new();
-        let mut in_fence = false;
-        for (ix, line) in raw.split('\n').enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("```") {
-                in_fence = !in_fence;
-                continue;
-            }
-            if in_fence {
-                continue;
-            }
-            let level = trimmed.chars().take_while(|&c| c == '#').count();
-            if (1..=6).contains(&level) && trimmed.chars().nth(level) == Some(' ') {
-                headings.push((ix + 1, level, trimmed[level + 1..].trim().to_string()));
-            }
-        }
-        headings
+        crate::preview::headings(&raw)
     }
 
     fn show_outline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5423,7 +5571,11 @@ impl Workspace {
                                 .text_color(theme.muted_foreground),
                             )
                             .child(div().text_xs().text_color(theme.muted_foreground).child(
-                                format!("Outgoing links · {}", links.len() + unresolved.len()),
+                                format!(
+                                    "{} · {}",
+                                    self.tr("Outgoing links", "Utgående lenker"),
+                                    links.len() + unresolved.len()
+                                ),
                             )),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -5441,7 +5593,10 @@ impl Workspace {
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("This note doesn't link anywhere"),
+                                .child(self.tr(
+                                    "This note doesn't link anywhere",
+                                    "Dette notatet har ingen lenker",
+                                )),
                         ),
                     );
                 }
@@ -5499,20 +5654,19 @@ impl Workspace {
                     );
                 }
                 for (ix, target) in unresolved.iter().enumerate() {
-                    rows = rows.child(
-                        div()
-                            .id(("outgoing-miss", ix))
-                            .w_full()
-                            .px_2()
-                            .py_0p5()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .truncate()
-                                    .text_color(theme.muted_foreground)
-                                    .child(target.clone()),
-                            ),
-                    );
+                    rows =
+                        rows.child(
+                            div()
+                                .id(("outgoing-miss", ix))
+                                .w_full()
+                                .px_2()
+                                .py_0p5()
+                                .child(
+                                    div().text_sm().truncate().text_color(theme.warning).child(
+                                        format!("{}: {target}", self.tr("Missing", "Mangler")),
+                                    ),
+                                ),
+                        );
                 }
                 this.child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
@@ -6100,10 +6254,14 @@ impl Workspace {
                                     .icon(match self.settings.tree_sort {
                                         TreeSort::Name => assets::IconName::ListOrdered,
                                         TreeSort::Modified => assets::IconName::FileClock,
+                                        TreeSort::Type => assets::IconName::File,
+                                        TreeSort::Size => assets::IconName::ListOrdered,
                                     })
                                     .tooltip(match self.settings.tree_sort {
-                                        TreeSort::Name => "Sorted by name",
-                                        TreeSort::Modified => "Sorted by modified",
+                                        TreeSort::Name => self.tr("Sorted by name", "Sortert etter navn"),
+                                        TreeSort::Modified => self.tr("Sorted by modified", "Sortert etter endring"),
+                                        TreeSort::Type => self.tr("Sorted by type", "Sortert etter filtype"),
+                                        TreeSort::Size => self.tr("Sorted by size", "Sortert etter størrelse"),
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_tree_sort(cx);
@@ -6111,6 +6269,7 @@ impl Workspace {
                             ),
                     ),
             )
+            .child(self.render_explorer_controls(cx))
             .child(self.render_starred(cx))
             .child(
                 div()
@@ -6328,7 +6487,9 @@ impl Workspace {
             std::collections::HashMap::new();
         for doc in &self.docs {
             let doc = doc.entity.read(cx);
-            let title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base") {
+            let title = if doc.is_read_only()
+                || doc.path.extension().and_then(|e| e.to_str()) == Some("base")
+            {
                 doc.file_name()
             } else {
                 doc.title()
@@ -6344,7 +6505,8 @@ impl Workspace {
                     let doc = doc.entity.read(cx);
                     // .base tabs keep their extension so `tasks` and
                     // `tasks.base` don't look like the same document.
-                    let mut title = if doc.path.extension().and_then(|e| e.to_str()) == Some("base")
+                    let mut title = if doc.is_read_only()
+                        || doc.path.extension().and_then(|e| e.to_str()) == Some("base")
                     {
                         doc.file_name()
                     } else {
@@ -6625,7 +6787,7 @@ impl Workspace {
     /// text editor)? Hides the Source/Split/Preview switcher.
     fn active_doc_is_image(&self, cx: &App) -> bool {
         self.active_doc()
-            .map(|d| d.read(cx).is_image)
+            .map(|d| d.read(cx).is_read_only())
             .unwrap_or(false)
     }
 
@@ -6780,6 +6942,9 @@ impl Workspace {
         if doc.read(cx).is_image {
             return self.render_image_view(&doc, cx).into_any_element();
         }
+        if doc.read(cx).file_preview.is_some() {
+            return self.render_file_preview(&doc, cx);
+        }
 
         // `.base` files render their live view in Preview/Split; Source
         // stays the raw YAML so the spec stays editable.
@@ -6799,7 +6964,7 @@ impl Workspace {
             ViewMode::Split => div()
                 .size_full()
                 .child(
-                    canvas_columns("split")
+                    canvas_panels("split", Axis::Horizontal)
                         .child(
                             resizable_panel()
                                 .size_range(px(280.)..px(4000.))
@@ -6879,6 +7044,91 @@ impl Workspace {
 
     /// Image document: the picture centered in the editor area with a
     /// `name.ext · N KB` caption — the breadcrumb stays on top.
+    fn render_file_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> AnyElement {
+        use crate::file_preview::Preview;
+        let document = doc.read(cx);
+        let path = document.path.clone();
+        let text = match &document.file_preview {
+            Some(Preview::Text(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let message = match &document.file_preview {
+            Some(Preview::TooLarge) => self.tr(
+                "Too large for inline preview (256 KB limit). Open in another app.",
+                "For stor for forhåndsvisning (grense på 256 KB). Åpne i en annen app.",
+            ),
+            _ => self.tr(
+                "No inline preview for this format. Open in another app.",
+                "Ingen forhåndsvisning for dette formatet. Åpne i en annen app.",
+            ),
+        };
+        let mut toolbar = h_flex()
+            .px_4()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().min_w_0().truncate().text_xs().child(format!(
+                "{} · {}",
+                document.file_name(),
+                self.tr("Read-only preview", "Skrivebeskyttet forhåndsvisning")
+            )))
+            .child(
+                Button::new("file-open-external")
+                    .ghost()
+                    .small()
+                    .label(self.tr("Open in default app", "Åpne i standardappen"))
+                    .on_click({
+                        let path = path.clone();
+                        move |_, _, _| open_in_default_app(&path)
+                    }),
+            );
+        if let Some(text) = &text {
+            let text = text.clone();
+            toolbar = toolbar.child(
+                Button::new("file-preview-copy")
+                    .ghost()
+                    .small()
+                    .icon(assets::IconName::Copy)
+                    .tooltip(self.tr("Copy text", "Kopier tekst"))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                    }),
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            toolbar = toolbar.child(
+                Button::new("file-quick-look")
+                    .ghost()
+                    .small()
+                    .label(self.tr("Quick Look", "Hurtigvisning"))
+                    .on_click(move |_, _, _| {
+                        let _ = std::process::Command::new("/usr/bin/qlmanage")
+                            .arg("-p")
+                            .arg(&path)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }),
+            );
+        }
+        v_flex()
+            .size_full()
+            .child(toolbar)
+            .child(
+                div()
+                    .id("file-preview-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_4()
+                    .text_sm()
+                    .font_family("monospace")
+                    .child(text.unwrap_or_else(|| message.into())),
+            )
+            .into_any_element()
+    }
+
     fn render_image_view(
         &self,
         doc: &Entity<Document>,
@@ -6956,6 +7206,7 @@ impl Workspace {
             .text_xs()
             .text_color(cx.theme().muted_foreground);
         let root_target = root.clone();
+        let root_siblings = root.clone();
         row = row
             .child(
                 div()
@@ -6972,6 +7223,7 @@ impl Workspace {
                         this.open_folder_page(root_target.clone(), window, cx);
                     })),
             )
+            .child(self.sibling_button(0, root_siblings, cx))
             .child(div().child("›"));
         let mut acc = String::new();
         for (ix, seg) in segs.iter().enumerate() {
@@ -6980,6 +7232,7 @@ impl Workspace {
             }
             acc.push_str(seg);
             let target = root.join(&acc);
+            let siblings = target.clone();
             row = row
                 .child(
                     div()
@@ -6996,6 +7249,7 @@ impl Workspace {
                             }
                         }),
                 )
+                .child(self.sibling_button(ix + 1, siblings, cx))
                 .child(div().child("›"));
         }
         Some(
@@ -7480,6 +7734,73 @@ impl Workspace {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(mode_label),
+                    )
+                    .when(
+                        self.settings.view_mode == ViewMode::Split && !self.active_doc_is_image(cx),
+                        |bar| {
+                            bar.child(
+                                Button::new("preview-follow-source")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::Link)
+                                    .selected(self.settings.preview_follows_source)
+                                    .tooltip(self.tr(
+                                        "Preview follows source scrolling",
+                                        "Forhåndsvisning følger rulling i kilden",
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.preview_follows_source =
+                                            !this.settings.preview_follows_source;
+                                        this.settings.save();
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    )
+                    .when(
+                        doc.is_some_and(|doc| !doc.read(cx).outgoing_unresolved.is_empty()),
+                        |bar| {
+                            bar.child(
+                                Button::new("link-diagnostics")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::TriangleAlert)
+                                    .label(format!(
+                                        "{} {}",
+                                        doc.map(|doc| doc.read(cx).outgoing_unresolved.len())
+                                            .unwrap_or(0),
+                                        self.tr("missing links", "manglende lenker")
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.inspector_open = true;
+                                        this.outgoing_open = true;
+                                        this.settings.panes.outgoing = true;
+                                        this.settings.save();
+                                        cx.notify();
+                                    })),
+                            )
+                        },
+                    )
+                    .child(
+                        Button::new("workspace-tools")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Blocks)
+                            .label(self.tr("Tools", "Verktøy"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_open_tools(&OpenTools, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("workspace-terminal")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Terminal)
+                            .label(self.tr("Terminal", "Terminal"))
+                            .selected(self.terminal_visible)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_toggle_terminal(&ToggleTerminal, window, cx)
+                            })),
                     ),
             )
     }
@@ -7487,6 +7808,11 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for (index, tab) in self.terminals.iter().enumerate() {
+            tab.terminal.update(cx, |terminal, _| {
+                terminal.visible = self.terminal_visible && self.active_terminal == Some(index)
+            });
+        }
         // Docs pick up external edits here — a window handle is guaranteed.
         if self.needs_fs_check {
             self.needs_fs_check = false;
@@ -7577,9 +7903,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_toggle_terminal))
+            .on_action(cx.listener(Self::on_open_tools))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_check_for_updates))
@@ -7598,7 +7927,7 @@ impl Render for Workspace {
                             .child(self.render_empty_editor(cx))
                             .into_any_element()
                     } else {
-                        canvas_columns("workspace")
+                        canvas_panels("workspace", Axis::Horizontal)
                             .when(sidebar_visible, |this| {
                                 this.child(
                                     resizable_panel()
@@ -7618,38 +7947,58 @@ impl Render for Workspace {
                             })
                             .child(
                                 resizable_panel().child(
-                                    div().size_full().p_1().child(
-                                        v_flex()
-                                            .size_full()
-                                            .bg(cx.theme().group_box)
-                                            .rounded(cx.theme().radius_lg)
-                                            .overflow_hidden()
-                                            .when(!self.zen, |this| {
-                                                this.child(self.render_tab_bar(cx))
-                                            })
-                                            .child(div().flex_1().min_h_0().child({
-                                                if let Some(graph) = self.graph.clone() {
-                                                    graph.into_any_element()
-                                                } else {
-                                                    let content = self.render_editor_area(cx);
-                                                    if self.zen {
-                                                        h_flex()
+                                    canvas_panels("editor-terminal", Axis::Vertical)
+                                        .child(
+                                            resizable_panel().child(
+                                                div().size_full().p_1().child(
+                                                    v_flex()
+                                                        .size_full()
+                                                        .bg(cx.theme().group_box)
+                                                        .rounded(cx.theme().radius_lg)
+                                                        .overflow_hidden()
+                                                        .when(!self.zen, |this| {
+                                                            this.child(self.render_tab_bar(cx))
+                                                        })
+                                                        .child(div().flex_1().min_h_0().child({
+                                                            if let Some(graph) = self.graph.clone()
+                                                            {
+                                                                graph.into_any_element()
+                                                            } else {
+                                                                let content =
+                                                                    self.render_editor_area(cx);
+                                                                if self.zen {
+                                                                    h_flex()
+                                                                        .size_full()
+                                                                        .justify_center()
+                                                                        .child(
+                                                                            div()
+                                                                                .h_full()
+                                                                                .w_full()
+                                                                                .max_w(px(920.))
+                                                                                .child(content),
+                                                                        )
+                                                                        .into_any_element()
+                                                                } else {
+                                                                    content
+                                                                }
+                                                            }
+                                                        })),
+                                                ),
+                                            ),
+                                        )
+                                        .when(self.terminal_visible && !self.zen, |panels| {
+                                            panels.child(
+                                                resizable_panel()
+                                                    .size(px(270.))
+                                                    .size_range(px(140.)..px(600.))
+                                                    .child(
+                                                        div()
                                                             .size_full()
-                                                            .justify_center()
-                                                            .child(
-                                                                div()
-                                                                    .h_full()
-                                                                    .w_full()
-                                                                    .max_w(px(920.))
-                                                                    .child(content),
-                                                            )
-                                                            .into_any_element()
-                                                    } else {
-                                                        content
-                                                    }
-                                                }
-                                            })),
-                                    ),
+                                                            .p_1()
+                                                            .child(self.render_terminal_panel(cx)),
+                                                    ),
+                                            )
+                                        }),
                                 ),
                             )
                             .when(!self.zen && self.settings.inspector_open, |columns| {

@@ -27,6 +27,13 @@ Regenerate after editing `src/theme.rs` (see "Generating token exports").
 
 ## Color
 
+Folder dashboards use a single identity header, quiet breadcrumb/action rows,
+and compact bordered content cards. Gallery media belongs to documents rather
+than chrome. Pins keep a stable order; layout/filter controls remain local to the
+folder. The terminal is a collapsible, resizable lower pane, not a competing
+sidebar. Its default/ANSI semantic colors follow the selected palette; explicit
+256-color and true-color escape sequences remain process-supplied content.
+
 Palette intent per token group (values in `design/tokens.json`):
 
 | Token | Night | Day | Role |
@@ -92,6 +99,8 @@ Syntax colours live under `highlight.syntax`; retain that nested object.
 - **Dialogs** — `open_dialog` for palette/search; `open_alert_dialog` for
   destructive confirms; `open_sheet_at(Placement::Right)` for settings.
 - **Status bar** — relative path, word count, view mode. Text only, no chrome.
+- **Terminal** — independent rounded canvas below the editor, matching its
+  surface and gutters. The resize grip appears only on hover or drag.
 - **Zen mode** — hides everything but editor+preview.
 
 ## Markdown preview rendering

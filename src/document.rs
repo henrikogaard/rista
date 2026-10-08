@@ -21,6 +21,7 @@ pub enum DocumentEvent {
     Saved,
     /// Caret moved — the status bar's Ln/Col display tracks it.
     Selection,
+    SourceScrolled,
 }
 
 impl EventEmitter<DocumentEvent> for Document {}
@@ -30,6 +31,7 @@ pub struct Document {
     /// Image file — the editor stays empty and the workspace renders
     /// the picture itself instead of the source/preview panes.
     pub is_image: bool,
+    pub file_preview: Option<crate::file_preview::Preview>,
     pub editor: Entity<EditorState>,
     /// Collapsible-callout fold state, keyed by callout source offset.
     pub callout_folds: preview::CalloutFolds,
@@ -68,6 +70,7 @@ pub struct Document {
     /// Last caret offset broadcast as `DocumentEvent::Selection` —
     /// dedupes so unchanged cursors don't re-render the workspace.
     status_cursor: Option<usize>,
+    source_scroll_offset: Point<Pixels>,
     /// Vault for link-graph lookups (linked mentions). Absent for
     /// documents opened outside a vault.
     vault: Option<Entity<crate::vault::Vault>>,
@@ -78,6 +81,10 @@ pub struct Document {
     pub outgoing_links: Vec<PathBuf>,
     /// `[[targets]]` that don't resolve — shown dimmed.
     pub outgoing_unresolved: Vec<String>,
+    preview_line_offsets: Vec<usize>,
+    preview_blocks: Vec<(usize, String)>,
+    preview_locations: Vec<(usize, usize)>,
+    mapped_preview: Option<gpui_kit::component::text::RenderedText>,
     /// Whether the preview's linked-mentions footer is expanded.
     pub mentions_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -89,6 +96,7 @@ pub(crate) struct InitialDocument {
     disk_bytes: Option<Vec<u8>>,
     mtime: Option<SystemTime>,
     is_image: bool,
+    file_preview: Option<crate::file_preview::Preview>,
 }
 
 impl Document {
@@ -97,13 +105,24 @@ impl Document {
         let mtime = std::fs::metadata(path)
             .and_then(|meta| meta.modified())
             .ok();
-        if is_image {
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Not a regular file",
+            ));
+        }
+        if is_image || !crate::file_preview::is_document(path) {
             return Ok(InitialDocument {
                 path: path.to_path_buf(),
                 content: String::new(),
                 disk_bytes: None,
                 mtime,
                 is_image,
+                file_preview: if is_image {
+                    None
+                } else {
+                    Some(crate::file_preview::load(path)?)
+                },
             });
         }
         let disk_bytes = std::fs::read(path)?;
@@ -115,6 +134,7 @@ impl Document {
             disk_bytes: Some(disk_bytes),
             mtime,
             is_image,
+            file_preview: None,
         })
     }
 
@@ -133,6 +153,7 @@ impl Document {
             disk_bytes,
             mtime,
             is_image,
+            file_preview,
         } = initial;
 
         let completions_vault = vault.clone();
@@ -155,13 +176,18 @@ impl Document {
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let preview_text =
-            preview::preprocess(&content, &path, vault_root.as_deref(), &*image_resolver);
+        let (preview_text, preview_line_offsets) =
+            preview::preprocess_mapped(&content, &path, vault_root.as_deref(), &*image_resolver);
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
         let mut this = Self {
+            preview_blocks: preview::navigation_blocks(&preview_text),
+            preview_locations: Vec::new(),
+            mapped_preview: None,
+            preview_line_offsets,
             is_image,
+            file_preview,
             path,
             editor,
             callout_folds: preview::CalloutFolds::default(),
@@ -184,6 +210,7 @@ impl Document {
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
+            source_scroll_offset: Point::default(),
             vault,
             linked_mentions: Vec::new(),
             outgoing_links: Vec::new(),
@@ -205,6 +232,11 @@ impl Document {
             // later '/' at an earlier offset would be ignored. While the menu
             // is closed, keep the trigger anchor pinned to the cursor instead.
             cx.observe(&this.editor, |this, editor, cx| {
+                let offset = editor.read(cx).scroll_offset();
+                if this.source_scroll_offset != offset {
+                    this.source_scroll_offset = offset;
+                    cx.emit(DocumentEvent::SourceScrolled);
+                }
                 let cursor = editor.update(cx, |editor, cx| {
                     let menu = editor.completion_menu_state();
                     let cursor = editor.cursor();
@@ -251,7 +283,7 @@ impl Document {
     }
 
     fn on_edited(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.reloading {
+        if self.reloading || self.is_read_only() {
             return;
         }
         if !self.dirty
@@ -294,7 +326,11 @@ impl Document {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
-        let text = preview::preprocess(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
+        let (text, offsets) =
+            preview::preprocess_mapped(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
+        self.preview_line_offsets = offsets;
+        self.preview_blocks = preview::navigation_blocks(&text);
+        self.mapped_preview = None;
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
         self.stats = word_stats(&raw);
         self.css_classes = crate::properties::frontmatter_cssclasses(&raw);
@@ -377,6 +413,7 @@ impl Document {
 
     /// Move the caret to the start of a 1-based line (outline jump).
     pub fn jump_to_line(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal_preview_line(line.saturating_sub(1), cx);
         self.editor.update(cx, |editor, cx| {
             let text = editor.value();
             let at = text
@@ -388,6 +425,40 @@ impl Document {
             editor.set_selected_range(at..at, cx);
             editor.focus(window, cx);
         });
+    }
+
+    pub fn reveal_preview_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let Some(&source) = self.preview_line_offsets.get(line) else {
+            return;
+        };
+        let rendered = self.preview.read(cx).rendered_text();
+        if self.mapped_preview.as_ref() != Some(&rendered) {
+            self.preview_locations =
+                preview::match_navigation_blocks(&self.preview_blocks, rendered.as_str());
+            self.mapped_preview = Some(rendered);
+        }
+        let Some(&(_, start)) = self
+            .preview_locations
+            .iter()
+            .rev()
+            .find(|(offset, _)| *offset <= source)
+        else {
+            return;
+        };
+        self.preview.update(cx, |preview, cx| {
+            let _ = preview.reveal_range(start..start, cx);
+        });
+    }
+
+    pub fn follow_source_scroll(&mut self, cx: &mut Context<Self>) {
+        let line = self
+            .editor
+            .read(cx)
+            .visible_row_range()
+            .map(|range| range.start);
+        if let Some(line) = line {
+            self.reveal_preview_line(line, cx);
+        }
     }
 
     /// Append `line` at end of buffer (a leading newline is inserted
@@ -524,7 +595,7 @@ impl Document {
     }
 
     pub fn flush_and_save(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
-        if !self.is_image
+        if !self.is_read_only()
             && !self.dirty
             && self
                 .disk_bytes
@@ -544,10 +615,10 @@ impl Document {
 
     /// Save the current editor text to a new path; repoints the document at it.
     pub fn save_as(&mut self, path: PathBuf, cx: &mut Context<Self>) -> std::io::Result<()> {
-        if self.is_image {
+        if self.is_read_only() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Image documents cannot be saved as text",
+                "Read-only files cannot be saved as text",
             ));
         }
         if same_existing_path(&self.path, &path) {
@@ -1224,6 +1295,20 @@ impl Document {
 
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_preview.is_some() {
+            let mtime = std::fs::metadata(&self.path)
+                .and_then(|m| m.modified())
+                .ok();
+            if mtime != self.mtime {
+                self.file_preview = Some(
+                    crate::file_preview::load(&self.path)
+                        .unwrap_or(crate::file_preview::Preview::Binary),
+                );
+                self.mtime = mtime;
+                cx.notify();
+            }
+            return;
+        }
         let Some(baseline) = self.disk_bytes.as_deref() else {
             return;
         };
@@ -1252,6 +1337,9 @@ impl Document {
     }
 
     pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) -> io::Result<()> {
+        if self.is_read_only() {
+            return Ok(());
+        }
         let bytes = std::fs::read(&self.path)?;
         let content = String::from_utf8(bytes.clone())
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -1272,6 +1360,10 @@ impl Document {
         cx.emit(DocumentEvent::Changed);
         cx.notify();
         Ok(())
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.is_image || self.file_preview.is_some()
     }
 
     /// Move the lines covered by the selection up or down by one line,
@@ -2588,6 +2680,26 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn other_files_never_load_into_a_writable_text_buffer() {
+        let path = test_path().with_extension("txt");
+        std::fs::write(&path, b"Read-only text").unwrap();
+        let initial = super::Document::load_initial(&path).unwrap();
+        assert!(initial.disk_bytes.is_none());
+        assert!(initial.content.is_empty());
+        assert_eq!(
+            initial.file_preview,
+            Some(crate::file_preview::Preview::Text("Read-only text".into()))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"Read-only text");
+        std::fs::write(&path, [0, 255, 0]).unwrap();
+        assert_eq!(
+            super::Document::load_initial(&path).unwrap().file_preview,
+            Some(crate::file_preview::Preview::Binary)
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -16,6 +16,7 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"]
 
 /// Emitted after a filesystem burst settles — the tree was already refreshed.
 pub enum VaultEvent {
+    TreeExpansionChanged,
     FilesChanged,
     /// Star/unstar flipped — `.base` `file.starred` rows recompute.
     StarredChanged,
@@ -61,8 +62,12 @@ pub struct Vault {
     /// Folder ids the user expanded — reapplied to rebuilt trees so
     /// watcher refreshes don't collapse the sidebar.
     expanded: std::collections::BTreeSet<String>,
+    all_items: Vec<TreeItem>,
+    pub explorer_query: String,
+    pub explorer_filter: crate::explorer::FileFilter,
     /// File ordering inside each folder — dirs stay alphabetical.
     pub tree_sort: TreeSort,
+    pub show_other_files: bool,
     /// Templates folder relative to the root — its notes stay visible
     /// and linkable but their scaffolding (`{{cursor}}` tasks, tags,
     /// aliases) doesn't pollute the vault indexes. Mirrors
@@ -74,13 +79,16 @@ pub struct Vault {
 impl Vault {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
-        let tree_sub = cx.subscribe(&tree, |this, _tree, event, _cx| match event {
-            TreeEvent::Expanded(id) => {
-                this.expanded.insert(id.to_string());
-            }
-            TreeEvent::Collapsed(id) => {
-                this.expanded.remove(id.as_str());
-            }
+        let tree_sub = cx.subscribe(&tree, |this, _tree, event, cx| {
+            match event {
+                TreeEvent::Expanded(id) => {
+                    this.expanded.insert(id.to_string());
+                }
+                TreeEvent::Collapsed(id) => {
+                    this.expanded.remove(id.as_str());
+                }
+            };
+            cx.emit(VaultEvent::TreeExpansionChanged);
         });
         Self {
             root: None,
@@ -97,7 +105,11 @@ impl Vault {
             alias_cache: std::collections::HashMap::new(),
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
+            all_items: Vec::new(),
+            explorer_query: String::new(),
+            explorer_filter: Default::default(),
             tree_sort: TreeSort::default(),
+            show_other_files: false,
             templates_dir: "templates".to_string(),
             _tree_sub: tree_sub,
         }
@@ -109,6 +121,15 @@ impl Vault {
 
     pub fn open(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.stop_watching();
+        self.expanded = crate::settings::Settings::load()
+            .expanded_folders
+            .get(&root.to_string_lossy().to_string())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        self.explorer_query.clear();
+        self.explorer_filter = Default::default();
         self.root = Some(root);
         self.refresh_tree(cx);
         self.start_watcher(cx);
@@ -118,6 +139,7 @@ impl Vault {
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.stop_watching();
         self.root = None;
+        self.all_items.clear();
         self.notes.clear();
         self.by_rel.clear();
         self.by_stem.clear();
@@ -131,7 +153,14 @@ impl Vault {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let items = mark_expanded(build_items(&root, 0, self.tree_sort), &self.expanded);
+        self.all_items = build_items(&root, 0, self.tree_sort, self.show_other_files);
+        let items = mark_expanded(self.all_items.clone(), &self.expanded);
+        let items = crate::explorer::filtered_tree(
+            &items,
+            &root,
+            &self.explorer_query,
+            self.explorer_filter,
+        );
         let (notes, images) = collect_files(&root);
         // Template files are scaffolding, not notes — they stay in the
         // tree and resolve as links, but their tags/tasks/aliases don't
@@ -207,6 +236,29 @@ impl Vault {
     }
 
     /// Public refresh — called after our own writes so the index stays warm.
+    pub fn expanded_folders(&self) -> Vec<String> {
+        self.expanded.iter().cloned().collect()
+    }
+
+    pub fn explorer_paths(&self) -> Vec<PathBuf> {
+        crate::explorer::paths(&self.all_items)
+    }
+
+    pub fn filter_tree(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let items = mark_expanded(self.all_items.clone(), &self.expanded);
+        let items = crate::explorer::filtered_tree(
+            &items,
+            root,
+            &self.explorer_query,
+            self.explorer_filter,
+        );
+        self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
+        cx.notify();
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_tree(cx);
     }
@@ -386,37 +438,23 @@ impl Vault {
     pub fn outgoing_from(&self, text: &str, from_dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
         let mut resolved: Vec<PathBuf> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        let mut cursor = 0;
-        while let Some(at) = text[cursor..].find("[[").map(|i| cursor + i) {
-            let Some(end) = text[at + 2..].find("]]").map(|i| at + 2 + i) else {
-                break;
-            };
-            let target = text[at + 2..end].split('|').next().unwrap_or("").trim();
-            match self.resolve_link_target(target) {
+        for (target, wiki) in local_link_targets(text) {
+            match if wiki {
+                self.resolve_link_target(&target)
+            } else {
+                self.md_link_path(&target, from_dir)
+            } {
                 Some(p) => {
                     if !resolved.contains(&p) {
                         resolved.push(p);
                     }
                 }
                 None => {
-                    if !target.is_empty() && !unresolved.contains(&target.to_string()) {
-                        unresolved.push(target.to_string());
+                    if !target.is_empty() && !unresolved.contains(&target) {
+                        unresolved.push(target);
                     }
                 }
             }
-            cursor = end + 2;
-        }
-        let mut cursor = 0;
-        while let Some(at) = text[cursor..].find("](").map(|i| cursor + i) {
-            let Some(end) = text[at + 2..].find(')').map(|i| at + 2 + i) else {
-                break;
-            };
-            if let Some(p) = self.md_link_path(&text[at + 2..end], from_dir) {
-                if !resolved.contains(&p) {
-                    resolved.push(p);
-                }
-            }
-            cursor = end + 1;
         }
         (resolved, unresolved)
     }
@@ -691,7 +729,7 @@ pub(crate) fn should_skip(entry: &std::fs::DirEntry) -> bool {
     name.starts_with('.') || (entry.path().is_dir() && SKIP_DIRS.iter().any(|d| name == *d))
 }
 
-fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
+fn build_items(dir: &Path, depth: usize, sort: TreeSort, show_other_files: bool) -> Vec<TreeItem> {
     if depth > 12 {
         return Vec::new();
     }
@@ -701,7 +739,7 @@ fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     for entry in read.flatten() {
-        if should_skip(&entry) {
+        if should_skip(&entry) || entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
             continue;
         }
         let path = entry.path();
@@ -712,23 +750,30 @@ fn build_items(dir: &Path, depth: usize, sort: TreeSort) -> Vec<TreeItem> {
                     &path,
                     depth + 1,
                     sort,
+                    show_other_files,
                 )),
             );
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| {
-                let e = e.to_lowercase();
-                e == "md" || e == "base" || IMAGE_EXTS.contains(&e.as_str())
-            })
-            .unwrap_or(false)
-        {
+        } else if path.is_file() && crate::file_preview::visible(&path, show_other_files) {
             files.push(TreeItem::new(path.to_string_lossy().to_string(), label));
         }
     }
     dirs.sort_by(|a, b| a.label.cmp(&b.label));
     match sort {
+        TreeSort::Size => files.sort_by_key(|f| {
+            std::cmp::Reverse(
+                std::fs::metadata(f.id.as_str())
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+            )
+        }),
         TreeSort::Name => files.sort_by(|a, b| a.label.cmp(&b.label)),
+        TreeSort::Type => files.sort_by_key(|f| {
+            (
+                crate::file_preview::extension(Path::new(f.id.as_str())),
+                f.label.to_lowercase(),
+                f.id.clone(),
+            )
+        }),
         TreeSort::Modified => files.sort_by_key(|f| {
             std::cmp::Reverse(
                 std::fs::metadata(f.id.as_str())
@@ -749,10 +794,9 @@ fn mark_expanded(
 ) -> Vec<TreeItem> {
     items
         .into_iter()
-        .map(|mut item| {
-            if expanded.contains(item.id.as_str()) {
-                item = item.expanded(true);
-            }
+        .map(|item| {
+            let is_expanded = expanded.contains(item.id.as_str());
+            let mut item = item.expanded(is_expanded);
             item.children = mark_expanded(std::mem::take(&mut item.children), expanded);
             item
         })
@@ -808,6 +852,80 @@ pub(crate) fn plain_mention_offset(text: &str, needle: &str) -> Option<usize> {
         cur = end;
     }
     None
+}
+
+fn local_link_targets(text: &str) -> Vec<(String, bool)> {
+    use markdown::mdast::Node;
+    fn definitions(node: &Node, out: &mut std::collections::HashMap<String, String>) {
+        if let Node::Definition(def) = node {
+            out.entry(def.identifier.clone())
+                .or_insert_with(|| def.url.clone());
+        }
+        for child in node.children().into_iter().flatten() {
+            definitions(child, out);
+        }
+    }
+    fn walk(
+        node: &Node,
+        defs: &std::collections::HashMap<String, String>,
+        out: &mut Vec<(String, bool)>,
+    ) {
+        let url = match node {
+            Node::Link(link) => Some(&link.url),
+            Node::Image(image) => Some(&image.url),
+            Node::LinkReference(link) => defs.get(&link.identifier),
+            Node::ImageReference(image) => defs.get(&image.identifier),
+            _ => None,
+        };
+        if let Some(url) = url.filter(|url| {
+            !url.is_empty() && !url.starts_with('#') && !url.starts_with("//") && !url.contains(':')
+        }) {
+            out.push((url.clone(), false));
+        }
+        if let Node::Text(text) = node {
+            let mut rest = text.value.as_str();
+            while let Some((_, tail)) = rest.split_once("[[") {
+                let Some((target, tail)) = tail.split_once("]]") else {
+                    break;
+                };
+                let target = target.split('|').next().unwrap_or("").trim();
+                if !target.is_empty() && !target.starts_with('#') {
+                    out.push((target.to_string(), true));
+                }
+                rest = tail;
+            }
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, defs, out);
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let Ok(root) = markdown::to_mdast(text, &options) else {
+        return Vec::new();
+    };
+    let mut defs = std::collections::HashMap::new();
+    definitions(&root, &mut defs);
+    let mut out = Vec::new();
+    walk(&root, &defs, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod link_diagnostics_tests {
+    #[test]
+    fn links_and_images_ignore_code_frontmatter_urls_and_anchors() {
+        let source = "---\nexample: '[[metadata]]'\n---\n[[Note|Label]] ![[missing.png]] [file](missing.md) ![photo][pic]\n\n[pic]: photo.png\n\n`[[inline]]`\n~~~\n[[code]]\n~~~\n[web](https://example.com) [mail](mailto:a@b.com) [anchor](#here) [[#Heading]]";
+        assert_eq!(
+            super::local_link_targets(source),
+            vec![
+                ("Note".into(), true),
+                ("missing.png".into(), true),
+                ("missing.md".into(), false),
+                ("photo.png".into(), false)
+            ]
+        );
+    }
 }
 
 fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String, PathBuf>) {

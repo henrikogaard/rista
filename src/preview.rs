@@ -105,12 +105,82 @@ pub fn extensions(
 }
 
 /// Rewrite the reference editor syntax into CommonMark for the preview pipeline.
+pub fn navigation_blocks(source: &str) -> Vec<(usize, String)> {
+    fn collect(node: &markdown::mdast::Node, out: &mut Vec<(usize, String)>) {
+        use markdown::mdast::Node;
+        if matches!(node, Node::Heading(_) | Node::Paragraph(_) | Node::Code(_)) {
+            if let Some(position) = node.position() {
+                let text = node.to_string();
+                if !text.trim().is_empty() {
+                    out.push((position.start.offset, text));
+                }
+            }
+        } else {
+            for child in node.children().into_iter().flatten() {
+                collect(child, out);
+            }
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let mut out = Vec::new();
+    if let Ok(node) = markdown::to_mdast(source, &options) {
+        collect(&node, &mut out);
+    }
+    out
+}
+
+pub fn match_navigation_blocks(blocks: &[(usize, String)], rendered: &str) -> Vec<(usize, usize)> {
+    let mut cursor = 0;
+    blocks
+        .iter()
+        .filter_map(|(source, text)| {
+            let start = rendered[cursor..].find(text.as_str())? + cursor;
+            cursor = start + text.len();
+            Some((*source, start))
+        })
+        .collect()
+}
+
+pub fn headings(source: &str) -> Vec<(usize, usize, String)> {
+    fn collect(node: &markdown::mdast::Node, out: &mut Vec<(usize, usize, String)>) {
+        if let markdown::mdast::Node::Heading(heading) = node {
+            if let Some(position) = &heading.position {
+                out.push((
+                    position.start.line,
+                    heading.depth as usize,
+                    node.to_string(),
+                ));
+            }
+        }
+        for child in node.children().into_iter().flatten() {
+            collect(child, out);
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let mut out = Vec::new();
+    if let Ok(node) = markdown::to_mdast(source, &options) {
+        collect(&node, &mut out);
+    }
+    out
+}
+
 pub fn preprocess(
     source: &str,
     doc_path: &Path,
     vault_root: Option<&Path>,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> String {
+    preprocess_mapped(source, doc_path, vault_root, image_resolver).0
+}
+
+pub fn preprocess_mapped(
+    source: &str,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
+    image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+) -> (String, Vec<usize>) {
     let doc_dir = doc_path
         .parent()
         .map(|p| p.to_path_buf())
@@ -122,8 +192,10 @@ pub fn preprocess(
     let mut in_frontmatter = false;
     let mut in_comment = false;
     let mut in_columns = false;
+    let mut line_offsets = Vec::new();
 
     for (index, line) in source.split_inclusive('\n').enumerate() {
+        line_offsets.push(out.len());
         let trimmed = line.trim_start();
         // YAML frontmatter is untouched — wikilinks in `banner:` etc. are data.
         if index == 0 && trimmed.trim_end() == "---" {
@@ -194,11 +266,60 @@ pub fn preprocess(
     if in_columns {
         out.push_str("```\n");
     }
-    out
+    line_offsets.push(out.len());
+    (out, line_offsets)
 }
 
 /// `::: name` fence marker — accepts `::: columns`, `:::columns` and
 /// Pandoc-style `::: {.columns}`. A bare `:::` yields `None`.
+#[cfg(test)]
+mod navigation_tests {
+    use super::{headings, match_navigation_blocks, navigation_blocks, preprocess_mapped};
+    use std::path::Path;
+
+    #[test]
+    fn source_blocks_map_to_rendered_text_not_markdown_offsets() {
+        let source = "# Øgård\n\n**Bold** and [a link](note.md).\n\n## Øgård\n";
+        let rendered = "Øgård\nBold and a link.\nØgård\n";
+        let mapped = match_navigation_blocks(&navigation_blocks(source), rendered);
+        assert_eq!(
+            mapped,
+            vec![
+                (0, 0),
+                (
+                    source.find("**Bold").unwrap(),
+                    rendered.find("Bold").unwrap()
+                ),
+                (
+                    source.rfind("##").unwrap(),
+                    rendered.rfind("Øgård").unwrap()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn heading_outline_handles_setext_fences_and_frontmatter() {
+        assert_eq!(
+            headings("---\nlabel: x\n---\nTitle\n=====\n~~~\n# Not a heading\n~~~\n## Real"),
+            vec![(4, 1, "Title".into()), (9, 2, "Real".into())]
+        );
+    }
+
+    #[test]
+    fn preview_offsets_survive_expansion_hidden_comments_and_unicode() {
+        let (text, offsets) = preprocess_mapped(
+            "[[a|A]]\n%% hidden %%\n## Øgård\n",
+            Path::new("/vault/note.md"),
+            Some(Path::new("/vault")),
+            &|_| None,
+        );
+        assert!(text[offsets[2]..].starts_with("## Øgård"));
+        assert_eq!(offsets[3], text.len());
+        assert!(offsets.iter().all(|&at| text.is_char_boundary(at)));
+    }
+}
+
 fn colon_fence(line: &str) -> Option<String> {
     let rest = line.trim_end().strip_prefix(":::")?;
     let name = rest

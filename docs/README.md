@@ -9,6 +9,8 @@ This index covers the native Rust/GPUI application shipped as Rísta v0.1.0. The
 - [CHANGELOG.md](../CHANGELOG.md) — native release history.
 - [AGENTS.md](../AGENTS.md) — repository and engineering guidance.
 - [Architecture](ARCHITECTURE.md) — current runtime structure and file behavior.
+- [Folder pages](folder-pages.md) — portable dashboard metadata, layouts, pins, and filters.
+- [Extensions and terminal](extensions.md) — JSON API v1, local tool launchers, and process permissions.
 - [Release checklist](RELEASE-CHECKLIST.md) — per-candidate release checks; items are intentionally not marked complete.
 - [Test cases](TEST-CASES.md) — manual regression checklist; items are intentionally not marked complete.
 - [Product roadmap](PRODUCT-ROADMAP.md) — unvalidated gaps and decisions, without dates or delivery promises.

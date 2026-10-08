@@ -136,7 +136,7 @@ The verified bindings are macOS command-key shortcuts. Linux and Windows mapping
 | Settings | `⌘,` |
 | Daily note | `⌘⇧D` |
 | New file | `⌘N` |
-| Open standalone `.md` or `.markdown` file | `⌘O` |
+| Open standalone file (notes or read-only attachment preview) | `⌘O` |
 | Open vault | `⌘⇧O` |
 | Zen mode | `⌘⇧Enter` |
 
