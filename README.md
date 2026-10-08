@@ -39,7 +39,7 @@ Remote images and packaged update checks can still make network requests.
 - **Quiet by design.** Rísta Night and Rísta Day, compact controls, adjustable
   typography, and resizable panes.
 
-### Exploring and writing (current source)
+### Exploring and writing
 
 Filter the explorer by filename/path or file type; folders stay first. Expansion
 is remembered per vault. **Files** offers a compact Name/Type/Modified/Size table
@@ -58,8 +58,8 @@ Wikilink and image completion remain available with `[[` and `![[`.
 Right-click a file/folder → **Tools here…** passes that selection to a confirmed
 JSON command. The terminal uses your existing shell configuration, supports
 independent tabs, and has font/size/shell preferences. See [extensions and terminal
-tools](docs/extensions.md) for capabilities and limits. These changes are not yet
-in the published v0.1.3 release.
+tools](docs/extensions.md) for capabilities and limits. These features are included
+in v0.1.4.
 
 ## Get Rísta
 
@@ -67,8 +67,8 @@ The [latest release](https://github.com/henrikogaard/rista/releases/latest)
 is an early **macOS 13+ / Apple Silicon** build. The v0.1.0 and v0.1.1 ZIP
 packages are ad-hoc signed and not notarized.
 
-The v0.1.2 ZIP and DMG are Developer ID signed, notarized, and stapled;
-the published artifacts have been verified.
+Releases from v0.1.2 use Developer ID signing, notarization, and stapled ZIP/DMG
+packages. The release workflow requires these checks before publishing.
 
 **Updating older installs:** The accented bundle filename in v0.1.0–v0.1.2
 can prevent Sparkle from recognizing the running app. An update may install
@@ -77,11 +77,11 @@ Before your next update, quit the app and rename only its outer bundle to
 `Rista.app` in Finder; leave its contents untouched. The published v0.1.1 →
 v0.1.2 update successfully terminated and relaunched with that filename.
 Packages built from this source use `Rista.app` while retaining **Rísta** as
-the display name. Installing a future DMG instead also requires removing the
+the display name. Installing the current DMG instead also requires removing the
 old accented-name copy after quitting it, so you do not keep launching it.
 
 macOS is the primary development and tested platform. Linux and Windows are
-targets, not verified v0.1.0 distributions. See the
+targets, not verified distributions. See the
 [roadmap and limitations](docs/PRODUCT-ROADMAP.md).
 
 ## Your first page
