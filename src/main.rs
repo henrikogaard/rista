@@ -25,6 +25,7 @@ mod search;
 mod settings;
 mod settings_panel;
 mod slash;
+mod templater;
 mod terminal;
 mod terminal_session;
 mod theme;

@@ -175,7 +175,8 @@ impl CompletionProvider for VaultCompletions {
                 .filter_map(|path| {
                     let name = path.file_stem()?.to_string_lossy().to_string();
                     let text = std::fs::read_to_string(&path).ok()?;
-                    Some((name, crate::document::expand_template(&text, &title, now).0))
+                    let ctx = crate::templater::TemplateCtx::new(&title, now);
+                    Some((name, crate::templater::expand(&text, &ctx).text))
                 })
                 .collect()
         };

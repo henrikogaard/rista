@@ -702,15 +702,33 @@ impl Document {
         cx.notify();
     }
 
-    /// Insert a template's expanded text at the cursor (see
-    /// `expand_template`); `{{cursor}}` marks where the caret lands.
-    pub fn insert_template(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (expanded, cursor_at) =
-            expand_template(text, &self.title(), chrono::Local::now().naive_local());
+    /// Insert an expanded template at the caret. Template frontmatter
+    /// merges into the note's (see `templater::merge_into`) and only the
+    /// body goes in at the caret; `cursor` (an offset into `expanded`)
+    /// marks where the caret lands.
+    pub fn insert_template(
+        &mut self,
+        expanded: &str,
+        cursor: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.editor.update(cx, |editor, cx| {
-            let start = editor.cursor();
-            editor.insert(expanded, window, cx);
-            if let Some(at) = cursor_at {
+            let doc = editor.value().to_string();
+            let (frontmatter, body) = crate::templater::merge_into(&doc, expanded);
+            // `body` is a suffix of `expanded`.
+            let skipped = expanded.len() - body.len();
+            let mut start = editor.cursor();
+            if let Some((range, text)) = frontmatter {
+                if range.start <= start {
+                    start = start + text.len() - range.len();
+                }
+                editor.set_selected_range(range, cx);
+                editor.replace(text, window, cx);
+            }
+            editor.set_selected_range(start..start, cx);
+            editor.insert(body, window, cx);
+            if let Some(at) = cursor.and_then(|c| c.checked_sub(skipped)) {
                 editor.set_selected_range(start + at..start + at, cx);
             }
         });
@@ -2647,48 +2665,6 @@ pub fn word_stats(text: &str) -> (usize, usize) {
     (text.split_whitespace().count(), text.chars().count())
 }
 
-/// Fill in a template: `{{title}}`, `{{date}}` (`YYYY-MM-DD`), `{{time}}`
-/// (`HH:mm`), and `{{date:FORMAT}}` / `{{time:FORMAT}}` with a Moment
-/// format — the core-templates syntax. Returns the text plus the byte
-/// offset of the first `{{cursor}}` (all cursor markers are removed).
-pub(crate) fn expand_template(
-    text: &str,
-    title: &str,
-    now: chrono::NaiveDateTime,
-) -> (String, Option<usize>) {
-    let mut out = String::with_capacity(text.len());
-    let mut cursor = None;
-    let mut rest = text;
-    while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 2..];
-        let Some(close) = after.find("}}") else {
-            out.push_str(&rest[open..]);
-            rest = "";
-            break;
-        };
-        let inner = after[..close].trim();
-        let (name, format) = match inner.split_once(':') {
-            Some((name, format)) => (name.trim(), Some(format.trim())),
-            None => (inner, None),
-        };
-        match (name.to_ascii_lowercase().as_str(), format) {
-            ("title", None) => out.push_str(title),
-            ("date", f) => {
-                out.push_str(&crate::bases::format_moment(now, f.unwrap_or("YYYY-MM-DD")))
-            }
-            ("time", f) => out.push_str(&crate::bases::format_moment(now, f.unwrap_or("HH:mm"))),
-            ("cursor", None) => {
-                cursor.get_or_insert(out.len());
-            }
-            _ => out.push_str(&rest[open..open + 2 + close + 2]),
-        }
-        rest = &after[close + 2..];
-    }
-    out.push_str(rest);
-    (out, cursor)
-}
-
 /// The `id` of a line's trailing ` ^id` block marker (or of a lone
 /// `^id` line) — the same convention block-ref completion reads.
 fn trailing_block_id(line: &str) -> Option<&str> {
@@ -3115,8 +3091,8 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_anchor, block_candidates, block_hash_id, expand_template, format_table_md,
-        guarded_write, highlight_color_edit, linked_block_id_edit, new_block_id,
+        block_anchor, block_candidates, block_hash_id, format_table_md, guarded_write,
+        highlight_color_edit, linked_block_id_edit, new_block_id,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3311,36 +3287,6 @@ mod tests {
         assert_eq!(recolor("==🔴@red==", ""), "==|red==");
         assert_eq!(recolor("==a== b@ ==c==", "🟡"), "==a== b==🟡|== ==c==");
         assert_eq!(recolor("`a==b` ==🔴re@al==", "🟢"), "`a==b` ==🟢re|al==");
-    }
-
-    #[test]
-    fn templates_expand_variables_formats_and_cursor() {
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 9)
-            .unwrap()
-            .and_hms_opt(8, 3, 0)
-            .unwrap();
-        let (text, cursor) = expand_template(
-            "# {{title}}\n{{date}} {{time}} · {{date:dddd D. MMMM}} · {{ time : HH[h]mm }}\n{{cursor}}x{{cursor}}",
-            "Plan",
-            now,
-        );
-        assert_eq!(
-            text,
-            "# Plan\n2026-10-09 08:03 · Friday 9. October · 08h03\nx"
-        );
-        assert_eq!(cursor, Some(text.len() - 1));
-    }
-
-    #[test]
-    fn unknown_or_unclosed_template_tags_stay_as_written() {
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        assert_eq!(
-            expand_template("{{weather}} <% tp.date.now() %> {{date", "t", now),
-            ("{{weather}} <% tp.date.now() %> {{date".to_string(), None)
-        );
     }
 
     #[test]
