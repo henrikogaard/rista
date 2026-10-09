@@ -5357,6 +5357,23 @@ impl Workspace {
                 if note.is_empty() {
                     return;
                 }
+                // `[[file.pdf]]` — an attachment, never a note to create.
+                if Path::new(note)
+                    .extension()
+                    .is_some_and(|e| e != "md" && e != "base")
+                {
+                    let found = self
+                        .vault
+                        .read(cx)
+                        .root
+                        .clone()
+                        .and_then(|root| find_vault_file(&root, note));
+                    match found {
+                        Some(path) => self.open_document_impl(path, new_tab, false, window, cx),
+                        None => self.note_status(format!("No file “{note}” in the vault"), cx),
+                    }
+                    return;
+                }
                 self.create_note_for_wikilink(note, window, cx);
             }
         }
@@ -8186,8 +8203,8 @@ impl Workspace {
 
     /// Copy dropped/copied files in and link them at the caret: images
     /// go to the attachments dir as `![[name]]`, notes next to the
-    /// active note as `[[stem]]`. Files already inside the vault just
-    /// get linked; other file types are skipped.
+    /// active note as `[[stem]]`, other files to the attachments dir as
+    /// `[[name.ext]]`. Files already inside the vault just get linked.
     fn import_paths(
         &mut self,
         paths: &[PathBuf],
@@ -8202,19 +8219,15 @@ impl Workspace {
             .active_doc()
             .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf));
         let mut links = Vec::new();
-        let mut skipped = false;
         for src in paths {
-            let image = crate::vault::is_image_file(src);
-            let target_dir = if image {
-                Some(&dir)
-            } else if src.extension().is_some_and(|e| e == "md") {
-                note_dir.as_ref()
-            } else {
-                None
-            };
-            let Some(target_dir) = target_dir else {
-                skipped = true;
+            if !src.is_file() {
                 continue;
+            }
+            let image = crate::vault::is_image_file(src);
+            let note = src.extension().is_some_and(|e| e == "md");
+            let target_dir = match (note, note_dir.as_ref()) {
+                (true, Some(note_dir)) => note_dir,
+                _ => &dir,
             };
             let dest = if src.starts_with(&root) {
                 src.clone()
@@ -8224,22 +8237,20 @@ impl Workspace {
                     None => continue,
                 }
             };
-            let link = if image {
-                dest.file_name()
-                    .map(|n| format!("![[{}]]", n.to_string_lossy()))
-            } else {
-                dest.file_stem()
-                    .map(|n| format!("[[{}]]", n.to_string_lossy()))
+            let link = match (image, note) {
+                (true, _) => dest
+                    .file_name()
+                    .map(|n| format!("![[{}]]", n.to_string_lossy())),
+                (_, true) => dest
+                    .file_stem()
+                    .map(|n| format!("[[{}]]", n.to_string_lossy())),
+                _ => dest
+                    .file_name()
+                    .map(|n| format!("[[{}]]", n.to_string_lossy())),
             };
             links.extend(link);
         }
         if links.is_empty() {
-            if skipped {
-                self.note_status(
-                    "Only images and notes drop into a note — drop other files on a sidebar folder",
-                    cx,
-                );
-            }
             return false;
         }
         self.refresh_image_index(cx);
@@ -9214,6 +9225,38 @@ fn free_path(dir: &Path, name: &str) -> PathBuf {
         .unwrap()
 }
 
+/// The vault file named `name` (`report.pdf`, or a vault-relative path):
+/// the exact path first, then the first basename match, skipping
+/// hidden folders like `.rista`.
+fn find_vault_file(root: &Path, name: &str) -> Option<PathBuf> {
+    let exact = root.join(name);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let base = Path::new(name)
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if entry.file_name().to_string_lossy().to_lowercase() == base {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 /// Copy `src` into `dir` under a free name and return where it went.
 /// A same-named file there with identical bytes is reused instead, so
 /// pasting the same image twice links one file.
@@ -9447,7 +9490,7 @@ mod preview_tab_tests {
 
 #[cfg(test)]
 mod import_tests {
-    use super::{copy_into, free_path};
+    use super::{copy_into, find_vault_file, free_path};
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rista-import-{tag}-{}", std::process::id()));
@@ -9481,5 +9524,23 @@ mod import_tests {
         assert_eq!(copy_into(&dest, &src), Some(dest.join("pic 1.png")));
         assert_eq!(std::fs::read(dest.join("pic.png")).unwrap(), b"one");
         assert_eq!(std::fs::read(dest.join("pic 1.png")).unwrap(), b"two");
+    }
+
+    #[test]
+    fn find_vault_file_matches_paths_then_basenames_outside_hidden_dirs() {
+        let root = temp_dir("find");
+        std::fs::create_dir_all(root.join("attachments/deep")).unwrap();
+        std::fs::create_dir_all(root.join(".rista")).unwrap();
+        std::fs::write(root.join(".rista/Report.pdf"), b"x").unwrap();
+        std::fs::write(root.join("attachments/deep/Report.pdf"), b"x").unwrap();
+        assert_eq!(
+            find_vault_file(&root, "report.pdf"),
+            Some(root.join("attachments/deep/Report.pdf"))
+        );
+        assert_eq!(
+            find_vault_file(&root, "attachments/deep/Report.pdf"),
+            Some(root.join("attachments/deep/Report.pdf"))
+        );
+        assert_eq!(find_vault_file(&root, "missing.pdf"), None);
     }
 }
