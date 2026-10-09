@@ -116,6 +116,24 @@ pub struct Settings {
     /// `YYYYMMDDHHmm` → `202610091430.md` (the Zettelkasten prefix).
     #[serde(default = "default_unique_note_format")]
     pub unique_note_format: String,
+    /// Periodic notes (the Periodic Notes plugin's settings): folder
+    /// (empty = vault root) and Moment filename format per period.
+    #[serde(default)]
+    pub weekly_dir: String,
+    #[serde(default = "default_weekly_format")]
+    pub weekly_format: String,
+    #[serde(default)]
+    pub monthly_dir: String,
+    #[serde(default = "default_monthly_format")]
+    pub monthly_format: String,
+    #[serde(default)]
+    pub quarterly_dir: String,
+    #[serde(default = "default_quarterly_format")]
+    pub quarterly_format: String,
+    #[serde(default)]
+    pub yearly_dir: String,
+    #[serde(default = "default_yearly_format")]
+    pub yearly_format: String,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     /// Which sidebar panes are expanded — persists across launches.
@@ -154,6 +172,100 @@ fn default_daily_format() -> String {
 
 fn default_unique_note_format() -> String {
     "YYYYMMDDHHmm".to_string()
+}
+
+/// ISO weeks — Monday-first like the calendar. Periodic Notes' own
+/// default, `gggg-[W]ww`, also works (the calendar then starts Sunday).
+fn default_weekly_format() -> String {
+    "GGGG-[W]WW".to_string()
+}
+
+fn default_monthly_format() -> String {
+    "YYYY-MM".to_string()
+}
+
+fn default_quarterly_format() -> String {
+    "YYYY-[Q]Q".to_string()
+}
+
+fn default_yearly_format() -> String {
+    "YYYY".to_string()
+}
+
+/// A periodic-note cadence. `Day` is the daily note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Period {
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
+}
+
+impl Period {
+    pub const ALL: [Period; 5] = [
+        Period::Day,
+        Period::Week,
+        Period::Month,
+        Period::Quarter,
+        Period::Year,
+    ];
+
+    /// `daily`, `weekly`, … — also the template file stem
+    /// (`<templates_dir>/weekly.md`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Period::Day => "daily",
+            Period::Week => "weekly",
+            Period::Month => "monthly",
+            Period::Quarter => "quarterly",
+            Period::Year => "yearly",
+        }
+    }
+
+    /// `date` moved by `n` periods (negative goes back); month steps
+    /// clamp to the month's last day.
+    pub fn shift(self, date: chrono::NaiveDate, n: i32) -> chrono::NaiveDate {
+        let months = |m: i32| {
+            let step = chrono::Months::new(m.unsigned_abs());
+            if m >= 0 {
+                date.checked_add_months(step)
+            } else {
+                date.checked_sub_months(step)
+            }
+            .unwrap_or(date)
+        };
+        match self {
+            Period::Day => date + chrono::Duration::days(n as i64),
+            Period::Week => date + chrono::Duration::weeks(n as i64),
+            Period::Month => months(n),
+            Period::Quarter => months(n * 3),
+            Period::Year => months(n * 12),
+        }
+    }
+}
+
+impl Settings {
+    /// Folder and Moment filename format for `period`'s notes.
+    pub fn period(&self, period: Period) -> (&str, &str) {
+        match period {
+            Period::Day => (&self.daily_dir, &self.daily_format),
+            Period::Week => (&self.weekly_dir, &self.weekly_format),
+            Period::Month => (&self.monthly_dir, &self.monthly_format),
+            Period::Quarter => (&self.quarterly_dir, &self.quarterly_format),
+            Period::Year => (&self.yearly_dir, &self.yearly_format),
+        }
+    }
+
+    pub fn period_mut(&mut self, period: Period) -> (&mut String, &mut String) {
+        match period {
+            Period::Day => (&mut self.daily_dir, &mut self.daily_format),
+            Period::Week => (&mut self.weekly_dir, &mut self.weekly_format),
+            Period::Month => (&mut self.monthly_dir, &mut self.monthly_format),
+            Period::Quarter => (&mut self.quarterly_dir, &mut self.quarterly_format),
+            Period::Year => (&mut self.yearly_dir, &mut self.yearly_format),
+        }
+    }
 }
 
 /// Expanded/collapsed state of the optional sidebar sections.
@@ -230,6 +342,14 @@ impl Default for Settings {
             daily_format: default_daily_format(),
             unique_note_dir: String::new(),
             unique_note_format: default_unique_note_format(),
+            weekly_dir: String::new(),
+            weekly_format: default_weekly_format(),
+            monthly_dir: String::new(),
+            monthly_format: default_monthly_format(),
+            quarterly_dir: String::new(),
+            quarterly_format: default_quarterly_format(),
+            yearly_dir: String::new(),
+            yearly_format: default_yearly_format(),
             starred: Vec::new(),
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),
@@ -358,5 +478,24 @@ mod tests {
                 .unwrap();
         assert_eq!(graphite.dark_theme, "Graphite Night");
         assert_eq!(graphite.light_theme, "Graphite Day");
+    }
+}
+
+#[cfg(test)]
+mod period_tests {
+    use super::Period;
+    use chrono::NaiveDate;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn periods_shift_by_their_own_length() {
+        assert_eq!(Period::Day.shift(d(2026, 12, 31), 1), d(2027, 1, 1));
+        assert_eq!(Period::Week.shift(d(2026, 10, 9), -1), d(2026, 10, 2));
+        assert_eq!(Period::Month.shift(d(2026, 1, 31), 1), d(2026, 2, 28));
+        assert_eq!(Period::Quarter.shift(d(2026, 11, 15), 1), d(2027, 2, 15));
+        assert_eq!(Period::Year.shift(d(2028, 2, 29), -1), d(2027, 2, 28));
     }
 }
