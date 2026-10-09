@@ -436,13 +436,24 @@ impl Vault {
     /// paths deduped in order, unresolvable targets as display strings.
     /// `from_dir` is the note's folder for relative md links.
     pub fn outgoing_from(&self, text: &str, from_dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
+        self.outgoing_targets(&local_link_targets(text), from_dir)
+    }
+
+    /// `outgoing_from` over already-parsed `local_link_targets` — lets
+    /// callers cache the markdown parse and only redo the cheap
+    /// resolution.
+    pub fn outgoing_targets(
+        &self,
+        targets: &[(String, bool)],
+        from_dir: &Path,
+    ) -> (Vec<PathBuf>, Vec<String>) {
         let mut resolved: Vec<PathBuf> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        for (target, wiki) in local_link_targets(text) {
-            match if wiki {
-                self.resolve_link_target(&target)
+        for (target, wiki) in targets {
+            match if *wiki {
+                self.resolve_link_target(target)
             } else {
-                self.md_link_path(&target, from_dir)
+                self.md_link_path(target, from_dir)
             } {
                 Some(p) => {
                     if !resolved.contains(&p) {
@@ -450,8 +461,8 @@ impl Vault {
                     }
                 }
                 None => {
-                    if !target.is_empty() && !unresolved.contains(&target) {
-                        unresolved.push(target);
+                    if !target.is_empty() && !unresolved.contains(target) {
+                        unresolved.push(target.clone());
                     }
                 }
             }
@@ -854,7 +865,7 @@ pub(crate) fn plain_mention_offset(text: &str, needle: &str) -> Option<usize> {
     None
 }
 
-fn local_link_targets(text: &str) -> Vec<(String, bool)> {
+pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
     use markdown::mdast::Node;
     fn definitions(node: &Node, out: &mut std::collections::HashMap<String, String>) {
         if let Node::Definition(def) = node {
