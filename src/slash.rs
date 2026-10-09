@@ -154,6 +154,9 @@ impl CompletionProvider for VaultCompletions {
         if let Some(resp) = tag_items(text, offset, self.vault.as_ref(), cx) {
             return Task::ready(Ok(resp));
         }
+        if let Some(resp) = highlight_color_items(text, offset) {
+            return Task::ready(Ok(resp));
+        }
         if let Some(resp) = emoji_items(text, offset) {
             return Task::ready(Ok(resp));
         }
@@ -172,7 +175,8 @@ impl CompletionProvider for VaultCompletions {
                 .filter_map(|path| {
                     let name = path.file_stem()?.to_string_lossy().to_string();
                     let text = std::fs::read_to_string(&path).ok()?;
-                    Some((name, crate::document::expand_template(&text, &title, now).0))
+                    let ctx = crate::templater::TemplateCtx::new(&title, now);
+                    Some((name, crate::templater::expand(&text, &ctx).text))
                 })
                 .collect()
         };
@@ -274,6 +278,32 @@ fn wiki_items(
                         }),
                         kind: Some(CompletionItemKind::REFERENCE),
                         sort_text: Some(format!("{:04}", ix)),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: format!("{note_part}#^{id}]]"),
+                        })),
+                        ..Default::default()
+                    });
+                }
+                // Blocks without an id yet: link a content-derived id; the
+                // next save writes it into the target (Workspace::
+                // add_linked_block_ids).
+                for (ix, block) in crate::document::block_candidates(&src)
+                    .into_iter()
+                    .filter(|b| b.id.is_none())
+                    .enumerate()
+                {
+                    if !bid_q.is_empty() && !block.first_line.to_lowercase().contains(&bid_q) {
+                        continue;
+                    }
+                    let id = block.hash_id;
+                    let label: String = block.first_line.chars().take(60).collect();
+                    items.push(CompletionItem {
+                        label,
+                        detail: Some("block · adds an id".to_string()),
+                        kind: Some(CompletionItemKind::REFERENCE),
+                        sort_text: Some(format!("z{:04}", ix)),
+                        filter_text: Some(format!("^{}", block.first_line)),
                         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                             range,
                             new_text: format!("{note_part}#^{id}]]"),
@@ -487,6 +517,44 @@ fn tag_items(
 /// `:query` → emoji — the emoji-picker core plugin. The `:`
 /// must start a token (whitespace or line start before it) so `https:`
 /// and `::` never fire; needs ≥2 query chars to keep the popup quiet.
+/// `==r…` right after an opening `==` — the highlight colors whose
+/// name starts with the typed letters (Obsidian's `==` suggestions).
+/// Accepting swaps the letters for the color emoji: `==🔴`.
+fn highlight_color_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {
+    let point = text.offset_to_point(offset);
+    let line = text.slice_line(point.row).to_string();
+    let line_start = text.line_start_offset(point.row);
+    let prefix = line.get(..point.column.min(line.len()))?;
+    let marks = crate::document::highlight_delimiters(prefix);
+    if marks.len().is_multiple_of(2) {
+        return None;
+    }
+    let open = *marks.last()? + 2;
+    let query = prefix[open..].to_lowercase();
+    if query.is_empty() || query.len() > 6 || !query.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let range = Range {
+        start: text.offset_to_position(line_start + open),
+        end: text.offset_to_position(offset),
+    };
+    let items: Vec<CompletionItem> = crate::preview::HIGHLIGHT_COLORS
+        .iter()
+        .filter(|(_, name)| name.to_lowercase().starts_with(&query))
+        .map(|(emoji, name)| CompletionItem {
+            label: format!("{emoji} {name} highlight"),
+            kind: Some(CompletionItemKind::COLOR),
+            filter_text: Some(name.to_lowercase()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: emoji.to_string(),
+            })),
+            ..Default::default()
+        })
+        .collect();
+    (!items.is_empty()).then_some(CompletionResponse::Array(items))
+}
+
 fn emoji_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {
     let point = text.offset_to_point(offset);
     let line = text.slice_line(point.row).to_string();
@@ -613,4 +681,28 @@ fn slash_items(
             )
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::highlight_color_items;
+    use gpui_kit::component::input::Rope;
+    use lsp_types::CompletionResponse;
+
+    fn labels(text: &str) -> Vec<String> {
+        match highlight_color_items(&Rope::from(text), text.len()) {
+            Some(CompletionResponse::Array(items)) => items.into_iter().map(|i| i.label).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn highlight_colors_follow_an_opening_delimiter() {
+        assert_eq!(labels("note ==r"), ["🔴 Red highlight"]);
+        assert_eq!(labels("==B"), ["🔵 Blue highlight"]);
+        assert!(labels("==rea").is_empty());
+        assert!(labels("==done== r").is_empty());
+        assert!(labels("`==` r").is_empty());
+        assert!(labels("==").is_empty());
+    }
 }

@@ -702,15 +702,35 @@ impl Document {
         cx.notify();
     }
 
-    /// Insert a template's expanded text at the cursor (see
-    /// `expand_template`); `{{cursor}}` marks where the caret lands.
-    pub fn insert_template(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (expanded, cursor_at) =
-            expand_template(text, &self.title(), chrono::Local::now().naive_local());
+    /// Insert an expanded template at the caret, replacing any selection.
+    /// Template frontmatter merges into the note's (see
+    /// `templater::merge_into`) and only the body goes in at the caret;
+    /// `cursor` (an offset into `expanded`) marks where the caret lands.
+    pub fn insert_template(
+        &mut self,
+        expanded: &str,
+        cursor: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.editor.update(cx, |editor, cx| {
-            let start = editor.cursor();
-            editor.insert(expanded, window, cx);
-            if let Some(at) = cursor_at {
+            let doc = editor.value().to_string();
+            let (frontmatter, body) = crate::templater::merge_into(&doc, expanded);
+            // `body` is a suffix of `expanded`.
+            let skipped = expanded.len() - body.len();
+            let sel = editor.selected_range();
+            let (mut start, mut end) = (sel.start, sel.end);
+            if let Some((range, text)) = frontmatter {
+                if range.start <= start {
+                    start = start + text.len() - range.len();
+                    end = end + text.len() - range.len();
+                }
+                editor.set_selected_range(range, cx);
+                editor.replace(text, window, cx);
+            }
+            editor.set_selected_range(start..end, cx);
+            editor.replace(body, window, cx);
+            if let Some(at) = cursor.and_then(|c| c.checked_sub(skipped)) {
                 editor.set_selected_range(start + at..start + at, cx);
             }
         });
@@ -1547,6 +1567,25 @@ impl Document {
             }
             true
         })
+    }
+
+    /// Insert `text` at byte `at` as one undo step, keeping the
+    /// selection where it was.
+    pub fn insert_at(
+        &mut self,
+        at: usize,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let shift = |b: usize| if b > at { b + text.len() } else { b };
+            let (start, end) = (shift(sel.start), shift(sel.end));
+            editor.set_selected_range(at..at, cx);
+            editor.insert(text.to_string(), window, cx);
+            editor.set_selected_range(start..end, cx);
+        });
     }
 
     /// "Copy link to block" — the `^id` of the block at the caret,
@@ -2543,6 +2582,30 @@ pub enum LinkTarget {
     Url(String),
 }
 
+/// Byte offsets of the `==` highlight delimiters in `line`, in order —
+/// inline code and `===` runs don't count, as for the highlight wash.
+pub(crate) fn highlight_delimiters(line: &str) -> Vec<usize> {
+    let bytes = line.as_bytes();
+    let mut marks = Vec::new();
+    let (mut i, mut in_code) = (0, false);
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            in_code = !in_code;
+        } else if !in_code
+            && bytes[i] == b'='
+            && bytes.get(i + 1) == Some(&b'=')
+            && bytes.get(i + 2) != Some(&b'=')
+            && (i == 0 || bytes[i - 1] != b'=')
+        {
+            marks.push(i);
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    marks
+}
+
 /// The edit behind `set_highlight_color`: `(range to replace, new
 /// text, selection after)`. A selection becomes `==<emoji>sel==`; a
 /// caret inside `==…==` on its line swaps the leading color emoji;
@@ -2566,26 +2629,11 @@ fn highlight_color_edit(
     let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let line = &text[line_start..line_end];
-    // `==…==` spans on the line, paired left to right — inline code and
-    // `===` runs don't count, as for the highlight wash.
-    let bytes = line.as_bytes();
-    let mut marks = Vec::new();
-    let (mut i, mut in_code) = (0, false);
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            in_code = !in_code;
-        } else if !in_code
-            && bytes[i] == b'='
-            && bytes.get(i + 1) == Some(&b'=')
-            && bytes.get(i + 2) != Some(&b'=')
-            && (i == 0 || bytes[i - 1] != b'=')
-        {
-            marks.push(line_start + i);
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
+    // `==…==` spans on the line, paired left to right.
+    let marks: Vec<usize> = highlight_delimiters(line)
+        .into_iter()
+        .map(|i| line_start + i)
+        .collect();
     for &[open, close] in marks.as_chunks::<2>().0 {
         if (open + 2..=close).contains(&at) {
             let body = open + 2;
@@ -2617,48 +2665,6 @@ fn note_title(path: &Path) -> String {
 
 pub fn word_stats(text: &str) -> (usize, usize) {
     (text.split_whitespace().count(), text.chars().count())
-}
-
-/// Fill in a template: `{{title}}`, `{{date}}` (`YYYY-MM-DD`), `{{time}}`
-/// (`HH:mm`), and `{{date:FORMAT}}` / `{{time:FORMAT}}` with a Moment
-/// format — the core-templates syntax. Returns the text plus the byte
-/// offset of the first `{{cursor}}` (all cursor markers are removed).
-pub(crate) fn expand_template(
-    text: &str,
-    title: &str,
-    now: chrono::NaiveDateTime,
-) -> (String, Option<usize>) {
-    let mut out = String::with_capacity(text.len());
-    let mut cursor = None;
-    let mut rest = text;
-    while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 2..];
-        let Some(close) = after.find("}}") else {
-            out.push_str(&rest[open..]);
-            rest = "";
-            break;
-        };
-        let inner = after[..close].trim();
-        let (name, format) = match inner.split_once(':') {
-            Some((name, format)) => (name.trim(), Some(format.trim())),
-            None => (inner, None),
-        };
-        match (name.to_ascii_lowercase().as_str(), format) {
-            ("title", None) => out.push_str(title),
-            ("date", f) => {
-                out.push_str(&crate::bases::format_moment(now, f.unwrap_or("YYYY-MM-DD")))
-            }
-            ("time", f) => out.push_str(&crate::bases::format_moment(now, f.unwrap_or("HH:mm"))),
-            ("cursor", None) => {
-                cursor.get_or_insert(out.len());
-            }
-            _ => out.push_str(&rest[open..open + 2 + close + 2]),
-        }
-        rest = &after[close + 2..];
-    }
-    out.push_str(rest);
-    (out, cursor)
 }
 
 /// The `id` of a line's trailing ` ^id` block marker (or of a lone
@@ -2838,6 +2844,137 @@ fn block_anchor(
     ))
 }
 
+/// A linkable block in a note, for `[[note#^` completion.
+pub(crate) struct BlockCandidate {
+    /// The block's existing `^id`, if it has one.
+    pub id: Option<String>,
+    /// Its first line, trimmed — the completion label.
+    pub first_line: String,
+    /// Byte offset of that first line.
+    pub at: usize,
+    /// The id `[[note#^` completion links before the block has one —
+    /// see `block_hash_id`.
+    pub hash_id: String,
+}
+
+/// Every block `block_anchor` can name, in order.
+pub(crate) fn block_candidates(text: &str) -> Vec<BlockCandidate> {
+    let mut out: Vec<BlockCandidate> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let first_line = line.trim();
+        if first_line.is_empty() {
+            continue;
+        }
+        let Some((id, insert)) = block_anchor(text, start, "") else {
+            continue;
+        };
+        // Lines of one block share its insertion point (or its id).
+        let key = match &insert {
+            Some((offset, _)) => format!("@{offset}"),
+            None => format!("^{id}"),
+        };
+        if seen.insert(key) {
+            // Blocks opening with the same line (two ```rust fences) are
+            // told apart by their order among those blocks.
+            let nth = out.iter().filter(|b| b.first_line == first_line).count();
+            out.push(BlockCandidate {
+                id: insert.is_none().then_some(id),
+                first_line: first_line.to_string(),
+                at: start,
+                hash_id: block_hash_id(first_line, nth),
+            });
+        }
+    }
+    out
+}
+
+/// A stable six-character id for a block, from its first line and
+/// which of the blocks opening with that line it is — what `[[note#^`
+/// completion links before the target has the id, so a later save can
+/// find the block again and add it (FNV-1a, base 36).
+fn block_hash_id(first_line: &str, nth: usize) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let key = match nth {
+        0 => first_line.trim().to_string(),
+        n => format!("{}\u{0}{n}", first_line.trim()),
+    };
+    for byte in key.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    (0..6)
+        .map(|_| {
+            let c = CHARS[(hash % 36) as usize] as char;
+            hash /= 36;
+            c
+        })
+        .collect()
+}
+
+/// `(note, id)` for every `[[note#^id]]` / `![[note#^id]]` in `text`,
+/// deduped — real links only: code spans, fenced code and `%%`
+/// comments don't count. `note` is empty for `[[#^id]]`.
+pub(crate) fn block_link_targets(text: &str) -> Vec<(String, String)> {
+    use markdown::mdast::Node;
+    fn walk(node: &Node, out: &mut Vec<(String, String)>) {
+        if let Node::Text(text) = node {
+            let mut rest = text.value.as_str();
+            while let Some((_, tail)) = rest.split_once("[[") {
+                let Some((inner, tail)) = tail.split_once("]]") else {
+                    break;
+                };
+                let inner = inner.split('|').next().unwrap_or_default();
+                if let Some((note, id)) = inner.split_once("#^") {
+                    let link = (note.trim().to_string(), id.trim().to_string());
+                    if !link.1.is_empty() && !out.contains(&link) {
+                        out.push(link);
+                    }
+                }
+                rest = tail;
+            }
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    // `%%comments%%` are blanked so their links are skipped too.
+    let mut visible = String::with_capacity(text.len());
+    for (ix, part) in text.split("%%").enumerate() {
+        if ix > 0 {
+            visible.push_str("  ");
+        }
+        if ix % 2 == 0 {
+            visible.push_str(part);
+        } else {
+            visible.extend(part.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let mut out = Vec::new();
+    if let Ok(root) = markdown::to_mdast(&visible, &options) {
+        walk(&root, &mut out);
+    }
+    out
+}
+
+/// The edit that gives `text` the block id `id` — `None` when some
+/// block already carries it or no block hashes to it.
+pub(crate) fn linked_block_id_edit(text: &str, id: &str) -> Option<(usize, String)> {
+    if text.lines().any(|l| trailing_block_id(l) == Some(id)) {
+        return None;
+    }
+    let block = block_candidates(text)
+        .into_iter()
+        .find(|b| b.id.is_none() && b.hash_id == id)?;
+    block_anchor(text, block.at, id)?.1
+}
+
 /// Byte ranges between the pipes of a table-row line — `| a | b |`
 /// yields the ` a ` and ` b ` segments. `\|` doesn't split; rows
 /// without leading/trailing pipes still yield their edge segments.
@@ -3014,8 +3151,8 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_anchor, expand_template, format_table_md, guarded_write, highlight_color_edit,
-        new_block_id,
+        block_anchor, block_candidates, block_link_targets, format_table_md, guarded_write,
+        highlight_color_edit, linked_block_id_edit, new_block_id,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3213,32 +3350,55 @@ mod tests {
     }
 
     #[test]
-    fn templates_expand_variables_formats_and_cursor() {
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 9)
-            .unwrap()
-            .and_hms_opt(8, 3, 0)
-            .unwrap();
-        let (text, cursor) = expand_template(
-            "# {{title}}\n{{date}} {{time}} · {{date:dddd D. MMMM}} · {{ time : HH[h]mm }}\n{{cursor}}x{{cursor}}",
-            "Plan",
-            now,
-        );
+    fn block_candidates_list_each_block_once() {
+        let text = "# H\n\npara one\npara two\n\n- a\n- b ^bid\n\n> q1\n> q2\n";
+        let blocks: Vec<(Option<String>, String)> = block_candidates(text)
+            .into_iter()
+            .map(|b| (b.id, b.first_line))
+            .collect();
         assert_eq!(
-            text,
-            "# Plan\n2026-10-09 08:03 · Friday 9. October · 08h03\nx"
+            blocks,
+            [
+                (None, "para one".to_string()),
+                (None, "- a".to_string()),
+                (Some("bid".to_string()), "- b ^bid".to_string()),
+                (None, "> q1".to_string()),
+            ]
         );
-        assert_eq!(cursor, Some(text.len() - 1));
     }
 
     #[test]
-    fn unknown_or_unclosed_template_tags_stay_as_written() {
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
+    fn linked_block_ids_are_added_once_to_the_hashed_block() {
+        let text = "intro\n\n- first\n- second\n";
+        let id = block_candidates(text)[2].hash_id.clone();
+        let (at, ins) = linked_block_id_edit(text, &id).unwrap();
+        let mut out = text.to_string();
+        out.insert_str(at, &ins);
+        assert_eq!(out, format!("intro\n\n- first\n- second ^{id}\n"));
+        assert_eq!(linked_block_id_edit(&out, &id), None);
+        assert_eq!(linked_block_id_edit(text, "zzzzzz"), None);
+    }
+
+    #[test]
+    fn same_first_line_blocks_get_distinct_ids() {
+        let text = "```rust\na\n```\n\n```rust\nb\n```\n";
+        let blocks = block_candidates(text);
+        assert_eq!(blocks.len(), 2);
+        assert_ne!(blocks[0].hash_id, blocks[1].hash_id);
+        let (at, ins) = linked_block_id_edit(text, &blocks[1].hash_id).unwrap();
+        assert!(at > text.find("b\n").unwrap());
+        assert!(ins.contains(&blocks[1].hash_id));
+    }
+
+    #[test]
+    fn block_link_targets_skip_code_and_comments() {
+        let text = "See [[A#^one]] and [[#^two|alias]].\n\n`[[B#^code]]`\n\n```\n[[C#^fence]]\n```\n\n%% [[D#^comment]] %%\n";
         assert_eq!(
-            expand_template("{{weather}} <% tp.date.now() %> {{date", "t", now),
-            ("{{weather}} <% tp.date.now() %> {{date".to_string(), None)
+            block_link_targets(text),
+            [
+                ("A".to_string(), "one".to_string()),
+                (String::new(), "two".to_string())
+            ]
         );
     }
 }

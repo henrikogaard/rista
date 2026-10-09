@@ -32,8 +32,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::SystemTime;
 
 #[path = "agent_panel.rs"]
@@ -245,6 +247,33 @@ impl Focusable for Workspace {
         self.focus_handle.clone()
     }
 }
+
+/// What a template-picker click does.
+#[derive(Clone)]
+enum TemplatePick {
+    Insert(Entity<Document>),
+    NewNote,
+    /// Set the template new notes in this folder start from.
+    Folder(PathBuf),
+}
+
+/// A template to expand for the note at `path`. `frontmatter` is the
+/// text `tp.frontmatter` reads (the template itself when `None`).
+struct TemplateJob {
+    template: String,
+    path: PathBuf,
+    now: chrono::NaiveDateTime,
+    frontmatter: Option<String>,
+    /// The selection an inserted template replaces.
+    selection: String,
+}
+
+/// The continuation `Workspace::ask_prompts` runs with the answers.
+type PromptsDone = Rc<
+    RefCell<
+        Option<Box<dyn FnOnce(&mut Workspace, Vec<String>, &mut Window, &mut Context<Workspace>)>>,
+    >,
+>;
 
 #[derive(Clone)]
 enum PaletteEntry {
@@ -1135,6 +1164,25 @@ impl Workspace {
         // Files can be pinned into the Starred group.
         let menu = if is_folder {
             menu.item(
+                PopupMenuItem::new(
+                    language.text("Template for new notes…", "Mal for nye notater…"),
+                )
+                .icon(assets::IconName::LayoutTemplate)
+                .on_click({
+                    let view = view.clone();
+                    let path = path.clone();
+                    move |_, window, _cx| {
+                        let view = view.clone();
+                        let path = path.clone();
+                        window.on_next_frame(move |window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.show_template_picker(TemplatePick::Folder(path), window, cx);
+                            });
+                        });
+                    }
+                }),
+            )
+            .item(
                 PopupMenuItem::new(language.text("Open terminal here", "Åpne terminal her"))
                     .icon(assets::IconName::Terminal)
                     .on_click({
@@ -1680,6 +1728,9 @@ impl Workspace {
             window,
             |this, changed_doc, event, window, cx| match event {
                 DocumentEvent::Saved | DocumentEvent::Changed => {
+                    if matches!(event, DocumentEvent::Saved) {
+                        this.add_linked_block_ids(changed_doc, window, cx);
+                    }
                     if matches!(event, DocumentEvent::Changed) && changed_doc.read(cx).dirty {
                         if let Some(tab) = this.docs.iter_mut().find(|d| d.entity == *changed_doc) {
                             tab.preview = false;
@@ -2325,16 +2376,8 @@ impl Workspace {
             &root.join(&self.settings.unique_note_dir),
             &format!("{stamp}.md"),
         );
-        if path
-            .parent()
-            .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-            || std::fs::write(&path, self.template_seed(&path, "unique.md", now, cx)).is_err()
-        {
-            self.note_status("Could not create the note", cx);
-            return;
-        }
-        self.vault.update(cx, |vault, cx| vault.refresh(cx));
-        self.open_document(path, window, cx);
+        let template = root.join(&self.settings.templates_dir).join("unique.md");
+        self.create_note(path, Some(template), now, window, cx);
     }
 
     /// Palette "New base" — a starter `.base` at the vault root,
@@ -2377,6 +2420,13 @@ impl Workspace {
             name = format!("Untitled {}.md", n);
         }
         let path = dir.join(&name);
+        if fm.is_empty() {
+            if let Some(template) = self.folder_template(&dir, cx) {
+                let now = chrono::Local::now().naive_local();
+                self.create_note(path, Some(template), now, window, cx);
+                return;
+            }
+        }
         let mut body = String::new();
         if !fm.is_empty() {
             body.push_str("---\n");
@@ -2522,10 +2572,9 @@ impl Workspace {
         self.open_daily_at(chrono::Local::now().date_naive(), window, cx);
     }
 
-    /// Initial content for a new daily, periodic, or unique note — the
-    /// reference editor convention: `<templates_dir>/<template>` seeds it,
-    /// expanded with `date` as "now" (see `expand_template`), else a
-    /// plain heading.
+    /// Initial content for a daily note created without asking —
+    /// `<templates_dir>/<template>` with prompts left at their defaults,
+    /// else a plain heading.
     fn template_seed(
         &self,
         path: &Path,
@@ -2544,7 +2593,16 @@ impl Workspace {
             .and_then(|root| {
                 std::fs::read_to_string(root.join(&self.settings.templates_dir).join(template)).ok()
             })
-            .map(|tpl| crate::document::expand_template(&tpl, &title, date).0)
+            .map(|template| {
+                let job = TemplateJob {
+                    template,
+                    path: path.to_path_buf(),
+                    now: date,
+                    frontmatter: None,
+                    selection: String::new(),
+                };
+                self.expand_template_for(&job, &[], cx).text
+            })
             .unwrap_or_else(|| format!("# {}\n\n", title))
     }
 
@@ -2571,19 +2629,16 @@ impl Workspace {
             self.note_status("Open a folder first", cx);
             return;
         };
-        if !path.exists() {
-            let when = date.and_time(chrono::Local::now().time());
-            let template = format!("{}.md", period.name());
-            if path
-                .parent()
-                .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(&path, self.template_seed(&path, &template, when, cx)).is_err()
-            {
-                return;
-            }
-            self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        if path.exists() {
+            self.open_document(path, window, cx);
+            return;
         }
-        self.open_document(path, window, cx);
+        let when = date.and_time(chrono::Local::now().time());
+        let template = self.vault.read(cx).root.clone().map(|root| {
+            root.join(&self.settings.templates_dir)
+                .join(format!("{}.md", period.name()))
+        });
+        self.create_note(path, template, when, window, cx);
     }
 
     /// Palette "Append to daily note…" — prompt for a line, append it
@@ -5042,7 +5097,7 @@ impl Workspace {
     /// with `{{date}}`/`{{time}}`/`{{title}}`/`{{cursor}}` expansion.
     fn show_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active_doc().cloned() {
-            Some(doc) => self.show_template_picker(Some(doc), window, cx),
+            Some(doc) => self.show_template_picker(TemplatePick::Insert(doc), window, cx),
             None => self.note_status("Open a note first", cx),
         }
     }
@@ -5050,14 +5105,13 @@ impl Workspace {
     /// Palette "New note from template…" — pick a template, then name
     /// the note.
     fn show_new_from_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_template_picker(None, window, cx);
+        self.show_template_picker(TemplatePick::NewNote, window, cx);
     }
 
-    /// The template list: with `doc`, a click inserts into it; without,
-    /// a click asks for a name and creates a note from the template.
+    /// The template list; `pick` says what a click does.
     fn show_template_picker(
         &mut self,
-        doc: Option<Entity<Document>>,
+        pick: TemplatePick,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -5067,14 +5121,37 @@ impl Workspace {
         };
         let files = template_files(&root, &self.settings.templates_dir);
         let view = cx.entity();
-        let title = if doc.is_some() {
-            "Insert template"
-        } else {
-            "New note from template"
+        let title = match &pick {
+            TemplatePick::Insert(_) => "Insert template",
+            TemplatePick::NewNote => "New note from template",
+            TemplatePick::Folder(_) => "Template for new notes in this folder",
         };
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
             let mut list = v_flex().w_full().py_1();
+            let row = |id: (&'static str, usize), label: String, file: Option<PathBuf>| {
+                let (view, pick) = (view.clone(), pick.clone());
+                div()
+                    .id(id)
+                    .w_full()
+                    .px_3()
+                    .py_1p5()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.muted))
+                    .child(div().text_sm().text_color(theme.foreground).child(label))
+                    .on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        let (view, pick, file) = (view.clone(), pick.clone(), file.clone());
+                        window.defer(cx, move |window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.on_template_picked(pick, file, window, cx)
+                            });
+                        });
+                    })
+            };
+            if matches!(pick, TemplatePick::Folder(_)) {
+                list = list.child(row(("template-none", 0), "No template".into(), None));
+            }
             if files.is_empty() {
                 list = list.child(
                     div()
@@ -5090,39 +5167,7 @@ impl Workspace {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let file = file.clone();
-                let doc = doc.clone();
-                let view = view.clone();
-                list = list.child(
-                    div()
-                        .id(("template-row", ix))
-                        .w_full()
-                        .px_3()
-                        .py_1p5()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.muted))
-                        .child(div().text_sm().text_color(theme.foreground).child(name))
-                        .on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-                            match &doc {
-                                Some(doc) => {
-                                    if let Ok(text) = std::fs::read_to_string(&file) {
-                                        doc.update(cx, |doc, cx| {
-                                            doc.insert_template(&text, window, cx)
-                                        });
-                                    }
-                                }
-                                None => {
-                                    let (view, file) = (view.clone(), file.clone());
-                                    window.defer(cx, move |window, cx| {
-                                        view.update(cx, |this, cx| {
-                                            this.prompt_note_from_template(file, window, cx)
-                                        });
-                                    });
-                                }
-                            }
-                        }),
-                );
+                list = list.child(row(("template-row", ix), name, Some(file.clone())));
             }
             dialog
                 .title(title)
@@ -5134,6 +5179,326 @@ impl Workspace {
                     ),
                 )
         });
+    }
+
+    /// A template-picker click: insert it, name a new note, or set (or,
+    /// with `None`, clear) the folder's template for new notes.
+    fn on_template_picked(
+        &mut self,
+        pick: TemplatePick,
+        file: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match (pick, file) {
+            (TemplatePick::Insert(doc), Some(file)) => {
+                let Ok(template) = std::fs::read_to_string(&file) else {
+                    return;
+                };
+                let (path, text, selection) = {
+                    let doc = doc.read(cx);
+                    let selection = doc.selected_text(cx).map(|(s, _)| s).unwrap_or_default();
+                    (
+                        doc.path.clone(),
+                        doc.editor.read(cx).value().to_string(),
+                        selection,
+                    )
+                };
+                let now = chrono::Local::now().naive_local();
+                let job = TemplateJob {
+                    template,
+                    path,
+                    now,
+                    frontmatter: Some(text),
+                    selection,
+                };
+                self.fill_template(
+                    job,
+                    move |this, expanded, window, cx| {
+                        doc.update(cx, |doc, cx| {
+                            doc.insert_template(&expanded.text, expanded.cursor, window, cx)
+                        });
+                        this.warn_unsupported(&expanded, cx);
+                    },
+                    window,
+                    cx,
+                );
+            }
+            (TemplatePick::NewNote, Some(file)) => self.prompt_note_from_template(file, window, cx),
+            (TemplatePick::Folder(dir), file) => {
+                let Some(root) = self.vault.read(cx).root.clone() else {
+                    return;
+                };
+                let key = vault_rel(&root, &dir);
+                let label = if key.is_empty() {
+                    "the vault root".to_string()
+                } else {
+                    key.clone()
+                };
+                match file {
+                    Some(file) => {
+                        let name = file
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        self.settings
+                            .folder_templates
+                            .insert(key, vault_rel(&root, &file));
+                        self.note_status(format!("New notes in {label} start from “{name}”"), cx);
+                    }
+                    None => {
+                        self.settings.folder_templates.remove(&key);
+                        self.note_status(format!("New notes in {label} start empty"), cx);
+                    }
+                }
+                self.settings.save();
+            }
+            _ => {}
+        }
+    }
+
+    /// The template new notes in `dir` start from, if one is set.
+    fn folder_template(&self, dir: &Path, cx: &App) -> Option<PathBuf> {
+        let root = self.vault.read(cx).root.clone()?;
+        let template = self.settings.folder_templates.get(&vault_rel(&root, dir))?;
+        Some(root.join(template)).filter(|p| p.is_file())
+    }
+
+    /// Create the note at `path` from `template` and open it — the
+    /// template's prompts are asked first and `{{cursor}}` places the
+    /// caret. A missing template gives a `# Title` heading.
+    fn create_note(
+        &mut self,
+        path: PathBuf,
+        template: Option<PathBuf>,
+        now: chrono::NaiveDateTime,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = template.and_then(|t| std::fs::read_to_string(t).ok()) else {
+            let title = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let heading = crate::templater::Expanded {
+                text: format!("# {title}\n\n"),
+                cursor: None,
+                unsupported: 0,
+            };
+            self.write_new_note(path, heading, window, cx);
+            return;
+        };
+        let job = TemplateJob {
+            template: text,
+            path: path.clone(),
+            now,
+            frontmatter: None,
+            selection: String::new(),
+        };
+        self.fill_template(
+            job,
+            move |this, expanded, window, cx| this.write_new_note(path, expanded, window, cx),
+            window,
+            cx,
+        );
+    }
+
+    fn write_new_note(
+        &mut self,
+        path: PathBuf,
+        expanded: crate::templater::Expanded,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if path
+            .parent()
+            .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+            || std::fs::write(&path, &expanded.text).is_err()
+        {
+            self.note_status("Could not create the note", cx);
+            return;
+        }
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        self.open_document(path.clone(), window, cx);
+        if let (Some(at), Some(doc)) = (expanded.cursor, self.active_doc().cloned()) {
+            if doc.read(cx).path == path {
+                doc.update(cx, |doc, cx| {
+                    doc.editor
+                        .update(cx, |editor, cx| editor.set_selected_range(at..at, cx));
+                });
+            }
+        }
+        self.warn_unsupported(&expanded, cx);
+    }
+
+    fn warn_unsupported(&mut self, expanded: &crate::templater::Expanded, cx: &mut Context<Self>) {
+        if expanded.unsupported > 0 {
+            self.note_status(
+                format!(
+                    "{} template command(s) left as written — Rísta runs no scripts",
+                    expanded.unsupported
+                ),
+                cx,
+            );
+        }
+    }
+
+    /// Expand a template — after asking its `tp.system.prompt`/
+    /// `suggester` questions — and hand the result to `then`.
+    /// Cancelling a prompt drops it all.
+    fn fill_template(
+        &mut self,
+        job: TemplateJob,
+        then: impl FnOnce(&mut Self, crate::templater::Expanded, &mut Window, &mut Context<Self>)
+            + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompts = crate::templater::prompts(&job.template);
+        let done: PromptsDone = Rc::new(RefCell::new(Some(Box::new(
+            move |this: &mut Self,
+                  answers: Vec<String>,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| {
+                let expanded = this.expand_template_for(&job, &answers, cx);
+                then(this, expanded, window, cx);
+            },
+        ))));
+        self.ask_prompts(prompts.into(), Vec::new(), done, window, cx);
+    }
+
+    fn expand_template_for(
+        &self,
+        job: &TemplateJob,
+        answers: &[String],
+        cx: &App,
+    ) -> crate::templater::Expanded {
+        let TemplateJob {
+            template,
+            path,
+            now,
+            frontmatter,
+            selection,
+        } = job;
+        let root = self.vault.read(cx).root.clone().unwrap_or_default();
+        let title = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let rel = vault_rel(&root, path);
+        let abs = path.to_string_lossy().to_string();
+        let clipboard = cx.read_from_clipboard().and_then(|c| c.text());
+        let include = |name: &str| {
+            find_vault_file(&root, &format!("{name}.md"))
+                .or_else(|| find_vault_file(&root, name))
+                .and_then(|p| std::fs::read_to_string(p).ok())
+        };
+        let ctx = crate::templater::TemplateCtx {
+            rel_path: &rel,
+            abs_path: &abs,
+            frontmatter: frontmatter.as_deref().unwrap_or(template),
+            clipboard: clipboard.as_deref(),
+            selection,
+            include: Some(&include),
+            answers,
+            ..crate::templater::TemplateCtx::new(&title, *now)
+        };
+        crate::templater::expand(template, &ctx)
+    }
+
+    /// Ask template prompts one dialog at a time; `done` runs with the
+    /// answers once all are given.
+    fn ask_prompts(
+        &mut self,
+        mut pending: std::collections::VecDeque<crate::templater::Prompt>,
+        answers: Vec<String>,
+        done: PromptsDone,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = pending.pop_front() else {
+            let finish = done.borrow_mut().take();
+            if let Some(finish) = finish {
+                finish(self, answers, window, cx);
+            }
+            return;
+        };
+        let view = cx.entity();
+        // Answer → next prompt, opened after this dialog closes.
+        let next = move |answer: String, window: &mut Window, cx: &mut App| {
+            let (view, pending, done) = (view.clone(), pending.clone(), done.clone());
+            let mut answers = answers.clone();
+            answers.push(answer);
+            window.defer(cx, move |window, cx| {
+                view.update(cx, |this, cx| {
+                    this.ask_prompts(pending, answers, done, window, cx)
+                });
+            });
+        };
+        match prompt {
+            crate::templater::Prompt::Text { question, default } => {
+                let input = self.cell_input.clone();
+                input.update(cx, |input, cx| input.set_value(default, window, cx));
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    let (input, next) = (input.clone(), next.clone());
+                    dialog
+                        .title(question.clone())
+                        .w(px(400.))
+                        .child(div().w_full().child(Input::new(&input).appearance(true)))
+                        .on_ok(move |_, window, cx| {
+                            let answer = input.read(cx).value().to_string();
+                            next(answer, window, cx);
+                            true
+                        })
+                });
+            }
+            crate::templater::Prompt::Choice {
+                labels,
+                values,
+                placeholder,
+            } => {
+                window.open_dialog(cx, move |dialog, _window, cx| {
+                    let theme = cx.theme();
+                    let mut list = v_flex().w_full().py_1();
+                    for (ix, label) in labels.iter().enumerate() {
+                        let value = values.get(ix).cloned().unwrap_or_else(|| label.clone());
+                        let next = next.clone();
+                        list = list.child(
+                            div()
+                                .id(("template-choice", ix))
+                                .w_full()
+                                .px_3()
+                                .py_1p5()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.muted))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.foreground)
+                                        .child(label.clone()),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    next(value.clone(), window, cx);
+                                }),
+                        );
+                    }
+                    let title = if placeholder.is_empty() {
+                        "Choose"
+                    } else {
+                        placeholder.as_str()
+                    };
+                    dialog
+                        .title(title.to_string())
+                        .w(px(400.))
+                        .overlay_closable(true)
+                        .child(list)
+                });
+            }
+        }
     }
 
     /// Ask for the new note's name, then create it from `template`.
@@ -5165,8 +5530,7 @@ impl Workspace {
         });
     }
 
-    /// `<vault>/<name>.md` filled from `template` (see
-    /// `expand_template`), opened with the caret at `{{cursor}}`.
+    /// `<vault>/<name>.md` from `template` (see `create_note`).
     fn create_note_from_template(
         &mut self,
         template: &Path,
@@ -5182,31 +5546,9 @@ impl Workspace {
             self.note_status("Give the note a name without slashes", cx);
             return;
         }
-        let Ok(tpl) = std::fs::read_to_string(template) else {
-            self.note_status("Could not read the template", cx);
-            return;
-        };
         let path = free_path(&root, &format!("{name}.md"));
-        let title = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let (text, cursor) =
-            crate::document::expand_template(&tpl, &title, chrono::Local::now().naive_local());
-        if std::fs::write(&path, text).is_err() {
-            self.note_status("Could not create the note", cx);
-            return;
-        }
-        self.vault.update(cx, |vault, cx| vault.refresh(cx));
-        self.open_document(path.clone(), window, cx);
-        if let (Some(at), Some(doc)) = (cursor, self.active_doc().cloned()) {
-            if doc.read(cx).path == path {
-                doc.update(cx, |doc, cx| {
-                    doc.editor
-                        .update(cx, |editor, cx| editor.set_selected_range(at..at, cx));
-                });
-            }
-        }
+        let now = chrono::Local::now().naive_local();
+        self.create_note(path, Some(template.to_path_buf()), now, window, cx);
     }
 
     /// List vault trash entries; clicking one restores it to its
@@ -5357,7 +5699,83 @@ impl Workspace {
                 if note.is_empty() {
                     return;
                 }
+                // `[[file.pdf]]` — an attachment, never a note to create.
+                if Path::new(note)
+                    .extension()
+                    .is_some_and(|e| e != "md" && e != "base")
+                {
+                    let found = self
+                        .vault
+                        .read(cx)
+                        .root
+                        .clone()
+                        .and_then(|root| find_vault_file(&root, note));
+                    match found {
+                        Some(path) => self.open_document_impl(path, new_tab, false, window, cx),
+                        None => self.note_status(format!("No file “{note}” in the vault"), cx),
+                    }
+                    return;
+                }
                 self.create_note_for_wikilink(note, window, cx);
+            }
+        }
+    }
+
+    /// After a save: every `[[note#^id]]` in `doc` whose target lacks
+    /// that id gets it written onto the block it hashes to — the second
+    /// half of `[[note#^` completion for blocks without an id. Open
+    /// targets are edited in their editor; others on disk.
+    fn add_linked_block_ids(
+        &mut self,
+        doc: &Entity<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (text, own_path) = {
+            let doc = doc.read(cx);
+            (doc.editor.read(cx).value().to_string(), doc.path.clone())
+        };
+        if !text.contains("#^") {
+            return;
+        }
+        for (note, id) in crate::document::block_link_targets(&text) {
+            let target = if note.is_empty() {
+                Some(own_path.clone())
+            } else {
+                self.vault.read(cx).resolve_wikilink(&note)
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let open = self
+                .docs
+                .iter()
+                .map(|d| d.entity.clone())
+                .find(|d| d.read(cx).path == target);
+            match open {
+                Some(target_doc) => {
+                    let target_text = target_doc.read(cx).editor.read(cx).value().to_string();
+                    if let Some((at, ins)) =
+                        crate::document::linked_block_id_edit(&target_text, &id)
+                    {
+                        target_doc.update(cx, |d, cx| d.insert_at(at, &ins, window, cx));
+                    }
+                }
+                None => {
+                    let Ok(target_text) = std::fs::read_to_string(&target) else {
+                        continue;
+                    };
+                    if let Some((at, ins)) =
+                        crate::document::linked_block_id_edit(&target_text, &id)
+                    {
+                        let mut new_text = target_text;
+                        new_text.insert_str(at, &ins);
+                        if let Some(root) = self.vault.read(cx).root.clone() {
+                            crate::history::snapshot_before_write(&root, &target, &new_text);
+                        }
+                        let _ = std::fs::write(&target, new_text);
+                    }
+                }
             }
         }
     }
@@ -5439,6 +5857,11 @@ impl Workspace {
         if path.exists() {
             // On disk but not indexed yet — just open it.
             self.open_document(path, window, cx);
+            return;
+        }
+        if let Some(template) = path.parent().and_then(|d| self.folder_template(d, cx)) {
+            let now = chrono::Local::now().naive_local();
+            self.create_note(path, Some(template), now, window, cx);
             return;
         }
         let ok = path
@@ -8186,8 +8609,8 @@ impl Workspace {
 
     /// Copy dropped/copied files in and link them at the caret: images
     /// go to the attachments dir as `![[name]]`, notes next to the
-    /// active note as `[[stem]]`. Files already inside the vault just
-    /// get linked; other file types are skipped.
+    /// active note as `[[stem]]`, other files to the attachments dir as
+    /// `[[name.ext]]`. Files already inside the vault just get linked.
     fn import_paths(
         &mut self,
         paths: &[PathBuf],
@@ -8202,19 +8625,15 @@ impl Workspace {
             .active_doc()
             .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf));
         let mut links = Vec::new();
-        let mut skipped = false;
         for src in paths {
-            let image = crate::vault::is_image_file(src);
-            let target_dir = if image {
-                Some(&dir)
-            } else if src.extension().is_some_and(|e| e == "md") {
-                note_dir.as_ref()
-            } else {
-                None
-            };
-            let Some(target_dir) = target_dir else {
-                skipped = true;
+            if !src.is_file() {
                 continue;
+            }
+            let image = crate::vault::is_image_file(src);
+            let note = src.extension().is_some_and(|e| e == "md");
+            let target_dir = match (note, note_dir.as_ref()) {
+                (true, Some(note_dir)) => note_dir,
+                _ => &dir,
             };
             let dest = if src.starts_with(&root) {
                 src.clone()
@@ -8224,22 +8643,20 @@ impl Workspace {
                     None => continue,
                 }
             };
-            let link = if image {
-                dest.file_name()
-                    .map(|n| format!("![[{}]]", n.to_string_lossy()))
-            } else {
-                dest.file_stem()
-                    .map(|n| format!("[[{}]]", n.to_string_lossy()))
+            let link = match (image, note) {
+                (true, _) => dest
+                    .file_name()
+                    .map(|n| format!("![[{}]]", n.to_string_lossy())),
+                (_, true) => dest
+                    .file_stem()
+                    .map(|n| format!("[[{}]]", n.to_string_lossy())),
+                _ => dest
+                    .file_name()
+                    .map(|n| format!("[[{}]]", n.to_string_lossy())),
             };
             links.extend(link);
         }
         if links.is_empty() {
-            if skipped {
-                self.note_status(
-                    "Only images and notes drop into a note — drop other files on a sidebar folder",
-                    cx,
-                );
-            }
             return false;
         }
         self.refresh_image_index(cx);
@@ -9214,6 +9631,46 @@ fn free_path(dir: &Path, name: &str) -> PathBuf {
         .unwrap()
 }
 
+/// `path` relative to the vault root with `/` separators (`""` for the root).
+fn vault_rel(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// The vault file named `name` (`report.pdf`, or a vault-relative path):
+/// the exact path first, then the first basename match, skipping
+/// hidden folders like `.rista`.
+fn find_vault_file(root: &Path, name: &str) -> Option<PathBuf> {
+    let exact = root.join(name);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let base = Path::new(name)
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if entry.file_name().to_string_lossy().to_lowercase() == base {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 /// Copy `src` into `dir` under a free name and return where it went.
 /// A same-named file there with identical bytes is reused instead, so
 /// pasting the same image twice links one file.
@@ -9447,7 +9904,7 @@ mod preview_tab_tests {
 
 #[cfg(test)]
 mod import_tests {
-    use super::{copy_into, free_path};
+    use super::{copy_into, find_vault_file, free_path};
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rista-import-{tag}-{}", std::process::id()));
@@ -9481,5 +9938,23 @@ mod import_tests {
         assert_eq!(copy_into(&dest, &src), Some(dest.join("pic 1.png")));
         assert_eq!(std::fs::read(dest.join("pic.png")).unwrap(), b"one");
         assert_eq!(std::fs::read(dest.join("pic 1.png")).unwrap(), b"two");
+    }
+
+    #[test]
+    fn find_vault_file_matches_paths_then_basenames_outside_hidden_dirs() {
+        let root = temp_dir("find");
+        std::fs::create_dir_all(root.join("attachments/deep")).unwrap();
+        std::fs::create_dir_all(root.join(".rista")).unwrap();
+        std::fs::write(root.join(".rista/Report.pdf"), b"x").unwrap();
+        std::fs::write(root.join("attachments/deep/Report.pdf"), b"x").unwrap();
+        assert_eq!(
+            find_vault_file(&root, "report.pdf"),
+            Some(root.join("attachments/deep/Report.pdf"))
+        );
+        assert_eq!(
+            find_vault_file(&root, "attachments/deep/Report.pdf"),
+            Some(root.join("attachments/deep/Report.pdf"))
+        );
+        assert_eq!(find_vault_file(&root, "missing.pdf"), None);
     }
 }

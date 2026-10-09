@@ -134,6 +134,10 @@ pub struct Settings {
     pub yearly_dir: String,
     #[serde(default = "default_yearly_format")]
     pub yearly_format: String,
+    /// Folder templates: vault-relative folder (`""` = root) → template
+    /// path relative to the vault. New notes in that folder start from it.
+    #[serde(default)]
+    pub folder_templates: std::collections::BTreeMap<String, String>,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     /// Which sidebar panes are expanded — persists across launches.
@@ -350,6 +354,7 @@ impl Default for Settings {
             quarterly_format: default_quarterly_format(),
             yearly_dir: String::new(),
             yearly_format: default_yearly_format(),
+            folder_templates: Default::default(),
             starred: Vec::new(),
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),
