@@ -264,6 +264,8 @@ struct TemplateJob {
     path: PathBuf,
     now: chrono::NaiveDateTime,
     frontmatter: Option<String>,
+    /// The selection an inserted template replaces.
+    selection: String,
 }
 
 /// The continuation `Workspace::ask_prompts` runs with the answers.
@@ -2597,6 +2599,7 @@ impl Workspace {
                     path: path.to_path_buf(),
                     now: date,
                     frontmatter: None,
+                    selection: String::new(),
                 };
                 self.expand_template_for(&job, &[], cx).text
             })
@@ -5192,9 +5195,14 @@ impl Workspace {
                 let Ok(template) = std::fs::read_to_string(&file) else {
                     return;
                 };
-                let (path, text) = {
+                let (path, text, selection) = {
                     let doc = doc.read(cx);
-                    (doc.path.clone(), doc.editor.read(cx).value().to_string())
+                    let selection = doc.selected_text(cx).map(|(s, _)| s).unwrap_or_default();
+                    (
+                        doc.path.clone(),
+                        doc.editor.read(cx).value().to_string(),
+                        selection,
+                    )
                 };
                 let now = chrono::Local::now().naive_local();
                 let job = TemplateJob {
@@ -5202,6 +5210,7 @@ impl Workspace {
                     path,
                     now,
                     frontmatter: Some(text),
+                    selection,
                 };
                 self.fill_template(
                     job,
@@ -5286,6 +5295,7 @@ impl Workspace {
             path: path.clone(),
             now,
             frontmatter: None,
+            selection: String::new(),
         };
         self.fill_template(
             job,
@@ -5370,6 +5380,7 @@ impl Workspace {
             path,
             now,
             frontmatter,
+            selection,
         } = job;
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
         let title = path
@@ -5390,6 +5401,7 @@ impl Workspace {
             abs_path: &abs,
             frontmatter: frontmatter.as_deref().unwrap_or(template),
             clipboard: clipboard.as_deref(),
+            selection,
             include: Some(&include),
             answers,
             ..crate::templater::TemplateCtx::new(&title, *now)
@@ -5723,23 +5735,10 @@ impl Workspace {
             let doc = doc.read(cx);
             (doc.editor.read(cx).value().to_string(), doc.path.clone())
         };
-        let mut links: Vec<(String, String)> = Vec::new();
-        let mut rest = text.as_str();
-        while let Some(open) = rest.find("[[") {
-            let after = &rest[open + 2..];
-            let Some(close) = after.find("]]") else {
-                break;
-            };
-            let inner = after[..close].split('|').next().unwrap_or_default();
-            if let Some((note, id)) = inner.split_once("#^") {
-                let id = id.trim();
-                if !id.is_empty() && !links.iter().any(|(n, i)| n == note && i == id) {
-                    links.push((note.trim().to_string(), id.to_string()));
-                }
-            }
-            rest = &after[close + 2..];
+        if !text.contains("#^") {
+            return;
         }
-        for (note, id) in links {
+        for (note, id) in crate::document::block_link_targets(&text) {
             let target = if note.is_empty() {
                 Some(own_path.clone())
             } else {

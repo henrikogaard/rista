@@ -21,6 +21,8 @@ pub struct TemplateCtx<'a> {
     /// itself when creating a note, the note when inserting).
     pub frontmatter: &'a str,
     pub clipboard: Option<&'a str>,
+    /// The editor selection the template replaces (`tp.file.selection()`).
+    pub selection: &'a str,
     /// `tp.file.include("[[Note]]")` → that note's text.
     pub include: Option<Include<'a>>,
     /// Answers to `prompts(…)`, in order.
@@ -36,6 +38,7 @@ impl<'a> TemplateCtx<'a> {
             abs_path: "",
             frontmatter: "",
             clipboard: None,
+            selection: "",
             include: None,
             answers: &[],
         }
@@ -463,8 +466,19 @@ fn eval<'a>(
             ))
         }
         ("file", "cursor", true) => Some(Value::Cursor),
-        ("file", "creation_date" | "last_modified_date", true) => {
-            text(fmt(ctx.now, &format(0, "YYYY-MM-DD HH:mm")))
+        ("file", kind @ ("creation_date" | "last_modified_date"), true) => {
+            // The file's own timestamps; "now" for a note not yet written.
+            let stamp = std::fs::metadata(ctx.abs_path)
+                .and_then(|m| {
+                    if kind == "creation_date" {
+                        m.created()
+                    } else {
+                        m.modified()
+                    }
+                })
+                .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
+                .unwrap_or(ctx.now);
+            text(fmt(stamp, &format(0, "YYYY-MM-DD HH:mm")))
         }
         ("file", "folder", true) => {
             let relative = matches!(args.first(), Some(Arg::Bool(true)));
@@ -479,7 +493,7 @@ fn eval<'a>(
             let relative = matches!(args.first(), Some(Arg::Bool(true)));
             text(if relative { ctx.rel_path } else { ctx.abs_path }.to_string())
         }
-        ("file", "selection", true) => text(String::new()),
+        ("file", "selection", true) => text(ctx.selection.to_string()),
         ("file", "include", true) => {
             if depth > 4 {
                 return None;
@@ -672,6 +686,7 @@ mod tests {
             abs_path: "/v/Projects/Q4/Plan.md",
             frontmatter: "---\nstatus: draft\ntags:\n  - a\n  - b\n---\n",
             clipboard: Some("CLIP"),
+            selection: "picked",
             ..TemplateCtx::new("Plan", now())
         };
         expand(text, &ctx)
@@ -721,6 +736,12 @@ mod tests {
             "draft a, b"
         );
         assert_eq!(run("<% tp.system.clipboard() %>").text, "CLIP");
+        assert_eq!(run("> <% tp.file.selection() %>").text, "> picked");
+        // A file that doesn't exist yet: "now".
+        assert_eq!(
+            run("<% tp.file.creation_date(\"YYYY-MM-DD\") %>").text,
+            "2026-10-09"
+        );
         let out = run("a <% tp.file.cursor(1) %>b");
         assert_eq!((out.text.as_str(), out.cursor), ("a b", Some(2)));
     }
@@ -799,5 +820,22 @@ mod tests {
             merge_into(doc, "no frontmatter"),
             (None, "no frontmatter".to_string())
         );
+    }
+
+    #[test]
+    fn file_dates_come_from_the_file() {
+        let path = std::env::temp_dir().join(format!("rista-tpl-{}.md", std::process::id()));
+        std::fs::write(&path, "x").unwrap();
+        let abs = path.to_string_lossy().to_string();
+        let ctx = TemplateCtx {
+            abs_path: &abs,
+            ..TemplateCtx::new("t", now())
+        };
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(
+            expand("<% tp.file.last_modified_date(\"YYYY-MM-DD\") %>", &ctx).text,
+            today
+        );
+        let _ = std::fs::remove_file(path);
     }
 }
