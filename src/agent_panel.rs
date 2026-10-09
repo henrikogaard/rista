@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 struct AgentChoice {
@@ -110,6 +110,7 @@ pub(super) struct AgentPanel {
     pending_writes: Vec<PendingWrite>,
     expanded_tools: HashSet<String>,
     thoughts_expanded: bool,
+    transcript_scroll: ScrollHandle,
 }
 
 impl AgentPanel {
@@ -155,6 +156,7 @@ impl AgentPanel {
             pending_writes: Vec::new(),
             expanded_tools: HashSet::new(),
             thoughts_expanded: false,
+            transcript_scroll: ScrollHandle::new(),
         }
     }
 
@@ -192,6 +194,11 @@ impl AgentPanel {
             has_usable_model,
             prompt,
         )
+    }
+
+    fn transcript_at_bottom(&self) -> bool {
+        let max = self.transcript_scroll.max_offset().y;
+        max + self.transcript_scroll.offset().y <= px(24.)
     }
 
     pub(super) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -412,7 +419,7 @@ impl AgentPanel {
         self.process = Some(process.clone());
         let entity = cx.entity().downgrade();
         cx.spawn(async move |_, cx| loop {
-            smol::Timer::after(Duration::from_millis(30)).await;
+            smol::Timer::after(Duration::from_millis(16)).await;
             let keep_polling = entity
                 .update(&mut *cx, |panel, cx| panel.poll(&process, cx))
                 .unwrap_or(false);
@@ -432,9 +439,17 @@ impl AgentPanel {
         {
             return false;
         }
-        for _ in 0..64 {
+        // Drain everything the agent has sent, but yield before a flood can
+        // stall a frame; the rest is picked up on the next tick.
+        let follow = self.transcript_at_bottom();
+        let deadline = Instant::now() + Duration::from_millis(8);
+        let mut received = false;
+        while Instant::now() < deadline {
             match process.try_recv() {
-                Ok(Some(message)) => self.handle_message(message, cx),
+                Ok(Some(message)) => {
+                    received = true;
+                    self.handle_message(message, cx);
+                }
                 Ok(None) => break,
                 Err(error) => {
                     self.set_process_error(error, cx);
@@ -443,6 +458,9 @@ impl AgentPanel {
                     return false;
                 }
             }
+        }
+        if received && follow {
+            self.transcript_scroll.scroll_to_bottom();
         }
         match process.try_wait() {
             Ok(Some(status)) => {
@@ -919,6 +937,7 @@ impl AgentPanel {
         self.update
             .transcript
             .push(TranscriptItem::User(prompt.to_string()));
+        self.transcript_scroll.scroll_to_bottom();
         self.status = AgentStatus::Working;
         self.error = None;
         cx.notify();
@@ -1200,7 +1219,14 @@ impl Workspace {
 impl Render for AgentPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language(cx);
-        let (choices, errors) = self.choices(cx);
+        // The registry reads manifests from disk, so only load it while the
+        // picker is visible rather than on every streamed frame.
+        let show_picker = self.picker_open || self.selected.is_none();
+        let (choices, errors) = if show_picker {
+            self.choices(cx)
+        } else {
+            Default::default()
+        };
         let context_root = self
             .workspace
             .upgrade()
@@ -1224,7 +1250,19 @@ impl Render for AgentPanel {
             && self.prompt_id.is_none()
             && self.model_selection.pending.is_none();
         let grok_model_selected = agent::has_usable_model(&self.model_selection.state, is_grok);
-        let show_picker = choices.is_empty() || self.picker_open;
+        let show_empty_state = self.update.transcript.is_empty()
+            && self.pending_permissions.is_empty()
+            && self.pending_writes.is_empty()
+            && self.error.is_none();
+        // Shown while the agent thinks or runs tools, so a quiet stretch
+        // does not look like a stall.
+        let show_working = self.status == AgentStatus::Working
+            && self.pending_permissions.is_empty()
+            && self.pending_writes.is_empty()
+            && !matches!(
+                self.update.transcript.last(),
+                Some(TranscriptItem::Message(_))
+            );
 
         v_flex()
             .size_full()
@@ -1365,54 +1403,81 @@ impl Render for AgentPanel {
                             ),
                     )
                     .when(show_picker, |content| {
-                        let mut content = content.child(
-                            v_flex()
-                                .gap_1()
-                                .max_h(px(150.))
-                                .overflow_y_scrollbar()
-                                .when(!has_configured_agents, |list| {
-                                    list.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(self.tr(
-                                                cx,
-                                                "Built-in presets need their agent tools installed separately. Add custom agents with a manifest.",
-                                                "Innebygde forhåndsvalg krever at agentverktøy installeres separat. Legg til egendefinerte agenter med et manifest.",
-                                            )),
-                                    )
-                                })
-                                .children(choices.iter().enumerate().map(|(index, choice)| {
-                                    let source = choice
-                                        .manifest_id
-                                        .as_deref()
-                                        .unwrap_or(self.tr(cx, "Built-in", "Innebygd"));
-                                    Button::new(("agent-choice", index))
-                                        .ghost()
-                                        .xsmall()
-                                        .w_full()
-                                        .justify_start()
-                                        .label(choice.agent.name.text(language).to_string())
-                                        .tooltip(format!(
-                                            "{source} · {}",
-                                            choice.agent.id
-                                        ))
-                                        .disabled(self.process.is_some())
-                                        .on_click(cx.listener({
-                                            let choice = choice.clone();
-                                            move |this, _, _, cx| {
-                                                if agent::can_select_agent(this.process.is_some()) {
-                                                    this.selected = Some(choice.clone());
-                                                    this.model_selection.reset();
-                                                    this.model_selector_open = false;
-                                                    this.model_error = None;
-                                                    this.picker_open = false;
-                                                    cx.notify();
+                        let mut content = content
+                            .when(!has_configured_agents, |content| {
+                                content.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(self.tr(
+                                            cx,
+                                            "Built-in presets need their agent tools installed separately. Add custom agents with a manifest.",
+                                            "Innebygde forhåndsvalg krever at agentverktøy installeres separat. Legg til egendefinerte agenter med et manifest.",
+                                        )),
+                                )
+                            })
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .max_h(px(150.))
+                                    .overflow_y_scrollbar()
+                                    .bg(cx.theme().group_box)
+                                    .rounded(cx.theme().radius)
+                                    .p_1()
+                                    .children(choices.iter().enumerate().map(|(index, choice)| {
+                                        let source = choice
+                                            .manifest_id
+                                            .as_deref()
+                                            .unwrap_or(self.tr(cx, "Built-in", "Innebygd"));
+                                        let name = choice.agent.name.text(language).to_string();
+                                        let is_selected = current_choice.is_some_and(|selected| {
+                                            selected.agent.id == choice.agent.id
+                                                && selected.manifest_id == choice.manifest_id
+                                        });
+                                        Button::new(("agent-choice", index))
+                                            .ghost()
+                                            .xsmall()
+                                            .w_full()
+                                            .accessibility_label(name.clone())
+                                            .child(
+                                                h_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .justify_between()
+                                                    .items_center()
+                                                    .child(
+                                                        div()
+                                                            .truncate()
+                                                            .child(name),
+                                                    )
+                                                    .when(is_selected, |row| {
+                                                        row.child(
+                                                            Icon::new(assets::IconName::Check)
+                                                                .size_3()
+                                                                .text_color(cx.theme().muted_foreground),
+                                                        )
+                                                    }),
+                                            )
+                                            .tooltip(format!(
+                                                "{source} · {}",
+                                                choice.agent.id
+                                            ))
+                                            .disabled(self.process.is_some())
+                                            .on_click(cx.listener({
+                                                let choice = choice.clone();
+                                                move |this, _, _, cx| {
+                                                    if agent::can_select_agent(this.process.is_some()) {
+                                                        this.selected = Some(choice.clone());
+                                                        this.model_selection.reset();
+                                                        this.model_selector_open = false;
+                                                        this.model_error = None;
+                                                        this.picker_open = false;
+                                                        cx.notify();
+                                                    }
                                                 }
-                                            }
-                                        }))
-                                })),
-                        );
+                                            }))
+                                    })),
+                            );
                         for error in errors.iter().take(6) {
                             content = content.child(
                                 div()
@@ -1434,6 +1499,7 @@ impl Render for AgentPanel {
                                 Button::new("agent-open-extensions")
                                     .ghost()
                                     .xsmall()
+                                    .self_start()
                                     .icon(assets::IconName::FolderOpen)
                                     .label(self.tr(
                                         cx,
@@ -1598,9 +1664,18 @@ impl Render for AgentPanel {
                     .id("agent-transcript")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
+                    .relative()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.transcript_scroll)
+                    .child(
+                v_flex()
+                    .w_full()
+                    .min_h_full()
                     .p_3()
                     .gap_2()
+                    .when(show_empty_state, |transcript| {
+                        transcript.child(self.render_empty_state(cx))
+                    })
                     .children(self.update.transcript.iter().map(|item| {
                         match item {
                             TranscriptItem::User(text) => div()
@@ -1819,7 +1894,17 @@ impl Render for AgentPanel {
                                     )
                                 }),
                         )
+                    })
+                    .when(show_working, |content| {
+                        content.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(self.tr(cx, "Working…", "Arbeider…")),
+                        )
                     }),
+                    )
+                    .vertical_scrollbar(&self.transcript_scroll),
             )
             .child(
                 v_flex()
@@ -1836,11 +1921,19 @@ impl Render for AgentPanel {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(self.tr(
-                                        cx,
-                                        "Enter to send · Shift+Enter for a new line",
-                                        "Enter for å sende · Shift+Enter for ny linje",
-                                    )),
+                                    .child(if self.process.is_some() {
+                                        self.tr(
+                                            cx,
+                                            "Enter to send · Shift+Enter for a new line",
+                                            "Enter for å sende · Shift+Enter for ny linje",
+                                        )
+                                    } else {
+                                        self.tr(
+                                            cx,
+                                            "Start an agent to send messages",
+                                            "Start en agent for å sende meldinger",
+                                        )
+                                    }),
                             )
                             .child(
                                 Button::new("agent-send")
@@ -1859,6 +1952,58 @@ impl Render for AgentPanel {
 }
 
 impl AgentPanel {
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let language = self.language(cx);
+        let name = self
+            .selected
+            .as_ref()
+            .map(|choice| choice.agent.name.text(language).to_string());
+        let message = match (&name, self.status) {
+            (None, _) => self
+                .tr(
+                    cx,
+                    "Choose an agent to get started.",
+                    "Velg en agent for å komme i gang.",
+                )
+                .to_string(),
+            (Some(_), AgentStatus::Connecting) => self.tr(cx, "Connecting…", "Kobler til…").into(),
+            (Some(_), AgentStatus::Ready) => self
+                .tr(
+                    cx,
+                    "Ask anything about this vault. The open note is added as context.",
+                    "Spør om hva som helst i dette hvelvet. Det åpne notatet legges til som kontekst.",
+                )
+                .to_string(),
+            (Some(name), _) => format!("{name} {}", self.tr(cx, "is not running.", "kjører ikke.")),
+        };
+        v_flex()
+            .w_full()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .px_4()
+            .child(
+                div()
+                    .text_sm()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(message),
+            )
+            .when_some(name.filter(|_| self.process.is_none()), |state, name| {
+                state.child(
+                    Button::new("agent-start")
+                        .primary()
+                        .small()
+                        .icon(assets::IconName::Play)
+                        .label(format!("{} {name}", self.tr(cx, "Start", "Start")))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.start_new_conversation(window, cx)
+                        })),
+                )
+            })
+    }
+
     fn render_diff(diff: &str, cx: &Context<Self>) -> impl IntoElement {
         v_flex()
             .w_full()
