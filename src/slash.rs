@@ -154,6 +154,9 @@ impl CompletionProvider for VaultCompletions {
         if let Some(resp) = tag_items(text, offset, self.vault.as_ref(), cx) {
             return Task::ready(Ok(resp));
         }
+        if let Some(resp) = highlight_color_items(text, offset) {
+            return Task::ready(Ok(resp));
+        }
         if let Some(resp) = emoji_items(text, offset) {
             return Task::ready(Ok(resp));
         }
@@ -487,6 +490,44 @@ fn tag_items(
 /// `:query` → emoji — the emoji-picker core plugin. The `:`
 /// must start a token (whitespace or line start before it) so `https:`
 /// and `::` never fire; needs ≥2 query chars to keep the popup quiet.
+/// `==r…` right after an opening `==` — the highlight colors whose
+/// name starts with the typed letters (Obsidian's `==` suggestions).
+/// Accepting swaps the letters for the color emoji: `==🔴`.
+fn highlight_color_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {
+    let point = text.offset_to_point(offset);
+    let line = text.slice_line(point.row).to_string();
+    let line_start = text.line_start_offset(point.row);
+    let prefix = line.get(..point.column.min(line.len()))?;
+    let marks = crate::document::highlight_delimiters(prefix);
+    if marks.len() % 2 == 0 {
+        return None;
+    }
+    let open = *marks.last()? + 2;
+    let query = prefix[open..].to_lowercase();
+    if query.is_empty() || query.len() > 6 || !query.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let range = Range {
+        start: text.offset_to_position(line_start + open),
+        end: text.offset_to_position(offset),
+    };
+    let items: Vec<CompletionItem> = crate::preview::HIGHLIGHT_COLORS
+        .iter()
+        .filter(|(_, name)| name.to_lowercase().starts_with(&query))
+        .map(|(emoji, name)| CompletionItem {
+            label: format!("{emoji} {name} highlight"),
+            kind: Some(CompletionItemKind::COLOR),
+            filter_text: Some(name.to_lowercase()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: emoji.to_string(),
+            })),
+            ..Default::default()
+        })
+        .collect();
+    (!items.is_empty()).then_some(CompletionResponse::Array(items))
+}
+
 fn emoji_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {
     let point = text.offset_to_point(offset);
     let line = text.slice_line(point.row).to_string();
@@ -613,4 +654,28 @@ fn slash_items(
             )
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::highlight_color_items;
+    use gpui_kit::component::input::Rope;
+    use lsp_types::CompletionResponse;
+
+    fn labels(text: &str) -> Vec<String> {
+        match highlight_color_items(&Rope::from(text), text.len()) {
+            Some(CompletionResponse::Array(items)) => items.into_iter().map(|i| i.label).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn highlight_colors_follow_an_opening_delimiter() {
+        assert_eq!(labels("note ==r"), ["🔴 Red highlight"]);
+        assert_eq!(labels("==B"), ["🔵 Blue highlight"]);
+        assert!(labels("==rea").is_empty());
+        assert!(labels("==done== r").is_empty());
+        assert!(labels("`==` r").is_empty());
+        assert!(labels("==").is_empty());
+    }
 }

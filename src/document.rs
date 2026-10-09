@@ -2543,6 +2543,30 @@ pub enum LinkTarget {
     Url(String),
 }
 
+/// Byte offsets of the `==` highlight delimiters in `line`, in order —
+/// inline code and `===` runs don't count, as for the highlight wash.
+pub(crate) fn highlight_delimiters(line: &str) -> Vec<usize> {
+    let bytes = line.as_bytes();
+    let mut marks = Vec::new();
+    let (mut i, mut in_code) = (0, false);
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            in_code = !in_code;
+        } else if !in_code
+            && bytes[i] == b'='
+            && bytes.get(i + 1) == Some(&b'=')
+            && bytes.get(i + 2) != Some(&b'=')
+            && (i == 0 || bytes[i - 1] != b'=')
+        {
+            marks.push(i);
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    marks
+}
+
 /// The edit behind `set_highlight_color`: `(range to replace, new
 /// text, selection after)`. A selection becomes `==<emoji>sel==`; a
 /// caret inside `==…==` on its line swaps the leading color emoji;
@@ -2566,26 +2590,11 @@ fn highlight_color_edit(
     let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let line = &text[line_start..line_end];
-    // `==…==` spans on the line, paired left to right — inline code and
-    // `===` runs don't count, as for the highlight wash.
-    let bytes = line.as_bytes();
-    let mut marks = Vec::new();
-    let (mut i, mut in_code) = (0, false);
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            in_code = !in_code;
-        } else if !in_code
-            && bytes[i] == b'='
-            && bytes.get(i + 1) == Some(&b'=')
-            && bytes.get(i + 2) != Some(&b'=')
-            && (i == 0 || bytes[i - 1] != b'=')
-        {
-            marks.push(line_start + i);
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
+    // `==…==` spans on the line, paired left to right.
+    let marks: Vec<usize> = highlight_delimiters(line)
+        .into_iter()
+        .map(|i| line_start + i)
+        .collect();
     for &[open, close] in marks.as_chunks::<2>().0 {
         if (open + 2..=close).contains(&at) {
             let body = open + 2;
