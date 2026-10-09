@@ -75,7 +75,7 @@ pub struct GraphView {
     /// Last painted canvas bounds — hit tests and the label overlay
     /// read it (it is refreshed every prepaint).
     bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// Parsed link targets per note, keyed by mtime — a rebuild only
+    /// Parsed link targets per note, keyed by mtime and size — a rebuild only
     /// re-reads and re-parses notes that changed.
     link_cache: LinkCache,
 }
@@ -88,7 +88,7 @@ const STEPS_LIVE: u32 = 600; // animated settle
 /// stall the UI thread on every save.
 const WARM_PAIRS: usize = 5_400_000;
 
-type LinkCache = HashMap<PathBuf, (Option<std::time::SystemTime>, Vec<(String, bool)>)>;
+type LinkCache = HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, Vec<(String, bool)>)>;
 
 /// `build()`'s product — nodes, the path → index map, edges, and the
 /// adjacency lists hover highlighting walks.
@@ -169,14 +169,18 @@ impl GraphView {
         }
         cache.retain(|path, _| by_path.contains_key(path));
         for path in &vault.notes {
-            let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-            if mtime.is_none() || cache.get(path).map(|(mt, _)| *mt) != Some(mtime) {
+            // Size backs up mtime — an mtime-preserving sync or two
+            // edits within timestamp granularity still re-parse.
+            let stamp = std::fs::metadata(path)
+                .and_then(|m| Ok((m.modified()?, m.len())))
+                .ok();
+            if stamp.is_none() || cache.get(path).map(|(st, _)| *st) != Some(stamp) {
                 let Ok(text) = std::fs::read_to_string(path) else {
                     cache.remove(path);
                     continue;
                 };
                 let targets = crate::vault::local_link_targets(&text);
-                cache.insert(path.clone(), (mtime, targets));
+                cache.insert(path.clone(), (stamp, targets));
             }
             let from = by_path[path];
             let from_dir = path.parent().unwrap_or(std::path::Path::new("/"));
