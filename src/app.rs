@@ -3628,6 +3628,9 @@ impl Workspace {
             doc.entity
                 .update(cx, |doc, cx| doc.apply_settings(&settings, window, cx));
         }
+        // The agent panel is a cached view that reads settings such as the
+        // language, so it must be redrawn alongside the workspace.
+        self.agent_panel.update(cx, |_, cx| cx.notify());
         settings.save();
         cx.notify();
     }
@@ -8273,7 +8276,13 @@ impl Render for Workspace {
                                                                                 .bg(cx.theme().sidebar)
                                                                                 .rounded(cx.theme().radius_lg)
                                                                                 .overflow_hidden()
-                                                                                .child(self.agent_panel.clone()),
+                                                                                // Cached so streamed agent output
+                                                                                // redraws only this panel.
+                                                                                .child(
+                                                                                    self.agent_panel
+                                                                                        .clone()
+                                                                                        .cached(StyleRefinement::default().size_full()),
+                                                                                ),
                                                                         ),
                                                                 ),
                                                         )
