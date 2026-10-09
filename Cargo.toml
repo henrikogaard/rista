@@ -7,7 +7,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-gpui-kit = { version = "0.7.0", features = [
+gpui-kit = { version = "0.7.1", features = [
     "tree-sitter-markdown",
     "tree-sitter-markdown-inline",
 ] }
@@ -52,3 +52,8 @@ libc = "0.2"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Inline `<mark>` highlights in Markdown previews (colored highlights).
+# Pinned to longbridge/gpui-kit#3425 until it ships in a release.
+[patch.crates-io]
+gpui-base = { git = "https://github.com/henrikogaard/gpui-kit", rev = "b470bda9fdff7fcb242a10fe38455562f2fc5b41" }

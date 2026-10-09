@@ -176,19 +176,27 @@ pub const HIGHLIGHT_COLORS: [(&str, &str); 6] = [
     ("🟣", "Purple"),
 ];
 
-/// `<mark>` backgrounds for `HIGHLIGHT_COLORS`, as `#rrggbbaa`: theme
-/// colors, translucent so the text stays readable. Empty = the plain
-/// highlight color.
+/// `<mark>` backgrounds as `#rrggbbaa` — theme colors, translucent so
+/// the text stays readable: `plain` for `==text==` (the source view's
+/// warning wash), `colors` for `HIGHLIGHT_COLORS`. Empty = the
+/// renderer's own default.
 #[derive(Clone, Default)]
-pub struct MarkColors([String; 6]);
+pub struct MarkColors {
+    plain: String,
+    colors: [String; 6],
+}
 
 impl MarkColors {
     pub fn from_theme(theme: &gpui_kit::component::theme::ThemeColor) -> Self {
-        Self(highlight_palette(theme).map(|c| {
+        let hex = |c: Hsla| {
             let c = c.to_rgb();
             let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
             format!("#{:02x}{:02x}{:02x}59", byte(c.r), byte(c.g), byte(c.b))
-        }))
+        };
+        Self {
+            plain: hex(theme.warning),
+            colors: highlight_palette(theme).map(hex),
+        }
     }
 }
 
@@ -395,6 +403,7 @@ mod navigation_tests {
         let theme = gpui_kit::component::theme::ThemeColor {
             red: gpui_kit::rgb(0xff0000).into(),
             yellow: gpui_kit::rgb(0xffff00).into(),
+            warning: gpui_kit::rgb(0x00ff00).into(),
             ..Default::default()
         };
         let marks = super::MarkColors::from_theme(&theme);
@@ -405,7 +414,10 @@ mod navigation_tests {
             "a <mark color=\"#ff000059\">hot</mark> b"
         );
         assert_eq!(render("==🟠mid=="), "<mark color=\"#ff800059\">mid</mark>");
-        assert_eq!(render("==plain=="), "<mark>plain</mark>");
+        assert_eq!(
+            render("==plain=="),
+            "<mark color=\"#00ff0059\">plain</mark>"
+        );
         let unthemed = super::preprocess(
             "==🟣idea==",
             Path::new("/v/n.md"),
@@ -587,20 +599,17 @@ fn rewrite_line(
             if let Some(end) = line[i + 2..].find("==") {
                 let inner = &line[i + 2..i + 2 + end];
                 if !inner.trim().is_empty() && !inner.starts_with('=') {
-                    let colored =
-                        HIGHLIGHT_COLORS
-                            .iter()
-                            .enumerate()
-                            .find_map(|(ix, (emoji, _))| {
-                                let text = inner.strip_prefix(emoji)?;
-                                Some((&marks.0[ix], text))
-                            });
-                    match colored {
-                        Some((color, text)) if !color.is_empty() => {
-                            out.push_str(&format!("<mark color=\"{color}\">{text}</mark>"))
-                        }
-                        Some((_, text)) => out.push_str(&format!("<mark>{text}</mark>")),
-                        None => out.push_str(&format!("<mark>{inner}</mark>")),
+                    let (color, text) = HIGHLIGHT_COLORS
+                        .iter()
+                        .enumerate()
+                        .find_map(|(ix, (emoji, _))| {
+                            Some((&marks.colors[ix], inner.strip_prefix(emoji)?))
+                        })
+                        .unwrap_or((&marks.plain, inner));
+                    if color.is_empty() {
+                        out.push_str(&format!("<mark>{text}</mark>"));
+                    } else {
+                        out.push_str(&format!("<mark color=\"{color}\">{text}</mark>"));
                     }
                     i += 2 + end + 2;
                     continue;
