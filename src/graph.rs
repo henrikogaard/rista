@@ -612,19 +612,24 @@ impl GraphView {
         let k = REPULSION;
         let n = self.nodes.len();
         let mut disp: Vec<Point<f32>> = vec![point(0., 0.); n];
-        // Repulsion between every pair.
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let dx = self.nodes[i].pos.x - self.nodes[j].pos.x;
-                let dy = self.nodes[i].pos.y - self.nodes[j].pos.y;
+        // Repulsion between every pair — over a packed copy of the
+        // positions; striding through `GNode`s makes this O(n²) loop
+        // ~2.5× slower in big vaults.
+        let pos: Vec<Point<f32>> = self.nodes.iter().map(|n| n.pos).collect();
+        for (i, pi) in pos.iter().enumerate() {
+            let (head, tail) = disp.split_at_mut(i + 1);
+            let di = &mut head[i];
+            for (pj, dj) in pos[i + 1..].iter().zip(tail) {
+                let dx = pi.x - pj.x;
+                let dy = pi.y - pj.y;
                 let d = (dx * dx + dy * dy).sqrt().max(1.0);
                 let f = (k * k / d).min(2000.) / d;
                 let fx = dx * f;
                 let fy = dy * f;
-                disp[i].x += fx;
-                disp[i].y += fy;
-                disp[j].x -= fx;
-                disp[j].y -= fy;
+                di.x += fx;
+                di.y += fy;
+                dj.x -= fx;
+                dj.y -= fy;
             }
         }
         // Edge springs.
@@ -867,8 +872,12 @@ impl Render for GraphView {
         let last_bounds = bounds_slot.get();
 
         let canvas = gpui::canvas(
-            move |bounds, _window, _cx| {
-                bounds_slot.set(bounds);
+            move |bounds, window, _cx| {
+                if bounds_slot.replace(bounds) != bounds {
+                    // Labels were placed with stale bounds (first paint,
+                    // pane resize) — render once more with these.
+                    window.request_animation_frame();
+                }
                 let mut nodes_px = Vec::with_capacity(positions.len());
                 for (ix, pos) in positions.iter().enumerate() {
                     let cxp = bounds.origin.x + bounds.size.width / 2.;
@@ -899,7 +908,6 @@ impl Render for GraphView {
             },
             move |bounds, painted, window, _cx| {
                 let painted: Painted = painted;
-                let _ = bounds;
                 // Edges — dim layer first, lit neighbours on top. In
                 // local mode edges off the center's neighbourhood fade.
                 let mut dim = gpui::PathBuilder::stroke(px(1.));
@@ -910,6 +918,14 @@ impl Render for GraphView {
                 for (a, b) in &edges {
                     let (ca, ra) = painted.nodes[*a];
                     let (cb, rb) = painted.nodes[*b];
+                    // Both ends past the same pane edge — never visible.
+                    if (ca.x < bounds.left() && cb.x < bounds.left())
+                        || (ca.x > bounds.right() && cb.x > bounds.right())
+                        || (ca.y < bounds.top() && cb.y < bounds.top())
+                        || (ca.y > bounds.bottom() && cb.y > bounds.bottom())
+                    {
+                        continue;
+                    }
                     let lit_edge = painted.lit[*a] || painted.lit[*b];
                     if lit_edge {
                         any_hot = true;
@@ -972,6 +988,15 @@ impl Render for GraphView {
                 }
                 // Nodes — ghosts first, then normal, hovered last.
                 for (ix, (c, r)) in painted.nodes.iter().enumerate() {
+                    // Off-pane dots (halo included) — skip the quads.
+                    let reach = *r + px(3.);
+                    if c.x + reach < bounds.left()
+                        || c.x - reach > bounds.right()
+                        || c.y + reach < bounds.top()
+                        || c.y - reach > bounds.bottom()
+                    {
+                        continue;
+                    }
                     let is_hover = hovered == Some(ix);
                     let color = if painted.ghost[ix] {
                         ghost_fill
@@ -1026,6 +1051,15 @@ impl Render for GraphView {
                     } else {
                         self.base_fade(*ix) >= 1.0
                     }
+            })
+            // Off-pane labels still cost layout — big vaults have thousands.
+            .filter(|(ix, n)| {
+                let c = self.to_screen(n.pos, last_bounds) - last_bounds.origin;
+                let top = c.y + px(self.node_radius(*ix) * self.scale + 2.);
+                c.x > px(-60.)
+                    && c.x < last_bounds.size.width + px(60.)
+                    && top > px(-20.)
+                    && top < last_bounds.size.height
             })
             .map(|(ix, n)| {
                 // to_screen gives window-absolute points; absolute

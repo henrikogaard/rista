@@ -7838,7 +7838,11 @@ impl Workspace {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .when_some(self.graph_dock.clone(), |this, graph| this.child(graph)),
+                    // Cached: workspace redraws (agent streaming, typing)
+                    // reuse the graph's last frame unless it notifies.
+                    .when_some(self.graph_dock.clone(), |this, graph| {
+                        this.child(graph.cached(StyleRefinement::default().size_full()))
+                    }),
             )
     }
 
@@ -8196,7 +8200,12 @@ impl Render for Workspace {
                                                         .child(div().flex_1().min_h_0().child({
                                                             if let Some(graph) = self.graph.clone()
                                                             {
-                                                                graph.into_any_element()
+                                                                graph
+                                                                    .cached(
+                                                                        StyleRefinement::default()
+                                                                            .size_full(),
+                                                                    )
+                                                                    .into_any_element()
                                                             } else {
                                                                 let content =
                                                                     self.render_editor_area(cx);
