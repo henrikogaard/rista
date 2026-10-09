@@ -284,6 +284,32 @@ fn wiki_items(
                         ..Default::default()
                     });
                 }
+                // Blocks without an id yet: link a content-derived id; the
+                // next save writes it into the target (Workspace::
+                // add_linked_block_ids).
+                for (ix, block) in crate::document::block_candidates(&src)
+                    .into_iter()
+                    .filter(|b| b.id.is_none())
+                    .enumerate()
+                {
+                    if !bid_q.is_empty() && !block.first_line.to_lowercase().contains(&bid_q) {
+                        continue;
+                    }
+                    let id = crate::document::block_hash_id(&block.first_line);
+                    let label: String = block.first_line.chars().take(60).collect();
+                    items.push(CompletionItem {
+                        label,
+                        detail: Some("block · adds an id".to_string()),
+                        kind: Some(CompletionItemKind::REFERENCE),
+                        sort_text: Some(format!("z{:04}", ix)),
+                        filter_text: Some(format!("^{}", block.first_line)),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: format!("{note_part}#^{id}]]"),
+                        })),
+                        ..Default::default()
+                    });
+                }
             } else {
                 let mut in_fence = false;
                 for (ix, line) in src.lines().enumerate() {
@@ -499,7 +525,7 @@ fn highlight_color_items(text: &Rope, offset: usize) -> Option<CompletionRespons
     let line_start = text.line_start_offset(point.row);
     let prefix = line.get(..point.column.min(line.len()))?;
     let marks = crate::document::highlight_delimiters(prefix);
-    if marks.len() % 2 == 0 {
+    if marks.len().is_multiple_of(2) {
         return None;
     }
     let open = *marks.last()? + 2;

@@ -1549,6 +1549,25 @@ impl Document {
         })
     }
 
+    /// Insert `text` at byte `at` as one undo step, keeping the
+    /// selection where it was.
+    pub fn insert_at(
+        &mut self,
+        at: usize,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let sel = editor.selected_range();
+            let shift = |b: usize| if b > at { b + text.len() } else { b };
+            let (start, end) = (shift(sel.start), shift(sel.end));
+            editor.set_selected_range(at..at, cx);
+            editor.insert(text.to_string(), window, cx);
+            editor.set_selected_range(start..end, cx);
+        });
+    }
+
     /// "Copy link to block" — the `^id` of the block at the caret,
     /// adding a fresh one (one undo step, caret kept) when the block
     /// has none. `None` on blank lines, headings, and frontmatter.
@@ -2847,6 +2866,79 @@ fn block_anchor(
     ))
 }
 
+/// A linkable block in a note, for `[[note#^` completion.
+pub(crate) struct BlockCandidate {
+    /// The block's existing `^id`, if it has one.
+    pub id: Option<String>,
+    /// Its first line, trimmed — the completion label and the source
+    /// of `block_hash_id`.
+    pub first_line: String,
+    /// Byte offset of that first line.
+    pub at: usize,
+}
+
+/// Every block `block_anchor` can name, in order.
+pub(crate) fn block_candidates(text: &str) -> Vec<BlockCandidate> {
+    let mut out: Vec<BlockCandidate> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let start = at;
+        at += line.len();
+        let first_line = line.trim();
+        if first_line.is_empty() {
+            continue;
+        }
+        let Some((id, insert)) = block_anchor(text, start, "") else {
+            continue;
+        };
+        // Lines of one block share its insertion point (or its id).
+        let key = match &insert {
+            Some((offset, _)) => format!("@{offset}"),
+            None => format!("^{id}"),
+        };
+        if seen.insert(key) {
+            out.push(BlockCandidate {
+                id: insert.is_none().then_some(id),
+                first_line: first_line.to_string(),
+                at: start,
+            });
+        }
+    }
+    out
+}
+
+/// A stable six-character id for a block, from its first line — what
+/// `[[note#^` completion links before the target has the id, so a
+/// later save can find the block again and add it (FNV-1a, base 36).
+pub(crate) fn block_hash_id(first_line: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in first_line.trim().bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    (0..6)
+        .map(|_| {
+            let c = CHARS[(hash % 36) as usize] as char;
+            hash /= 36;
+            c
+        })
+        .collect()
+}
+
+/// The edit that gives `text` the block id `id` — `None` when some
+/// block already carries it or no block hashes to it.
+pub(crate) fn linked_block_id_edit(text: &str, id: &str) -> Option<(usize, String)> {
+    if text.lines().any(|l| trailing_block_id(l) == Some(id)) {
+        return None;
+    }
+    let block = block_candidates(text)
+        .into_iter()
+        .find(|b| b.id.is_none() && block_hash_id(&b.first_line) == id)?;
+    block_anchor(text, block.at, id)?.1
+}
+
 /// Byte ranges between the pipes of a table-row line — `| a | b |`
 /// yields the ` a ` and ` b ` segments. `\|` doesn't split; rows
 /// without leading/trailing pipes still yield their edge segments.
@@ -3023,8 +3115,8 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_anchor, expand_template, format_table_md, guarded_write, highlight_color_edit,
-        new_block_id,
+        block_anchor, block_candidates, block_hash_id, expand_template, format_table_md,
+        guarded_write, highlight_color_edit, linked_block_id_edit, new_block_id,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3249,5 +3341,36 @@ mod tests {
             expand_template("{{weather}} <% tp.date.now() %> {{date", "t", now),
             ("{{weather}} <% tp.date.now() %> {{date".to_string(), None)
         );
+    }
+
+    #[test]
+    fn block_candidates_list_each_block_once() {
+        let text = "# H\n\npara one\npara two\n\n- a\n- b ^bid\n\n> q1\n> q2\n";
+        let blocks: Vec<(Option<String>, String)> = block_candidates(text)
+            .into_iter()
+            .map(|b| (b.id, b.first_line))
+            .collect();
+        assert_eq!(
+            blocks,
+            [
+                (None, "para one".to_string()),
+                (None, "- a".to_string()),
+                (Some("bid".to_string()), "- b ^bid".to_string()),
+                (None, "> q1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn linked_block_ids_are_added_once_to_the_hashed_block() {
+        let text = "intro\n\n- first\n- second\n";
+        let id = block_hash_id("- second");
+        assert_eq!(block_hash_id("  - second "), id);
+        let (at, ins) = linked_block_id_edit(text, &id).unwrap();
+        let mut out = text.to_string();
+        out.insert_str(at, &ins);
+        assert_eq!(out, format!("intro\n\n- first\n- second ^{id}\n"));
+        assert_eq!(linked_block_id_edit(&out, &id), None);
+        assert_eq!(linked_block_id_edit(text, "zzzzzz"), None);
     }
 }

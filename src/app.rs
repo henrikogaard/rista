@@ -1680,6 +1680,9 @@ impl Workspace {
             window,
             |this, changed_doc, event, window, cx| match event {
                 DocumentEvent::Saved | DocumentEvent::Changed => {
+                    if matches!(event, DocumentEvent::Saved) {
+                        this.add_linked_block_ids(changed_doc, window, cx);
+                    }
                     if matches!(event, DocumentEvent::Changed) && changed_doc.read(cx).dirty {
                         if let Some(tab) = this.docs.iter_mut().find(|d| d.entity == *changed_doc) {
                             tab.preview = false;
@@ -5375,6 +5378,78 @@ impl Workspace {
                     return;
                 }
                 self.create_note_for_wikilink(note, window, cx);
+            }
+        }
+    }
+
+    /// After a save: every `[[note#^id]]` in `doc` whose target lacks
+    /// that id gets it written onto the block it hashes to — the second
+    /// half of `[[note#^` completion for blocks without an id. Open
+    /// targets are edited in their editor; others on disk.
+    fn add_linked_block_ids(
+        &mut self,
+        doc: &Entity<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (text, own_path) = {
+            let doc = doc.read(cx);
+            (doc.editor.read(cx).value().to_string(), doc.path.clone())
+        };
+        let mut links: Vec<(String, String)> = Vec::new();
+        let mut rest = text.as_str();
+        while let Some(open) = rest.find("[[") {
+            let after = &rest[open + 2..];
+            let Some(close) = after.find("]]") else {
+                break;
+            };
+            let inner = after[..close].split('|').next().unwrap_or_default();
+            if let Some((note, id)) = inner.split_once("#^") {
+                let id = id.trim();
+                if !id.is_empty() && !links.iter().any(|(n, i)| n == note && i == id) {
+                    links.push((note.trim().to_string(), id.to_string()));
+                }
+            }
+            rest = &after[close + 2..];
+        }
+        for (note, id) in links {
+            let target = if note.is_empty() {
+                Some(own_path.clone())
+            } else {
+                self.vault.read(cx).resolve_wikilink(&note)
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let open = self
+                .docs
+                .iter()
+                .map(|d| d.entity.clone())
+                .find(|d| d.read(cx).path == target);
+            match open {
+                Some(target_doc) => {
+                    let target_text = target_doc.read(cx).editor.read(cx).value().to_string();
+                    if let Some((at, ins)) =
+                        crate::document::linked_block_id_edit(&target_text, &id)
+                    {
+                        target_doc.update(cx, |d, cx| d.insert_at(at, &ins, window, cx));
+                    }
+                }
+                None => {
+                    let Ok(target_text) = std::fs::read_to_string(&target) else {
+                        continue;
+                    };
+                    if let Some((at, ins)) =
+                        crate::document::linked_block_id_edit(&target_text, &id)
+                    {
+                        let mut new_text = target_text;
+                        new_text.insert_str(at, &ins);
+                        if let Some(root) = self.vault.read(cx).root.clone() {
+                            crate::history::snapshot_before_write(&root, &target, &new_text);
+                        }
+                        let _ = std::fs::write(&target, new_text);
+                    }
+                }
             }
         }
     }
