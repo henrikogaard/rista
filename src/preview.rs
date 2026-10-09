@@ -166,13 +166,60 @@ pub fn headings(source: &str) -> Vec<(usize, usize, String)> {
     out
 }
 
+/// Obsidian's highlight-color emoji, in menu order: `==🔴text==`.
+pub const HIGHLIGHT_COLORS: [(&str, &str); 6] = [
+    ("🔴", "Red"),
+    ("🟠", "Orange"),
+    ("🟡", "Yellow"),
+    ("🟢", "Green"),
+    ("🔵", "Blue"),
+    ("🟣", "Purple"),
+];
+
+/// `<mark>` backgrounds for `HIGHLIGHT_COLORS`, as `#rrggbbaa`: theme
+/// colors, translucent so the text stays readable. Empty = the plain
+/// highlight color.
+#[derive(Clone, Default)]
+pub struct MarkColors([String; 6]);
+
+impl MarkColors {
+    pub fn from_theme(theme: &gpui_kit::component::theme::ThemeColor) -> Self {
+        Self(highlight_palette(theme).map(|c| {
+            let c = c.to_rgb();
+            let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            format!("#{:02x}{:02x}{:02x}59", byte(c.r), byte(c.g), byte(c.b))
+        }))
+    }
+}
+
+/// The theme colors behind `HIGHLIGHT_COLORS`, opaque. There is no
+/// orange token, so orange sits halfway between red and yellow.
+pub fn highlight_palette(theme: &gpui_kit::component::theme::ThemeColor) -> [Hsla; 6] {
+    let (red, yellow) = (theme.red.to_rgb(), theme.yellow.to_rgb());
+    let orange = Rgba {
+        r: (red.r + yellow.r) / 2.0,
+        g: (red.g + yellow.g) / 2.0,
+        b: (red.b + yellow.b) / 2.0,
+        a: 1.0,
+    };
+    [
+        theme.red,
+        orange.into(),
+        theme.yellow,
+        theme.green,
+        theme.blue,
+        theme.magenta,
+    ]
+}
+
 pub fn preprocess(
     source: &str,
     doc_path: &Path,
     vault_root: Option<&Path>,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+    marks: &MarkColors,
 ) -> String {
-    preprocess_mapped(source, doc_path, vault_root, image_resolver).0
+    preprocess_mapped(source, doc_path, vault_root, image_resolver, marks).0
 }
 
 pub fn preprocess_mapped(
@@ -180,6 +227,7 @@ pub fn preprocess_mapped(
     doc_path: &Path,
     vault_root: Option<&Path>,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+    marks: &MarkColors,
 ) -> (String, Vec<usize>) {
     let doc_dir = doc_path
         .parent()
@@ -242,6 +290,7 @@ pub fn preprocess_mapped(
                     doc_path,
                     vault_root,
                     image_resolver,
+                    marks,
                     &mut in_comment,
                 ));
             }
@@ -259,6 +308,7 @@ pub fn preprocess_mapped(
             doc_path,
             vault_root,
             image_resolver,
+            marks,
             &mut in_comment,
         );
         out.push_str(&line);
@@ -333,10 +383,37 @@ mod navigation_tests {
             Path::new("/vault/note.md"),
             Some(Path::new("/vault")),
             &|_| None,
+            &Default::default(),
         );
         assert!(text[offsets[2]..].starts_with("## Øgård"));
         assert_eq!(offsets[3], text.len());
         assert!(offsets.iter().all(|&at| text.is_char_boundary(at)));
+    }
+
+    #[test]
+    fn colored_highlights_use_the_theme_color_and_hide_the_emoji() {
+        let theme = gpui_kit::component::theme::ThemeColor {
+            red: gpui_kit::rgb(0xff0000).into(),
+            yellow: gpui_kit::rgb(0xffff00).into(),
+            ..Default::default()
+        };
+        let marks = super::MarkColors::from_theme(&theme);
+        let render =
+            |src: &str| super::preprocess(src, Path::new("/v/n.md"), None, &|_| None, &marks);
+        assert_eq!(
+            render("a ==🔴hot== b"),
+            "a <mark color=\"#ff000059\">hot</mark> b"
+        );
+        assert_eq!(render("==🟠mid=="), "<mark color=\"#ff800059\">mid</mark>");
+        assert_eq!(render("==plain=="), "<mark>plain</mark>");
+        let unthemed = super::preprocess(
+            "==🟣idea==",
+            Path::new("/v/n.md"),
+            None,
+            &|_| None,
+            &Default::default(),
+        );
+        assert_eq!(unthemed, "<mark>idea</mark>");
     }
 }
 
@@ -357,6 +434,7 @@ fn rewrite_line(
     doc_path: &Path,
     vault_root: Option<&Path>,
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+    marks: &MarkColors,
     in_comment: &mut bool,
 ) -> String {
     let mut out = String::with_capacity(line.len() + 32);
@@ -504,11 +582,26 @@ fn rewrite_line(
             // `==highlight==` — the mark syntax; renders through
             // the inline-HTML path as <mark>. The content must be
             // non-empty and not start with `=` (keeps `===` and `====`
-            // runs literal).
+            // runs literal). A leading color emoji (`==🔴text==`) picks
+            // the theme color and is hidden.
             if let Some(end) = line[i + 2..].find("==") {
                 let inner = &line[i + 2..i + 2 + end];
                 if !inner.trim().is_empty() && !inner.starts_with('=') {
-                    out.push_str(&format!("<mark>{inner}</mark>"));
+                    let colored =
+                        HIGHLIGHT_COLORS
+                            .iter()
+                            .enumerate()
+                            .find_map(|(ix, (emoji, _))| {
+                                let text = inner.strip_prefix(emoji)?;
+                                Some((&marks.0[ix], text))
+                            });
+                    match colored {
+                        Some((color, text)) if !color.is_empty() => {
+                            out.push_str(&format!("<mark color=\"{color}\">{text}</mark>"))
+                        }
+                        Some((_, text)) => out.push_str(&format!("<mark>{text}</mark>")),
+                        None => out.push_str(&format!("<mark>{inner}</mark>")),
+                    }
                     i += 2 + end + 2;
                     continue;
                 }

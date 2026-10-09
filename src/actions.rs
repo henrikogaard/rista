@@ -72,6 +72,14 @@ pub struct PairInsert {
     pub pair: &'static str,
 }
 
+/// Editor menu "Highlight color" — `emoji` is one of
+/// `preview::HIGHLIGHT_COLORS` (`""` removes the color).
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct SetHighlightColor {
+    pub emoji: &'static str,
+}
+
 #[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
 #[action(namespace = rista, no_json)]
 pub struct PairClose {

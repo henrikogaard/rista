@@ -60,8 +60,13 @@ mod tests {
     #[test]
     fn preview_only_rewrites_prose_shortcodes() {
         let source = "---\ntitle: ':LiInbox:'\n---\n# :LiInbox: Inbox\n`:LiInbox:`\n```md\n:LiInbox:\n```\n:lucide-no-such-icon-xyz:\n\\:LiInbox:\n";
-        let rendered =
-            crate::preview::preprocess(source, std::path::Path::new("note.md"), None, &|_| None);
+        let rendered = crate::preview::preprocess(
+            source,
+            std::path::Path::new("note.md"),
+            None,
+            &|_| None,
+            &Default::default(),
+        );
         assert!(rendered.contains("# ![:LiInbox:](rista-icon:"));
         assert!(rendered.contains("title: ':LiInbox:'"));
         assert!(rendered.contains("`:LiInbox:`"));
