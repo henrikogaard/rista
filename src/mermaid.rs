@@ -10,7 +10,7 @@ use merman::svg::{
     SvgPipelinePreset, ThemeRole,
 };
 use merman::{Engine, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// A rendered diagram. Sizes are logical pixels.
@@ -92,8 +92,13 @@ type Key = (String, DiagramTheme, u32);
 #[derive(Default)]
 struct Cache {
     done: HashMap<Key, Result<Arc<DiagramImage>, String>>,
+    /// `done` keys oldest first — the oldest go once it's full.
+    order: VecDeque<Key>,
     pending: HashSet<Key>,
 }
+
+/// Rendered diagrams kept at once.
+const CACHE_SIZE: usize = 256;
 
 fn cache() -> &'static Mutex<Cache> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -124,9 +129,13 @@ pub fn diagram(source: &str, theme: &DiagramTheme, scale: f32, cx: &mut App) -> 
         let result = task.await;
         if let Ok(mut cache) = cache().lock() {
             cache.pending.remove(&key);
-            if cache.done.len() > 256 {
-                cache.done.clear();
+            while cache.done.len() >= CACHE_SIZE {
+                let Some(oldest) = cache.order.pop_front() else {
+                    break;
+                };
+                cache.done.remove(&oldest);
             }
+            cache.order.push_back(key.clone());
             cache.done.insert(key, result);
         }
         cx.update(|cx| cx.refresh_windows());
@@ -144,6 +153,7 @@ pub fn render(source: &str, theme: &DiagramTheme, scale: f32) -> Result<DiagramI
     };
     let tree = resvg::usvg::Tree::from_str(&svg, &options).map_err(|e| e.to_string())?;
     let (width, height) = (tree.size().width(), tree.size().height());
+    let scale = raster_scale(width, height, scale)?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(
         (width * scale).ceil().max(1.0) as u32,
         (height * scale).ceil().max(1.0) as u32,
@@ -160,6 +170,32 @@ pub fn render(source: &str, theme: &DiagramTheme, scale: f32) -> Result<DiagramI
         width,
         height,
     })
+}
+
+/// Longest side and pixel count a diagram rasterizes to.
+const MAX_SIDE: f32 = 8192.0;
+const MAX_PIXELS: f32 = 24_000_000.0;
+
+/// `scale`, lowered so a `width`×`height` diagram stays within
+/// `MAX_SIDE` and `MAX_PIXELS` — the pixmap can't report a failed
+/// allocation, so huge diagrams must not reach it.
+fn raster_scale(width: f32, height: f32, scale: f32) -> Result<f32, String> {
+    if !(width.is_finite() && height.is_finite()) || width <= 0.0 || height <= 0.0 {
+        return Err("Diagram has no size".into());
+    }
+    let fit = scale
+        .min(MAX_SIDE / width)
+        .min(MAX_SIDE / height)
+        .min((MAX_PIXELS / (width * height)).sqrt());
+    // Below a quarter scale the text is unreadable anyway.
+    if fit < 0.25 {
+        return Err(format!(
+            "Diagram too large to draw ({}×{} px)",
+            width.round(),
+            height.round()
+        ));
+    }
+    Ok(fit)
 }
 
 /// The system font database, loaded once.
@@ -219,7 +255,7 @@ fn svg(source: &str, theme: &DiagramTheme) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render, DiagramTheme};
+    use super::{raster_scale, render, DiagramTheme};
 
     fn theme() -> DiagramTheme {
         let theme = gpui_kit::component::theme::ThemeColor {
@@ -246,5 +282,16 @@ mod tests {
     fn bad_syntax_is_an_error() {
         assert!(render("graph TD; A[Start", &theme(), 1.0).is_err());
         assert!(render("not a diagram", &theme(), 1.0).is_err());
+    }
+
+    #[test]
+    fn huge_diagrams_are_scaled_down_or_refused() {
+        assert_eq!(raster_scale(800.0, 600.0, 2.0), Ok(2.0));
+        let fit = raster_scale(20_000.0, 400.0, 2.0).unwrap();
+        assert!(20_000.0 * fit <= 8192.0);
+        let fit = raster_scale(6000.0, 6000.0, 2.0).unwrap();
+        assert!(6000.0 * fit * 6000.0 * fit <= 24_000_000.0);
+        assert!(raster_scale(100_000.0, 100_000.0, 2.0).is_err());
+        assert!(raster_scale(0.0, 10.0, 2.0).is_err());
     }
 }
