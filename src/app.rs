@@ -7,7 +7,7 @@ use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
 use crate::properties;
 use crate::search;
-use crate::settings::{Appearance, Settings, TreeSort, ViewMode};
+use crate::settings::{Appearance, Period, Settings, TreeSort, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
@@ -260,6 +260,13 @@ enum PaletteCmd {
     OpenFile,
     OpenFolder,
     DailyNote,
+    WeeklyNote,
+    MonthlyNote,
+    QuarterlyNote,
+    YearlyNote,
+    PrevPeriodic,
+    NextPeriodic,
+    NewFromTemplate,
     AppendDaily,
     CloseFolder,
     Save,
@@ -366,6 +373,41 @@ impl PaletteCmd {
                 assets::IconName::BookOpen,
                 "Open daily note",
                 &["today", "journal"],
+            ),
+            WeeklyNote => (
+                assets::IconName::CalendarRange,
+                "Open weekly note",
+                &["week", "periodic", "journal", "review"],
+            ),
+            MonthlyNote => (
+                assets::IconName::CalendarDays,
+                "Open monthly note",
+                &["month", "periodic", "journal", "review"],
+            ),
+            QuarterlyNote => (
+                assets::IconName::Calendar,
+                "Open quarterly note",
+                &["quarter", "periodic", "review"],
+            ),
+            YearlyNote => (
+                assets::IconName::Calendar,
+                "Open yearly note",
+                &["year", "annual", "periodic", "review"],
+            ),
+            PrevPeriodic => (
+                assets::IconName::ChevronLeft,
+                "Previous daily/periodic note",
+                &["previous", "yesterday", "last", "week", "month", "periodic"],
+            ),
+            NextPeriodic => (
+                assets::IconName::ChevronRight,
+                "Next daily/periodic note",
+                &["next", "tomorrow", "week", "month", "periodic"],
+            ),
+            NewFromTemplate => (
+                assets::IconName::LayoutTemplate,
+                "New note from template…",
+                &["create", "template", "boilerplate"],
             ),
             AppendDaily => (
                 assets::IconName::SquarePen,
@@ -2277,8 +2319,8 @@ impl Workspace {
             self.note_status("Open a folder first", cx);
             return;
         };
-        let fmt = crate::bases::moment_to_chrono(&self.settings.unique_note_format);
-        let stamp = chrono::Local::now().format(&fmt).to_string();
+        let now = chrono::Local::now().naive_local();
+        let stamp = crate::bases::format_moment(now, &self.settings.unique_note_format);
         let path = free_path(
             &root.join(&self.settings.unique_note_dir),
             &format!("{stamp}.md"),
@@ -2286,7 +2328,7 @@ impl Workspace {
         if path
             .parent()
             .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-            || std::fs::write(&path, self.template_seed(&path, "unique.md", cx)).is_err()
+            || std::fs::write(&path, self.template_seed(&path, "unique.md", now, cx)).is_err()
         {
             self.note_status("Could not create the note", cx);
             return;
@@ -2417,14 +2459,56 @@ impl Workspace {
         .detach();
     }
 
-    /// `<daily_dir>/<daily_format>.md` for `date` — the daily-format
-    /// setting is Moment syntax (`YYYY-MM-DD`), translated via
-    /// `bases::moment_to_chrono`.
     fn daily_path_for(&self, date: NaiveDate, cx: &App) -> Option<PathBuf> {
-        let fmt = crate::bases::moment_to_chrono(&self.settings.daily_format);
-        self.vault
-            .read(cx)
-            .daily_note(date, &self.settings.daily_dir, &fmt)
+        self.period_path(Period::Day, date, cx)
+    }
+
+    /// `<dir>/<format>.md` for the `period` note holding `date` — the
+    /// format setting is Moment syntax (`YYYY-MM-DD`, `gggg-[W]ww`).
+    fn period_path(&self, period: Period, date: NaiveDate, cx: &App) -> Option<PathBuf> {
+        let root = self.vault.read(cx).root.clone()?;
+        let (dir, format) = self.settings.period(period);
+        let name = crate::bases::format_moment(date.and_hms_opt(0, 0, 0)?, format);
+        Some(root.join(dir).join(format!("{name}.md")))
+    }
+
+    /// The period and a date of the note at `path`, when it is a
+    /// daily or periodic note — searched within 20 years of today.
+    fn period_of(&self, path: &Path, cx: &App) -> Option<(Period, NaiveDate)> {
+        let today = chrono::Local::now().date_naive();
+        Period::ALL.into_iter().find_map(|period| {
+            let span = match period {
+                Period::Day => 7305,
+                Period::Week => 1044,
+                Period::Month => 240,
+                Period::Quarter => 80,
+                Period::Year => 20,
+            };
+            (0..=span)
+                .flat_map(|k| [k, -k])
+                .map(|k| period.shift(today, k))
+                .find(|&date| self.period_path(period, date, cx).as_deref() == Some(path))
+                .map(|date| (period, date))
+        })
+    }
+
+    fn open_period_today(&mut self, period: Period, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_period_at(period, chrono::Local::now().date_naive(), window, cx);
+    }
+
+    /// Palette "Previous/Next periodic note" — the neighbouring note of
+    /// the same period as the active daily/weekly/… note.
+    fn open_adjacent_period(&mut self, step: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.active_doc().map(|d| d.read(cx).path.clone()) else {
+            self.note_status("No note open", cx);
+            return;
+        };
+        match self.period_of(&path, cx) {
+            Some((period, date)) => {
+                self.open_period_at(period, period.shift(date, step), window, cx)
+            }
+            None => self.note_status("This isn't a daily or periodic note", cx),
+        }
     }
 
     fn on_open_daily(&mut self, _: &OpenDailyNote, window: &mut Window, cx: &mut Context<Self>) {
@@ -2438,10 +2522,17 @@ impl Workspace {
         self.open_daily_at(chrono::Local::now().date_naive(), window, cx);
     }
 
-    /// Initial content for a new daily or unique note — the reference editor convention:
-    /// `<templates_dir>/<template>` seeds it with `{{date}}`/`{{time}}`/
-    /// `{{title}}`/`{{cursor}}` expanded, else a plain heading.
-    fn template_seed(&self, path: &Path, template: &str, cx: &App) -> String {
+    /// Initial content for a new daily, periodic, or unique note — the
+    /// reference editor convention: `<templates_dir>/<template>` seeds it,
+    /// expanded with `date` as "now" (see `expand_template`), else a
+    /// plain heading.
+    fn template_seed(
+        &self,
+        path: &Path,
+        template: &str,
+        date: chrono::NaiveDateTime,
+        cx: &App,
+    ) -> String {
         let title = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -2453,34 +2544,40 @@ impl Workspace {
             .and_then(|root| {
                 std::fs::read_to_string(root.join(&self.settings.templates_dir).join(template)).ok()
             })
-            .map(|tpl| {
-                let now = crate::history::epoch();
-                tpl.replace("{{date}}", &crate::history::format_date(now))
-                    .replace("{{time}}", &crate::history::format_time(now))
-                    .replace("{{title}}", &title)
-                    .replace("{{cursor}}", "")
-            })
+            .map(|tpl| crate::document::expand_template(&tpl, &title, date).0)
             .unwrap_or_else(|| format!("# {}\n\n", title))
     }
 
-    /// Shared tail of `on_open_daily`: write (templated if missing),
-    /// refresh the vault, open — `daily_dir`/`daily_format` resolve
-    /// `date` to the path.
     pub(crate) fn open_daily_at(
         &mut self,
         date: NaiveDate,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(path) = self.daily_path_for(date, cx) else {
+        self.open_period_at(Period::Day, date, window, cx);
+    }
+
+    /// Open the `period` note holding `date`, creating it first from
+    /// `<templates_dir>/<period>.md` (`daily.md`, `weekly.md`, …) with
+    /// `{{date}}` set to that date.
+    pub(crate) fn open_period_at(
+        &mut self,
+        period: Period,
+        date: NaiveDate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.period_path(period, date, cx) else {
             self.note_status("Open a folder first", cx);
             return;
         };
         if !path.exists() {
+            let when = date.and_time(chrono::Local::now().time());
+            let template = format!("{}.md", period.name());
             if path
                 .parent()
                 .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(&path, self.template_seed(&path, "daily.md", cx)).is_err()
+                || std::fs::write(&path, self.template_seed(&path, &template, when, cx)).is_err()
             {
                 return;
             }
@@ -2540,7 +2637,11 @@ impl Workspace {
             && (path
                 .parent()
                 .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(path, self.template_seed(path, "daily.md", cx)).is_err())
+                || std::fs::write(
+                    path,
+                    self.template_seed(path, "daily.md", chrono::Local::now().naive_local(), cx),
+                )
+                .is_err())
         {
             self.note_status("Could not create daily note", cx);
             return;
@@ -3222,8 +3323,15 @@ impl Workspace {
         let commands = [
             PaletteCmd::NewFile,
             PaletteCmd::NewUniqueNote,
+            PaletteCmd::NewFromTemplate,
             PaletteCmd::NewBase,
             PaletteCmd::DailyNote,
+            PaletteCmd::WeeklyNote,
+            PaletteCmd::MonthlyNote,
+            PaletteCmd::QuarterlyNote,
+            PaletteCmd::YearlyNote,
+            PaletteCmd::PrevPeriodic,
+            PaletteCmd::NextPeriodic,
             PaletteCmd::AppendDaily,
             PaletteCmd::OpenFile,
             PaletteCmd::OpenFolder,
@@ -3475,6 +3583,15 @@ impl Workspace {
             PaletteCmd::OpenFile => self.on_open_file(&OpenFile, window, cx),
             PaletteCmd::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
             PaletteCmd::DailyNote => self.on_open_daily(&OpenDailyNote, window, cx),
+            PaletteCmd::WeeklyNote => self.open_period_today(Period::Week, window, cx),
+            PaletteCmd::MonthlyNote => self.open_period_today(Period::Month, window, cx),
+            PaletteCmd::QuarterlyNote => self.open_period_today(Period::Quarter, window, cx),
+            PaletteCmd::YearlyNote => self.open_period_today(Period::Year, window, cx),
+            PaletteCmd::PrevPeriodic => self.open_adjacent_period(-1, window, cx),
+            PaletteCmd::NextPeriodic => self.open_adjacent_period(1, window, cx),
+            PaletteCmd::NewFromTemplate => {
+                self.defer_dialog(Self::show_new_from_template, window, cx)
+            }
             PaletteCmd::AppendDaily => {
                 self.defer_dialog(Self::show_append_daily_dialog, window, cx)
             }
@@ -3968,7 +4085,7 @@ impl Workspace {
             for doc in &self.docs {
                 doc.entity.update(cx, |doc, _cx| {
                     if doc.path == path {
-                        doc.path = new_path.clone();
+                        doc.set_path(new_path.clone());
                     }
                 });
             }
@@ -4924,14 +5041,37 @@ impl Workspace {
     /// List `templates/**/*.md`; clicking one inserts it at the cursor
     /// with `{{date}}`/`{{time}}`/`{{title}}`/`{{cursor}}` expansion.
     fn show_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.active_doc().cloned() {
+            Some(doc) => self.show_template_picker(Some(doc), window, cx),
+            None => self.note_status("Open a note first", cx),
+        }
+    }
+
+    /// Palette "New note from template…" — pick a template, then name
+    /// the note.
+    fn show_new_from_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_template_picker(None, window, cx);
+    }
+
+    /// The template list: with `doc`, a click inserts into it; without,
+    /// a click asks for a name and creates a note from the template.
+    fn show_template_picker(
+        &mut self,
+        doc: Option<Entity<Document>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(root) = self.vault.read(cx).root.clone() else {
-            return;
-        };
-        let Some(doc) = self.active_doc().cloned() else {
-            self.note_status("Open a note first", cx);
+            self.note_status("Open a folder first", cx);
             return;
         };
         let files = template_files(&root, &self.settings.templates_dir);
+        let view = cx.entity();
+        let title = if doc.is_some() {
+            "Insert template"
+        } else {
+            "New note from template"
+        };
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
             let mut list = v_flex().w_full().py_1();
@@ -4952,6 +5092,7 @@ impl Workspace {
                     .unwrap_or_default();
                 let file = file.clone();
                 let doc = doc.clone();
+                let view = view.clone();
                 list = list.child(
                     div()
                         .id(("template-row", ix))
@@ -4962,15 +5103,29 @@ impl Workspace {
                         .hover(|s| s.bg(theme.muted))
                         .child(div().text_sm().text_color(theme.foreground).child(name))
                         .on_click(move |_, window, cx| {
-                            if let Ok(text) = std::fs::read_to_string(&file) {
-                                doc.update(cx, |doc, cx| doc.insert_template(&text, window, cx));
-                            }
                             window.close_dialog(cx);
+                            match &doc {
+                                Some(doc) => {
+                                    if let Ok(text) = std::fs::read_to_string(&file) {
+                                        doc.update(cx, |doc, cx| {
+                                            doc.insert_template(&text, window, cx)
+                                        });
+                                    }
+                                }
+                                None => {
+                                    let (view, file) = (view.clone(), file.clone());
+                                    window.defer(cx, move |window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.prompt_note_from_template(file, window, cx)
+                                        });
+                                    });
+                                }
+                            }
                         }),
                 );
             }
             dialog
-                .title("Insert template")
+                .title(title)
                 .w(px(440.))
                 .overlay_closable(true)
                 .child(
@@ -4979,6 +5134,79 @@ impl Workspace {
                     ),
                 )
         });
+    }
+
+    /// Ask for the new note's name, then create it from `template`.
+    fn prompt_note_from_template(
+        &mut self,
+        template: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.cell_input.clone();
+        input.update(cx, |input, cx| input.set_value("Untitled", window, cx));
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Name the new note")
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .on_ok({
+                    let view = view.clone();
+                    let template = template.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            let name = this.cell_input.read(cx).value().to_string();
+                            this.create_note_from_template(&template, &name, window, cx);
+                        });
+                        true
+                    }
+                })
+        });
+    }
+
+    /// `<vault>/<name>.md` filled from `template` (see
+    /// `expand_template`), opened with the caret at `{{cursor}}`.
+    fn create_note_from_template(
+        &mut self,
+        template: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let name = name.trim().trim_end_matches(".md").trim();
+        if name.is_empty() || name.contains(['/', '\\']) {
+            self.note_status("Give the note a name without slashes", cx);
+            return;
+        }
+        let Ok(tpl) = std::fs::read_to_string(template) else {
+            self.note_status("Could not read the template", cx);
+            return;
+        };
+        let path = free_path(&root, &format!("{name}.md"));
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let (text, cursor) =
+            crate::document::expand_template(&tpl, &title, chrono::Local::now().naive_local());
+        if std::fs::write(&path, text).is_err() {
+            self.note_status("Could not create the note", cx);
+            return;
+        }
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        self.open_document(path.clone(), window, cx);
+        if let (Some(at), Some(doc)) = (cursor, self.active_doc().cloned()) {
+            if doc.read(cx).path == path {
+                doc.update(cx, |doc, cx| {
+                    doc.editor
+                        .update(cx, |editor, cx| editor.set_selected_range(at..at, cx));
+                });
+            }
+        }
     }
 
     /// List vault trash entries; clicking one restores it to its
@@ -6040,8 +6268,15 @@ impl Workspace {
         }
         .map(|d| d.pred_opt().map(|p| p.day()).unwrap_or(30))
         .unwrap_or(30);
-        // Monday-first leading blanks.
-        let lead = (first.weekday().num_days_from_monday()) as usize;
+        // Monday-first, unless the weekly format counts Moment's
+        // Sunday-first locale weeks (`w`/`gggg`) — rows then match the
+        // weekly notes the week column opens.
+        let sunday_first = crate::bases::moment_locale_weeks(&self.settings.weekly_format);
+        let lead = if sunday_first {
+            first.weekday().num_days_from_sunday()
+        } else {
+            first.weekday().num_days_from_monday()
+        } as usize;
         // Which days have a daily note in the daily-note folder.
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
         let daily_root = root.join(&self.settings.daily_dir);
@@ -6084,8 +6319,40 @@ impl Workspace {
                 }))
         };
 
+        // Week-number column: click opens that row's weekly note.
+        let week_token = if sunday_first { "w" } else { "W" };
+        let week_cell = |row: usize| {
+            let start =
+                first - chrono::Duration::days(lead as i64) + chrono::Duration::weeks(row as i64);
+            let has_note = self
+                .period_path(Period::Week, start, cx)
+                .is_some_and(|p| p.exists());
+            div()
+                .id(("cal-week", row))
+                .w(px(18.))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.))
+                .cursor_pointer()
+                .text_color(if has_note {
+                    theme.info
+                } else {
+                    theme.muted_foreground
+                })
+                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                .child(crate::bases::format_moment(
+                    start.and_hms_opt(0, 0, 0).unwrap_or_default(),
+                    week_token,
+                ))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_period_at(Period::Week, start, window, cx);
+                }))
+        };
+
         let mut weeks: Vec<Div> = Vec::new();
-        let mut week = h_flex().gap_0p5();
+        let mut week = h_flex().gap_0p5().child(week_cell(0));
         for _ in 0..lead {
             week = week.child(div().w(px(26.)).h(px(20.)));
         }
@@ -6095,7 +6362,7 @@ impl Workspace {
             slot += 1;
             if slot.is_multiple_of(7) {
                 weeks.push(week);
-                week = h_flex().gap_0p5();
+                week = h_flex().gap_0p5().child(week_cell(weeks.len()));
             }
         }
         if !slot.is_multiple_of(7) {
@@ -6165,18 +6432,23 @@ impl Workspace {
                     })),
             )
             .when(self.cal_open, |this| {
-                let head =
-                    h_flex()
-                        .gap_0p5()
-                        .children(["M", "T", "W", "T", "F", "S", "S"].iter().map(|d| {
-                            div()
-                                .w(px(26.))
-                                .flex()
-                                .justify_center()
-                                .text_color(theme.muted_foreground)
-                                .child(d.to_string())
-                                .into_any_element()
-                        }));
+                let days = if sunday_first {
+                    ["S", "M", "T", "W", "T", "F", "S"]
+                } else {
+                    ["M", "T", "W", "T", "F", "S", "S"]
+                };
+                let head = h_flex()
+                    .gap_0p5()
+                    .child(div().w(px(18.)))
+                    .children(days.iter().map(|d| {
+                        div()
+                            .w(px(26.))
+                            .flex()
+                            .justify_center()
+                            .text_color(theme.muted_foreground)
+                            .child(d.to_string())
+                            .into_any_element()
+                    }));
                 this.child(
                     v_flex()
                         .px_2()
@@ -8968,7 +9240,7 @@ fn copy_into(dir: &Path, src: &Path) -> Option<PathBuf> {
 }
 
 /// `<templates_dir>/**/*.md` under the vault root, sorted for a stable dialog list.
-fn template_files(root: &std::path::Path, templates_dir: &str) -> Vec<PathBuf> {
+pub(crate) fn template_files(root: &std::path::Path, templates_dir: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.join(templates_dir)];
     while let Some(dir) = stack.pop() {

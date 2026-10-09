@@ -28,6 +28,9 @@ impl EventEmitter<DocumentEvent> for Document {}
 
 pub struct Document {
     pub path: PathBuf,
+    /// The note's title, shared with its `/` completions so template
+    /// items expand `{{title}}` — kept in step by `set_path`.
+    completion_title: Rc<std::cell::RefCell<String>>,
     /// Image file — the editor stays empty and the workspace renders
     /// the picture itself instead of the source/preview panes.
     pub is_image: bool,
@@ -157,6 +160,8 @@ impl Document {
         } = initial;
 
         let completions_vault = vault.clone();
+        let completion_title = Rc::new(std::cell::RefCell::new(note_title(&path)));
+        let completions_title = completion_title.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("markdown")
@@ -169,7 +174,7 @@ impl Document {
                 })
                 .searchable(true);
             state.lsp_mut().completion_provider = Some(Rc::new(
-                crate::slash::VaultCompletions::new(completions_vault),
+                crate::slash::VaultCompletions::new(completions_vault, completions_title),
             ));
             state.set_value(content.clone(), window, cx);
             state
@@ -194,6 +199,7 @@ impl Document {
             is_image,
             file_preview,
             path,
+            completion_title,
             editor,
             callout_folds: preview::CalloutFolds::default(),
             base_embeds: preview::EmbedViews::default(),
@@ -272,11 +278,13 @@ impl Document {
     }
 
     pub fn title(&self) -> String {
-        self.path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled")
-            .to_string()
+        note_title(&self.path)
+    }
+
+    /// Point the document at a renamed/moved/saved-as file.
+    pub fn set_path(&mut self, path: PathBuf) {
+        *self.completion_title.borrow_mut() = note_title(&path);
+        self.path = path;
     }
 
     pub fn file_name(&self) -> String {
@@ -637,7 +645,7 @@ impl Document {
         let path = canonical_save_path(&path)?;
         let text = self.editor.read(cx).value();
         std::fs::write(&path, text.as_bytes())?;
-        self.path = path;
+        self.set_path(path);
         self.disk_bytes = Some(text.as_bytes().to_vec());
         self.mtime = std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
@@ -694,18 +702,11 @@ impl Document {
         cx.notify();
     }
 
-    /// Insert a template's expanded text at the cursor. `{{date}}`,
-    /// `{{time}}`, `{{title}}` expand; `{{cursor}}` marks where the
-    /// caret lands after insertion.
+    /// Insert a template's expanded text at the cursor (see
+    /// `expand_template`); `{{cursor}}` marks where the caret lands.
     pub fn insert_template(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.title();
-        let now = history::epoch();
-        let expanded = text
-            .replace("{{date}}", &history::format_date(now))
-            .replace("{{time}}", &history::format_time(now))
-            .replace("{{title}}", &title);
-        let cursor_at = expanded.find("{{cursor}}");
-        let expanded = expanded.replace("{{cursor}}", "");
+        let (expanded, cursor_at) =
+            expand_template(text, &self.title(), chrono::Local::now().naive_local());
         self.editor.update(cx, |editor, cx| {
             let start = editor.cursor();
             editor.insert(expanded, window, cx);
@@ -2607,8 +2608,57 @@ fn highlight_color_edit(
     (at..at, format!("=={emoji}=="), caret..caret)
 }
 
+fn note_title(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled")
+        .to_string()
+}
+
 pub fn word_stats(text: &str) -> (usize, usize) {
     (text.split_whitespace().count(), text.chars().count())
+}
+
+/// Fill in a template: `{{title}}`, `{{date}}` (`YYYY-MM-DD`), `{{time}}`
+/// (`HH:mm`), and `{{date:FORMAT}}` / `{{time:FORMAT}}` with a Moment
+/// format — the core-templates syntax. Returns the text plus the byte
+/// offset of the first `{{cursor}}` (all cursor markers are removed).
+pub(crate) fn expand_template(
+    text: &str,
+    title: &str,
+    now: chrono::NaiveDateTime,
+) -> (String, Option<usize>) {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = None;
+    let mut rest = text;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("}}") else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let inner = after[..close].trim();
+        let (name, format) = match inner.split_once(':') {
+            Some((name, format)) => (name.trim(), Some(format.trim())),
+            None => (inner, None),
+        };
+        match (name.to_ascii_lowercase().as_str(), format) {
+            ("title", None) => out.push_str(title),
+            ("date", f) => {
+                out.push_str(&crate::bases::format_moment(now, f.unwrap_or("YYYY-MM-DD")))
+            }
+            ("time", f) => out.push_str(&crate::bases::format_moment(now, f.unwrap_or("HH:mm"))),
+            ("cursor", None) => {
+                cursor.get_or_insert(out.len());
+            }
+            _ => out.push_str(&rest[open..open + 2 + close + 2]),
+        }
+        rest = &after[close + 2..];
+    }
+    out.push_str(rest);
+    (out, cursor)
 }
 
 /// The `id` of a line's trailing ` ^id` block marker (or of a lone
@@ -2963,7 +3013,10 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_anchor, format_table_md, guarded_write, highlight_color_edit, new_block_id};
+    use super::{
+        block_anchor, expand_template, format_table_md, guarded_write, highlight_color_edit,
+        new_block_id,
+    };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -3157,5 +3210,35 @@ mod tests {
         assert_eq!(recolor("==🔴@red==", ""), "==|red==");
         assert_eq!(recolor("==a== b@ ==c==", "🟡"), "==a== b==🟡|== ==c==");
         assert_eq!(recolor("`a==b` ==🔴re@al==", "🟢"), "`a==b` ==🟢re|al==");
+    }
+
+    #[test]
+    fn templates_expand_variables_formats_and_cursor() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 9)
+            .unwrap()
+            .and_hms_opt(8, 3, 0)
+            .unwrap();
+        let (text, cursor) = expand_template(
+            "# {{title}}\n{{date}} {{time}} · {{date:dddd D. MMMM}} · {{ time : HH[h]mm }}\n{{cursor}}x{{cursor}}",
+            "Plan",
+            now,
+        );
+        assert_eq!(
+            text,
+            "# Plan\n2026-10-09 08:03 · Friday 9. October · 08h03\nx"
+        );
+        assert_eq!(cursor, Some(text.len() - 1));
+    }
+
+    #[test]
+    fn unknown_or_unclosed_template_tags_stay_as_written() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        assert_eq!(
+            expand_template("{{weather}} <% tp.date.now() %> {{date", "t", now),
+            ("{{weather}} <% tp.date.now() %> {{date".to_string(), None)
+        );
     }
 }
