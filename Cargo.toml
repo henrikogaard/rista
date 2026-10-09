@@ -26,6 +26,11 @@ lsp-types = { version = "0.97.0", features = ["proposed"] }
 url = "2"
 portable-pty = "0.8.1"
 vt100 = "0.15.2"
+# LaTeX math (KaTeX-compatible, pure Rust, fonts embedded — offline).
+ratex-parser = "=0.1.14"
+ratex-layout = "=0.1.14"
+ratex-types = "=0.1.14"
+ratex-render = { version = "=0.1.14", features = ["embed-fonts"] }
 
 [features]
 # Links vendor/sparkle/Sparkle.framework and enables the Sparkle updater

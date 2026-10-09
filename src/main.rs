@@ -18,6 +18,7 @@ mod folder;
 mod graph;
 mod history;
 mod http;
+mod math;
 mod note_icons;
 mod preview;
 mod properties;
