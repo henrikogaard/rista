@@ -296,7 +296,7 @@ fn wiki_items(
                     if !bid_q.is_empty() && !block.first_line.to_lowercase().contains(&bid_q) {
                         continue;
                     }
-                    let id = crate::document::block_hash_id(&block.first_line);
+                    let id = block.hash_id;
                     let label: String = block.first_line.chars().take(60).collect();
                     items.push(CompletionItem {
                         label,

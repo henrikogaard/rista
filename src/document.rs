@@ -702,10 +702,10 @@ impl Document {
         cx.notify();
     }
 
-    /// Insert an expanded template at the caret. Template frontmatter
-    /// merges into the note's (see `templater::merge_into`) and only the
-    /// body goes in at the caret; `cursor` (an offset into `expanded`)
-    /// marks where the caret lands.
+    /// Insert an expanded template at the caret, replacing any selection.
+    /// Template frontmatter merges into the note's (see
+    /// `templater::merge_into`) and only the body goes in at the caret;
+    /// `cursor` (an offset into `expanded`) marks where the caret lands.
     pub fn insert_template(
         &mut self,
         expanded: &str,
@@ -718,16 +718,18 @@ impl Document {
             let (frontmatter, body) = crate::templater::merge_into(&doc, expanded);
             // `body` is a suffix of `expanded`.
             let skipped = expanded.len() - body.len();
-            let mut start = editor.cursor();
+            let sel = editor.selected_range();
+            let (mut start, mut end) = (sel.start, sel.end);
             if let Some((range, text)) = frontmatter {
                 if range.start <= start {
                     start = start + text.len() - range.len();
+                    end = end + text.len() - range.len();
                 }
                 editor.set_selected_range(range, cx);
                 editor.replace(text, window, cx);
             }
-            editor.set_selected_range(start..start, cx);
-            editor.insert(body, window, cx);
+            editor.set_selected_range(start..end, cx);
+            editor.replace(body, window, cx);
             if let Some(at) = cursor.and_then(|c| c.checked_sub(skipped)) {
                 editor.set_selected_range(start + at..start + at, cx);
             }
@@ -2846,11 +2848,13 @@ fn block_anchor(
 pub(crate) struct BlockCandidate {
     /// The block's existing `^id`, if it has one.
     pub id: Option<String>,
-    /// Its first line, trimmed — the completion label and the source
-    /// of `block_hash_id`.
+    /// Its first line, trimmed — the completion label.
     pub first_line: String,
     /// Byte offset of that first line.
     pub at: usize,
+    /// The id `[[note#^` completion links before the block has one —
+    /// see `block_hash_id`.
+    pub hash_id: String,
 }
 
 /// Every block `block_anchor` can name, in order.
@@ -2874,22 +2878,31 @@ pub(crate) fn block_candidates(text: &str) -> Vec<BlockCandidate> {
             None => format!("^{id}"),
         };
         if seen.insert(key) {
+            // Blocks opening with the same line (two ```rust fences) are
+            // told apart by their order among those blocks.
+            let nth = out.iter().filter(|b| b.first_line == first_line).count();
             out.push(BlockCandidate {
                 id: insert.is_none().then_some(id),
                 first_line: first_line.to_string(),
                 at: start,
+                hash_id: block_hash_id(first_line, nth),
             });
         }
     }
     out
 }
 
-/// A stable six-character id for a block, from its first line — what
-/// `[[note#^` completion links before the target has the id, so a
-/// later save can find the block again and add it (FNV-1a, base 36).
-pub(crate) fn block_hash_id(first_line: &str) -> String {
+/// A stable six-character id for a block, from its first line and
+/// which of the blocks opening with that line it is — what `[[note#^`
+/// completion links before the target has the id, so a later save can
+/// find the block again and add it (FNV-1a, base 36).
+fn block_hash_id(first_line: &str, nth: usize) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in first_line.trim().bytes() {
+    let key = match nth {
+        0 => first_line.trim().to_string(),
+        n => format!("{}\u{0}{n}", first_line.trim()),
+    };
+    for byte in key.bytes() {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -2903,6 +2916,53 @@ pub(crate) fn block_hash_id(first_line: &str) -> String {
         .collect()
 }
 
+/// `(note, id)` for every `[[note#^id]]` / `![[note#^id]]` in `text`,
+/// deduped — real links only: code spans, fenced code and `%%`
+/// comments don't count. `note` is empty for `[[#^id]]`.
+pub(crate) fn block_link_targets(text: &str) -> Vec<(String, String)> {
+    use markdown::mdast::Node;
+    fn walk(node: &Node, out: &mut Vec<(String, String)>) {
+        if let Node::Text(text) = node {
+            let mut rest = text.value.as_str();
+            while let Some((_, tail)) = rest.split_once("[[") {
+                let Some((inner, tail)) = tail.split_once("]]") else {
+                    break;
+                };
+                let inner = inner.split('|').next().unwrap_or_default();
+                if let Some((note, id)) = inner.split_once("#^") {
+                    let link = (note.trim().to_string(), id.trim().to_string());
+                    if !link.1.is_empty() && !out.contains(&link) {
+                        out.push(link);
+                    }
+                }
+                rest = tail;
+            }
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    // `%%comments%%` are blanked so their links are skipped too.
+    let mut visible = String::with_capacity(text.len());
+    for (ix, part) in text.split("%%").enumerate() {
+        if ix > 0 {
+            visible.push_str("  ");
+        }
+        if ix % 2 == 0 {
+            visible.push_str(part);
+        } else {
+            visible.extend(part.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let mut out = Vec::new();
+    if let Ok(root) = markdown::to_mdast(&visible, &options) {
+        walk(&root, &mut out);
+    }
+    out
+}
+
 /// The edit that gives `text` the block id `id` — `None` when some
 /// block already carries it or no block hashes to it.
 pub(crate) fn linked_block_id_edit(text: &str, id: &str) -> Option<(usize, String)> {
@@ -2911,7 +2971,7 @@ pub(crate) fn linked_block_id_edit(text: &str, id: &str) -> Option<(usize, Strin
     }
     let block = block_candidates(text)
         .into_iter()
-        .find(|b| b.id.is_none() && block_hash_id(&b.first_line) == id)?;
+        .find(|b| b.id.is_none() && b.hash_id == id)?;
     block_anchor(text, block.at, id)?.1
 }
 
@@ -3091,7 +3151,7 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_anchor, block_candidates, block_hash_id, format_table_md, guarded_write,
+        block_anchor, block_candidates, block_link_targets, format_table_md, guarded_write,
         highlight_color_edit, linked_block_id_edit, new_block_id,
     };
     use std::path::PathBuf;
@@ -3310,13 +3370,35 @@ mod tests {
     #[test]
     fn linked_block_ids_are_added_once_to_the_hashed_block() {
         let text = "intro\n\n- first\n- second\n";
-        let id = block_hash_id("- second");
-        assert_eq!(block_hash_id("  - second "), id);
+        let id = block_candidates(text)[2].hash_id.clone();
         let (at, ins) = linked_block_id_edit(text, &id).unwrap();
         let mut out = text.to_string();
         out.insert_str(at, &ins);
         assert_eq!(out, format!("intro\n\n- first\n- second ^{id}\n"));
         assert_eq!(linked_block_id_edit(&out, &id), None);
         assert_eq!(linked_block_id_edit(text, "zzzzzz"), None);
+    }
+
+    #[test]
+    fn same_first_line_blocks_get_distinct_ids() {
+        let text = "```rust\na\n```\n\n```rust\nb\n```\n";
+        let blocks = block_candidates(text);
+        assert_eq!(blocks.len(), 2);
+        assert_ne!(blocks[0].hash_id, blocks[1].hash_id);
+        let (at, ins) = linked_block_id_edit(text, &blocks[1].hash_id).unwrap();
+        assert!(at > text.find("b\n").unwrap());
+        assert!(ins.contains(&blocks[1].hash_id));
+    }
+
+    #[test]
+    fn block_link_targets_skip_code_and_comments() {
+        let text = "See [[A#^one]] and [[#^two|alias]].\n\n`[[B#^code]]`\n\n```\n[[C#^fence]]\n```\n\n%% [[D#^comment]] %%\n";
+        assert_eq!(
+            block_link_targets(text),
+            [
+                ("A".to_string(), "one".to_string()),
+                (String::new(), "two".to_string())
+            ]
+        );
     }
 }

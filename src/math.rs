@@ -44,7 +44,7 @@ pub fn render(
         (rgb.r * 255.0) as u8,
         (rgb.g * 255.0) as u8,
         (rgb.b * 255.0) as u8,
-        0,
+        (rgb.a * 255.0) as u8,
     ]);
     let key = (
         latex.to_string(),
@@ -57,7 +57,7 @@ pub fn render(
     if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
         return hit;
     }
-    let result = typeset(latex, font_px, scale, [rgb.r, rgb.g, rgb.b], inline).map(Arc::new);
+    let result = typeset(latex, font_px, scale, [rgb.r, rgb.g, rgb.b, rgb.a], inline).map(Arc::new);
     if let Ok(mut cache) = cache.lock() {
         // Plenty for a session of editing; cheap to rebuild.
         if cache.len() > 2048 {
@@ -72,7 +72,7 @@ fn typeset(
     latex: &str,
     font_px: f32,
     scale: f32,
-    rgb: [f32; 3],
+    rgba: [f32; 4],
     inline: bool,
 ) -> Result<MathImage, String> {
     let nodes = ratex_parser::parse(latex).map_err(|e| e.message)?;
@@ -84,7 +84,7 @@ fn typeset(
             } else {
                 MathStyle::Display
             },
-            color: Color::rgb(rgb[0], rgb[1], rgb[2]),
+            color: Color::new(rgba[0], rgba[1], rgba[2], rgba[3]),
             ..Default::default()
         },
     );
@@ -141,5 +141,13 @@ mod tests {
         assert!(render(r"\frac{a", 16.0, 1.0, white(), true).is_err());
         assert!(render(r"\unknowncmd", 16.0, 1.0, white(), true).is_err());
         assert!(render("", 16.0, 1.0, white(), true).is_err());
+    }
+
+    #[test]
+    fn text_alpha_is_kept_and_keyed() {
+        let faded = gpui_kit::Hsla { a: 0.5, ..white() };
+        let solid = render("x", 16.0, 1.0, white(), true).unwrap();
+        let half = render("x", 16.0, 1.0, faded, true).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&solid, &half));
     }
 }
