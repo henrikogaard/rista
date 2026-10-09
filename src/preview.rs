@@ -2923,10 +2923,9 @@ impl MarkdownPlugin for WikiLinkPlugin {
 }
 
 // ------------------------------------------------------------------
-// Math — `$$...$$` blocks and `$...$` inline, typeset as Unicode.
-// Not a full TeX engine: covers the everyday set (greek, scripts,
-// fractions, roots, operators, common symbols) and falls back to the
-// raw source for anything unrecognized.
+// Math — `$$...$$` blocks and `$...$` inline, typeset by RaTeX
+// (`crate::math`) in the theme's text color. Anything it can't parse
+// falls back to a Unicode approximation of the source.
 // ------------------------------------------------------------------
 
 struct Math {
@@ -2954,6 +2953,32 @@ impl MarkdownPlugin for MathPlugin {
             _ => None,
         }
     }
+
+    fn render_inline(
+        &self,
+        node: &MarkdownNode,
+        context: &InlineRenderContext,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<InlineElement> {
+        let math = node.data::<Math>()?;
+        let image = crate::math::render(
+            &math.source,
+            f32::from(context.font_size()) * crate::math::SCALE,
+            window.scale_factor(),
+            context.text_style().color,
+            true,
+        )
+        .ok()?;
+        Some(
+            InlineElement::new(
+                img(image.image.clone())
+                    .w(px(image.width))
+                    .h(px(image.height)),
+            )
+            .with_baseline(px(image.baseline)),
+        )
+    }
 }
 
 /// Block math — `$$...$$` rendered as a centered display line.
@@ -2980,9 +3005,35 @@ impl MarkdownPlugin for MathBlockPlugin {
         ))
     }
 
-    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let math = node.data::<Math>().expect("math node data");
         let theme = cx.theme();
+        let rendered = crate::math::render(
+            &math.source,
+            f32::from(window.rem_size()) * crate::math::SCALE,
+            window.scale_factor(),
+            theme.foreground,
+            false,
+        );
+        let body = match rendered {
+            Ok(image) => img(image.image.clone())
+                .w(px(image.width))
+                .h(px(image.height))
+                .into_any_element(),
+            // Unparseable TeX: the Unicode approximation, plus why.
+            Err(error) => v_flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .text_base()
+                        .italic()
+                        .text_color(theme.foreground)
+                        .child(tex_to_unicode(&math.source)),
+                )
+                .child(div().text_xs().text_color(theme.danger).child(error))
+                .into_any_element(),
+        };
         div()
             .w_full()
             .py_2()
@@ -2990,13 +3041,7 @@ impl MarkdownPlugin for MathBlockPlugin {
             .my_1()
             .flex()
             .justify_center()
-            .child(
-                div()
-                    .text_base()
-                    .italic()
-                    .text_color(theme.foreground)
-                    .child(tex_to_unicode(&math.source)),
-            )
+            .child(body)
     }
 }
 

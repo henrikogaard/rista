@@ -88,6 +88,7 @@ sed "s/@VERSION@/${VERSION}/g; s/@BUILD@/${BUILD}/g" \
   macos/Info.plist >"$APP/Contents/Info.plist"
 
 cp LICENSE "$APP/Contents/Resources/LICENSE"
+cp third_party/KaTeX-fonts-OFL.txt "$APP/Contents/Resources/KaTeX-fonts-OFL.txt"
 ICONSET="${WORK}/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
