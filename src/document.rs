@@ -1538,6 +1538,30 @@ impl Document {
         })
     }
 
+    /// "Copy link to block" — the `^id` of the block at the caret,
+    /// adding a fresh one (one undo step, caret kept) when the block
+    /// has none. `None` on blank lines, headings, and frontmatter.
+    pub fn ensure_block_id(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let cursor = editor.cursor().min(text.len());
+            let (id, insert) = block_anchor(&text, cursor, &new_block_id(&text))?;
+            if let Some((at, ins)) = insert {
+                let sel = editor.selected_range();
+                let shift = |b: usize| if b > at { b + ins.len() } else { b };
+                let (start, end) = (shift(sel.start), shift(sel.end));
+                editor.set_selected_range(at..at, cx);
+                editor.insert(ins, window, cx);
+                editor.set_selected_range(start..end, cx);
+            }
+            Some(id)
+        })
+    }
+
     /// Pasting a URL over a selection wraps the selection in
     /// `[selection](url)` — returns false when nothing is selected so
     /// the caller lets the normal paste through.
@@ -2494,6 +2518,183 @@ pub fn word_stats(text: &str) -> (usize, usize) {
     (text.split_whitespace().count(), text.chars().count())
 }
 
+/// The `id` of a line's trailing ` ^id` block marker (or of a lone
+/// `^id` line) — the same convention block-ref completion reads.
+fn trailing_block_id(line: &str) -> Option<&str> {
+    let t = line.trim_end();
+    let pos = t.rfind('^')?;
+    let id = &t[pos + 1..];
+    let valid = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && (pos == 0 || t.as_bytes()[pos - 1] == b' ');
+    valid.then_some(id)
+}
+
+/// A random six-character block id not yet used in `text`.
+fn new_block_id(text: &str) -> String {
+    use std::hash::BuildHasher;
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let state = std::collections::hash_map::RandomState::new();
+    for salt in 0u64.. {
+        let mut n = state.hash_one((std::time::SystemTime::now(), salt));
+        let id: String = (0..6)
+            .map(|_| {
+                let c = CHARS[(n % CHARS.len() as u64) as usize] as char;
+                n /= CHARS.len() as u64;
+                c
+            })
+            .collect();
+        if !text.contains(&format!("^{id}")) {
+            return id;
+        }
+    }
+    unreachable!()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum BlockKind {
+    Blank,
+    Heading,
+    Anchor,
+    List,
+    Quote,
+    Table,
+    /// Fenced code; the payload is the opening fence's line index.
+    Code(usize),
+    Para,
+}
+
+/// The block around byte `cursor` and where its id lives — the
+/// "copy link to block" anchor. Paragraphs and list items carry a
+/// trailing ` ^id`; quotes, tables, and code fences get a lone `^id`
+/// line after the block, set off by blank lines. Returns the id the
+/// block already has, or `new_id` plus the `(offset, text)` insert
+/// that adds it. `None` on blank lines, headings, and frontmatter.
+fn block_anchor(
+    text: &str,
+    cursor: usize,
+    new_id: &str,
+) -> Option<(String, Option<(usize, String)>)> {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut off = 0;
+    for l in text.split_inclusive('\n') {
+        lines.push((off, l.trim_end_matches('\n').trim_end_matches('\r')));
+        off += l.len();
+    }
+    if text.is_empty() || text.ends_with('\n') {
+        lines.push((off, ""));
+    }
+    let cur = lines.iter().rposition(|(start, _)| *start <= cursor)?;
+
+    // Frontmatter is not a block.
+    let mut first = 0;
+    if lines[0].1 == "---" {
+        if let Some(close) = lines.iter().skip(1).position(|(_, l)| *l == "---") {
+            first = close + 2;
+        }
+    }
+    if cur < first {
+        return None;
+    }
+
+    let mut kinds = vec![BlockKind::Blank; lines.len()];
+    let mut ix = first;
+    while ix < lines.len() {
+        let s = lines[ix].1.trim_start();
+        if s.starts_with("```") || s.starts_with("~~~") {
+            let fence = &s[..3];
+            let open = ix;
+            kinds[ix] = BlockKind::Code(open);
+            ix += 1;
+            while ix < lines.len() {
+                kinds[ix] = BlockKind::Code(open);
+                ix += 1;
+                if lines[ix - 1].1.trim_start().starts_with(fence) {
+                    break;
+                }
+            }
+            continue;
+        }
+        let b = s.as_bytes();
+        let hashes = s.chars().take_while(|&c| c == '#').count();
+        let digits = s.chars().take_while(char::is_ascii_digit).count();
+        kinds[ix] = if s.is_empty() {
+            BlockKind::Blank
+        } else if (1..=6).contains(&hashes) && matches!(b.get(hashes), None | Some(b' ')) {
+            BlockKind::Heading
+        } else if s.starts_with('^')
+            && trailing_block_id(s).is_some_and(|id| id.len() + 1 == s.trim_end().len())
+        {
+            BlockKind::Anchor
+        } else if s.starts_with('>') {
+            BlockKind::Quote
+        } else if s.starts_with('|') {
+            BlockKind::Table
+        } else if (matches!(b[0], b'-' | b'*' | b'+') && matches!(b.get(1), None | Some(b' ')))
+            || (digits > 0
+                && matches!(b.get(digits), Some(b'.' | b')'))
+                && matches!(b.get(digits + 1), None | Some(b' ')))
+        {
+            BlockKind::List
+        } else {
+            BlockKind::Para
+        };
+        ix += 1;
+    }
+
+    let kind = kinds[cur];
+    let mut last = cur;
+    match kind {
+        BlockKind::Blank | BlockKind::Heading => return None,
+        BlockKind::Anchor => {
+            return trailing_block_id(lines[cur].1).map(|id| (id.to_string(), None))
+        }
+        BlockKind::List => {}
+        BlockKind::Para => {
+            while kinds.get(last + 1) == Some(&BlockKind::Para) {
+                last += 1;
+            }
+        }
+        BlockKind::Quote | BlockKind::Table | BlockKind::Code(_) => {
+            while kinds.get(last + 1) == Some(&kind) {
+                last += 1;
+            }
+        }
+    }
+
+    let (start, line) = lines[last];
+    if matches!(kind, BlockKind::List | BlockKind::Para) {
+        if let Some(id) = trailing_block_id(line) {
+            return Some((id.to_string(), None));
+        }
+        let at = start + line.trim_end().len();
+        return Some((new_id.to_string(), Some((at, format!(" ^{new_id}")))));
+    }
+
+    // Structured block: an existing lone `^id` line right after it,
+    // or after one blank line, already names it.
+    let next = |n: usize| kinds.get(last + n).copied();
+    let anchor_at = match (next(1), next(2)) {
+        (Some(BlockKind::Anchor), _) => Some(last + 1),
+        (Some(BlockKind::Blank), Some(BlockKind::Anchor)) => Some(last + 2),
+        _ => None,
+    };
+    if let Some(a) = anchor_at {
+        return trailing_block_id(lines[a].1).map(|id| (id.to_string(), None));
+    }
+    let tail = if matches!(next(1), None | Some(BlockKind::Blank)) {
+        ""
+    } else {
+        "\n"
+    };
+    Some((
+        new_id.to_string(),
+        Some((start + line.len(), format!("\n\n^{new_id}{tail}"))),
+    ))
+}
+
 /// Byte ranges between the pipes of a table-row line — `| a | b |`
 /// yields the ` a ` and ` b ` segments. `\|` doesn't split; rows
 /// without leading/trailing pipes still yield their edge segments.
@@ -2669,7 +2870,7 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_table_md, guarded_write};
+    use super::{block_anchor, format_table_md, guarded_write, new_block_id};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2757,5 +2958,82 @@ mod tests {
             "| Name | Status | Age |\n|---|---|---|\n| alpha |done |5|\n| beta-longer | todo | 42 |\n"
         );
         println!("{}", out);
+    }
+
+    /// Apply `block_anchor` at the `@` in `src` (removed first).
+    fn anchor(src: &str) -> (String, String) {
+        let cursor = src.find('@').unwrap();
+        let text = src.replacen('@', "", 1);
+        let (id, insert) = block_anchor(&text, cursor, "new1").unwrap();
+        let mut out = text.clone();
+        if let Some((at, ins)) = insert {
+            out.insert_str(at, &ins);
+        }
+        (id, out)
+    }
+
+    #[test]
+    fn block_id_goes_at_the_end_of_a_paragraph() {
+        assert_eq!(
+            anchor("one\ntw@o\nthree\n\nnext\n"),
+            ("new1".into(), "one\ntwo\nthree ^new1\n\nnext\n".into())
+        );
+        assert_eq!(anchor("solo@"), ("new1".into(), "solo ^new1".into()));
+    }
+
+    #[test]
+    fn block_id_goes_on_the_list_item_line() {
+        assert_eq!(
+            anchor("- a\n- b@\n- c\n"),
+            ("new1".into(), "- a\n- b ^new1\n- c\n".into())
+        );
+        assert_eq!(
+            anchor("1. fi@rst\n2. second"),
+            ("new1".into(), "1. first ^new1\n2. second".into())
+        );
+    }
+
+    #[test]
+    fn existing_block_ids_are_reused() {
+        assert_eq!(
+            anchor("para@ here ^abc\n"),
+            ("abc".into(), "para here ^abc\n".into())
+        );
+        assert_eq!(
+            anchor("> q@uote\n\n^q1\n"),
+            ("q1".into(), "> quote\n\n^q1\n".into())
+        );
+    }
+
+    #[test]
+    fn structured_blocks_get_a_lone_id_line() {
+        assert_eq!(
+            anchor("> a@\n> b\nafter\n"),
+            ("new1".into(), "> a\n> b\n\n^new1\n\nafter\n".into())
+        );
+        assert_eq!(
+            anchor("| a |\n|---|\n| 1@ |\n"),
+            ("new1".into(), "| a |\n|---|\n| 1 |\n\n^new1\n".into())
+        );
+        assert_eq!(
+            anchor("```\nco@de\n```"),
+            ("new1".into(), "```\ncode\n```\n\n^new1".into())
+        );
+    }
+
+    #[test]
+    fn headings_blanks_and_frontmatter_have_no_block() {
+        assert!(block_anchor("# Title\n", 3, "x").is_none());
+        assert!(block_anchor("a\n\nb", 2, "x").is_none());
+        assert!(block_anchor("---\ntag: x\n---\nbody", 6, "x").is_none());
+        assert!(block_anchor("---\ntag: x\n---\nbody", 16, "x").is_some());
+    }
+
+    #[test]
+    fn new_block_ids_are_short_and_unused() {
+        let id = new_block_id("");
+        assert_eq!(id.len(), 6);
+        assert!(id.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert!(!new_block_id(&format!("x ^{id}")).eq(&id));
     }
 }

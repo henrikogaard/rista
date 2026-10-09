@@ -107,6 +107,13 @@ pub struct Settings {
     /// "date format").
     #[serde(default = "default_daily_format")]
     pub daily_format: String,
+    /// Vault-relative folder "New unique note" creates notes in (empty = vault root).
+    #[serde(default)]
+    pub unique_note_dir: String,
+    /// Unique-note filename prefix in Moment syntax, e.g.
+    /// `YYYYMMDDHHmm` → `202610091430.md` (the Zettelkasten prefix).
+    #[serde(default = "default_unique_note_format")]
+    pub unique_note_format: String,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     /// Which sidebar panes are expanded — persists across launches.
@@ -141,6 +148,10 @@ fn default_templates_dir() -> String {
 
 fn default_daily_format() -> String {
     "YYYY-MM-DD".to_string()
+}
+
+fn default_unique_note_format() -> String {
+    "YYYYMMDDHHmm".to_string()
 }
 
 /// Expanded/collapsed state of the optional sidebar sections.
@@ -215,6 +226,8 @@ impl Default for Settings {
             templates_dir: default_templates_dir(),
             daily_dir: String::new(),
             daily_format: default_daily_format(),
+            unique_note_dir: String::new(),
+            unique_note_format: default_unique_note_format(),
             starred: Vec::new(),
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),
