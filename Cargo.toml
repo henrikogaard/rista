@@ -31,6 +31,24 @@ ratex-parser = "=0.1.14"
 ratex-layout = "=0.1.14"
 ratex-types = "=0.1.14"
 ratex-render = { version = "=0.1.14", features = ["embed-fonts"] }
+# Mermaid diagrams: merman lays out and draws SVG (pure Rust, offline);
+# resvg rasterizes it with the system fonts.
+merman = { version = "=0.8.0", default-features = false, features = [
+    "svg",
+    "layout-cytoscape",
+    "diagram-flowchart",
+    "diagram-sequence",
+    "diagram-class",
+    "diagram-state",
+    "diagram-er",
+    "diagram-gantt",
+    "diagram-pie",
+    "diagram-mindmap",
+    "diagram-journey",
+    "diagram-timeline",
+    "diagram-git-graph",
+] }
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts"] }
 
 [features]
 # Links vendor/sparkle/Sparkle.framework and enables the Sparkle updater
