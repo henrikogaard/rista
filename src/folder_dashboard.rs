@@ -88,7 +88,9 @@ impl Workspace {
                     let resolver = vault.image_resolver();
                     banner = preview::banner_spec(&raw, &path, &*resolver);
                     let body = folder::introduction_body(&raw, &metadata.title);
-                    let text = preview::preprocess(body, note, vault.root.as_deref(), &*resolver);
+                    let marks = preview::MarkColors::from_theme(cx.theme());
+                    let text =
+                        preview::preprocess(body, note, vault.root.as_deref(), &*resolver, &marks);
                     introduction = Some(cx.new(|cx| TextViewState::markdown(&text, cx)));
                 }
                 Err(_) => introduction_error = true,

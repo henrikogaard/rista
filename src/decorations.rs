@@ -434,8 +434,15 @@ fn comments(text: &str, base: usize, out: &mut Vec<TextDecoration>, style: Highl
 
 /// `==highlight==` spans get a translucent wash like the preview's
 /// `<mark>` — `===` (setext underline) is not a highlight. Fenced code
-/// stays literal.
-fn highlights(text: &str, base: usize, out: &mut Vec<TextDecoration>, style: HighlightStyle) {
+/// stays literal. A leading color emoji (`==🔴text==`) picks the wash
+/// from `colors` (see `preview::HIGHLIGHT_COLORS`).
+fn highlights(
+    text: &str,
+    base: usize,
+    out: &mut Vec<TextDecoration>,
+    style: HighlightStyle,
+    colors: &[gpui_kit::Hsla; 6],
+) {
     let mut open: Option<usize> = None;
     let mut fenced = false;
     let mut at = 0usize;
@@ -458,7 +465,15 @@ fn highlights(text: &str, base: usize, out: &mut Vec<TextDecoration>, style: Hig
                     match open {
                         None => open = Some(at + i),
                         Some(start) => {
-                            mark(out, base + start..base + at + i + 2, style);
+                            let inner = &text[start + 2..];
+                            let color = crate::preview::HIGHLIGHT_COLORS
+                                .iter()
+                                .position(|(emoji, _)| inner.starts_with(emoji))
+                                .map(|ix| HighlightStyle {
+                                    background_color: Some(colors[ix].opacity(0.25)),
+                                    ..style
+                                });
+                            mark(out, base + start..base + at + i + 2, color.unwrap_or(style));
                             open = None;
                         }
                     }
@@ -559,6 +574,7 @@ pub fn markdown_decorations(
             background_color: Some(theme.warning.opacity(0.25)),
             ..Default::default()
         },
+        &crate::preview::highlight_palette(theme),
     );
     out
 }

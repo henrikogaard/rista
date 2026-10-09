@@ -736,6 +736,7 @@ impl Workspace {
                 if this.settings.appearance == Appearance::System {
                     theme::apply(&this.settings, cx);
                     crate::apply_ui_settings(&this.settings, cx);
+                    this.retheme_previews(cx);
                     cx.notify();
                 }
             });
@@ -1353,6 +1354,19 @@ impl Workspace {
     fn on_pair_insert(&mut self, action: &PairInsert, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
             doc.update(cx, |doc, cx| doc.insert_pair(action.pair, window, cx));
+        }
+    }
+
+    fn on_set_highlight_color(
+        &mut self,
+        action: &SetHighlightColor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| {
+                doc.set_highlight_color(action.emoji, window, cx)
+            });
         }
     }
 
@@ -3154,8 +3168,17 @@ impl Workspace {
             _ => Appearance::Dark,
         };
         theme::apply(&self.settings, cx);
+        self.retheme_previews(cx);
         self.settings.save();
         cx.notify();
+    }
+
+    /// Re-render open previews after a theme change — colored highlights
+    /// bake theme colors into the preview markup.
+    fn retheme_previews(&self, cx: &mut Context<Self>) {
+        for doc in &self.docs {
+            doc.entity.update(cx, |doc, cx| doc.resync_preview(cx));
+        }
     }
 
     pub(crate) fn quit(&mut self, cx: &mut Context<Self>) {
@@ -3762,6 +3785,7 @@ impl Workspace {
             }
         }
         theme::apply(&settings, cx);
+        self.retheme_previews(cx);
         for tab in &self.terminals {
             tab.terminal
                 .update(cx, |terminal, cx| terminal.apply_settings(&settings, cx));
@@ -7637,6 +7661,7 @@ impl Workspace {
             // plain characters.
             .key_context("RistaEditor")
             .on_action(cx.listener(Self::on_pair_insert))
+            .on_action(cx.listener(Self::on_set_highlight_color))
             .on_action(cx.listener(Self::on_pair_close))
             .capture_action::<input::Paste>(cx.listener(|this, _paste, window, cx| {
                 this.on_editor_paste_action(window, cx);
@@ -7719,6 +7744,22 @@ impl Workspace {
                             .menu("Select All", Box::new(input::SelectAll))
                             .separator()
                             .menu("Italic", Box::new(ToggleItalic))
+                            .submenu(
+                                "Highlight color",
+                                preview::HIGHLIGHT_COLORS
+                                    .iter()
+                                    .fold(
+                                        gpui_kit::component::native_menu::NativeMenu::new(),
+                                        |menu, (emoji, name)| {
+                                            menu.menu(
+                                                format!("{emoji} {name}"),
+                                                Box::new(SetHighlightColor { emoji }),
+                                            )
+                                        },
+                                    )
+                                    .separator()
+                                    .menu("No color", Box::new(SetHighlightColor { emoji: "" })),
+                            )
                             .menu("Task checkbox", Box::new(ToggleCheckbox))
                             .menu("Toggle comment", Box::new(ToggleComment))
                             .separator()

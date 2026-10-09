@@ -176,8 +176,13 @@ impl Document {
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let (preview_text, preview_line_offsets) =
-            preview::preprocess_mapped(&content, &path, vault_root.as_deref(), &*image_resolver);
+        let (preview_text, preview_line_offsets) = preview::preprocess_mapped(
+            &content,
+            &path,
+            vault_root.as_deref(),
+            &*image_resolver,
+            &preview::MarkColors::from_theme(cx.theme()),
+        );
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
 
@@ -326,8 +331,13 @@ impl Document {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
-        let (text, offsets) =
-            preview::preprocess_mapped(&raw, &self.path, self.vault_root.as_deref(), &*resolver);
+        let (text, offsets) = preview::preprocess_mapped(
+            &raw,
+            &self.path,
+            self.vault_root.as_deref(),
+            &*resolver,
+            &preview::MarkColors::from_theme(cx.theme()),
+        );
         self.preview_line_offsets = offsets;
         self.preview_blocks = preview::navigation_blocks(&text);
         self.mapped_preview = None;
@@ -1562,6 +1572,24 @@ impl Document {
         })
     }
 
+    /// Editor menu "Highlight color": recolor the highlight at the caret,
+    /// highlight the selection in that color, or start an empty one.
+    pub fn set_highlight_color(
+        &mut self,
+        emoji: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let (range, new_text, caret) =
+                highlight_color_edit(&text, editor.selected_range(), emoji);
+            editor.set_selected_range(range, cx);
+            editor.replace(new_text, window, cx);
+            editor.set_selected_range(caret, cx);
+        });
+    }
+
     /// Pasting a URL over a selection wraps the selection in
     /// `[selection](url)` — returns false when nothing is selected so
     /// the caller lets the normal paste through.
@@ -2514,6 +2542,56 @@ pub enum LinkTarget {
     Url(String),
 }
 
+/// The edit behind `set_highlight_color`: `(range to replace, new
+/// text, selection after)`. A selection becomes `==<emoji>sel==`; a
+/// caret inside `==…==` on its line swaps the leading color emoji;
+/// anywhere else inserts `==<emoji>==` with the caret inside.
+fn highlight_color_edit(
+    text: &str,
+    sel: std::ops::Range<usize>,
+    emoji: &str,
+) -> (std::ops::Range<usize>, String, std::ops::Range<usize>) {
+    let sel = sel.start.min(text.len())..sel.end.min(text.len());
+    if !sel.is_empty() {
+        let inner = &text[sel.clone()];
+        let start = sel.start + 2 + emoji.len();
+        return (
+            sel.clone(),
+            format!("=={emoji}{inner}=="),
+            start..start + inner.len(),
+        );
+    }
+    let at = sel.start;
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let line = &text[line_start..line_end];
+    // `==…==` spans on the line, paired left to right.
+    let marks: Vec<usize> = line
+        .match_indices("==")
+        .map(|(i, _)| line_start + i)
+        .collect();
+    for &[open, close] in marks.as_chunks::<2>().0 {
+        if (open + 2..=close).contains(&at) {
+            let body = open + 2;
+            let old = crate::preview::HIGHLIGHT_COLORS
+                .iter()
+                .find(|(e, _)| text[body..close].starts_with(e))
+                .map_or(0, |(e, _)| e.len());
+            let shift = |p: usize| {
+                if p > body {
+                    p + emoji.len() - old.min(p - body)
+                } else {
+                    p
+                }
+            };
+            let caret = shift(at).max(body + emoji.len());
+            return (body..body + old, emoji.to_string(), caret..caret);
+        }
+    }
+    let caret = at + 2 + emoji.len();
+    (at..at, format!("=={emoji}=="), caret..caret)
+}
+
 pub fn word_stats(text: &str) -> (usize, usize) {
     (text.split_whitespace().count(), text.chars().count())
 }
@@ -2870,7 +2948,7 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_anchor, format_table_md, guarded_write, new_block_id};
+    use super::{block_anchor, format_table_md, guarded_write, highlight_color_edit, new_block_id};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -3035,5 +3113,33 @@ mod tests {
         assert_eq!(id.len(), 6);
         assert!(id.chars().all(|c| c.is_ascii_alphanumeric()));
         assert!(!new_block_id(&format!("x ^{id}")).eq(&id));
+    }
+
+    /// Apply `highlight_color_edit` at `@` (a `[`…`]` pair marks a selection).
+    fn recolor(src: &str, emoji: &str) -> String {
+        let (sel, text) = match (src.find('['), src.find(']')) {
+            (Some(a), Some(b)) => (a..b - 1, src.replacen('[', "", 1).replacen(']', "", 1)),
+            _ => {
+                let at = src.find('@').unwrap();
+                (at..at, src.replacen('@', "", 1))
+            }
+        };
+        let (range, new, caret) = highlight_color_edit(&text, sel, emoji);
+        let mut out = text.clone();
+        out.replace_range(range, &new);
+        out.insert(caret.end, '|');
+        if caret.start != caret.end {
+            out.insert(caret.start, '|');
+        }
+        out
+    }
+
+    #[test]
+    fn highlight_colors_wrap_recolor_and_insert() {
+        assert_eq!(recolor("a [word] b", "🔴"), "a ==🔴|word|== b");
+        assert_eq!(recolor("x ==hi@gh== y", "🔵"), "x ==🔵hi|gh== y");
+        assert_eq!(recolor("==🔴r@ed==", "🟢"), "==🟢r|ed==");
+        assert_eq!(recolor("==🔴@red==", ""), "==|red==");
+        assert_eq!(recolor("==a== b@ ==c==", "🟡"), "==a== b==🟡|== ==c==");
     }
 }
