@@ -75,11 +75,20 @@ pub struct GraphView {
     /// Last painted canvas bounds — hit tests and the label overlay
     /// read it (it is refreshed every prepaint).
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Parsed link targets per note, keyed by mtime — a rebuild only
+    /// re-reads and re-parses notes that changed.
+    link_cache: LinkCache,
 }
 
 const REPULSION: f32 = 110.0; // ideal spacing k
 const STEPS_INIT: u32 = 120; // silent warmup before first paint
 const STEPS_LIVE: u32 = 600; // animated settle
+/// Rebuild warm-up budget in node pairs × steps — a full
+/// `STEPS_INIT` up to ~300 nodes, fewer above so big vaults don't
+/// stall the UI thread on every save.
+const WARM_PAIRS: usize = 5_400_000;
+
+type LinkCache = HashMap<PathBuf, (Option<std::time::SystemTime>, Vec<(String, bool)>)>;
 
 /// `build()`'s product — nodes, the path → index map, edges, and the
 /// adjacency lists hover highlighting walks.
@@ -113,7 +122,7 @@ impl GraphView {
     /// Build the node/edge graph from the vault's link index. Also
     /// returns the path → node-index map for the callers that need it
     /// (local-graph center, rebuild position carry-over).
-    fn build(vault: &crate::vault::Vault) -> BuiltGraph {
+    fn build(vault: &crate::vault::Vault, cache: &mut LinkCache) -> BuiltGraph {
         let mut nodes: Vec<GNode> = Vec::new();
         let mut by_path: HashMap<PathBuf, usize> = HashMap::new();
         let mut ghosts: HashMap<String, usize> = HashMap::new();
@@ -158,13 +167,20 @@ impl GraphView {
                 pinned: false,
             });
         }
+        cache.retain(|path, _| by_path.contains_key(path));
         for path in &vault.notes {
-            let Ok(text) = std::fs::read_to_string(path) else {
-                continue;
-            };
+            let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+            if mtime.is_none() || cache.get(path).map(|(mt, _)| *mt) != Some(mtime) {
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    cache.remove(path);
+                    continue;
+                };
+                let targets = crate::vault::local_link_targets(&text);
+                cache.insert(path.clone(), (mtime, targets));
+            }
             let from = by_path[path];
             let from_dir = path.parent().unwrap_or(std::path::Path::new("/"));
-            let (resolved, unresolved) = vault.outgoing_from(&text, from_dir);
+            let (resolved, unresolved) = vault.outgoing_targets(&cache[path].1, from_dir);
             let link = |from: usize,
                         to: usize,
                         edges: &mut Vec<(usize, usize)>,
@@ -419,7 +435,9 @@ impl GraphView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (nodes, _by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
+        let mut link_cache = LinkCache::new();
+        let (nodes, _by_path, edges, adjacent, mutual) =
+            Self::build(vault.read(cx), &mut link_cache);
         let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
         let mut view = Self {
             focus_handle: cx.focus_handle(),
@@ -443,6 +461,7 @@ impl GraphView {
             drag: None,
             steps: STEPS_LIVE,
             bounds: Rc::new(Cell::new(Bounds::default())),
+            link_cache,
         };
         for _ in 0..STEPS_INIT.min(view.steps) {
             view.step();
@@ -462,7 +481,9 @@ impl GraphView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (mut nodes, by_path, edges, adjacent, mutual) = Self::build(vault.read(cx));
+        let mut link_cache = LinkCache::new();
+        let (mut nodes, by_path, edges, adjacent, mutual) =
+            Self::build(vault.read(cx), &mut link_cache);
         let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
         let local = by_path.get(center).copied();
         if let Some(ix) = local {
@@ -493,6 +514,7 @@ impl GraphView {
             drag: None,
             steps: STEPS_LIVE,
             bounds: Rc::new(Cell::new(Bounds::default())),
+            link_cache,
         };
         for _ in 0..STEPS_INIT.min(view.steps) {
             view.step();
@@ -556,7 +578,8 @@ impl GraphView {
     /// Rebuild the node set after vault changes — positions carry over
     /// by path (and ghosts by label) so the map doesn't jump.
     pub(crate) fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let (mut nodes, _by_path, edges, adjacent, mutual) = Self::build(self.vault.read(cx));
+        let (mut nodes, _by_path, edges, adjacent, mutual) =
+            Self::build(self.vault.read(cx), &mut self.link_cache);
         let mut old_pos: HashMap<String, Point<f32>> = HashMap::new();
         for n in &self.nodes {
             let key = n
@@ -566,7 +589,8 @@ impl GraphView {
                 .unwrap_or_else(|| format!("ghost:{}", n.label));
             old_pos.insert(key, n.pos);
         }
-        for n in &mut nodes {
+        let mut placed = vec![false; nodes.len()];
+        for (n, placed) in nodes.iter_mut().zip(&mut placed) {
             let key = n
                 .path
                 .as_ref()
@@ -574,6 +598,35 @@ impl GraphView {
                 .unwrap_or_else(|| format!("ghost:{}", n.label));
             if let Some(pos) = old_pos.get(&key) {
                 n.pos = *pos;
+                *placed = true;
+            }
+        }
+        let carried = placed.iter().filter(|p| **p).count();
+        // New nodes start beside their already-placed neighbours, not
+        // out on the seed circle — the short warm-up below can't
+        // haul them in on a big graph.
+        if carried > 0 {
+            for ix in 0..nodes.len() {
+                if placed[ix] {
+                    continue;
+                }
+                let near: Vec<Point<f32>> = adjacent[ix]
+                    .iter()
+                    .filter(|nb| placed[**nb])
+                    .map(|nb| nodes[*nb].pos)
+                    .collect();
+                if near.is_empty() {
+                    continue;
+                }
+                let len = near.len() as f32;
+                let mx = near.iter().map(|p| p.x).sum::<f32>() / len;
+                let my = near.iter().map(|p| p.y).sum::<f32>() / len;
+                // Golden-angle offset keeps siblings from stacking.
+                let a = ix as f32 * 2.4;
+                nodes[ix].pos = point(
+                    mx + REPULSION * 0.5 * a.cos(),
+                    my + REPULSION * 0.5 * a.sin(),
+                );
             }
         }
         // Local center may sit at a new index — re-find it by path.
@@ -599,10 +652,23 @@ impl GraphView {
             let active = self.active.clone();
             self.set_local_center(active.as_deref(), cx);
         }
-        self.steps = STEPS_INIT;
-        for _ in 0..self.steps {
+        // A fresh layout gets the full warm-up; a carried-over one only
+        // needs a short settle, capped by graph size. Cooling as it
+        // goes keeps a settled map from jumping. A live animation
+        // resumes where it was.
+        let pairs = (self.nodes.len() * self.nodes.len().saturating_sub(1) / 2).max(1);
+        let warm = if carried == 0 {
+            STEPS_INIT
+        } else {
+            STEPS_INIT.min((WARM_PAIRS / pairs) as u32)
+        };
+        let live = self.steps;
+        self.steps = warm;
+        while self.steps > 0 {
             self.step();
+            self.steps = self.steps.saturating_sub(1);
         }
+        self.steps = live;
         self.recenter();
         cx.notify();
     }
