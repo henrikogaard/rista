@@ -5106,15 +5106,15 @@ impl Workspace {
             return;
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
-        // `[[note#^block-id]]` — the line whose trailing `^id` matches.
+        // `[[note#^block-id]]` — the first line of the block it names.
         if let Some(block) = anchor.strip_prefix('^') {
-            for (ix, line) in raw.split('\n').enumerate() {
-                if line.trim_end().ends_with(&format!("^{block}")) {
-                    doc.update(cx, |doc, cx| doc.jump_to_line(ix + 1, window, cx));
-                    return;
+            let lines: Vec<&str> = raw.split('\n').collect();
+            match crate::preview::block_lines(&lines, block) {
+                Some((start, _)) => {
+                    doc.update(cx, |doc, cx| doc.jump_to_line(start + 1, window, cx))
                 }
+                None => self.note_status(format!("No block “{}”", anchor), cx),
             }
-            self.note_status(format!("No block “{}”", anchor), cx);
             return;
         }
         let mut in_fence = false;

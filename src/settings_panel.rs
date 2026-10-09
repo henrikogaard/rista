@@ -321,7 +321,18 @@ impl SettingsView {
                     return;
                 }
                 let dir = state.read(cx).value().trim().to_string();
-                if dir.starts_with('/') || dir.contains("..") {
+                // Vault-relative only — `C:\x`, `\\server`, `/x`, and `..`
+                // would let `root.join` escape the vault.
+                let path = std::path::Path::new(&dir);
+                if path.has_root()
+                    || path.is_absolute()
+                    || path.components().any(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                        )
+                    })
+                {
                     return;
                 }
                 this.update_setting(cx, |s| s.unique_note_dir = dir, window);
