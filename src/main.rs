@@ -19,6 +19,7 @@ mod graph;
 mod history;
 mod http;
 mod math;
+mod mermaid;
 mod note_icons;
 mod preview;
 mod properties;

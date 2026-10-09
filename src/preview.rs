@@ -101,7 +101,9 @@ pub fn extensions(
         }),
         _ => ext,
     };
-    ext.plugin(MathPlugin).plugin(MathBlockPlugin)
+    ext.plugin(MathPlugin)
+        .plugin(MathBlockPlugin)
+        .plugin(MermaidPlugin)
 }
 
 /// Rewrite the reference editor syntax into CommonMark for the preview pipeline.
@@ -2919,6 +2921,89 @@ impl MarkdownPlugin for WikiLinkPlugin {
                 });
         }
         el
+    }
+}
+
+// ------------------------------------------------------------------
+// Mermaid — ```` ```mermaid ```` blocks drawn as diagrams in the theme's
+// colors (`crate::mermaid`). The source shows while the diagram renders
+// and, with the error, when it can't be parsed.
+// ------------------------------------------------------------------
+
+struct Mermaid {
+    source: String,
+}
+
+struct MermaidPlugin;
+
+impl MarkdownPlugin for MermaidPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "mermaid"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Code(code) = node else {
+            return None;
+        };
+        if code.lang.as_deref() != Some("mermaid") {
+            return None;
+        }
+        Some(MarkdownNode::new(
+            "mermaid",
+            Mermaid {
+                source: code.value.clone(),
+            },
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mermaid = node.data::<Mermaid>().expect("mermaid node data");
+        let dark = cx.theme().is_dark();
+        let diagram_theme = crate::mermaid::DiagramTheme::from_theme(cx.theme(), dark);
+        let diagram =
+            crate::mermaid::diagram(&mermaid.source, &diagram_theme, window.scale_factor(), cx);
+        let theme = cx.theme();
+        let source = |note: Option<(String, Hsla)>| {
+            v_flex()
+                .w_full()
+                .gap_1()
+                .p_3()
+                .rounded(theme.radius)
+                .bg(theme.secondary)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.muted_foreground)
+                        .child(mermaid.source.trim_end().to_string()),
+                )
+                .when_some(note, |this, (note, color)| {
+                    this.child(div().text_xs().text_color(color).child(note))
+                })
+                .into_any_element()
+        };
+        let body = match diagram {
+            crate::mermaid::Diagram::Ready(image) => div()
+                .flex()
+                .justify_center()
+                .child(
+                    img(image.image.clone())
+                        .w(px(image.width))
+                        .h(px(image.height))
+                        .max_w_full()
+                        .object_fit(ObjectFit::Contain),
+                )
+                .into_any_element(),
+            crate::mermaid::Diagram::Pending => {
+                source(Some(("Drawing diagram…".into(), theme.muted_foreground)))
+            }
+            crate::mermaid::Diagram::Failed(error) => source(Some((error, theme.danger))),
+        };
+        div().w_full().my_2().child(body)
     }
 }
 
