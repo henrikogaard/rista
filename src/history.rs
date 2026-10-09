@@ -197,16 +197,6 @@ pub fn format_epoch(secs: u64) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
 }
 
-/// `YYYY-MM-DD` — template `{{date}}` expansion.
-pub fn format_date(secs: u64) -> String {
-    format_epoch(secs)[..10].to_string()
-}
-
-/// `HH:MM` — template `{{time}}` expansion.
-pub fn format_time(secs: u64) -> String {
-    format_epoch(secs)[11..16].to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

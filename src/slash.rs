@@ -116,11 +116,16 @@ const ITEMS: &[SlashItem] = &[
 /// on `[[` / `![[` (note/image links resolved against the live vault).
 pub struct VaultCompletions {
     vault: Option<Entity<Vault>>,
+    /// The note's title, for `{{title}}` in template items.
+    title: std::rc::Rc<std::cell::RefCell<String>>,
 }
 
 impl VaultCompletions {
-    pub fn new(vault: Option<Entity<Vault>>) -> Self {
-        Self { vault }
+    pub fn new(
+        vault: Option<Entity<Vault>>,
+        title: std::rc::Rc<std::cell::RefCell<String>>,
+    ) -> Self {
+        Self { vault, title }
     }
 }
 
@@ -152,7 +157,26 @@ impl CompletionProvider for VaultCompletions {
         if let Some(resp) = emoji_items(text, offset) {
             return Task::ready(Ok(resp));
         }
-        Task::ready(Ok(slash_items(text, offset)))
+        let templates = || {
+            let Some(vault) = self.vault.as_ref() else {
+                return Vec::new();
+            };
+            let vault = vault.read(cx);
+            let Some(root) = vault.root.as_ref() else {
+                return Vec::new();
+            };
+            let title = self.title.borrow();
+            let now = chrono::Local::now().naive_local();
+            crate::app::template_files(root, &vault.templates_dir)
+                .into_iter()
+                .filter_map(|path| {
+                    let name = path.file_stem()?.to_string_lossy().to_string();
+                    let text = std::fs::read_to_string(&path).ok()?;
+                    Some((name, crate::document::expand_template(&text, &title, now).0))
+                })
+                .collect()
+        };
+        Task::ready(Ok(slash_items(text, offset, templates)))
     }
 }
 
@@ -521,7 +545,13 @@ fn emoji_items(text: &Rope, offset: usize) -> Option<CompletionResponse> {
     }
 }
 
-fn slash_items(text: &Rope, offset: usize) -> CompletionResponse {
+/// `/query` at line start: the built-in blocks, then the vault's
+/// templates (`templates` is only called once the line qualifies).
+fn slash_items(
+    text: &Rope,
+    offset: usize,
+    templates: impl FnOnce() -> Vec<(String, String)>,
+) -> CompletionResponse {
     let point = text.offset_to_point(offset);
     let line = text.slice_line(point.row).to_string();
     let line_start = text.line_start_offset(point.row);
@@ -561,6 +591,26 @@ fn slash_items(text: &Rope, offset: usize) -> CompletionResponse {
                 })),
                 ..Default::default()
             })
+            .chain(
+                templates()
+                    .into_iter()
+                    .filter(|(name, _)| {
+                        q.is_empty()
+                            || name.to_lowercase().contains(&q)
+                            || "template".contains(q.as_str())
+                    })
+                    .map(|(name, text)| CompletionItem {
+                        filter_text: Some(format!("{name} template")),
+                        label: name,
+                        detail: Some("Template".to_string()),
+                        kind: Some(CompletionItemKind::FILE),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: text,
+                        })),
+                        ..Default::default()
+                    }),
+            )
             .collect(),
     )
 }

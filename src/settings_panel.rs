@@ -2,7 +2,7 @@
 
 use crate::app::Workspace;
 use crate::settings::{
-    Appearance, Language, PropertiesVisibility, Settings, ViewMode, EDITOR_FONTS,
+    Appearance, Language, Period, PropertiesVisibility, Settings, ViewMode, EDITOR_FONTS,
 };
 use crate::theme;
 use gpui_kit::base::StyledExt;
@@ -35,6 +35,8 @@ pub struct SettingsView {
     daily_format_input: Entity<InputState>,
     unique_dir_input: Entity<InputState>,
     unique_format_input: Entity<InputState>,
+    /// Folder and format inputs for the weekly … yearly notes.
+    periodic_inputs: Vec<(Period, Entity<InputState>, Entity<InputState>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -155,7 +157,57 @@ impl SettingsView {
             state
         });
 
+        let periodic_inputs: Vec<_> = [Period::Week, Period::Month, Period::Quarter, Period::Year]
+            .into_iter()
+            .map(|period| {
+                let (dir, format) = settings.period(period);
+                let (dir, format) = (dir.to_string(), format.to_string());
+                let dir_input = cx.new(|cx| {
+                    let mut state = InputState::new(window, cx).placeholder("vault root");
+                    state.set_value(dir, window, cx);
+                    state
+                });
+                let format_input = cx.new(|cx| {
+                    let mut state = InputState::new(window, cx);
+                    state.set_value(format, window, cx);
+                    state
+                });
+                (period, dir_input, format_input)
+            })
+            .collect();
+
         let mut subs = Vec::new();
+        for (period, dir_input, format_input) in &periodic_inputs {
+            let period = *period;
+            subs.push(cx.subscribe_in(
+                dir_input,
+                window,
+                move |this, state, event: &InputEvent, window, cx| {
+                    if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        return;
+                    }
+                    let dir = state.read(cx).value().trim().to_string();
+                    if !is_vault_relative(&dir) {
+                        return;
+                    }
+                    this.update_setting(cx, |s| *s.period_mut(period).0 = dir, window);
+                },
+            ));
+            subs.push(cx.subscribe_in(
+                format_input,
+                window,
+                move |this, state, event: &InputEvent, window, cx| {
+                    if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        return;
+                    }
+                    let format = state.read(cx).value().trim().to_string();
+                    if format.is_empty() {
+                        return;
+                    }
+                    this.update_setting(cx, |s| *s.period_mut(period).1 = format, window);
+                },
+            ));
+        }
         for (input, kind) in [
             (&terminal_font_input, 0),
             (&terminal_size_input, 1),
@@ -321,18 +373,7 @@ impl SettingsView {
                     return;
                 }
                 let dir = state.read(cx).value().trim().to_string();
-                // Vault-relative only — `C:\x`, `\\server`, `/x`, and `..`
-                // would let `root.join` escape the vault.
-                let path = std::path::Path::new(&dir);
-                if path.has_root()
-                    || path.is_absolute()
-                    || path.components().any(|c| {
-                        matches!(
-                            c,
-                            std::path::Component::ParentDir | std::path::Component::Prefix(_)
-                        )
-                    })
-                {
+                if !is_vault_relative(&dir) {
                     return;
                 }
                 this.update_setting(cx, |s| s.unique_note_dir = dir, window);
@@ -371,6 +412,7 @@ impl SettingsView {
             daily_format_input,
             unique_dir_input,
             unique_format_input,
+            periodic_inputs,
             _subscriptions: subs,
         }
     }
@@ -768,7 +810,23 @@ impl Render for SettingsView {
                         cx,
                         "Unique note format",
                         Input::new(&self.unique_format_input).w(px(180.)),
-                    )),
+                    ))
+                    .children(self.periodic_inputs.iter().map(|(period, dir, format)| {
+                        let label = match period {
+                            Period::Week => "Weekly note folder · format",
+                            Period::Month => "Monthly note folder · format",
+                            Period::Quarter => "Quarterly note folder · format",
+                            _ => "Yearly note folder · format",
+                        };
+                        Self::row(
+                            cx,
+                            label,
+                            h_flex()
+                                .gap_1()
+                                .child(Input::new(dir).w(px(88.)))
+                                .child(Input::new(format).w(px(88.))),
+                        )
+                    })),
             )
             .child(
                 v_flex()
@@ -790,4 +848,18 @@ impl Render for SettingsView {
                     ),
             )
     }
+}
+
+/// A folder setting must stay inside the vault — `C:\x`, `\\server`,
+/// `/x`, and `..` would let `root.join` escape it.
+fn is_vault_relative(dir: &str) -> bool {
+    let path = std::path::Path::new(dir);
+    !path.has_root()
+        && !path.is_absolute()
+        && !path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        })
 }
