@@ -52,3 +52,12 @@ libc = "0.2"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Test-only: point gpui-kit at the inline <mark> fix. gpui-pre stays on
+# crates.io so it follows the pin that branch was built against (=0.3.8).
+[patch.crates-io]
+gpui-kit = { git = "https://github.com/henrikogaard/gpui-kit", branch = "cursor/inline-html-mark-0bc0" }
+gpui-base = { git = "https://github.com/henrikogaard/gpui-kit", branch = "cursor/inline-html-mark-0bc0" }
+gpui-component = { git = "https://github.com/henrikogaard/gpui-kit", branch = "cursor/inline-html-mark-0bc0" }
+gpui-kit-assets = { git = "https://github.com/henrikogaard/gpui-kit", branch = "cursor/inline-html-mark-0bc0" }
+gpui-component-macros = { git = "https://github.com/henrikogaard/gpui-kit", branch = "cursor/inline-html-mark-0bc0" }
