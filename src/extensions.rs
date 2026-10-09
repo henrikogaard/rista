@@ -18,6 +18,17 @@ const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENTS_TOTAL_BYTES: usize = 16 * 1024;
 const MAX_ERRORS: usize = 512;
 pub const BUILTIN_VIBE_AGENT_ID: &str = "vibe";
+pub const BUILTIN_CODEX_AGENT_ID: &str = "rista-codex";
+pub const BUILTIN_CLAUDE_AGENT_ID: &str = "rista-claude";
+pub const BUILTIN_OPENCODE_AGENT_ID: &str = "rista-opencode";
+pub const BUILTIN_GROK_AGENT_ID: &str = "rista-grok";
+const BUILTIN_AGENT_IDS: &[&str] = &[
+    BUILTIN_VIBE_AGENT_ID,
+    BUILTIN_CODEX_AGENT_ID,
+    BUILTIN_CLAUDE_AGENT_ID,
+    BUILTIN_OPENCODE_AGENT_ID,
+    BUILTIN_GROK_AGENT_ID,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,19 +67,149 @@ pub struct Agent {
     pub args: Vec<String>,
 }
 
-pub fn registered_agents(plugins: Vec<Manifest>) -> Vec<(Option<String>, Agent)> {
-    let mut agents = vec![(
-        None,
-        Agent {
-            id: BUILTIN_VIBE_AGENT_ID.to_string(),
-            name: Localized {
-                en: "Vibe".into(),
-                nb: "Vibe".into(),
+struct BuiltinAgentPreset {
+    agent: Agent,
+    setup: Localized,
+}
+
+fn builtin_presets() -> Vec<BuiltinAgentPreset> {
+    [
+        (
+            BUILTIN_VIBE_AGENT_ID,
+            "Vibe",
+            "Vibe",
+            "vibe-acp",
+            &[] as &[&str],
+            "Install Vibe with `uv tool install mistral-vibe`, then run `vibe` in Terminal to complete setup and sign in.",
+            "Installer Vibe med `uv tool install mistral-vibe`, og kjør deretter `vibe` i Terminal for å fullføre oppsettet og logge inn.",
+        ),
+        (
+            BUILTIN_CODEX_AGENT_ID,
+            "Codex",
+            "Codex",
+            "codex-acp",
+            &[] as &[&str],
+            "Install the ACP adapter with `npm install -g @agentclientprotocol/codex-acp`, then sign in with `codex login` or follow the adapter's documented authentication setup.",
+            "Installer ACP-adapteren med `npm install -g @agentclientprotocol/codex-acp`, og logg deretter inn med `codex login` eller følg adapterens dokumenterte autentiseringsoppsett.",
+        ),
+        (
+            BUILTIN_CLAUDE_AGENT_ID,
+            "Claude",
+            "Claude",
+            "claude-agent-acp",
+            &[] as &[&str],
+            "Install the ACP adapter with `npm install -g @agentclientprotocol/claude-agent-acp` (Node.js 22+ required), then authenticate using Claude's own CLI or setup.",
+            "Installer ACP-adapteren med `npm install -g @agentclientprotocol/claude-agent-acp` (Node.js 22+ kreves), og autentiser deretter med Claudes egen CLI eller oppsett.",
+        ),
+        (
+            BUILTIN_OPENCODE_AGENT_ID,
+            "OpenCode",
+            "OpenCode",
+            "opencode",
+            &["acp"] as &[&str],
+            "Install OpenCode with `npm install -g opencode-ai`, then run `opencode auth login` and configure a provider.",
+            "Installer OpenCode med `npm install -g opencode-ai`, kjør deretter `opencode auth login` og konfigurer en leverandør.",
+        ),
+        (
+            BUILTIN_GROK_AGENT_ID,
+            "Grok (via OpenCode)",
+            "Grok (via OpenCode)",
+            "opencode",
+            &["acp"] as &[&str],
+            "Install OpenCode with `npm install -g opencode-ai`, configure xAI access with `opencode auth login`, and choose an available model whose ID starts with `xai/`. Rísta does not select or invent a model ID.",
+            "Installer OpenCode med `npm install -g opencode-ai`, konfigurer xAI-tilgang med `opencode auth login`, og velg en tilgjengelig modell med ID som starter med `xai/`. Rísta velger eller finner ikke på modell-ID-er.",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(id, en, nb, program, args, help_en, help_nb)| BuiltinAgentPreset {
+            agent: Agent {
+                id: id.into(),
+                name: Localized {
+                    en: en.into(),
+                    nb: nb.into(),
+                },
+                program: program.into(),
+                args: args.iter().map(|arg| (*arg).into()).collect(),
             },
-            program: "vibe-acp".into(),
-            args: Vec::new(),
+            setup: Localized {
+                en: help_en.into(),
+                nb: help_nb.into(),
+            },
         },
-    )];
+    )
+    .collect()
+}
+
+pub fn builtin_setup_help(agent_id: &str) -> Option<Localized> {
+    builtin_presets()
+        .into_iter()
+        .find(|preset| preset.agent.id == agent_id)
+        .map(|preset| preset.setup)
+}
+
+pub fn launch_error_text(
+    agent_id: &str,
+    program: &str,
+    kind: std::io::ErrorKind,
+    detail: &str,
+    language: crate::settings::Language,
+    is_manifest_agent: bool,
+) -> String {
+    match kind {
+        std::io::ErrorKind::NotFound => {
+            let mut text = match language {
+                crate::settings::Language::English => format!(
+                    "Executable `{program}` was not found in the app PATH. It may be installed outside the app PATH."
+                ),
+                crate::settings::Language::Norwegian => format!(
+                    "Fant ikke den kjørbare filen `{program}` i appens PATH. Den kan være installert utenfor appens PATH."
+                ),
+            };
+            if let Some(help) = builtin_setup_help(agent_id) {
+                text.push('\n');
+                text.push_str(help.text(language));
+            } else if is_manifest_agent {
+                text.push('\n');
+                text.push_str(match language {
+                    crate::settings::Language::English => {
+                        "For a custom agent, set `program` to its absolute executable path."
+                    }
+                    crate::settings::Language::Norwegian => {
+                        "For en egendefinert agent kan `program` settes til den absolutte filbanen."
+                    }
+                });
+            }
+            text
+        }
+        std::io::ErrorKind::PermissionDenied => match language {
+            crate::settings::Language::English => {
+                format!("Permission was denied when starting `{program}`: {detail}")
+            }
+            crate::settings::Language::Norwegian => {
+                format!("Tillatelse ble nektet ved oppstart av `{program}`: {detail}")
+            }
+        },
+        _ => match language {
+            crate::settings::Language::English => {
+                format!("Could not start `{program}`: {detail}")
+            }
+            crate::settings::Language::Norwegian => {
+                format!("Kunne ikke starte `{program}`: {detail}")
+            }
+        },
+    }
+}
+
+pub fn is_grok_agent(agent_id: &str) -> bool {
+    agent_id == BUILTIN_GROK_AGENT_ID
+}
+
+pub fn registered_agents(plugins: Vec<Manifest>) -> Vec<(Option<String>, Agent)> {
+    let mut agents = builtin_presets()
+        .into_iter()
+        .map(|preset| (None, preset.agent))
+        .collect::<Vec<_>>();
     agents.extend(plugins.into_iter().flat_map(|manifest| {
         let manifest_id = manifest.id;
         manifest
@@ -414,9 +555,9 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
     let mut agent_ids = HashSet::new();
     for agent in &manifest.agents {
         validate_id("agent id", &agent.id)?;
-        if agent.id == BUILTIN_VIBE_AGENT_ID {
+        if BUILTIN_AGENT_IDS.contains(&agent.id.as_str()) {
             return Err(format!(
-                "agent id {:?} is reserved for the built-in agent",
+                "agent id {:?} is reserved for a built-in agent",
                 agent.id
             ));
         }
@@ -730,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_builtin_vibe_with_manifest_agents_and_reserves_its_id() {
+    fn lists_all_builtin_agents_and_reserves_their_ids() {
         let mut manifest = valid_manifest("sample", "Sample");
         manifest.agents.push(Agent {
             id: "assistant".into(),
@@ -742,19 +883,103 @@ mod tests {
             args: Vec::new(),
         });
         let agents = registered_agents(vec![manifest.clone()]);
+        let expected = [
+            ("vibe", "Vibe", "vibe-acp", &[][..]),
+            ("rista-codex", "Codex", "codex-acp", &[][..]),
+            ("rista-claude", "Claude", "claude-agent-acp", &[][..]),
+            ("rista-opencode", "OpenCode", "opencode", &["acp"][..]),
+            (
+                "rista-grok",
+                "Grok (via OpenCode)",
+                "opencode",
+                &["acp"][..],
+            ),
+        ];
+        assert_eq!(agents.len(), expected.len() + 1);
+        for (index, (id, name, program, args)) in expected.iter().enumerate() {
+            assert_eq!(agents[index].0, None);
+            assert_eq!(agents[index].1.id, *id);
+            assert_eq!(agents[index].1.name.en, *name);
+            assert_eq!(agents[index].1.name.nb, *name);
+            assert_eq!(agents[index].1.program, *program);
+            assert_eq!(agents[index].1.args, *args);
+            assert!(super::builtin_setup_help(id).is_some());
 
-        assert_eq!(agents[0].0, None);
-        assert_eq!(agents[0].1.id, BUILTIN_VIBE_AGENT_ID);
-        assert_eq!(agents[0].1.name.en, "Vibe");
-        assert_eq!(agents[0].1.program, "vibe-acp");
-        assert!(agents[0].1.args.is_empty());
-        assert_eq!(agents[1].0.as_deref(), Some("sample"));
-        assert_eq!(agents[1].1.id, "assistant");
+            manifest.agents[0].id = (*id).into();
+            assert!(validate_manifest(&manifest)
+                .expect_err("reject reserved built-in agent id")
+                .contains("reserved"));
+        }
+        assert_eq!(agents[expected.len()].0.as_deref(), Some("sample"));
+        assert_eq!(agents[expected.len()].1.id, "assistant");
+        manifest.agents[0].id = "custom-agent".into();
+        assert!(validate_manifest(&manifest).is_ok());
 
-        manifest.agents[0].id = BUILTIN_VIBE_AGENT_ID.into();
-        assert!(validate_manifest(&manifest)
-            .expect_err("reject reserved built-in agent id")
-            .contains("reserved"));
+        for (id, command) in [
+            ("vibe", "uv tool install mistral-vibe"),
+            (
+                "rista-codex",
+                "npm install -g @agentclientprotocol/codex-acp",
+            ),
+            (
+                "rista-claude",
+                "npm install -g @agentclientprotocol/claude-agent-acp",
+            ),
+            ("rista-opencode", "npm install -g opencode-ai"),
+            ("rista-grok", "xai/"),
+        ] {
+            let setup = super::builtin_setup_help(id).expect("localized setup help");
+            assert!(setup.en.contains(command));
+            assert!(setup.nb.contains(command));
+        }
+    }
+
+    #[test]
+    fn launch_errors_distinguish_missing_and_denied_executables() {
+        let missing = super::launch_error_text(
+            BUILTIN_VIBE_AGENT_ID,
+            "vibe-acp",
+            std::io::ErrorKind::NotFound,
+            "missing",
+            crate::settings::Language::English,
+            false,
+        );
+        assert!(missing.contains("not found in the app PATH"));
+        assert!(missing.contains("uv tool install mistral-vibe"));
+        assert!(!missing.contains("not installed"));
+
+        let denied = super::launch_error_text(
+            "custom",
+            "agent-cli",
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied",
+            crate::settings::Language::English,
+            true,
+        );
+        assert!(denied.contains("Permission was denied"));
+        assert!(!denied.contains("not found"));
+
+        let other = super::launch_error_text(
+            "custom",
+            "agent-cli",
+            std::io::ErrorKind::Other,
+            "unavailable",
+            crate::settings::Language::English,
+            true,
+        );
+        assert!(other.contains("Could not start `agent-cli`"));
+        assert!(!other.contains("Permission was denied"));
+
+        let custom_missing = super::launch_error_text(
+            "custom",
+            "agent-cli",
+            std::io::ErrorKind::NotFound,
+            "missing",
+            crate::settings::Language::Norwegian,
+            true,
+        );
+        assert!(custom_missing.contains("i appens PATH"));
+        assert!(custom_missing.contains("absolutte filbanen"));
     }
 
     #[test]

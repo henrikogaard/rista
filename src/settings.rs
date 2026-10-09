@@ -75,7 +75,9 @@ pub struct Settings {
     pub agent_open: bool,
     pub active_folder: Option<PathBuf>,
     pub appearance: Appearance,
+    #[serde(deserialize_with = "deserialize_theme_name")]
     pub dark_theme: String,
+    #[serde(deserialize_with = "deserialize_theme_name")]
     pub light_theme: String,
     pub properties_visibility: PropertiesVisibility,
     /// Editor font family — a writing-first set, resolved by name.
@@ -247,6 +249,17 @@ pub fn config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+fn deserialize_theme_name<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    Ok(match name.as_str() {
+        "Rísta Night" => "Slate Night".into(),
+        "Rísta Day" => "Slate Day".into(),
+        _ => name,
+    })
+}
+
 pub fn config_path() -> PathBuf {
     config_dir().join("settings.json")
 }
@@ -317,5 +330,33 @@ mod tests {
         assert_eq!(restored.tree_sort, TreeSort::Type);
         assert_eq!(restored.light_theme, "Fjord Day");
         assert_eq!(restored.properties_visibility, PropertiesVisibility::Hidden);
+    }
+
+    #[test]
+    fn theme_defaults_migrate_only_legacy_original_names() {
+        let defaults: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.dark_theme, "Graphite Night");
+        assert_eq!(defaults.light_theme, "Graphite Day");
+        let migrated: Settings =
+            serde_json::from_str(r#"{"dark_theme":"Rísta Night","light_theme":"Rísta Day"}"#)
+                .unwrap();
+        assert_eq!(migrated.dark_theme, "Slate Night");
+        assert_eq!(migrated.light_theme, "Slate Day");
+        let custom: Settings =
+            serde_json::from_str(r#"{"dark_theme":"Fjord Night","light_theme":"Rose Day"}"#)
+                .unwrap();
+        assert_eq!(custom.dark_theme, "Fjord Night");
+        assert_eq!(custom.light_theme, "Rose Day");
+        let preserved: Settings = serde_json::from_str(
+            r#"{"dark_theme":"Mono Night","light_theme":"Custom Quiet","appearance":"light"}"#,
+        )
+        .unwrap();
+        assert_eq!(preserved.dark_theme, "Mono Night");
+        assert_eq!(preserved.light_theme, "Custom Quiet");
+        let graphite: Settings =
+            serde_json::from_str(r#"{"dark_theme":"Graphite Night","light_theme":"Graphite Day"}"#)
+                .unwrap();
+        assert_eq!(graphite.dark_theme, "Graphite Night");
+        assert_eq!(graphite.light_theme, "Graphite Day");
     }
 }

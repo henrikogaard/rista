@@ -4,7 +4,8 @@ Quiet, modern-mythic. Nordic restraint: mineral surfaces, restrained accents,
 terse type, nothing ornamental. Files are the product; chrome recedes.
 
 The source of truth for UI tokens is `src/theme.rs`
-(Rísta, Fjord, Rose, Graphite, and Mono light/dark palettes),
+(Slate, Fjord, Rose, Graphite, Mono, Gruvbox, Nord, Solarized, and Catppuccin
+light/dark palettes; Graphite is the default),
 exported framework-agnostically:
 
 - `design/tokens.json` — generated values
@@ -17,7 +18,7 @@ Regenerate after editing `src/theme.rs` (see "Generating token exports").
 
 ## Principles
 
-1. **Dark first.** Rísta Night is the default; Day is a full peer, not an inversion.
+1. **Dark first.** Graphite Night is the default; Day is a full peer, not an inversion.
 2. **Quiet chrome.** Borderless pane cards and toolbar controls; canvas gutters
    separate the panes. Resize grips appear only on hover or drag. No gradients.
 3. **Compact density.** Small type, tight spacing, no wasted vertical space.
@@ -38,23 +39,30 @@ true-color escape sequences remain process-supplied content.
 
 Palette intent per token group (values in `design/tokens.json`):
 
+- **Graphite** is the quiet monochrome default. **Slate** preserves the original
+  teal-accented Rísta palette under its new visible name.
+- **Fjord** uses cool blue accents; **Rose** uses muted rose accents.
+- **Mono** stays black-and-white; **Gruvbox** brings warm earth tones; **Nord**
+  uses cool arctic colors; **Solarized** balances teal and ochre; **Catppuccin**
+  uses soft pastel accents. These are adapted palette families, not exact
+  reproductions of upstream themes.
+
 | Token | Night | Day | Role |
 |---|---|---|---|
-| `background` | `#0a0b0e` | `#f6f4ef` | Canvas |
-| `foreground` | `#d8dce5` | `#363b47` | Primary text |
-| `accent.background` | `#29443f` | `#e9e6dd` | Interactive fills |
-| `ring` / `caret` | `#6fd8c8` / `#7ee0d0` | `#5b7fa3` / `#4a6b8f` | Focus + cursor |
-| `primary.background` | `#6fd8c8` | `#5b7fa3` | Primary action |
-| `sidebar.background` | `#121419` | `#ffffff` | Vault rail |
-| `muted.foreground` | `#82899a` | `#727887` | Secondary text |
+| `background` | `#161618` | `#f5f5f7` | Canvas |
+| `foreground` | `#e5e5ea` | `#1d1d1f` | Primary text |
+| `accent.background` | `#2c2c2e` | `#ededf0` | Interactive fills |
+| `ring` / `caret` | `#f5f5f7` | `#1d1d1f` | Focus + cursor |
+| `primary.background` | `#f5f5f7` | `#1d1d1f` | Primary action |
+| `sidebar.background` | `#1e1e20` | `#ffffff` | Vault rail |
+| `muted.foreground` | `#8e8e93` | `#6e6e73` | Secondary text |
 | `success` / `warning` / `danger` | muted green/amber/red | — | Semantic only |
 
-Night uses a restrained teal accent; Day uses blue-grey.
-Fjord uses cool blue surfaces and accents; Rose uses warm plum surfaces and
-rose accents. Graphite and Mono are monochrome: neutral grey (Graphite) or pure
-black-and-white (Mono) surfaces with a near-black/white accent; semantic and
-terminal ANSI colours use the system palette. Light and dark palettes are
-selected independently in Settings.
+Graphite is the default monochrome palette; Slate retains the original
+teal-accented Rísta colors, while Fjord and Rose preserve their cool blue and
+muted rose identities. Mono is black-and-white. Gruvbox, Nord, Solarized, and
+Catppuccin each provide a paired light and dark adaptation. Light and dark
+palettes are selected independently in Settings.
 Accent tokens apply to controls, links, selection, the caret, and syntax accents.
 
 ### Custom palettes
@@ -138,7 +146,7 @@ than an ornament. Warm paper and ink keep it legible in both app themes.
 | [`rista-mark.svg`](public/logos/rista-mark.svg) | Ink mark on a light background |
 | [`rista-mark-light.svg`](public/logos/rista-mark-light.svg) | Paper mark on a dark background |
 
-- Ink: `#363b47`; paper: `#f6f4ef` (from Rísta Day foreground/background).
+- Ink: `#363b47`; paper: `#f6f4ef` (from Slate Day foreground/background).
 - Keep the SVG viewBox and built-in clear space. Do not stretch or rotate.
 - Use the icon at 16px or larger; use the standalone mark at 24px or larger.
 - Pair with the name **Rísta**, preserving the acute accent. Plain ASCII
@@ -163,6 +171,6 @@ shipping. Do not regenerate the app's UI tokens when only brand assets change.
 python3 scripts/export-theme-tokens.py
 ```
 
-The existing `themes.dark`/`themes.light` exports and CSS selectors remain
-compatible. `palettes` adds all ten named variants, selectable in CSS with e.g.
-`data-rista-theme="fjord-night"`.
+The `themes.dark`/`themes.light` exports and generic CSS selectors use Graphite.
+`palettes` includes all eighteen named variants. The historical `rista-night`
+and `rista-day` selectors and palette keys remain aliases for Slate.
