@@ -8273,7 +8273,13 @@ impl Render for Workspace {
                                                                                 .bg(cx.theme().sidebar)
                                                                                 .rounded(cx.theme().radius_lg)
                                                                                 .overflow_hidden()
-                                                                                .child(self.agent_panel.clone()),
+                                                                                // Cached so streamed agent output
+                                                                                // redraws only this panel.
+                                                                                .child(
+                                                                                    self.agent_panel
+                                                                                        .clone()
+                                                                                        .cached(StyleRefinement::default().size_full()),
+                                                                                ),
                                                                         ),
                                                                 ),
                                                         )
