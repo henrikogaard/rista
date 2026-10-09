@@ -1927,7 +1927,11 @@ impl Workspace {
             .and_then(|i| self.docs.get(i))
             .map(|d| d.entity.read(cx).path.clone());
         if let Some(graph) = self.graph.clone() {
-            graph.update(cx, |g, _cx| g.active = path.clone());
+            // Cached view — notify so the active-note halo moves.
+            graph.update(cx, |g, cx| {
+                g.active = path.clone();
+                cx.notify();
+            });
         }
         if let Some(graph) = self.graph_dock.clone() {
             graph.update(cx, |g, cx| g.set_local_center(path.as_deref(), cx));
@@ -3770,6 +3774,10 @@ impl Workspace {
         // The agent panel is a cached view that reads settings such as the
         // language, so it must be redrawn alongside the workspace.
         self.agent_panel.update(cx, |_, cx| cx.notify());
+        // Graphs are cached too and read the language through the workspace.
+        for graph in self.graph.iter().chain(&self.graph_dock) {
+            graph.update(cx, |_, cx| cx.notify());
+        }
         settings.save();
         cx.notify();
     }
