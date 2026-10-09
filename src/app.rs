@@ -317,6 +317,10 @@ enum PaletteCmd {
     ReopenTab,
     CopyLink,
     CopyLinkHeading,
+    CopyLinkBlock,
+    CopyEmbedBlock,
+    RandomNote,
+    NewUniqueNote,
     RevealFile,
     CloseOtherTabs,
     CloseTabsRight,
@@ -630,6 +634,33 @@ impl PaletteCmd {
                 assets::IconName::Link,
                 "Copy wikilink to heading",
                 &["copy", "link", "anchor", "section", "heading", "clipboard"],
+            ),
+            CopyLinkBlock => (
+                assets::IconName::Link,
+                "Copy link to block",
+                &["copy", "link", "block", "reference", "id", "clipboard"],
+            ),
+            CopyEmbedBlock => (
+                assets::IconName::Link2,
+                "Copy embed to block",
+                &[
+                    "copy",
+                    "embed",
+                    "transclude",
+                    "block",
+                    "reference",
+                    "clipboard",
+                ],
+            ),
+            RandomNote => (
+                assets::IconName::Dices,
+                "Open random note",
+                &["random", "shuffle", "surprise", "serendipity"],
+            ),
+            NewUniqueNote => (
+                assets::IconName::FileClock,
+                "New unique note",
+                &["create", "zettelkasten", "timestamp", "id", "prefix"],
             ),
             RevealFile => (
                 assets::IconName::Crosshair,
@@ -2191,6 +2222,61 @@ impl Workspace {
         self.new_note_in(dir, Vec::new(), window, cx);
     }
 
+    /// Palette "Open random note" — any Markdown note except the
+    /// active one and templates.
+    fn open_random_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.note_status("Open a folder first", cx);
+            return;
+        };
+        let templates = root.join(&self.settings.templates_dir);
+        let active = self.active_doc().map(|d| d.read(cx).path.clone());
+        let pool: Vec<PathBuf> = self
+            .vault
+            .read(cx)
+            .notes
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "md"))
+            .filter(|p| !p.starts_with(&templates) && Some(*p) != active.as_ref())
+            .cloned()
+            .collect();
+        if pool.is_empty() {
+            self.note_status("No other notes to pick from", cx);
+            return;
+        }
+        use std::hash::BuildHasher;
+        let n =
+            std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now());
+        let path = pool[(n % pool.len() as u64) as usize].clone();
+        self.open_document(path, window, cx);
+    }
+
+    /// Palette "New unique note" — `<unique_note_dir>/<stamp>.md` with
+    /// a Moment-format timestamp name (the Zettelkasten prefix), seeded
+    /// from `<templates_dir>/unique.md` when that exists.
+    fn new_unique_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.note_status("Open a folder first", cx);
+            return;
+        };
+        let fmt = crate::bases::moment_to_chrono(&self.settings.unique_note_format);
+        let stamp = chrono::Local::now().format(&fmt).to_string();
+        let path = free_path(
+            &root.join(&self.settings.unique_note_dir),
+            &format!("{stamp}.md"),
+        );
+        if path
+            .parent()
+            .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+            || std::fs::write(&path, self.template_seed(&path, "unique.md", cx)).is_err()
+        {
+            self.note_status("Could not create the note", cx);
+            return;
+        }
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        self.open_document(path, window, cx);
+    }
+
     /// Palette "New base" — a starter `.base` at the vault root,
     /// named like Untitled notes, opened in Preview.
     fn new_base(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2334,10 +2420,10 @@ impl Workspace {
         self.open_daily_at(chrono::Local::now().date_naive(), window, cx);
     }
 
-    /// Initial content for a missing daily note — the reference editor convention:
-    /// `<templates_dir>/daily.md` seeds it with `{{date}}`/`{{time}}`/
+    /// Initial content for a new daily or unique note — the reference editor convention:
+    /// `<templates_dir>/<template>` seeds it with `{{date}}`/`{{time}}`/
     /// `{{title}}`/`{{cursor}}` expanded, else a plain heading.
-    fn daily_seed(&self, path: &Path, cx: &App) -> String {
+    fn template_seed(&self, path: &Path, template: &str, cx: &App) -> String {
         let title = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -2347,8 +2433,7 @@ impl Workspace {
             .root
             .as_ref()
             .and_then(|root| {
-                std::fs::read_to_string(root.join(&self.settings.templates_dir).join("daily.md"))
-                    .ok()
+                std::fs::read_to_string(root.join(&self.settings.templates_dir).join(template)).ok()
             })
             .map(|tpl| {
                 let now = crate::history::epoch();
@@ -2377,7 +2462,7 @@ impl Workspace {
             if path
                 .parent()
                 .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(&path, self.daily_seed(&path, cx)).is_err()
+                || std::fs::write(&path, self.template_seed(&path, "daily.md", cx)).is_err()
             {
                 return;
             }
@@ -2437,7 +2522,7 @@ impl Workspace {
             && (path
                 .parent()
                 .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(path, self.daily_seed(path, cx)).is_err())
+                || std::fs::write(path, self.template_seed(path, "daily.md", cx)).is_err())
         {
             self.note_status("Could not create daily note", cx);
             return;
@@ -2855,6 +2940,52 @@ impl Workspace {
         }
     }
 
+    fn on_copy_block_link(
+        &mut self,
+        _: &CopyBlockLink,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_block_ref(false, window, cx);
+    }
+
+    fn on_copy_block_embed(
+        &mut self,
+        _: &CopyBlockEmbed,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_block_ref(true, window, cx);
+    }
+
+    /// Copy `[[stem#^id]]` (or the `![[…]]` embed) for the block at the
+    /// caret, adding the `^id` marker first when the block has none.
+    fn copy_block_ref(&mut self, embed: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.note_status("No note open", cx);
+            return;
+        };
+        let Some(stem) = doc
+            .read(cx)
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+        else {
+            return;
+        };
+        match doc.update(cx, |doc, cx| doc.ensure_block_id(window, cx)) {
+            Some(id) => {
+                let link = format!("{}[[{stem}#^{id}]]", if embed { "!" } else { "" });
+                cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                self.note_status(format!("Copied {link}"), cx);
+            }
+            None => self.note_status(
+                "Put the caret in a paragraph, list item, quote, table, or code block",
+                cx,
+            ),
+        }
+    }
+
     /// ⌘+/⌘−/⌘0 — editor font zoom, clamped to a readable range.
     fn adjust_editor_font(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
         let mut s = self.settings.clone();
@@ -3063,6 +3194,7 @@ impl Workspace {
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let commands = [
             PaletteCmd::NewFile,
+            PaletteCmd::NewUniqueNote,
             PaletteCmd::NewBase,
             PaletteCmd::DailyNote,
             PaletteCmd::AppendDaily,
@@ -3127,6 +3259,9 @@ impl Workspace {
             PaletteCmd::ReopenTab,
             PaletteCmd::CopyLink,
             PaletteCmd::CopyLinkHeading,
+            PaletteCmd::CopyLinkBlock,
+            PaletteCmd::CopyEmbedBlock,
+            PaletteCmd::RandomNote,
             PaletteCmd::RevealFile,
             PaletteCmd::CloseOtherTabs,
             PaletteCmd::CloseTabsRight,
@@ -3490,6 +3625,10 @@ impl Workspace {
                     None => self.note_status("No note open", cx),
                 }
             }
+            PaletteCmd::CopyLinkBlock => self.on_copy_block_link(&CopyBlockLink, window, cx),
+            PaletteCmd::CopyEmbedBlock => self.on_copy_block_embed(&CopyBlockEmbed, window, cx),
+            PaletteCmd::RandomNote => self.open_random_note(window, cx),
+            PaletteCmd::NewUniqueNote => self.new_unique_note(window, cx),
             PaletteCmd::CopyLinkHeading => {
                 // `[[stem#heading]]` for the nearest heading at or above
                 // the caret — the "copy link to heading".
@@ -4971,15 +5110,15 @@ impl Workspace {
             return;
         };
         let raw = doc.read(cx).editor.read(cx).value().to_string();
-        // `[[note#^block-id]]` — the line whose trailing `^id` matches.
+        // `[[note#^block-id]]` — the first line of the block it names.
         if let Some(block) = anchor.strip_prefix('^') {
-            for (ix, line) in raw.split('\n').enumerate() {
-                if line.trim_end().ends_with(&format!("^{block}")) {
-                    doc.update(cx, |doc, cx| doc.jump_to_line(ix + 1, window, cx));
-                    return;
+            let lines: Vec<&str> = raw.split('\n').collect();
+            match crate::preview::block_lines(&lines, block) {
+                Some((start, _)) => {
+                    doc.update(cx, |doc, cx| doc.jump_to_line(start + 1, window, cx))
                 }
+                None => self.note_status(format!("No block “{}”", anchor), cx),
             }
-            self.note_status(format!("No block “{}”", anchor), cx);
             return;
         }
         let mut in_fence = false;
@@ -6389,6 +6528,20 @@ impl Workspace {
                             });
                         }
                     })
+                    .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                        style.bg(cx.theme().accent.opacity(0.2))
+                    })
+                    .on_drop::<ExternalPaths>({
+                        let view = view.clone();
+                        move |paths, window, cx| {
+                            view.update(cx, |this, cx| {
+                                let Some(root) = this.vault.read(cx).root.clone() else {
+                                    return;
+                                };
+                                this.copy_external_into(paths.paths(), root, window, cx);
+                            });
+                        }
+                    })
                     .child(
                         Button::new("vault-home").ghost().xsmall()
                             .icon(assets::IconName::House)
@@ -6611,11 +6764,29 @@ impl Workspace {
                                             })
                                             .on_drop::<PathBuf>({
                                                 let view = render_view.clone();
+                                                let dest_dir = dest_dir.clone();
                                                 move |src, _window, cx| {
                                                     let src = src.clone();
                                                     let dest_dir = dest_dir.clone();
                                                     view.update(cx, |this, cx| {
                                                         this.move_tree_entry(src, dest_dir, cx);
+                                                    });
+                                                }
+                                            })
+                                            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                                                style.bg(cx.theme().accent.opacity(0.2))
+                                            })
+                                            .on_drop::<ExternalPaths>({
+                                                let view = render_view.clone();
+                                                move |paths, window, cx| {
+                                                    let dest_dir = dest_dir.clone();
+                                                    view.update(cx, |this, cx| {
+                                                        this.copy_external_into(
+                                                            paths.paths(),
+                                                            dest_dir,
+                                                            window,
+                                                            cx,
+                                                        );
                                                     });
                                                 }
                                             })
@@ -7549,6 +7720,8 @@ impl Workspace {
                             .menu("Delete line", Box::new(DeleteLine))
                             .separator()
                             .menu("Open link under cursor", Box::new(FollowLink))
+                            .menu("Copy link to block", Box::new(CopyBlockLink))
+                            .menu("Copy embed to block", Box::new(CopyBlockEmbed))
                     });
                 // `cssclasses:` per-note override — `wide` lifts the
                 // readable-width cap for this note, `narrow`/`readable`
@@ -7690,39 +7863,127 @@ impl Workspace {
         true
     }
 
-    /// Copy dropped/copied image files into the attachments dir and insert
-    /// `![[name]]` for each. Files already inside the vault just get linked.
+    /// Copy dropped/copied files in and link them at the caret: images
+    /// go to the attachments dir as `![[name]]`, notes next to the
+    /// active note as `[[stem]]`. Files already inside the vault just
+    /// get linked; other file types are skipped.
     fn import_paths(
         &mut self,
         paths: &[PathBuf],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(dir) = self.attachments_dir(cx) else {
+        let (Some(root), Some(dir)) = (self.vault.read(cx).root.clone(), self.attachments_dir(cx))
+        else {
             return false;
         };
-        let mut imported = false;
+        let note_dir = self
+            .active_doc()
+            .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf));
+        let mut links = Vec::new();
+        let mut skipped = false;
         for src in paths {
-            if !crate::vault::is_image_file(src) {
-                continue;
-            }
-            let Some(name) = src.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            let image = crate::vault::is_image_file(src);
+            let target_dir = if image {
+                Some(&dir)
+            } else if src.extension().is_some_and(|e| e == "md") {
+                note_dir.as_ref()
+            } else {
+                None
+            };
+            let Some(target_dir) = target_dir else {
+                skipped = true;
                 continue;
             };
-            let dest = dir.join(&name);
-            if dest != *src
-                && !dest.exists()
-                && (std::fs::create_dir_all(&dir).is_err() || std::fs::copy(src, &dest).is_err())
-            {
-                continue;
+            let dest = if src.starts_with(&root) {
+                src.clone()
+            } else {
+                match copy_into(target_dir, src) {
+                    Some(dest) => dest,
+                    None => continue,
+                }
+            };
+            let link = if image {
+                dest.file_name()
+                    .map(|n| format!("![[{}]]", n.to_string_lossy()))
+            } else {
+                dest.file_stem()
+                    .map(|n| format!("[[{}]]", n.to_string_lossy()))
+            };
+            links.extend(link);
+        }
+        if links.is_empty() {
+            if skipped {
+                self.note_status(
+                    "Only images and notes drop into a note — drop other files on a sidebar folder",
+                    cx,
+                );
             }
-            self.insert_embed(&name, window, cx);
-            imported = true;
+            return false;
         }
-        if imported {
-            self.refresh_image_index(cx);
+        self.refresh_image_index(cx);
+        if let Some(doc) = self.active_doc().cloned() {
+            doc.update(cx, |doc, cx| {
+                doc.editor
+                    .update(cx, |editor, cx| editor.insert(links.join("\n"), window, cx));
+            });
         }
-        imported
+        true
+    }
+
+    /// Finder drop onto a sidebar folder (or the header, for the vault
+    /// root): copy the files in under free names. A single dropped note
+    /// opens.
+    fn copy_external_into(
+        &mut self,
+        paths: &[PathBuf],
+        dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let copied: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| p.is_file())
+            .filter_map(|src| copy_into(&dir, src))
+            .collect();
+        if copied.is_empty() {
+            self.note_status(
+                if paths.iter().any(|p| p.is_dir()) {
+                    "Folders can't be dropped in yet — drop the files inside"
+                } else {
+                    "Could not copy the dropped files"
+                },
+                cx,
+            );
+            return;
+        }
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        match copied.as_slice() {
+            [one] if one.extension().is_some_and(|e| e == "md") => {
+                self.open_document(one.clone(), window, cx);
+            }
+            _ => {
+                let added = match copied.as_slice() {
+                    [one] => one
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                    _ => format!("{} files", copied.len()),
+                };
+                let hidden = copied
+                    .iter()
+                    .any(|p| !crate::file_preview::visible(p, self.settings.show_other_files));
+                self.note_status(
+                    if hidden {
+                        format!("Added {added} · turn on “Show non-Markdown files” to see it in the sidebar")
+                    } else {
+                        format!("Added {added}")
+                    },
+                    cx,
+                );
+            }
+        }
     }
 
     /// Put freshly imported attachments into the vault's live image index
@@ -8135,6 +8396,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_duplicate_block))
             .on_action(cx.listener(Self::on_delete_line))
             .on_action(cx.listener(Self::on_toggle_comment))
+            .on_action(cx.listener(Self::on_copy_block_link))
+            .on_action(cx.listener(Self::on_copy_block_embed))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
@@ -8613,6 +8876,48 @@ pub(crate) fn is_base(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// `dir/name`, or `dir/<stem> N.<ext>` for the first free `N` —
+/// imports never overwrite.
+fn free_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (1..)
+        .map(|n| dir.join(format!("{stem} {n}{ext}")))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
+/// Copy `src` into `dir` under a free name and return where it went.
+/// A same-named file there with identical bytes is reused instead, so
+/// pasting the same image twice links one file.
+fn copy_into(dir: &Path, src: &Path) -> Option<PathBuf> {
+    let same = dir.join(src.file_name()?);
+    if same == src {
+        return Some(same);
+    }
+    let identical = |a: &Path, b: &Path| {
+        let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+            return false;
+        };
+        ma.is_file()
+            && ma.len() == mb.len()
+            && matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
+    };
+    if identical(&same, src) {
+        return Some(same);
+    }
+    let dest = free_path(dir, &src.file_name()?.to_string_lossy());
+    std::fs::create_dir_all(dir).ok()?;
+    std::fs::copy(src, &dest).ok()?;
+    Some(dest)
+}
+
 /// `<templates_dir>/**/*.md` under the vault root, sorted for a stable dialog list.
 fn template_files(root: &std::path::Path, templates_dir: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -8816,5 +9121,44 @@ mod preview_tab_tests {
         assert!(!preview_tab_is_replaceable(true, true, false, false));
         assert!(!preview_tab_is_replaceable(true, false, true, false));
         assert!(!preview_tab_is_replaceable(true, false, false, true));
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::{copy_into, free_path};
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rista-import-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn free_path_adds_a_number_instead_of_overwriting() {
+        let dir = temp_dir("free");
+        assert_eq!(free_path(&dir, "a.png"), dir.join("a.png"));
+        std::fs::write(dir.join("a.png"), b"x").unwrap();
+        std::fs::write(dir.join("a 1.png"), b"x").unwrap();
+        assert_eq!(free_path(&dir, "a.png"), dir.join("a 2.png"));
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        assert_eq!(free_path(&dir, "README"), dir.join("README 1"));
+    }
+
+    #[test]
+    fn copy_into_reuses_identical_files_and_renames_different_ones() {
+        let src_dir = temp_dir("copy-src");
+        let dest = temp_dir("copy-dest");
+        let src = src_dir.join("pic.png");
+        std::fs::write(&src, b"one").unwrap();
+
+        assert_eq!(copy_into(&dest, &src), Some(dest.join("pic.png")));
+        assert_eq!(copy_into(&dest, &src), Some(dest.join("pic.png")));
+
+        std::fs::write(&src, b"two").unwrap();
+        assert_eq!(copy_into(&dest, &src), Some(dest.join("pic 1.png")));
+        assert_eq!(std::fs::read(dest.join("pic.png")).unwrap(), b"one");
+        assert_eq!(std::fs::read(dest.join("pic 1.png")).unwrap(), b"two");
     }
 }

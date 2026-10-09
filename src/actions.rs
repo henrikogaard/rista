@@ -24,6 +24,8 @@ actions!(
         DuplicateBlock,
         DeleteLine,
         ToggleComment,
+        CopyBlockLink,
+        CopyBlockEmbed,
         // Navigation
         NextTab,
         PrevTab,

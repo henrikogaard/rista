@@ -33,6 +33,8 @@ pub struct SettingsView {
     templates_input: Entity<InputState>,
     daily_dir_input: Entity<InputState>,
     daily_format_input: Entity<InputState>,
+    unique_dir_input: Entity<InputState>,
+    unique_format_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -140,6 +142,16 @@ impl SettingsView {
         let daily_format_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("YYYY-MM-DD");
             state.set_value(settings.daily_format.clone(), window, cx);
+            state
+        });
+        let unique_dir_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("vault root");
+            state.set_value(settings.unique_note_dir.clone(), window, cx);
+            state
+        });
+        let unique_format_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("YYYYMMDDHHmm");
+            state.set_value(settings.unique_note_format.clone(), window, cx);
             state
         });
 
@@ -301,6 +313,45 @@ impl SettingsView {
                 this.update_setting(cx, |s| s.daily_format = fmt, window);
             },
         ));
+        subs.push(cx.subscribe_in(
+            &unique_dir_input,
+            window,
+            |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let dir = state.read(cx).value().trim().to_string();
+                // Vault-relative only — `C:\x`, `\\server`, `/x`, and `..`
+                // would let `root.join` escape the vault.
+                let path = std::path::Path::new(&dir);
+                if path.has_root()
+                    || path.is_absolute()
+                    || path.components().any(|c| {
+                        matches!(
+                            c,
+                            std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                        )
+                    })
+                {
+                    return;
+                }
+                this.update_setting(cx, |s| s.unique_note_dir = dir, window);
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &unique_format_input,
+            window,
+            |this, state, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                let fmt = state.read(cx).value().trim().to_string();
+                if fmt.is_empty() {
+                    return;
+                }
+                this.update_setting(cx, |s| s.unique_note_format = fmt, window);
+            },
+        ));
 
         Self {
             terminal_font_input,
@@ -318,6 +369,8 @@ impl SettingsView {
             templates_input,
             daily_dir_input,
             daily_format_input,
+            unique_dir_input,
+            unique_format_input,
             _subscriptions: subs,
         }
     }
@@ -705,6 +758,16 @@ impl Render for SettingsView {
                         cx,
                         "Daily note format",
                         Input::new(&self.daily_format_input).w(px(180.)),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        "Unique note folder",
+                        Input::new(&self.unique_dir_input).w(px(180.)),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        "Unique note format",
+                        Input::new(&self.unique_format_input).w(px(180.)),
                     )),
             )
             .child(
