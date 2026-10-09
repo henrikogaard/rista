@@ -3628,6 +3628,9 @@ impl Workspace {
             doc.entity
                 .update(cx, |doc, cx| doc.apply_settings(&settings, window, cx));
         }
+        // The agent panel is a cached view that reads settings such as the
+        // language, so it must be redrawn alongside the workspace.
+        self.agent_panel.update(cx, |_, cx| cx.notify());
         settings.save();
         cx.notify();
     }
