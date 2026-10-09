@@ -6244,8 +6244,15 @@ impl Workspace {
         }
         .map(|d| d.pred_opt().map(|p| p.day()).unwrap_or(30))
         .unwrap_or(30);
-        // Monday-first leading blanks.
-        let lead = (first.weekday().num_days_from_monday()) as usize;
+        // Monday-first, unless the weekly format counts Moment's
+        // Sunday-first locale weeks (`w`/`gggg`) — rows then match the
+        // weekly notes the week column opens.
+        let sunday_first = crate::bases::moment_locale_weeks(&self.settings.weekly_format);
+        let lead = if sunday_first {
+            first.weekday().num_days_from_sunday()
+        } else {
+            first.weekday().num_days_from_monday()
+        } as usize;
         // Which days have a daily note in the daily-note folder.
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
         let daily_root = root.join(&self.settings.daily_dir);
@@ -6288,18 +6295,13 @@ impl Workspace {
                 }))
         };
 
-        // Week-number column: click opens that week's weekly note; the
-        // number follows the weekly format (ISO `W` or locale `w`).
-        let week_token = if crate::bases::moment_uses_iso_week(&self.settings.weekly_format) {
-            "W"
-        } else {
-            "w"
-        };
+        // Week-number column: click opens that row's weekly note.
+        let week_token = if sunday_first { "w" } else { "W" };
         let week_cell = |row: usize| {
-            let monday =
+            let start =
                 first - chrono::Duration::days(lead as i64) + chrono::Duration::weeks(row as i64);
             let has_note = self
-                .period_path(Period::Week, monday, cx)
+                .period_path(Period::Week, start, cx)
                 .is_some_and(|p| p.exists());
             div()
                 .id(("cal-week", row))
@@ -6317,11 +6319,11 @@ impl Workspace {
                 })
                 .hover(|s| s.bg(theme.muted.opacity(0.5)))
                 .child(crate::bases::format_moment(
-                    monday.and_hms_opt(0, 0, 0).unwrap_or_default(),
+                    start.and_hms_opt(0, 0, 0).unwrap_or_default(),
                     week_token,
                 ))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_period_at(Period::Week, monday, window, cx);
+                    this.open_period_at(Period::Week, start, window, cx);
                 }))
         };
 
@@ -6406,8 +6408,15 @@ impl Workspace {
                     })),
             )
             .when(self.cal_open, |this| {
-                let head = h_flex().gap_0p5().child(div().w(px(18.))).children(
-                    ["M", "T", "W", "T", "F", "S", "S"].iter().map(|d| {
+                let days = if sunday_first {
+                    ["S", "M", "T", "W", "T", "F", "S"]
+                } else {
+                    ["M", "T", "W", "T", "F", "S", "S"]
+                };
+                let head = h_flex()
+                    .gap_0p5()
+                    .child(div().w(px(18.)))
+                    .children(days.iter().map(|d| {
                         div()
                             .w(px(26.))
                             .flex()
@@ -6415,8 +6424,7 @@ impl Workspace {
                             .text_color(theme.muted_foreground)
                             .child(d.to_string())
                             .into_any_element()
-                    }),
-                );
+                    }));
                 this.child(
                     v_flex()
                         .px_2()

@@ -174,8 +174,10 @@ fn default_unique_note_format() -> String {
     "YYYYMMDDHHmm".to_string()
 }
 
+/// ISO weeks — Monday-first like the calendar. Periodic Notes' own
+/// default, `gggg-[W]ww`, also works (the calendar then starts Sunday).
 fn default_weekly_format() -> String {
-    "gggg-[W]ww".to_string()
+    "GGGG-[W]WW".to_string()
 }
 
 fn default_monthly_format() -> String {

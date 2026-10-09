@@ -1547,6 +1547,7 @@ pub(crate) fn format_moment(dt: chrono::NaiveDateTime, pattern: &str) -> String 
             ("W", dt.iso_week().week().to_string()),
             ("w", locale_week.to_string()),
             ("Q", (dt.month0() / 3 + 1).to_string()),
+            ("Do", ordinal(dt.day())),
         ]
         .into_iter()
         .find(|(tok, _)| rest.starts_with(tok))
@@ -1575,9 +1576,21 @@ pub(crate) fn format_moment(dt: chrono::NaiveDateTime, pattern: &str) -> String 
     out
 }
 
-/// Whether a Moment pattern numbers weeks the ISO way (`W`, `G`)
-/// rather than by locale (`w`, `g`) — literals in `[...]` don't count.
-pub(crate) fn moment_uses_iso_week(pattern: &str) -> bool {
+/// `1st`, `2nd`, `3rd`, `11th`, `22nd` — Moment's `Do`.
+fn ordinal(day: u32) -> String {
+    let suffix = match (day % 10, day % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{day}{suffix}")
+}
+
+/// Whether a Moment pattern counts Moment's Sunday-first locale weeks
+/// (`w`, `gggg`) — literals in `[...]` don't count.
+pub(crate) fn moment_locale_weeks(pattern: &str) -> bool {
     let mut in_literal = false;
     pattern.chars().any(|c| {
         match c {
@@ -1585,7 +1598,7 @@ pub(crate) fn moment_uses_iso_week(pattern: &str) -> bool {
             ']' => in_literal = false,
             _ => {}
         }
-        !in_literal && matches!(c, 'W' | 'G')
+        !in_literal && matches!(c, 'w' | 'g')
     })
 }
 
@@ -7916,7 +7929,7 @@ impl Render for BaseView {
 
 #[cfg(test)]
 mod moment_tests {
-    use super::{format_moment, moment_uses_iso_week};
+    use super::{format_moment, moment_locale_weeks};
 
     fn at(y: i32, m: u32, d: u32) -> chrono::NaiveDateTime {
         chrono::NaiveDate::from_ymd_opt(y, m, d)
@@ -7959,10 +7972,18 @@ mod moment_tests {
     }
 
     #[test]
-    fn detects_iso_week_patterns_outside_literals() {
-        assert!(!moment_uses_iso_week("gggg-[W]ww"));
-        assert!(moment_uses_iso_week("GGGG-[W]WW"));
-        assert!(!moment_uses_iso_week("YYYY-MM"));
+    fn detects_locale_week_patterns_outside_literals() {
+        assert!(moment_locale_weeks("gggg-[W]ww"));
+        assert!(!moment_locale_weeks("GGGG-[W]WW"));
+        assert!(!moment_locale_weeks("YYYY-MM-[week]"));
+    }
+
+    #[test]
+    fn formats_ordinal_days() {
+        assert_eq!(format_moment(at(2026, 10, 9), "Do MMMM"), "9th October");
+        assert_eq!(format_moment(at(2026, 10, 1), "Do"), "1st");
+        assert_eq!(format_moment(at(2026, 10, 22), "Do"), "22nd");
+        assert_eq!(format_moment(at(2026, 10, 13), "Do"), "13th");
     }
 }
 
