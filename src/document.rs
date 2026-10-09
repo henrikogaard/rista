@@ -2565,11 +2565,26 @@ fn highlight_color_edit(
     let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let line = &text[line_start..line_end];
-    // `==…==` spans on the line, paired left to right.
-    let marks: Vec<usize> = line
-        .match_indices("==")
-        .map(|(i, _)| line_start + i)
-        .collect();
+    // `==…==` spans on the line, paired left to right — inline code and
+    // `===` runs don't count, as for the highlight wash.
+    let bytes = line.as_bytes();
+    let mut marks = Vec::new();
+    let (mut i, mut in_code) = (0, false);
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            in_code = !in_code;
+        } else if !in_code
+            && bytes[i] == b'='
+            && bytes.get(i + 1) == Some(&b'=')
+            && bytes.get(i + 2) != Some(&b'=')
+            && (i == 0 || bytes[i - 1] != b'=')
+        {
+            marks.push(line_start + i);
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
     for &[open, close] in marks.as_chunks::<2>().0 {
         if (open + 2..=close).contains(&at) {
             let body = open + 2;
@@ -3141,5 +3156,6 @@ mod tests {
         assert_eq!(recolor("==🔴r@ed==", "🟢"), "==🟢r|ed==");
         assert_eq!(recolor("==🔴@red==", ""), "==|red==");
         assert_eq!(recolor("==a== b@ ==c==", "🟡"), "==a== b==🟡|== ==c==");
+        assert_eq!(recolor("`a==b` ==🔴re@al==", "🟢"), "`a==b` ==🟢re|al==");
     }
 }
