@@ -274,7 +274,27 @@ pub fn preprocess_mapped(
 /// Pandoc-style `::: {.columns}`. A bare `:::` yields `None`.
 #[cfg(test)]
 mod navigation_tests {
-    use super::{headings, match_navigation_blocks, navigation_blocks, preprocess_mapped};
+    use super::{
+        headings, match_navigation_blocks, navigation_blocks, preprocess_mapped, slice_section,
+    };
+
+    #[test]
+    fn block_embeds_resolve_inline_and_standalone_ids() {
+        let text = "intro\n\npara one\npara two ^p1\n\n> quote a\n> quote b\n\n^q1\n\nafter";
+        assert_eq!(
+            slice_section(text, "^p1").as_deref(),
+            Some("para one\npara two")
+        );
+        assert_eq!(
+            slice_section(text, "^q1").as_deref(),
+            Some("> quote a\n> quote b")
+        );
+        let tail = "| a |\n|---|\n| 1 |\n\n^t1";
+        assert_eq!(
+            slice_section(tail, "^t1").as_deref(),
+            Some("| a |\n|---|\n| 1 |")
+        );
+    }
     use std::path::Path;
 
     #[test]
@@ -2436,6 +2456,32 @@ const TRANSCLUDE_MAX_DEPTH: usize = 2;
 /// heading of equal-or-higher level; `^block` anchors return the block
 /// paragraph with the `^id` marker stripped. Fenced code can't spoof
 /// either kind. `None` when the anchor isn't in the text.
+/// First and last line of the block a `^id` marker names: the
+/// contiguous non-blank lines around a trailing ` ^id`, or — for a lone
+/// `^id` line set off by a blank line, the structured-block convention
+/// for quotes, tables, and code fences — the block above it.
+pub(crate) fn block_lines(lines: &[&str], id: &str) -> Option<(usize, usize)> {
+    let marker = format!("^{id}");
+    let at = lines.iter().position(|l| {
+        let t = l.trim_end();
+        t.trim_start() == marker || t.ends_with(&format!(" {marker}"))
+    })?;
+    let blank = |i: usize| lines[i].trim().is_empty();
+    let mut e = at;
+    if lines[at].trim() == marker && at > 0 && blank(at - 1) {
+        e = (0..at).rev().find(|&i| !blank(i))?;
+    } else {
+        while e + 1 < lines.len() && !blank(e + 1) {
+            e += 1;
+        }
+    }
+    let mut s = e.min(at);
+    while s > 0 && !blank(s - 1) {
+        s -= 1;
+    }
+    Some((s, e))
+}
+
 fn slice_section(text: &str, anchor: &str) -> Option<String> {
     let anchor = anchor.trim();
     if anchor.is_empty() {
@@ -2455,21 +2501,10 @@ fn slice_section(text: &str, anchor: &str) -> Option<String> {
         }
     }
 
-    // `^block-id` — the contiguous block containing the marker line.
+    // `^block-id` — the block the marker names.
     if let Some(id) = anchor.strip_prefix('^') {
         let marker = format!("^{id}");
-        let at = lines.iter().position(|l| {
-            let t = l.trim_end();
-            t == marker || t.ends_with(&format!(" {marker}"))
-        })?;
-        let mut s = at;
-        while s > 0 && !lines[s - 1].trim().is_empty() {
-            s -= 1;
-        }
-        let mut e = at;
-        while e + 1 < lines.len() && !lines[e + 1].trim().is_empty() {
-            e += 1;
-        }
+        let (s, e) = block_lines(&lines, id)?;
         let mut block = lines[s..=e].to_vec();
         let last = block.len() - 1;
         block[last] = block[last]

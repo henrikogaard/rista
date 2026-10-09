@@ -321,7 +321,7 @@ impl AgentProcess {
             .take()
             .ok_or_else(|| io::Error::other("agent stderr was not piped"))?;
         let (out_tx, out_rx) = mpsc::sync_channel::<String>(64);
-        let (in_tx, in_rx) = mpsc::sync_channel::<Result<Value, String>>(64);
+        let (in_tx, in_rx) = mpsc::sync_channel::<Result<Value, String>>(256);
         let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_BYTES)));
 
         thread::spawn(move || {
