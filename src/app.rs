@@ -2777,6 +2777,16 @@ impl Workspace {
 
     fn on_save(&mut self, _: &SaveFile, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
+            if doc.read(cx).is_read_only() {
+                self.note_status(
+                    self.tr(
+                        "This document is read-only and cannot be saved as text",
+                        "Dette dokumentet er skrivebeskyttet og kan ikke lagres som tekst",
+                    ),
+                    cx,
+                );
+                return;
+            }
             if let Err(err) = doc.update(cx, |doc, cx| doc.save(cx)) {
                 self.note_status(format!("Could not save: {err}"), cx);
             }
@@ -2787,6 +2797,16 @@ impl Workspace {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };
+        if doc.read(cx).is_read_only() {
+            self.note_status(
+                self.tr(
+                    "This document is read-only and cannot be saved as text",
+                    "Dette dokumentet er skrivebeskyttet og kan ikke lagres som tekst",
+                ),
+                cx,
+            );
+            return;
+        }
         let dir = doc
             .read(cx)
             .path
@@ -3182,7 +3202,7 @@ impl Workspace {
     /// caret, adding the `^id` marker first when the block has none.
     fn copy_block_ref(&mut self, embed: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.active_doc().cloned() else {
-            self.note_status("No note open", cx);
+            self.note_status(self.tr("No note open", "Ingen notater er åpne"), cx);
             return;
         };
         let Some(stem) = doc
@@ -3197,10 +3217,13 @@ impl Workspace {
             Some(id) => {
                 let link = format!("{}[[{stem}#^{id}]]", if embed { "!" } else { "" });
                 cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                self.note_status(format!("Copied {link}"), cx);
+                self.note_status(format!("{} {link}", self.tr("Copied", "Kopiert")), cx);
             }
             None => self.note_status(
-                "Put the caret in a paragraph, list item, quote, table, or code block",
+                self.tr(
+                    "Put the caret in a paragraph, list item, quote, table, or code block",
+                    "Plasser markøren i et avsnitt, listeelement, sitat, tabell eller kodeblokk",
+                ),
                 cx,
             ),
         }
@@ -3570,6 +3593,12 @@ impl Workspace {
                         }
                         PaletteCmd::ToggleAgentPanel => {
                             self.tr("Toggle agent panel", "Vis/skjul agentpanel")
+                        }
+                        PaletteCmd::CopyLinkBlock => {
+                            self.tr("Copy link to block", "Kopier lenke til blokk")
+                        }
+                        PaletteCmd::CopyEmbedBlock => {
+                            self.tr("Copy embed to block", "Kopier innbygging av blokk")
                         }
                         _ => label,
                     })
@@ -8491,10 +8520,11 @@ impl Workspace {
                 // the palette already exposes (the edit context menu).
                 // `appearance(false)` — the editor's bordered box would
                 // draw a second frame inside the pane card.
+                let language = self.settings.language;
                 let editor = Editor::new(&doc.read(cx).editor)
                     .h_full()
                     .appearance(false)
-                    .context_menu(|menu, _window, _cx| {
+                    .context_menu(move |menu, _window, _cx| {
                         menu.menu("Cut", Box::new(input::Cut))
                             .menu("Copy", Box::new(input::Copy))
                             .menu("Paste", Box::new(input::Paste))
@@ -8526,8 +8556,14 @@ impl Workspace {
                             .menu("Delete line", Box::new(DeleteLine))
                             .separator()
                             .menu("Open link under cursor", Box::new(FollowLink))
-                            .menu("Copy link to block", Box::new(CopyBlockLink))
-                            .menu("Copy embed to block", Box::new(CopyBlockEmbed))
+                            .menu(
+                                language.text("Copy link to block", "Kopier lenke til blokk"),
+                                Box::new(CopyBlockLink),
+                            )
+                            .menu(
+                                language.text("Copy embed to block", "Kopier innbygging av blokk"),
+                                Box::new(CopyBlockEmbed),
+                            )
                     });
                 // `cssclasses:` per-note override — `wide` lifts the
                 // readable-width cap for this note, `narrow`/`readable`
