@@ -24,7 +24,10 @@ mod mermaid;
 mod note_icons;
 mod preview;
 mod properties;
+mod query_embed;
 mod search;
+pub mod search_query;
+pub mod search_service;
 mod settings;
 mod settings_panel;
 mod slash;
@@ -182,6 +185,8 @@ fn keymap() -> Vec<KeyBinding> {
         // Navigation
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new("down", SearchNextResult, Some("ProjectSearch")),
+        KeyBinding::new("up", SearchPreviousResult, Some("ProjectSearch")),
         KeyBinding::new("cmd-[", NavigateBack, None),
         KeyBinding::new("cmd-]", NavigateForward, None),
         KeyBinding::new("alt-enter", FollowLink, None),

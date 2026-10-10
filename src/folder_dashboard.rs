@@ -11,6 +11,7 @@ pub(super) struct FolderPage {
     banner: Option<preview::BannerSpec>,
     folds: preview::CalloutFolds,
     embeds: preview::EmbedViews,
+    query_embeds: preview::QueryEmbedViews,
     metadata: folder::Metadata,
     config: folder::Dashboard,
     cards: Vec<FolderCard>,
@@ -179,6 +180,7 @@ impl Workspace {
             banner,
             folds: preview::CalloutFolds::default(),
             embeds: preview::EmbedViews::default(),
+            query_embeds: preview::QueryEmbedViews::default(),
             metadata,
             config,
             cards,
@@ -402,6 +404,7 @@ impl Workspace {
                 vault: self.vault.clone(),
                 workspace: cx.weak_entity(),
                 views: page.embeds.clone(),
+                query_views: page.query_embeds.clone(),
                 doc_path: page
                     .contents
                     .as_ref()

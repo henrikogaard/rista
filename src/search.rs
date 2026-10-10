@@ -1,218 +1,234 @@
 //! Project-wide text search — a small dialog: one input, results beneath.
-//! Picking a hit opens the note and arms the editor's built-in find.
+//! Picking a hit opens the note at its first matching line.
 
-use crate::app::Workspace;
-use crate::document::Document;
+use crate::search_service::{SearchOptions, SearchService, SearchSort};
+use crate::vault::VaultEvent;
+use crate::{
+    actions::{SearchNextResult, SearchPreviousResult},
+    app::Workspace,
+};
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 #[derive(Clone)]
 pub struct SearchHit {
     pub path: PathBuf,
     pub count: usize,
     pub sample: String,
+    pub first_line: Option<usize>,
 }
 
 pub struct ProjectSearch {
     query_input: Entity<InputState>,
     workspace: WeakEntity<Workspace>,
     results: Vec<SearchHit>,
+    service: SearchService,
+    generation: u64,
+    cancellation: Arc<AtomicU64>,
+    busy: bool,
+    error: Option<String>,
+    match_case: bool,
+    sort: SearchSort,
+    total: usize,
+    more: bool,
+    selected_index: usize,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ProjectSearch {
     fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let norwegian = workspace.upgrade().is_some_and(|workspace| {
+            workspace.read(cx).language() == crate::settings::Language::Norwegian
+        });
         let query_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Search… (tag:, path:, file:, task:, -term negates)")
+            InputState::new(window, cx).placeholder(if norwegian {
+                "Søk… (tag:, path:, file:, task:, -term utelater)"
+            } else {
+                "Search… (tag:, path:, file:, task:, -term negates)"
+            })
         });
 
-        let sub = cx.subscribe_in(&query_input, window, |this, _input, event, _window, cx| {
-            if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
-                this.recompute(cx);
+        let sub = cx.subscribe_in(&query_input, window, |this, _input, event, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.schedule_search(cx);
+            } else if matches!(event, InputEvent::PressEnter { .. }) {
+                if let Some(hit) = this.results.get(this.selected_index).cloned() {
+                    this.open_hit(&hit, window, cx);
+                }
             }
         });
+        let mut subscriptions = vec![sub];
+        let service = workspace
+            .upgrade()
+            .map(|workspace| workspace.read(cx).search_service())
+            .unwrap_or_default();
+        if let Some(workspace_entity) = workspace.upgrade() {
+            let vault = workspace_entity.read(cx).vault_entity().clone();
+            subscriptions.push(cx.subscribe(&vault, |this, _, event: &VaultEvent, cx| {
+                if matches!(event, VaultEvent::Files) {
+                    this.service.invalidate_all();
+                    this.schedule_search(cx);
+                }
+            }));
+        }
 
         Self {
             query_input,
             workspace,
             results: Vec::new(),
-            _subscriptions: vec![sub],
+            service,
+            generation: 0,
+            cancellation: Arc::new(AtomicU64::new(0)),
+            busy: false,
+            error: None,
+            match_case: false,
+            sort: SearchSort::Relevance,
+            total: 0,
+            more: false,
+            selected_index: 0,
+            _subscriptions: subscriptions,
         }
     }
 
-    fn recompute(&mut self, cx: &mut Context<Self>) {
-        let query = self.query_input.read(cx).value().to_string();
-        let query = query.trim();
+    fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let cancellation_generation = self.cancellation.fetch_add(1, Ordering::Relaxed) + 1;
+        let query = self.query_input.read(cx).value().trim().to_string();
+        self.busy = !query.is_empty();
+        self.error = None;
         self.results.clear();
-        if query.len() < 2 {
+        self.total = 0;
+        self.more = false;
+        self.selected_index = 0;
+        if query.is_empty() {
             cx.notify();
             return;
         }
+        cx.notify();
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
         let vault = workspace.read(cx).vault_entity().read(cx);
-        let notes = vault.notes.clone();
-        let root = vault.root.clone();
-        // the reference editor search operators: `tag:`/`path:`/`file:`/`task:`/
-        // `content:` tokens filter per-note; every term must match (AND).
-        // A `-` prefix negates the term (`-tag:x`, `-path:y`, `-word`).
-        // Non-operator words rejoin into one content needle so multiword
-        // queries still substring-match verbatim.
-        let mut ops: Vec<(String, String, bool)> = Vec::new();
-        let mut rest: Vec<&str> = Vec::new();
-        for tok in query.split_whitespace() {
-            let (neg, tok) = match tok.strip_prefix('-') {
-                Some(t) if !t.is_empty() => (true, t),
-                _ => (false, tok),
-            };
-            let known = tok
-                .split_once(':')
-                .filter(|(k, v)| {
-                    !v.is_empty()
-                        && matches!(
-                            k.to_ascii_lowercase().as_str(),
-                            "tag" | "path" | "file" | "task" | "content" | "line"
+        let root = vault.root.clone().unwrap_or_default();
+        let paths = vault.explorer_path_snapshot();
+        let service = self.service.clone();
+        let cancellation = self.cancellation.clone();
+        let language = workspace.read(cx).language();
+        let match_case = self.match_case;
+        let sort = self.sort;
+        let task = cx.background_executor().spawn(async move {
+            smol::Timer::after(std::time::Duration::from_millis(100)).await;
+            smol::unblock(move || {
+                service.search_cancellable(
+                    &root,
+                    paths.as_slice(),
+                    &query,
+                    SearchOptions {
+                        match_case,
+                        sort,
+                        limit: 100,
+                    },
+                    Some((cancellation, cancellation_generation)),
+                )
+            })
+            .await
+        });
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let result = task.await;
+            let _ = this.update(&mut *cx, |search, cx| {
+                if search.generation != generation {
+                    return;
+                }
+                search.busy = false;
+                match result {
+                    Ok(response) => {
+                        search.results = response
+                            .results
+                            .into_iter()
+                            .map(|hit| SearchHit {
+                                sample: hit.relative_path.clone(),
+                                path: hit.path,
+                                count: hit.count,
+                                first_line: hit.first_line,
+                            })
+                            .collect();
+                        search.total = response.total;
+                        search.more = response.more;
+                        search.selected_index = 0;
+                    }
+                    Err(error) => {
+                        search.error = Some(
+                            error
+                                .message(language == crate::settings::Language::Norwegian)
+                                .to_string(),
                         )
-                })
-                .map(|(k, v)| (k.to_ascii_lowercase(), v.to_lowercase()));
-            if let Some((k, v)) = known {
-                ops.push((k, v, neg));
-            } else if neg {
-                ops.push(("content".into(), tok.to_lowercase(), true));
-            } else {
-                rest.push(tok);
-            }
-        }
-        if !rest.is_empty() {
-            ops.push(("content".into(), rest.join(" ").to_lowercase(), false));
-        }
-        if ops.is_empty() {
-            cx.notify();
-            return;
-        }
-        let mut results = Vec::new();
-        for path in notes {
-            let rel = root
-                .as_ref()
-                .and_then(|r| path.strip_prefix(r).ok())
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_lowercase();
-            let file = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let need_content = ops
-                .iter()
-                .any(|(k, _, _)| matches!(k.as_str(), "tag" | "task" | "content" | "line"));
-            let content = if need_content {
-                std::fs::read_to_string(&path).unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let mut count = 0usize;
-            let mut sample = String::new();
-            let mut all = true;
-            for (kind, needle, neg) in &ops {
-                // Each op resolves to (matched, hit count, sample line).
-                let (hit, hits, hint) = match kind.as_str() {
-                    "path" => (rel.contains(needle), 1usize, rel.clone()),
-                    "file" => (file.contains(needle), 1usize, rel.clone()),
-                    "tag" => {
-                        // `tag:#a` also matches nested `#a/b`.
-                        let arg = needle.trim_start_matches('#');
-                        let hit = crate::properties::note_tags(&content)
-                            .iter()
-                            .any(|t| t == arg || t.starts_with(&format!("{arg}/")));
-                        (hit, 1, format!("#{arg}"))
-                    }
-                    "task" => {
-                        let mut hits = 0usize;
-                        let mut hint = String::new();
-                        for line in content.lines() {
-                            let t = line.trim_start();
-                            let is_task = t.len() > 4
-                                && matches!(t.as_bytes()[0], b'-' | b'*' | b'+')
-                                && t[1..].starts_with(" [");
-                            if is_task && t.to_lowercase().contains(needle) {
-                                hits += 1;
-                                if hint.is_empty() {
-                                    hint = t.chars().take(120).collect();
-                                }
-                            }
-                        }
-                        (hits > 0, hits, hint)
-                    }
-                    _ => {
-                        // `content:` (and `line:` — we search line-wise
-                        // either way, so they behave the same here).
-                        let mut hits = 0usize;
-                        let mut hint = String::new();
-                        for line in content.lines() {
-                            let lower = line.to_lowercase();
-                            let mut offset = 0usize;
-                            while let Some(pos) = lower[offset..].find(needle.as_str()) {
-                                hits += 1;
-                                if hint.is_empty() {
-                                    hint = line.trim().chars().take(120).collect();
-                                }
-                                offset += pos + needle.len();
-                            }
-                            if hits > 200 {
-                                break;
-                            }
-                        }
-                        (hits > 0, hits, hint)
-                    }
-                };
-                // Negated ops pass only when they do not match.
-                if hit == *neg {
-                    all = false;
-                    break;
-                }
-                if hit {
-                    count += hits;
-                    if sample.is_empty() {
-                        sample = hint;
                     }
                 }
-            }
-            // All-negated queries keep every note that survives the filter.
-            if all && (count > 0 || ops.iter().all(|(_, _, n)| *n)) {
-                results.push(SearchHit {
-                    path,
-                    count,
-                    sample,
-                });
-            }
-            if results.len() >= 50 {
-                break;
-            }
-        }
-        self.results = results;
-        cx.notify();
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn open_hit(&self, hit: &SearchHit, window: &mut Window, cx: &mut App) {
-        let query = self.query_input.read(cx).value().to_string();
+        self.cancellation.fetch_add(1, Ordering::Relaxed);
         let path = hit.path.clone();
-        let _ = self.workspace.update(cx, |ws, cx| {
-            ws.open_document_pub(path, window, cx);
-            // Arm the editor's find so matches highlight and ⌘F steps through.
-            if let Some(doc) = ws.iter_docs().find(|d| d.read(cx).path == hit.path) {
-                doc.update(cx, |doc: &mut Document, cx| {
-                    doc.editor.update(cx, |editor, cx| {
-                        editor.set_search_query(query.clone(), true, cx);
+        let line = hit.first_line;
+        let workspace = self.workspace.clone();
+        window.close_dialog(cx);
+        window.defer(cx, move |window, cx| {
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.open_document_pub(path.clone(), window, cx);
+            });
+            if let Some(line) = line {
+                let workspace = workspace.clone();
+                let path = path.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        if let Some(document) = workspace
+                            .iter_docs()
+                            .find(|document| document.read(cx).path == path)
+                        {
+                            document.update(cx, |document, cx| {
+                                document.jump_to_line(line, window, cx);
+                            });
+                        }
                     });
                 });
             }
         });
-        window.close_dialog(cx);
+    }
+
+    fn on_search_next(
+        &mut self,
+        _: &SearchNextResult,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.results.is_empty() {
+            self.selected_index = (self.selected_index + 1).min(self.results.len() - 1);
+            cx.notify();
+        }
+    }
+
+    fn on_search_previous(
+        &mut self,
+        _: &SearchPreviousResult,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_index = self.selected_index.saturating_sub(1);
+        cx.notify();
     }
 }
 
@@ -220,12 +236,144 @@ impl Render for ProjectSearch {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let results = self.results.clone();
         let this = cx.entity();
+        let norwegian = self.workspace.upgrade().is_some_and(|workspace| {
+            workspace.read(cx).language() == crate::settings::Language::Norwegian
+        });
+        let match_case = self.match_case;
+        let sort = self.sort;
+        let selected_index = self.selected_index;
+        let status = if self.busy {
+            Some(
+                if norwegian {
+                    "Søker…"
+                } else {
+                    "Searching…"
+                }
+                .to_string(),
+            )
+        } else if let Some(error) = self.error.as_deref() {
+            Some(error.to_string())
+        } else if self.total == 0 && !self.query_input.read(cx).value().is_empty() {
+            Some(
+                if norwegian {
+                    "Ingen treff"
+                } else {
+                    "No results"
+                }
+                .to_string(),
+            )
+        } else {
+            None
+        };
+        let status_is_error = self.error.is_some();
         v_flex()
+            .key_context("ProjectSearch")
+            .on_action(cx.listener(Self::on_search_next))
+            .on_action(cx.listener(Self::on_search_previous))
             .w_full()
             .gap_2()
             .child(Input::new(&self.query_input).appearance(true))
             .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("search-match-case")
+                            .ghost()
+                            .xsmall()
+                            .label(if match_case {
+                                if norwegian {
+                                    "Skil store/små"
+                                } else {
+                                    "Match case"
+                                }
+                            } else if norwegian {
+                                "Ignorer store/små"
+                            } else {
+                                "Ignore case"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.match_case = !this.match_case;
+                                this.schedule_search(cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("search-sort")
+                            .ghost()
+                            .xsmall()
+                            .label(match sort {
+                                SearchSort::Relevance => {
+                                    if norwegian {
+                                        "Relevans"
+                                    } else {
+                                        "Relevance"
+                                    }
+                                }
+                                SearchSort::Filename => {
+                                    if norwegian {
+                                        "Filnavn"
+                                    } else {
+                                        "Filename"
+                                    }
+                                }
+                                SearchSort::Modified => {
+                                    if norwegian {
+                                        "Endret"
+                                    } else {
+                                        "Modified"
+                                    }
+                                }
+                                SearchSort::Created => {
+                                    if norwegian {
+                                        "Opprettet"
+                                    } else {
+                                        "Created"
+                                    }
+                                }
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sort = match this.sort {
+                                    SearchSort::Relevance => SearchSort::Filename,
+                                    SearchSort::Filename => SearchSort::Modified,
+                                    SearchSort::Modified => SearchSort::Created,
+                                    SearchSort::Created => SearchSort::Relevance,
+                                };
+                                this.schedule_search(cx);
+                            })),
+                    ),
+            )
+            .when_some(status, |this, status| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(if status_is_error {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .child(status.to_string()),
+                )
+            })
+            .when(self.total > 0, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if self.more {
+                            if norwegian {
+                                format!("Viser {} av {} treff", results.len(), self.total)
+                            } else {
+                                format!("Showing {} of {} results", results.len(), self.total)
+                            }
+                        } else if norwegian {
+                            format!("{} treff", self.total)
+                        } else {
+                            format!("{} results", self.total)
+                        }),
+                )
+            })
+            .child(
                 v_flex()
+                    .id("project-search-results")
                     .w_full()
                     .children(results.iter().enumerate().map(|(ix, hit)| {
                         let name = hit
@@ -238,6 +386,7 @@ impl Render for ProjectSearch {
                             .px_2()
                             .py_1()
                             .rounded(cx.theme().radius)
+                            .when(ix == selected_index, |this| this.bg(cx.theme().secondary))
                             .child(
                                 v_flex()
                                     .w_full()
@@ -271,7 +420,9 @@ impl Render for ProjectSearch {
                                 }
                             })
                             .into_any_element()
-                    })),
+                    }))
+                    .max_h(px(360.))
+                    .overflow_y_scroll(),
             )
     }
 }
@@ -291,10 +442,15 @@ pub fn open_project_search_for(
     let search = cx.new(|cx| ProjectSearch::new(workspace.downgrade(), window, cx));
     let input = search.read(cx).query_input.clone();
     let seeded = search.clone();
+    let norwegian = workspace.read(cx).language() == crate::settings::Language::Norwegian;
     let query = query.map(|q| q.to_string());
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
-            .title("Find in project")
+            .title(if norwegian {
+                "Søk i prosjektet"
+            } else {
+                "Find in project"
+            })
             .w(px(560.))
             .overlay_closable(true)
             .child(search.clone())
@@ -308,7 +464,13 @@ pub fn open_project_search_for(
         });
         if query.is_some() {
             // set_value suppresses Change — run the search explicitly.
-            seeded.update(cx, |search, cx| search.recompute(cx));
+            seeded.update(cx, |search, cx| search.schedule_search(cx));
         }
     });
+}
+
+impl Drop for ProjectSearch {
+    fn drop(&mut self) {
+        self.cancellation.fetch_add(1, Ordering::Relaxed);
+    }
 }

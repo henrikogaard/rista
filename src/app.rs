@@ -7,6 +7,7 @@ use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
 use crate::properties;
 use crate::search;
+use crate::search_service::SearchService;
 use crate::settings::{Appearance, Period, Settings, TreeSort, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
@@ -117,6 +118,7 @@ fn canvas_panels(id: &'static str, axis: Axis) -> ResizablePanelGroup {
 
 pub struct Workspace {
     vault: Entity<Vault>,
+    search_service: SearchService,
     docs: Vec<OpenDoc>,
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
@@ -861,6 +863,7 @@ impl Workspace {
 
         let mut this = Self {
             vault,
+            search_service: SearchService::new(),
             docs: Vec::new(),
             active: None,
             folder: None,
@@ -1387,6 +1390,9 @@ impl Workspace {
         // Flag docs whose files changed underneath; they reload themselves on
         // the next frame where a window handle is available.
         self.needs_fs_check = true;
+        if matches!(event, VaultEvent::Files) {
+            self.search_service.invalidate_all();
+        }
         cx.notify();
         // An open graph keeps its map in sync — positions carry over
         // so it settles instead of jumping.
@@ -6023,6 +6029,14 @@ impl Workspace {
         &self.vault
     }
 
+    pub fn language(&self) -> crate::settings::Language {
+        self.settings.language
+    }
+
+    pub(crate) fn search_service(&self) -> SearchService {
+        self.search_service.clone()
+    }
+
     // ------------------------------------------------------------------
     // Render
     // ------------------------------------------------------------------
@@ -7951,13 +7965,24 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let (state, banner, folds, embeds, mentions, mentions_open, has_frontmatter, doc_path) = {
+        let (
+            state,
+            banner,
+            folds,
+            embeds,
+            query_embeds,
+            mentions,
+            mentions_open,
+            has_frontmatter,
+            doc_path,
+        ) = {
             let doc = doc.read(cx);
             (
                 doc.preview.clone(),
                 doc.banner.clone(),
                 doc.callout_folds.clone(),
                 doc.base_embeds.clone(),
+                doc.query_embeds.clone(),
                 doc.linked_mentions.clone(),
                 doc.mentions_open,
                 crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref()).is_some(),
@@ -7970,6 +7995,7 @@ impl Workspace {
             vault: self.vault.clone(),
             workspace: view.downgrade(),
             views: embeds,
+            query_views: query_embeds,
             doc_path: Some(doc_path),
             depth: 0,
         };

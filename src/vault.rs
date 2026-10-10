@@ -9,6 +9,7 @@ use crate::settings::TreeSort;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"];
 
@@ -39,6 +40,7 @@ pub struct Vault {
     /// Open `- [ ]` checkboxes vault-wide — the sidebar Tasks index.
     /// Rebuilt with the note index.
     pub tasks: Vec<crate::properties::VaultTask>,
+    search_paths: Arc<Vec<PathBuf>>,
     /// Lowercase `aliases:` frontmatter values → the note declaring them,
     /// so `[[Alias]]` resolves. Rebuilt with the index.
     pub aliases: std::collections::HashMap<String, PathBuf>,
@@ -97,6 +99,7 @@ impl Vault {
             pending_events: 0,
             tags: Vec::new(),
             tasks: Vec::new(),
+            search_paths: Arc::new(Vec::new()),
             aliases: std::collections::HashMap::new(),
             by_rel: std::collections::HashMap::new(),
             by_stem: std::collections::HashMap::new(),
@@ -131,6 +134,7 @@ impl Vault {
         self.root = Some(root);
         self.refresh_tree(cx);
         self.start_watcher(cx);
+        cx.emit(VaultEvent::Files);
         cx.notify();
     }
 
@@ -138,12 +142,14 @@ impl Vault {
         self.stop_watching();
         self.root = None;
         self.all_items.clear();
+        self.search_paths = Arc::new(Vec::new());
         self.notes.clear();
         self.by_rel.clear();
         self.by_stem.clear();
         self.aliases.clear();
         self.tree
             .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
+        cx.emit(VaultEvent::Files);
         cx.notify();
     }
 
@@ -152,6 +158,7 @@ impl Vault {
             return;
         };
         self.all_items = build_items(&root, 0, self.tree_sort, self.show_other_files);
+        self.search_paths = Arc::new(crate::explorer::paths(&self.all_items));
         let items = mark_expanded(self.all_items.clone(), &self.expanded);
         let items = crate::explorer::filtered_tree(
             &items,
@@ -239,7 +246,11 @@ impl Vault {
     }
 
     pub fn explorer_paths(&self) -> Vec<PathBuf> {
-        crate::explorer::paths(&self.all_items)
+        self.search_paths.as_ref().clone()
+    }
+
+    pub fn explorer_path_snapshot(&self) -> Arc<Vec<PathBuf>> {
+        self.search_paths.clone()
     }
 
     pub fn filter_tree(&mut self, cx: &mut Context<Self>) {
@@ -259,6 +270,7 @@ impl Vault {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_tree(cx);
+        cx.emit(VaultEvent::Files);
     }
 
     fn start_watcher(&mut self, cx: &mut Context<Self>) {
