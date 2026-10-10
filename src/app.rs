@@ -1366,7 +1366,7 @@ impl Workspace {
     }
 
     fn on_vault_event(&mut self, event: &VaultEvent, cx: &mut Context<Self>) {
-        if matches!(event, VaultEvent::TreeExpansionChanged) {
+        if matches!(event, VaultEvent::TreeExpansion) {
             let vault = self.vault.read(cx);
             if let Some(root) = &vault.root {
                 self.settings
@@ -1684,6 +1684,7 @@ impl Workspace {
                 self.recent.truncate(12);
                 self.persist_tabs(cx);
                 self.reveal_active_file(cx);
+                self.refocus(window, cx);
                 cx.notify();
                 return;
             }
@@ -2185,19 +2186,28 @@ impl Workspace {
             self.note_status("Tab is pinned", cx);
             return;
         }
-        let dirty = self.docs[ix].entity.read(cx).dirty;
+        let save_result = self.docs[ix]
+            .entity
+            .update(cx, |doc, cx| doc.flush_and_save(cx));
         let title = self.docs[ix].entity.read(cx).title();
-        if dirty {
+        if save_result.is_err() {
             let target = self.docs[ix].entity.clone();
             let view = cx.entity();
+            let heading = format!(
+                "{} “{}”?",
+                self.tr("Discard unsaved changes to", "Forkast ulagrede endringer i"),
+                title
+            );
+            let description = self.tr("Saving failed or the file changed on disk. Cancel to keep your edits.", "Lagring mislyktes eller filen ble endret på disken. Avbryt for å beholde endringene dine.");
+            let discard = self.tr("Close without saving", "Lukk uten å lagre");
             window.open_alert_dialog(cx, move |dialog, _window, _cx| {
                 let target = target.clone();
                 let view = view.clone();
                 dialog
-                    .title(format!("Close “{}” without saving?", title))
-                    .description("The note has unsaved changes.")
+                    .title(heading.clone())
+                    .description(description)
                     .show_cancel(true)
-                    .ok_text("Close without saving")
+                    .ok_text(discard)
                     .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                     .on_ok(move |_, window, cx| {
                         let target_id = target.entity_id();
@@ -3195,7 +3205,7 @@ impl Workspace {
         }
     }
 
-    fn on_next_tab(&mut self, _: &NextTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.docs.is_empty() {
             return;
         }
@@ -3207,10 +3217,11 @@ impl Workspace {
         });
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
+        self.refocus(window, cx);
         cx.notify();
     }
 
-    fn on_prev_tab(&mut self, _: &PrevTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.docs.is_empty() {
             return;
         }
@@ -3222,6 +3233,7 @@ impl Workspace {
         });
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
+        self.refocus(window, cx);
         cx.notify();
     }
 
@@ -3275,7 +3287,7 @@ impl Workspace {
             } else {
                 vault.starred.remove(&key);
             }
-            cx.emit(VaultEvent::StarredChanged);
+            cx.emit(VaultEvent::Starred);
         });
         self.settings.save();
         cx.notify();
@@ -5511,18 +5523,22 @@ impl Workspace {
         let input = self.cell_input.clone();
         input.update(cx, |input, cx| input.set_value("Untitled", window, cx));
         let view = cx.entity();
+        let title = self.tr("Name the new note", "Gi det nye notatet et navn");
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
-                .title("Name the new note")
+                .title(title)
                 .w(px(400.))
                 .child(div().w_full().child(Input::new(&input).appearance(true)))
                 .on_ok({
                     let view = view.clone();
                     let template = template.clone();
                     move |_, window, cx| {
-                        view.update(cx, |this, cx| {
-                            let name = this.cell_input.read(cx).value().to_string();
-                            this.create_note_from_template(&template, &name, window, cx);
+                        let name = view.read(cx).cell_input.read(cx).value().to_string();
+                        let (view, template) = (view.clone(), template.clone());
+                        window.defer(cx, move |window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.create_note_from_template(&template, &name, window, cx);
+                            });
                         });
                         true
                     }

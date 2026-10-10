@@ -3097,7 +3097,10 @@ fn prefill_pairs(spec: &BaseSpec, view: &ViewSpec) -> Vec<(String, String)> {
 /// into lines with byte offsets and collect the `views:` list's
 /// direct item start-lines. Returns `(lines, offs, item_starts,
 /// item_indent)` — `item_indent` is the depth the `- ` markers sit at.
-fn view_items<'a>(src: &'a str) -> Option<(Vec<&'a str>, Vec<usize>, Vec<usize>, usize)> {
+type ViewItemsData<'a> = (Vec<&'a str>, Vec<usize>, Vec<usize>, usize);
+type ViewItemData<'a> = (Vec<&'a str>, Vec<usize>, usize, usize, usize);
+
+fn view_items(src: &str) -> Option<ViewItemsData<'_>> {
     let lines: Vec<&str> = src.split_inclusive('\n').collect();
     let mut offs = Vec::with_capacity(lines.len() + 1);
     offs.push(0usize);
@@ -3158,10 +3161,7 @@ fn view_span(lines: &[&str], items: &[usize], ix: usize, views_ind: usize) -> (u
 /// with byte offsets and locate the `view_ix`-th `views:` item.
 /// Returns `(lines, offs, item_start_ln, item_end_ln, key_indent)` —
 /// `key_indent` is the indent a view's own keys sit at.
-fn view_item<'a>(
-    src: &'a str,
-    view_ix: usize,
-) -> Option<(Vec<&'a str>, Vec<usize>, usize, usize, usize)> {
+fn view_item(src: &str, view_ix: usize) -> Option<ViewItemData<'_>> {
     let (lines, offs, items, item_ind) = view_items(src)?;
     let views_ind = lines
         .iter()
@@ -4168,9 +4168,9 @@ pub fn duplicate_view(src: &str, view_ix: usize, name: &str) -> Option<(usize, u
     let indent = |l: &str| l.len() - l.trim_start().len();
     let mut item = String::new();
     let mut named = false;
-    for i in start_ln..end_ln {
-        let t = lines[i].trim_start();
-        if !named && indent(lines[i]) == key_ind && t.starts_with("name:") {
+    for line in &lines[start_ln..end_ln] {
+        let t = line.trim_start();
+        if !named && indent(line) == key_ind && t.starts_with("name:") {
             item.push_str(&format!(
                 "{}name: {}\n",
                 " ".repeat(key_ind),
@@ -4178,7 +4178,7 @@ pub fn duplicate_view(src: &str, view_ix: usize, name: &str) -> Option<(usize, u
             ));
             named = true;
         } else {
-            item.push_str(lines[i]);
+            item.push_str(line);
         }
     }
     if !named {

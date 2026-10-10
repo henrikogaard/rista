@@ -14,10 +14,10 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"]
 
 /// Emitted after a filesystem burst settles — the tree was already refreshed.
 pub enum VaultEvent {
-    TreeExpansionChanged,
-    FilesChanged,
+    TreeExpansion,
+    Files,
     /// Star/unstar flipped — `.base` `file.starred` rows recompute.
-    StarredChanged,
+    Starred,
 }
 
 impl EventEmitter<VaultEvent> for Vault {}
@@ -86,7 +86,7 @@ impl Vault {
                     this.expanded.remove(id.as_str());
                 }
             };
-            cx.emit(VaultEvent::TreeExpansionChanged);
+            cx.emit(VaultEvent::TreeExpansion);
         });
         Self {
             root: None,
@@ -290,7 +290,7 @@ impl Vault {
                 let _ = this.update(&mut *cx, |this, cx| {
                     this.pending_events += 1;
                     this.refresh_tree(cx);
-                    cx.emit(VaultEvent::FilesChanged);
+                    cx.emit(VaultEvent::Files);
                 });
             }
         })

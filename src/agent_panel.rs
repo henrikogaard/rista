@@ -1912,7 +1912,8 @@ impl Render for AgentPanel {
                     .p_3()
                     .border_t_1()
                     .border_color(cx.theme().border)
-                    .child(Textarea::new(&self.composer).h(px(84.)).appearance(true))
+                    .child(Textarea::new(&self.composer).h(px(84.)).appearance(true)
+                        .disabled(self.process.is_none() || self.session_id.is_none() || self.stopping))
                     .child(
                         h_flex()
                             .justify_between()

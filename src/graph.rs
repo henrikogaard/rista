@@ -67,6 +67,7 @@ pub struct GraphView {
     _filter_sub: gpui::Subscription,
     hovered: Option<usize>,
     scale: f32,
+    auto_fit: bool,
     /// Pan offset in screen pixels.
     offset: Point<f32>,
     drag: Option<Drag>,
@@ -87,6 +88,11 @@ const STEPS_LIVE: u32 = 600; // animated settle
 /// `STEPS_INIT` up to ~300 nodes, fewer above so big vaults don't
 /// stall the UI thread on every save.
 const WARM_PAIRS: usize = 5_400_000;
+
+fn warmup_steps(nodes: usize) -> u32 {
+    let pairs = (nodes * nodes.saturating_sub(1) / 2).max(1);
+    STEPS_INIT.min((WARM_PAIRS / pairs) as u32).max(1)
+}
 
 type LinkCache = HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, Vec<(String, bool)>)>;
 
@@ -333,6 +339,7 @@ impl GraphView {
             self.localized(cx, "Graph", "Graf")
         };
         let search_label = self.localized(cx, "Search graph", "Søk i grafen");
+        let fit_label = self.localized(cx, "Fit graph to view", "Tilpass grafen til visningen");
         let hide_label = self.localized(cx, "Hide local graph", "Skjul lokal graf");
         let close_label = self.localized(cx, "Close graph (Esc)", "Lukk graf (Esc)");
         h_flex()
@@ -353,6 +360,17 @@ impl GraphView {
                     .text_sm()
                     .font_medium()
                     .child(title),
+            )
+            .child(
+                Button::new("graph-fit")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Maximize)
+                    .tooltip(fit_label)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.auto_fit = true;
+                        cx.notify();
+                    })),
             )
             .child(
                 Button::new("graph-filter")
@@ -461,13 +479,14 @@ impl GraphView {
             _filter_sub,
             hovered: None,
             scale: 1.0,
+            auto_fit: true,
             offset: point(0., 0.),
             drag: None,
             steps: STEPS_LIVE,
             bounds: Rc::new(Cell::new(Bounds::default())),
             link_cache,
         };
-        for _ in 0..STEPS_INIT.min(view.steps) {
+        for _ in 0..warmup_steps(view.nodes.len()) {
             view.step();
         }
         view.recenter();
@@ -514,13 +533,14 @@ impl GraphView {
             hovered: None,
             // Slightly zoomed in — the neighbourhood is what matters.
             scale: 1.4,
+            auto_fit: false,
             offset: point(0., 0.),
             drag: None,
             steps: STEPS_LIVE,
             bounds: Rc::new(Cell::new(Bounds::default())),
             link_cache,
         };
-        for _ in 0..STEPS_INIT.min(view.steps) {
+        for _ in 0..warmup_steps(view.nodes.len()) {
             view.step();
         }
         view.kick(window, cx);
@@ -656,16 +676,9 @@ impl GraphView {
             let active = self.active.clone();
             self.set_local_center(active.as_deref(), cx);
         }
-        // A fresh layout gets the full warm-up; a carried-over one only
-        // needs a short settle, capped by graph size. Cooling as it
-        // goes keeps a settled map from jumping. A live animation
-        // resumes where it was.
-        let pairs = (self.nodes.len() * self.nodes.len().saturating_sub(1) / 2).max(1);
-        let warm = if carried == 0 {
-            STEPS_INIT
-        } else {
-            STEPS_INIT.min((WARM_PAIRS / pairs) as u32)
-        };
+        // Bound synchronous warm-up on both new and carried-over layouts.
+        // Cooling keeps an already settled map from jumping.
+        let warm = warmup_steps(self.nodes.len());
         let live = self.steps;
         self.steps = warm;
         while self.steps > 0 {
@@ -680,28 +693,11 @@ impl GraphView {
     /// One Fruchterman–Reingold iteration in place.
     fn step(&mut self) {
         let k = REPULSION;
-        let n = self.nodes.len();
-        let mut disp: Vec<Point<f32>> = vec![point(0., 0.); n];
-        // Repulsion between every pair — over a packed copy of the
-        // positions; striding through `GNode`s makes this O(n²) loop
-        // ~2.5× slower in big vaults.
-        let pos: Vec<Point<f32>> = self.nodes.iter().map(|n| n.pos).collect();
-        for (i, pi) in pos.iter().enumerate() {
-            let (head, tail) = disp.split_at_mut(i + 1);
-            let di = &mut head[i];
-            for (pj, dj) in pos[i + 1..].iter().zip(tail) {
-                let dx = pi.x - pj.x;
-                let dy = pi.y - pj.y;
-                let d = (dx * dx + dy * dy).sqrt().max(1.0);
-                let f = (k * k / d).min(2000.) / d;
-                let fx = dx * f;
-                let fy = dy * f;
-                di.x += fx;
-                di.y += fy;
-                dj.x -= fx;
-                dj.y -= fy;
-            }
-        }
+        let pos: Vec<[f32; 2]> = self.nodes.iter().map(|n| [n.pos.x, n.pos.y]).collect();
+        let mut disp: Vec<Point<f32>> = crate::graph_layout::repulsion(&pos, k * k)
+            .into_iter()
+            .map(|[x, y]| point(x, y))
+            .collect();
         // Edge springs.
         for (a, b) in &self.edges {
             let dx = self.nodes[*b].pos.x - self.nodes[*a].pos.x;
@@ -852,6 +848,16 @@ struct Painted {
 
 impl Render for GraphView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.auto_fit {
+            let bounds = self.bounds.get();
+            if let Some((scale, [x, y])) = crate::graph_layout::fit(
+                self.nodes.iter().map(|n| [n.pos.x, n.pos.y]),
+                [f32::from(bounds.size.width), f32::from(bounds.size.height)],
+            ) {
+                self.scale = scale;
+                self.offset = point(x, y);
+            }
+        }
         let this = cx.entity();
         let filter_visible = self.filter_visible;
         let header = self.render_header(cx);
@@ -941,12 +947,16 @@ impl Render for GraphView {
         // read the slot written by last frame's prepaint.
         let last_bounds = bounds_slot.get();
 
+        let graph = cx.entity().downgrade();
         let canvas = gpui::canvas(
-            move |bounds, window, _cx| {
+            move |bounds, window, cx| {
                 if bounds_slot.replace(bounds) != bounds {
                     // Labels were placed with stale bounds (first paint,
                     // pane resize) — render once more with these.
-                    window.request_animation_frame();
+                    let graph = graph.clone();
+                    window.defer(cx, move |_, cx| {
+                        let _ = graph.update(cx, |_, cx| cx.notify());
+                    });
                 }
                 let mut nodes_px = Vec::with_capacity(positions.len());
                 for (ix, pos) in positions.iter().enumerate() {
@@ -1169,6 +1179,7 @@ impl Render for GraphView {
                 let this = this.clone();
                 move |ev: &gpui::MouseDownEvent, _window, cx| {
                     this.update(cx, |view, _cx| {
+                        view.auto_fit = false;
                         let b = view.bounds.get();
                         view.drag = Some(match view.hit(ev.position, b) {
                             Some(ix) => Drag::Node { ix, moved: false },
@@ -1279,7 +1290,8 @@ impl Render for GraphView {
                             return;
                         }
                         let old = view.scale;
-                        view.scale = (view.scale * (1. + d * 0.0025)).clamp(0.25, 4.0);
+                        view.auto_fit = false;
+                        view.scale = (view.scale * (1. + d * 0.0025)).clamp(0.001, 4.0);
                         if view.scale == old {
                             return;
                         }
