@@ -142,6 +142,7 @@ pub struct Settings {
     pub folder_templates: std::collections::BTreeMap<String, String>,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
+    pub bookmarks: crate::bookmarks::Bookmarks,
     /// Which sidebar panes are expanded — persists across launches.
     pub panes: SidebarPanes,
     /// Document tabs open when the app closed — restored on launch.
@@ -360,6 +361,7 @@ impl Default for Settings {
             yearly_format: default_yearly_format(),
             folder_templates: Default::default(),
             starred: Vec::new(),
+            bookmarks: crate::bookmarks::Bookmarks::default(),
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),
             active_tab: None,
@@ -396,10 +398,12 @@ pub fn config_path() -> PathBuf {
 impl Settings {
     pub fn load() -> Self {
         let path = config_path();
-        match std::fs::read_to_string(&path) {
+        let mut settings: Self = match std::fs::read_to_string(&path) {
             Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
             Err(_) => Self::default(),
-        }
+        };
+        settings.bookmarks.migrate_stars(&settings.starred);
+        settings
     }
 
     pub fn save(&self) {
