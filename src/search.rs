@@ -475,11 +475,22 @@ pub fn open_project_search_for(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let query = query.map(str::to_owned);
+    window.defer(cx, move |window, cx| {
+        show_project_search(workspace, query, window, cx);
+    });
+}
+
+fn show_project_search(
+    workspace: Entity<Workspace>,
+    query: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let search = cx.new(|cx| ProjectSearch::new(workspace.downgrade(), window, cx));
     let input = search.read(cx).query_input.clone();
     let seeded = search.clone();
     let norwegian = workspace.read(cx).language() == crate::settings::Language::Norwegian;
-    let query = query.map(|q| q.to_string());
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .title(if norwegian {
