@@ -500,6 +500,8 @@ fn show_project_search(
             })
             .w(px(560.))
             .overlay_closable(true)
+            // PressEnter opens the hit; the dialog must not also restore its old focus.
+            .on_ok(|_, _, _| false)
             .child(search.clone())
     });
     window.defer(cx, move |window, cx| {
