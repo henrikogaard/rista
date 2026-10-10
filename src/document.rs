@@ -1,16 +1,23 @@
 //! Document: one open note — editor, preview state, autosave, disk sync.
 
+use crate::actions::{SpellCorrection, SpellIgnore, SpellLearn};
 use crate::history;
 use crate::preview;
 use crate::settings::Settings;
-use gpui_kit::component::input::{EditorState, InputEvent, TabSize, TextDecorationCollection};
+use crate::spellcheck::{self, Analysis, Projection, SpellChecker};
+use gpui_kit::component::input::{
+    EditorState, InputEvent, TabSize, TextDecoration, TextDecorationCollection,
+};
 use gpui_kit::component::text::TextViewState;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::SystemTime;
+
+type SpellRequestKey = (u64, String, Vec<std::ops::Range<usize>>);
 
 pub type ImageResolver = Rc<dyn Fn(&str) -> Option<PathBuf>>;
 
@@ -64,6 +71,16 @@ pub struct Document {
     /// Live-preview emphasis layer over the source editor — bold,
     /// italic, dimmed markers. Lazily created on first refresh.
     decorations: Option<TextDecorationCollection>,
+    spell_decorations: Option<TextDecorationCollection>,
+    spell_checker: Rc<dyn SpellChecker>,
+    spell_enabled: bool,
+    spell_languages: Vec<String>,
+    spell_analysis: Option<(u64, Arc<Analysis>)>,
+    spell_diagnostics: Vec<std::ops::Range<usize>>,
+    spell_generation: u64,
+    spell_task: Option<Task<()>>,
+    spell_request_key: Option<SpellRequestKey>,
+    spell_request_pending: bool,
     /// Focus mode: only the block under the caret stays lit —
     /// decorations recompute on cursor moves while this is on.
     pub focus_mode: bool,
@@ -191,6 +208,7 @@ impl Document {
         );
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
+        let spell_checker = spellcheck::create_checker();
 
         let mut this = Self {
             preview_blocks: preview::navigation_blocks(&preview_text),
@@ -220,6 +238,16 @@ impl Document {
             stats: word_stats(&content),
             css_classes: crate::properties::frontmatter_cssclasses(&content),
             decorations: None,
+            spell_decorations: None,
+            spell_checker,
+            spell_enabled: settings.spellcheck_enabled,
+            spell_languages: settings.spellcheck_languages.clone(),
+            spell_analysis: None,
+            spell_diagnostics: Vec::new(),
+            spell_generation: 0,
+            spell_task: None,
+            spell_request_key: None,
+            spell_request_pending: false,
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
@@ -269,13 +297,17 @@ impl Document {
                     this.status_cursor = Some(cursor);
                     cx.emit(DocumentEvent::Selection);
                 }
+                this.schedule_spellcheck(cx);
             }),
             cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
                 this.refresh_decorations(cx);
+                this.refresh_spell_decorations(cx);
+                this.schedule_spellcheck(cx);
                 cx.notify();
             }),
         ];
 
+        this.schedule_spellcheck(cx);
         this
     }
 
@@ -311,6 +343,10 @@ impl Document {
         }
         self.dirty = true;
         self.revision += 1;
+        self.spell_analysis = None;
+        self.spell_request_key = None;
+        self.clear_spellcheck(cx);
+        self.schedule_spellcheck(cx);
         let revision = self.revision;
         cx.emit(DocumentEvent::Changed);
 
@@ -409,6 +445,201 @@ impl Document {
                 self.decorations = Some(collection);
             }
         }
+    }
+
+    fn clear_spellcheck(&mut self, cx: &mut Context<Self>) {
+        self.spell_generation = self.spell_generation.wrapping_add(1);
+        self.spell_task.take();
+        self.spell_request_key = None;
+        self.spell_request_pending = false;
+        let had_diagnostics = !self.spell_diagnostics.is_empty();
+        self.spell_diagnostics.clear();
+        if had_diagnostics {
+            if let Some(collection) = &self.spell_decorations {
+                collection.set(Vec::new(), cx);
+            }
+        }
+    }
+
+    fn refresh_spell_decorations(&mut self, cx: &mut Context<Self>) {
+        if self.spell_diagnostics.is_empty() && self.spell_decorations.is_none() {
+            return;
+        }
+        let style = HighlightStyle {
+            underline: Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(cx.theme().danger),
+                wavy: true,
+            }),
+            ..Default::default()
+        };
+        let decorations = self
+            .spell_diagnostics
+            .iter()
+            .cloned()
+            .map(|range| TextDecoration::new(range, style))
+            .collect();
+        match &self.spell_decorations {
+            Some(collection) => collection.set(decorations, cx),
+            None => {
+                let collection = self.editor.update(cx, |state, cx| {
+                    state.create_decorations_collection(decorations, cx)
+                });
+                self.spell_decorations = Some(collection);
+            }
+        }
+    }
+
+    fn schedule_spellcheck(&mut self, cx: &mut Context<Self>) {
+        if self.is_read_only() || !self.spell_enabled || !spellcheck::is_supported() {
+            self.clear_spellcheck(cx);
+            return;
+        }
+        self.spell_generation = self.spell_generation.wrapping_add(1);
+        let generation = self.spell_generation;
+        self.spell_task.take();
+        if self.spell_request_pending {
+            self.spell_request_key = None;
+            self.spell_request_pending = false;
+        }
+        self.spell_task = Some(cx.spawn(async move |this, cx| {
+            smol::Timer::after(std::time::Duration::from_millis(350)).await;
+            let Some((revision, text, cached)) = this
+                .update(&mut *cx, |this, cx| this.prepare_spellcheck(generation, cx))
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let analysis = if let Some(analysis) = cached {
+                analysis
+            } else {
+                cx.background_executor()
+                    .spawn(async move { Arc::new(Analysis::new(text)) })
+                    .await
+            };
+            let Some((receiver, key, projection)) = this
+                .update(&mut *cx, |this, cx| {
+                    this.start_spellcheck(generation, revision, analysis, cx)
+                })
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let result = receiver.recv().await.ok();
+            let _ = this.update(&mut *cx, |this, cx| {
+                if this.spell_generation != generation
+                    || this.revision != revision
+                    || this.spell_request_key.as_ref() != Some(&key)
+                {
+                    return;
+                }
+                this.spell_request_pending = false;
+                if let Some(Ok(results)) = result {
+                    let diagnostics = projection.diagnostics(&results);
+                    if diagnostics != this.spell_diagnostics {
+                        this.spell_diagnostics = diagnostics;
+                        this.refresh_spell_decorations(cx);
+                    }
+                } else {
+                    this.spell_request_key = None;
+                }
+            });
+        }));
+    }
+
+    fn reschedule_spellcheck_for_revision(&mut self, text_changed: bool, cx: &mut Context<Self>) {
+        if text_changed {
+            self.spell_analysis = None;
+            self.clear_spellcheck(cx);
+        } else if let Some((_, analysis)) = self.spell_analysis.take() {
+            self.spell_analysis = Some((self.revision, analysis));
+        }
+        self.schedule_spellcheck(cx);
+    }
+
+    pub(crate) fn dictionary_changed(&mut self, cx: &mut Context<Self>) {
+        self.clear_spellcheck(cx);
+        self.schedule_spellcheck(cx);
+    }
+
+    fn visible_spell_words(&mut self, cx: &mut Context<Self>) -> Vec<std::ops::Range<usize>> {
+        self.spell_analysis
+            .as_ref()
+            .map(|(_, analysis)| {
+                self.editor.update(cx, |editor, _| {
+                    let viewport = editor.input_bounds();
+                    let line_height = editor.line_height().unwrap_or(px(16.));
+                    spellcheck::visible_words(&analysis.words, viewport, line_height, |offset| {
+                        editor
+                            .range_to_bounds(&(offset..offset))
+                            .map(|bounds| bounds.origin)
+                    })
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn prepare_spellcheck(
+        &mut self,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) -> Option<(u64, String, Option<Arc<Analysis>>)> {
+        if generation != self.spell_generation
+            || self.is_read_only()
+            || !self.spell_enabled
+            || !spellcheck::is_supported()
+        {
+            return None;
+        }
+        let text = self.editor.read(cx).value().to_string();
+        let analysis = self
+            .spell_analysis
+            .as_ref()
+            .filter(|(revision, _)| *revision == self.revision)
+            .map(|(_, analysis)| analysis.clone());
+        Some((self.revision, text, analysis))
+    }
+
+    fn start_spellcheck(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        analysis: Arc<Analysis>,
+        cx: &mut Context<Self>,
+    ) -> Option<(spellcheck::SpellCheckReceiver, SpellRequestKey, Projection)> {
+        if generation != self.spell_generation
+            || revision != self.revision
+            || self.is_read_only()
+            || !self.spell_enabled
+            || !spellcheck::is_supported()
+        {
+            return None;
+        }
+        self.spell_analysis = Some((self.revision, analysis));
+        let words = self.visible_spell_words(cx);
+        let projection = Projection::new(self.spell_analysis.as_ref()?.1.as_ref(), &words);
+        if projection.text.is_empty() {
+            self.spell_request_key = None;
+            if !self.spell_diagnostics.is_empty() {
+                self.spell_diagnostics.clear();
+                self.refresh_spell_decorations(cx);
+            }
+            return None;
+        }
+        let key = (self.revision, projection.text.clone(), words);
+        if self.spell_request_key.as_ref() == Some(&key) {
+            return None;
+        }
+        self.spell_request_key = Some(key.clone());
+        self.spell_request_pending = true;
+        Some((
+            self.spell_checker
+                .check(projection.text.clone(), &self.spell_languages),
+            key,
+            projection,
+        ))
     }
 
     fn doc_dir(&self) -> PathBuf {
@@ -607,6 +838,7 @@ impl Document {
                 self.dirty = false;
                 self.conflict = false;
                 self.revision += 1;
+                self.reschedule_spellcheck_for_revision(false, cx);
                 self.save_task.take();
                 self.sync_preview(cx);
                 cx.emit(DocumentEvent::Saved);
@@ -661,6 +893,7 @@ impl Document {
         self.dirty = false;
         self.conflict = false;
         self.revision += 1;
+        self.reschedule_spellcheck_for_revision(false, cx);
         self.save_task.take();
         cx.emit(DocumentEvent::Saved);
         cx.notify();
@@ -705,6 +938,7 @@ impl Document {
         });
         self.dirty = true;
         self.revision += 1;
+        self.reschedule_spellcheck_for_revision(true, cx);
         self.sync_preview(cx);
         cx.emit(DocumentEvent::Changed);
         cx.notify();
@@ -1393,6 +1627,7 @@ impl Document {
         self.mtime = std::fs::metadata(&self.path)
             .and_then(|meta| meta.modified())
             .ok();
+        self.reschedule_spellcheck_for_revision(true, cx);
         self.sync_preview(cx);
         self.dirty = false;
         self.conflict = false;
@@ -2566,6 +2801,134 @@ impl Document {
         });
     }
 
+    pub(crate) fn spell_context_at(
+        &self,
+        position: Point<Pixels>,
+        cx: &App,
+    ) -> Option<(std::ops::Range<usize>, String, Vec<String>)> {
+        let source = self.editor.read(cx).value();
+        let analysis = self
+            .spell_analysis
+            .as_ref()
+            .filter(|(revision, _)| *revision == self.revision)?
+            .1
+            .clone();
+        let visible_words = {
+            let editor = self.editor.read(cx);
+            let viewport = editor.input_bounds();
+            let line_height = editor.line_height().unwrap_or(px(16.));
+            spellcheck::visible_words(&analysis.words, viewport, line_height, |offset| {
+                editor
+                    .range_to_bounds(&(offset..offset))
+                    .map(|bounds| bounds.origin)
+            })
+        };
+        let range = self
+            .spell_diagnostics
+            .iter()
+            .filter(|range| visible_words.contains(*range))
+            .find(|range| {
+                let Some(word) = source.get((*range).clone()) else {
+                    return false;
+                };
+                word.char_indices().any(|(offset, character)| {
+                    let start = range.start + offset;
+                    self.editor
+                        .read(cx)
+                        .range_to_bounds(&(start..start + character.len_utf8()))
+                        .is_some_and(|bounds| bounds.contains(&position))
+                })
+            })?
+            .clone();
+        let word = source.get(range.clone())?.to_string();
+        let suggestions = self.spell_checker.suggestions(&word, &self.spell_languages);
+        Some((range, word, suggestions))
+    }
+
+    pub(crate) fn spell_revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn apply_spell_correction(
+        &mut self,
+        action: &SpellCorrection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.spell_target_matches(
+            action.revision,
+            action.start,
+            action.end,
+            &action.original,
+            cx,
+        ) {
+            return false;
+        }
+        let changed = self.editor.update(cx, |editor, cx| {
+            let text = editor.value();
+            let range = action.start..action.end;
+            if range.end > text.len()
+                || !text.is_char_boundary(range.start)
+                || !text.is_char_boundary(range.end)
+                || text.get(range.clone()) != Some(action.original.as_str())
+            {
+                return false;
+            }
+            editor.set_selected_range(range, cx);
+            editor.replace(action.replacement.clone(), window, cx);
+            true
+        });
+        changed
+    }
+
+    pub(crate) fn ignore_spell_word(
+        &mut self,
+        action: &SpellIgnore,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.spell_target_matches(
+            action.revision,
+            action.start,
+            action.end,
+            &action.original,
+            cx,
+        ) {
+            return false;
+        }
+        self.spell_checker.ignore(&action.original);
+        self.clear_spellcheck(cx);
+        self.schedule_spellcheck(cx);
+        true
+    }
+
+    pub(crate) fn learn_spell_word(&mut self, action: &SpellLearn, cx: &mut Context<Self>) -> bool {
+        if !self.spell_target_matches(
+            action.revision,
+            action.start,
+            action.end,
+            &action.original,
+            cx,
+        ) {
+            return false;
+        }
+        self.spell_checker.learn(&action.original);
+        self.clear_spellcheck(cx);
+        self.schedule_spellcheck(cx);
+        true
+    }
+
+    fn spell_target_matches(
+        &self,
+        revision: u64,
+        start: usize,
+        end: usize,
+        original: &str,
+        cx: &App,
+    ) -> bool {
+        let text = self.editor.read(cx).value();
+        spellcheck::target_matches(&text, self.revision, revision, start, end, original)
+    }
+
     /// Apply live-editing settings onto this editor.
     pub fn apply_settings(
         &mut self,
@@ -2573,10 +2936,21 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let spell_changed = self.spell_enabled != settings.spellcheck_enabled
+            || self.spell_languages != settings.spellcheck_languages;
+        self.spell_enabled = settings.spellcheck_enabled;
+        self.spell_languages = settings.spellcheck_languages.clone();
+        if spell_changed {
+            self.spell_analysis = None;
+            self.clear_spellcheck(cx);
+        }
         self.editor.update(cx, |editor, cx| {
             editor.set_soft_wrap(settings.soft_wrap, window, cx);
             editor.set_line_number(settings.show_line_numbers, window, cx);
         });
+        if spell_changed {
+            self.schedule_spellcheck(cx);
+        }
         cx.notify();
     }
 }

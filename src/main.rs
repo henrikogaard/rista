@@ -32,6 +32,7 @@ pub mod search_service;
 mod settings;
 mod settings_panel;
 mod slash;
+mod spellcheck;
 mod templater;
 mod terminal;
 mod terminal_session;

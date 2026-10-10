@@ -5,6 +5,7 @@ use crate::hotkeys::{self, CommandSpec, HotkeyNotice};
 use crate::settings::{
     Appearance, Language, Period, PropertiesVisibility, Settings, ViewMode, EDITOR_FONTS,
 };
+use crate::spellcheck;
 use crate::theme;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -15,6 +16,7 @@ use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectStat
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::theme::ThemeMode;
+use gpui_kit::component::Disableable;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, IndexPath};
 use gpui_kit::prelude::FluentBuilder;
@@ -26,6 +28,7 @@ pub struct SettingsView {
     terminal_shell_input: Entity<InputState>,
     workspace: WeakEntity<Workspace>,
     hotkey_search: Entity<InputState>,
+    spell_language_search: Entity<InputState>,
     capture_focus: FocusHandle,
     recording: Option<String>,
     hotkey_notice: Option<HotkeyNotice>,
@@ -64,6 +67,13 @@ impl SettingsView {
                 settings
                     .language
                     .text("Search shortcuts…", "Søk etter snarveier…"),
+            )
+        });
+        let spell_language_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(
+                settings
+                    .language
+                    .text("Search installed languages…", "Søk i installerte språk…"),
             )
         });
         let capture_focus = cx.focus_handle();
@@ -194,6 +204,11 @@ impl SettingsView {
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(
             &hotkey_search,
+            window,
+            |_this, _state, _event: &InputEvent, _window, cx| cx.notify(),
+        ));
+        subs.push(cx.subscribe_in(
+            &spell_language_search,
             window,
             |_this, _state, _event: &InputEvent, _window, cx| cx.notify(),
         ));
@@ -420,6 +435,7 @@ impl SettingsView {
             terminal_shell_input,
             workspace,
             hotkey_search,
+            spell_language_search,
             capture_focus,
             recording: None,
             hotkey_notice: None,
@@ -784,10 +800,17 @@ impl SettingsView {
                     cx,
                 );
             });
+            self.spell_language_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    new_language.text("Search installed languages…", "Søk i installerte språk…"),
+                    window,
+                    cx,
+                );
+            });
         }
     }
 
-    fn row(cx: &App, label: &'static str, control: impl IntoElement) -> gpui_kit::Div {
+    fn row(cx: &App, label: impl Into<SharedString>, control: impl IntoElement) -> gpui_kit::Div {
         h_flex()
             .w_full()
             .items_center()
@@ -796,7 +819,7 @@ impl SettingsView {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(label),
+                    .child(label.into()),
             )
             .child(control)
     }
@@ -820,6 +843,17 @@ impl Render for SettingsView {
             ViewMode::Split => 1,
             ViewMode::Preview => 2,
         };
+        let language_query = self
+            .spell_language_search
+            .read(cx)
+            .value()
+            .to_string()
+            .to_lowercase();
+        let installed_spell_languages = spellcheck::available_languages();
+        let has_invalid_spell_language = settings
+            .spellcheck_languages
+            .iter()
+            .any(|language| !installed_spell_languages.contains(language));
         let hotkeys = self.hotkeys_section(settings.language, window, cx);
 
         v_flex()
@@ -982,7 +1016,7 @@ impl Render for SettingsView {
                         cx,
                         "UI size",
                         Select::new(&self.ui_size_select).w(px(90.)),
-                    )),
+                    ))
             )
             .child(
                 v_flex()
@@ -1069,7 +1103,139 @@ impl Render for SettingsView {
                         cx,
                         "Tab size",
                         Select::new(&self.tab_size_select).w(px(90.)),
-                    )),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        settings.language.text("Spell checking", "Stavekontroll"),
+                        Switch::new("spellcheck-enabled")
+                            .disabled(!spellcheck::is_supported())
+                            .checked(settings.spellcheck_enabled)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                let checked = *checked;
+                                this.update_setting(cx, |s| s.spellcheck_enabled = checked, window);
+                            })),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if !spellcheck::is_supported() {
+                                settings.language.text(
+                                    "Spell checking is unavailable on this platform.",
+                                    "Stavekontroll er ikke tilgjengelig på denne plattformen.",
+                                )
+                            } else {
+                                settings.language.text(
+                                    "Choose installed languages, or leave empty for system languages.",
+                                    "Velg installerte språk, eller la listen stå tom for systemspråk.",
+                                )
+                            }),
+                    )
+                    .when(spellcheck::is_supported(), |view| {
+                        view.child(Input::new(&self.spell_language_search).w_full())
+                    })
+                    .when(
+                        spellcheck::is_supported() && settings.spellcheck_languages.is_empty(),
+                        |view| {
+                        view.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(settings.language.text(
+                                    "System languages",
+                                    "Systemspråk",
+                                )),
+                        )
+                    })
+                    .when(spellcheck::is_supported(), |view| {
+                        view.children(settings.spellcheck_languages.iter().map(|selected_language| {
+                            let selected_language = selected_language.clone();
+                            let remove_language = selected_language.clone();
+                            Self::row(
+                                cx,
+                                selected_language.clone(),
+                                Button::new(format!("spell-remove-{selected_language}"))
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text("Remove", "Fjern"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let remove_language = remove_language.clone();
+                                        this.update_setting(
+                                            cx,
+                                            |settings| {
+                                                settings
+                                                    .spellcheck_languages
+                                                    .retain(|item| item != &remove_language);
+                                            },
+                                            window,
+                                        );
+                                    })),
+                            )
+                        }))
+                    })
+                    .when(
+                        spellcheck::is_supported() && !settings.spellcheck_languages.is_empty(),
+                        |view| {
+                            view.child(
+                                Button::new("spellcheck-system-languages")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text(
+                                        "Use system languages",
+                                        "Bruk systemspråk",
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.update_setting(
+                                            cx,
+                                            |settings| settings.spellcheck_languages.clear(),
+                                            window,
+                                        );
+                                    })),
+                            )
+                        },
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .when(
+                                spellcheck::is_supported()
+                                    && has_invalid_spell_language,
+                                |view| {
+                                    view.child(settings.language.text(
+                                        "One or more selected languages are unavailable.",
+                                        "Ett eller flere valgte språk er ikke tilgjengelige.",
+                                    ))
+                                },
+                            ),
+                    )
+                    .when(spellcheck::is_supported(), |view| {
+                        view.children(installed_spell_languages.into_iter().filter(|language| {
+                            language.to_lowercase().contains(&language_query)
+                        }).map(|language| {
+                            let selected = settings.spellcheck_languages.contains(&language);
+                            let language_id = language.clone();
+                            Self::row(
+                                cx,
+                                language,
+                                Switch::new(format!("spell-language-{language_id}"))
+                                    .checked(selected)
+                                    .on_click(cx.listener(move |this, checked, window, cx| {
+                                        let checked = *checked;
+                                        let language_id = language_id.clone();
+                                        this.update_setting(cx, |s| {
+                                            if checked {
+                                                if !s.spellcheck_languages.contains(&language_id) {
+                                                    s.spellcheck_languages.push(language_id.clone());
+                                                }
+                                            } else {
+                                                s.spellcheck_languages.retain(|item| item != &language_id);
+                                            }
+                                        }, window);
+                                    })),
+                            )
+                        }))
+                    })
             )
             .child(v_flex().gap_2()
                 .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child(settings.language.text("TERMINAL", "TERMINAL")))

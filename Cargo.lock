@@ -6286,6 +6286,7 @@ version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "block2 0.6.2",
  "chrono",
  "directories",
  "gpui-kit",
@@ -6308,6 +6309,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smol",
+ "unicode-segmentation",
  "ureq",
  "url",
  "vt100",

@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 regex = "1"
+unicode-segmentation = "1.13.3"
 directories = "6"
 chrono = "0.4"
 smol = "2"
@@ -62,6 +63,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSApplication",
     "NSImage",
     "NSResponder",
+    "NSSpellChecker",
+    "block2",
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSData",
@@ -69,6 +72,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSObject",
     "NSString",
 ] }
+block2 = "0.6.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

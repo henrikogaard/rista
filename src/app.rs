@@ -1776,6 +1776,75 @@ impl Workspace {
         }
     }
 
+    fn on_spell_correction(
+        &mut self,
+        action: &SpellCorrection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self
+            .active_doc()
+            .filter(|doc| doc.entity_id().as_non_zero_u64().get() == action.document_id)
+            .cloned()
+        else {
+            return;
+        };
+        doc.update(cx, |doc, cx| {
+            doc.apply_spell_correction(action, window, cx);
+        });
+    }
+
+    fn on_spell_ignore(
+        &mut self,
+        action: &SpellIgnore,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self
+            .active_doc()
+            .filter(|doc| doc.entity_id().as_non_zero_u64().get() == action.document_id)
+            .cloned()
+        else {
+            return;
+        };
+        doc.update(cx, |doc, cx| {
+            doc.ignore_spell_word(action, cx);
+        });
+    }
+
+    fn on_spell_learn(
+        &mut self,
+        action: &SpellLearn,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self
+            .active_doc()
+            .filter(|doc| doc.entity_id().as_non_zero_u64().get() == action.document_id)
+            .cloned()
+        else {
+            return;
+        };
+        let learned = doc.update(cx, |doc, cx| doc.learn_spell_word(action, cx));
+        if learned {
+            for open_doc in &self.docs {
+                if open_doc.entity.entity_id().as_non_zero_u64().get() != action.document_id {
+                    open_doc
+                        .entity
+                        .update(cx, |doc, cx| doc.dictionary_changed(cx));
+                }
+            }
+        }
+    }
+
+    fn on_spell_no_suggestions(
+        &mut self,
+        _action: &SpellNoSuggestions,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
     /// Preview checkbox click → flip the `- [ ]` marker on `line`
     /// (1-based) in the active document.
     pub fn toggle_task_pub(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -8812,10 +8881,64 @@ impl Workspace {
                 // `appearance(false)` — the editor's bordered box would
                 // draw a second frame inside the pane card.
                 let language = self.settings.language;
+                let spell_doc = doc.clone();
                 let editor = Editor::new(&doc.read(cx).editor)
                     .h_full()
                     .appearance(false)
-                    .context_menu(move |menu, _window, _cx| {
+                    .context_menu(move |menu, _window, cx| {
+                        let spell_context = spell_doc
+                            .read(cx)
+                            .spell_context_at(_window.mouse_position(), cx);
+                        let spell_id = spell_doc.entity_id().as_non_zero_u64().get();
+                        let spell_revision = spell_doc.read(cx).spell_revision();
+                        let mut menu = menu;
+                        if let Some((range, word, suggestions)) = spell_context.clone() {
+                            let mut spelling = gpui_kit::component::native_menu::NativeMenu::new();
+                            let no_suggestions = suggestions.is_empty();
+                            for suggestion in suggestions {
+                                spelling = spelling.menu(
+                                    suggestion.clone(),
+                                    Box::new(SpellCorrection {
+                                        document_id: spell_id,
+                                        revision: spell_revision,
+                                        start: range.start,
+                                        end: range.end,
+                                        original: word.clone(),
+                                        replacement: suggestion,
+                                    }),
+                                );
+                            }
+                            if no_suggestions {
+                                spelling = spelling.menu(
+                                    language.text("No suggestions", "Ingen forslag"),
+                                    Box::new(SpellNoSuggestions),
+                                );
+                            }
+                            spelling = spelling
+                                .separator()
+                                .menu(
+                                    language.text("Add to dictionary", "Legg til i ordliste"),
+                                    Box::new(SpellLearn {
+                                        document_id: spell_id,
+                                        revision: spell_revision,
+                                        start: range.start,
+                                        end: range.end,
+                                        original: word.clone(),
+                                    }),
+                                )
+                                .menu(
+                                    language.text("Ignore", "Ignorer"),
+                                    Box::new(SpellIgnore {
+                                        document_id: spell_id,
+                                        revision: spell_revision,
+                                        start: range.start,
+                                        end: range.end,
+                                        original: word,
+                                    }),
+                                );
+                            menu =
+                                menu.submenu(language.text("Spelling", "Stavekontroll"), spelling);
+                        }
                         menu.menu("Cut", Box::new(input::Cut))
                             .menu("Copy", Box::new(input::Copy))
                             .menu("Paste", Box::new(input::Paste))
@@ -9556,6 +9679,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_run_palette_command))
+            .on_action(cx.listener(Self::on_spell_correction))
+            .on_action(cx.listener(Self::on_spell_ignore))
+            .on_action(cx.listener(Self::on_spell_learn))
+            .on_action(cx.listener(Self::on_spell_no_suggestions))
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
