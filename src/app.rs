@@ -7966,7 +7966,7 @@ impl Workspace {
                                                 }
                                             });
                                         // Folders accept drops; files only drag.
-                                        let row = if entry.is_folder() {
+                                        let row = if is_folder {
                                             let dest_dir = path.clone();
                                             row.drag_over::<PathBuf>(|style, _, _, cx| {
                                                 style.bg(cx.theme().accent.opacity(0.2))
