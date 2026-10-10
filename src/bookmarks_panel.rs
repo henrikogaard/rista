@@ -6,6 +6,18 @@ use std::ffi::OsStr;
 use std::rc::Rc;
 
 impl Workspace {
+    fn visible_markdown_document(&self, cx: &App) -> Option<Entity<Document>> {
+        if self.graph.is_some() || self.folder.is_some() {
+            return None;
+        }
+        let doc = self.active_doc()?.clone();
+        doc.read(cx)
+            .path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            .then_some(doc)
+    }
+
     fn bookmark_title(item: &Bookmark, language: crate::settings::Language) -> String {
         if let Some(title) = item
             .title
@@ -22,7 +34,7 @@ impl Workspace {
                     |anchor| format!("{name} · {}", anchor.trim_start_matches('^')),
                 )
             }
-            BookmarkKind::Folder { path } => path
+            BookmarkKind::Folder { path, .. } => path
                 .file_name()
                 .unwrap_or_else(|| OsStr::new(""))
                 .to_string_lossy()
@@ -40,8 +52,13 @@ impl Workspace {
     fn bookmark_missing(item: &Bookmark) -> bool {
         match &item.kind {
             BookmarkKind::File { path, .. } | BookmarkKind::Base { path, .. } => !path.is_file(),
-            BookmarkKind::Folder { path } => !path.is_dir(),
-            BookmarkKind::Search { root, .. } | BookmarkKind::Graph { root, .. } => !root.is_dir(),
+            BookmarkKind::Folder { path, root } => {
+                !path.is_dir() || root.as_ref().is_some_and(|root| !root.is_dir())
+            }
+            BookmarkKind::Search { root, .. } => !root.is_dir(),
+            BookmarkKind::Graph { root, center } => {
+                !root.is_dir() || center.as_ref().is_some_and(|center| !center.is_file())
+            }
             BookmarkKind::Group { .. } => false,
         }
     }
@@ -85,15 +102,9 @@ impl Workspace {
                 ..
             }
         );
-        let is_drop_target = self.bookmark_drop_target.is_some_and(|target| {
-            matches!(
-                target,
-                DropTarget::Before(target_id)
-                    | DropTarget::After(target_id)
-                    | DropTarget::Into(target_id)
-                    if target_id == id
-            )
-        });
+        let drop_before = self.bookmark_drop_target == Some(DropTarget::Before(id));
+        let drop_after = self.bookmark_drop_target == Some(DropTarget::After(id));
+        let drop_into = is_group && self.bookmark_drop_target == Some(DropTarget::Into(id));
         let bounds = Rc::new(Cell::new(Bounds::default()));
         let drag_title = title.clone();
         let row_target = move |position: Point<Pixels>, bounds: Bounds<Pixels>| {
@@ -118,22 +129,21 @@ impl Workspace {
             .px_2()
             .pl(px(8. + depth as f32 * 16.))
             .py_0p5()
-            .when(is_drop_target, |this| this.bg(theme.accent.opacity(0.12)))
+            .when(drop_into, |this| this.bg(theme.muted.opacity(0.35)))
             .on_prepaint({
                 let bounds = bounds.clone();
                 move |resolved, _, _| bounds.set(resolved)
             })
-            .on_mouse_move({
-                let bounds = bounds.clone();
+            .on_drag_move::<DraggedBookmark>({
                 let view = view.clone();
                 move |event, _, cx| {
-                    if event.dragging() && cx.has_active_drag() {
-                        let target = row_target(event.position, bounds.get());
+                    if event.bounds.contains(&event.event.position) {
+                        let dragged = event.drag(cx);
+                        let target = (dragged.0 != id)
+                            .then(|| row_target(event.event.position, event.bounds));
                         view.update(cx, |this, cx| {
-                            if this.dragged_bookmark.is_some()
-                                && this.bookmark_drop_target != Some(target)
-                            {
-                                this.bookmark_drop_target = Some(target);
+                            if this.bookmark_drop_target != target {
+                                this.bookmark_drop_target = target;
                                 cx.notify();
                             }
                         });
@@ -150,22 +160,6 @@ impl Workspace {
                     });
                 }
             })
-            .drag_over::<DraggedBookmark>({
-                let bounds = bounds.clone();
-                move |style, dragged, window, cx| {
-                    let target = row_target(window.mouse_position(), bounds.get());
-                    let valid = dragged.0 != id;
-                    if valid {
-                        style.bg(if is_group && target == DropTarget::Into(id) {
-                            cx.theme().accent.opacity(0.16)
-                        } else {
-                            cx.theme().muted.opacity(0.35)
-                        })
-                    } else {
-                        style
-                    }
-                }
-            })
             .on_drag(DraggedBookmark(id), {
                 let view = view.clone();
                 move |_, _, _, cx| {
@@ -180,7 +174,6 @@ impl Workspace {
                 }
             })
             .on_drop::<DraggedBookmark>({
-                let bounds = bounds.clone();
                 let view = view.clone();
                 move |dragged, window, cx| {
                     let target = row_target(window.mouse_position(), bounds.get());
@@ -226,56 +219,68 @@ impl Workspace {
                 }
             })
             .child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        Icon::new(if is_group {
-                            if collapsed {
-                                assets::IconName::ChevronRight
-                            } else {
-                                assets::IconName::ChevronDown
-                            }
-                        } else {
-                            Self::bookmark_icon(item)
-                        })
-                        .size_4()
-                        .text_color(if missing {
-                            theme.danger
-                        } else {
-                            theme.muted_foreground
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .truncate()
-                            .text_color(if missing {
-                                theme.danger
-                            } else {
-                                theme.foreground
-                            })
-                            .child(title),
-                    )
-                    .when(missing, |this| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.danger)
-                                .child(self.tr("Missing", "Mangler")),
-                        )
+                v_flex()
+                    .w_full()
+                    .when(drop_before, |this| {
+                        this.child(div().w_full().h(px(1.)).bg(theme.accent))
                     })
-                    .when(is_group, |this| {
-                        this.child(div().text_xs().text_color(theme.muted_foreground).child(
-                            format!(
-                                "{}",
-                                match &item.kind {
-                                    BookmarkKind::Group { items, .. } =>
-                                        Self::bookmark_count(items),
-                                    _ => 0,
-                                }
-                            ),
-                        ))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Icon::new(if is_group {
+                                    if collapsed {
+                                        assets::IconName::ChevronRight
+                                    } else {
+                                        assets::IconName::ChevronDown
+                                    }
+                                } else {
+                                    Self::bookmark_icon(item)
+                                })
+                                .size_4()
+                                .text_color(if missing {
+                                    theme.danger
+                                } else {
+                                    theme.muted_foreground
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .truncate()
+                                    .text_color(if missing {
+                                        theme.danger
+                                    } else {
+                                        theme.foreground
+                                    })
+                                    .child(title),
+                            )
+                            .when(missing, |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.danger)
+                                        .child(self.tr("Missing", "Mangler")),
+                                )
+                            })
+                            .when(is_group, |this| {
+                                this.child(
+                                    div().text_xs().text_color(theme.muted_foreground).child(
+                                        format!(
+                                            "{}",
+                                            match &item.kind {
+                                                BookmarkKind::Group { items, .. } =>
+                                                    Self::bookmark_count(items),
+                                                _ => 0,
+                                            }
+                                        ),
+                                    ),
+                                )
+                            }),
+                    )
+                    .when(drop_after, |this| {
+                        this.child(div().w_full().h(px(1.)).bg(theme.accent))
                     }),
             );
         let element = row.into_any_element();
@@ -345,7 +350,37 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
-                    .child(menu_button),
+                    .child(menu_button)
+                    .on_drop::<DraggedBookmark>({
+                        let view = view.clone();
+                        move |dragged, _, cx| {
+                            view.update(cx, |this, cx| {
+                                if this.settings.bookmarks.move_to(dragged.0, DropTarget::Root) {
+                                    this.persist_bookmarks(cx);
+                                }
+                                this.dragged_bookmark = None;
+                                this.bookmark_drop_target = None;
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .on_drag_move::<DraggedBookmark>({
+                        let view = view.clone();
+                        move |event, _, cx| {
+                            if event.bounds.contains(&event.event.position) {
+                                view.update(cx, |this, cx| {
+                                    if this.bookmark_drop_target != Some(DropTarget::Root) {
+                                        this.bookmark_drop_target = Some(DropTarget::Root);
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        }
+                    }),
+            )
+            .when(
+                self.bookmark_drop_target == Some(DropTarget::Root),
+                |this| this.child(div().h(px(1.)).w_full().bg(cx.theme().accent.opacity(0.7))),
             )
             .when(self.starred_open, |this| {
                 this.child(
@@ -367,22 +402,6 @@ impl Workspace {
                                     cx.notify();
                                 });
                             }
-                        })
-                        .on_drop::<DraggedBookmark>({
-                            let view = view.clone();
-                            move |dragged, _, cx| {
-                                view.update(cx, |this, cx| {
-                                    if this.settings.bookmarks.move_to(dragged.0, DropTarget::Root)
-                                    {
-                                        this.persist_bookmarks(cx);
-                                    }
-                                    this.dragged_bookmark = None;
-                                    this.bookmark_drop_target = None;
-                                });
-                            }
-                        })
-                        .drag_over::<DraggedBookmark>(|style, _, _, cx| {
-                            style.border_color(cx.theme().accent).border_1()
                         }),
                 )
             })
@@ -444,7 +463,11 @@ impl Workspace {
                 PopupMenuItem::new(language.text("New group", "Ny gruppe")).on_click({
                     let view = view.clone();
                     move |_, window, cx| {
-                        view.update(cx, |this, cx| this.show_new_group_dialog(None, window, cx))
+                        view.update(cx, |this, cx| {
+                            this.defer_bookmark_dialog(window, cx, |this, window, cx| {
+                                this.show_new_group_dialog(None, window, cx)
+                            })
+                        })
                     }
                 }),
             )
@@ -493,7 +516,9 @@ impl Workspace {
                     let view = view.clone();
                     move |_, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.show_bookmark_rename_dialog(id, window, cx)
+                            this.defer_bookmark_dialog(window, cx, move |this, window, cx| {
+                                this.show_bookmark_rename_dialog(id, window, cx)
+                            })
                         })
                     }
                 }),
@@ -512,7 +537,9 @@ impl Workspace {
                         let view = view.clone();
                         move |_, window, cx| {
                             view.update(cx, |this, cx| {
-                                this.show_new_group_dialog(Some(id), window, cx)
+                                this.defer_bookmark_dialog(window, cx, move |this, window, cx| {
+                                    this.show_new_group_dialog(Some(id), window, cx)
+                                })
                             })
                         }
                     }),
@@ -540,8 +567,13 @@ impl Workspace {
                 center: graph.read(cx).local_center_path(),
             }
         } else if let Some(folder) = &self.folder {
+            let Some(root) = self.vault.read(cx).root.clone() else {
+                self.note_status(self.tr("Open a vault first", "Åpne et hvelv først"), cx);
+                return;
+            };
             BookmarkKind::Folder {
                 path: folder.path.clone(),
+                root: Some(root),
             }
         } else if let Some(doc) = self.active_doc().cloned() {
             let path = doc.read(cx).path.clone();
@@ -574,8 +606,12 @@ impl Workspace {
         let _ = window;
     }
 
-    fn bookmark_current_heading(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.active_doc().cloned() else {
+    fn bookmark_current_heading(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.visible_markdown_document(cx) else {
+            self.note_status(
+                self.tr("Open a Markdown note first", "Åpne et Markdown-notat først"),
+                cx,
+            );
             return;
         };
         let (path, text, cursor) = {
@@ -586,16 +622,7 @@ impl Workspace {
                 doc.editor.read(cx).cursor(),
             )
         };
-        let line = text
-            .get(..cursor.min(text.len()))
-            .unwrap_or(&text)
-            .lines()
-            .count()
-            .max(1);
-        let Some((heading_line, _, raw)) = preview::headings(&text)
-            .into_iter()
-            .rev()
-            .find(|(line_no, _, _)| *line_no <= line)
+        let Some((normalized, occurrence)) = crate::bookmarks::capture_heading(&text, cursor)
         else {
             self.note_status(
                 self.tr("No heading at the caret", "Ingen overskrift ved markøren"),
@@ -603,19 +630,6 @@ impl Workspace {
             );
             return;
         };
-        let normalized = raw.trim().trim_start_matches('#').trim().to_string();
-        let occurrence = preview::headings(&text)
-            .into_iter()
-            .filter(|(line_no, _, raw)| {
-                *line_no <= heading_line
-                    && raw
-                        .trim()
-                        .trim_start_matches('#')
-                        .trim()
-                        .eq_ignore_ascii_case(&normalized)
-            })
-            .count()
-            .saturating_sub(1);
         let kind = BookmarkKind::File {
             path,
             anchor: Some(normalized),
@@ -625,11 +639,14 @@ impl Workspace {
             self.settings.bookmarks.add(kind, None, None);
             self.persist_bookmarks(cx);
         }
-        let _ = window;
     }
 
     fn bookmark_current_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.active_doc().cloned() else {
+        let Some(doc) = self.visible_markdown_document(cx) else {
+            self.note_status(
+                self.tr("Open a Markdown note first", "Åpne et Markdown-notat først"),
+                cx,
+            );
             return;
         };
         if doc.read(cx).is_read_only() {
@@ -682,6 +699,16 @@ impl Workspace {
                     let Some(doc) = self.active_doc().cloned() else {
                         return;
                     };
+                    if doc.read(cx).path != path {
+                        self.note_status(
+                            self.tr(
+                                "Bookmark document could not be opened",
+                                "Bokmerkedokumentet kunne ikke åpnes",
+                            ),
+                            cx,
+                        );
+                        return;
+                    }
                     let text = doc.read(cx).editor.read(cx).value().to_string();
                     if let Some(block) = anchor.strip_prefix('^') {
                         let lines: Vec<&str> = text.split('\n').collect();
@@ -694,17 +721,9 @@ impl Workspace {
                             );
                         }
                     } else {
-                        let line = preview::headings(&text)
-                            .into_iter()
-                            .filter(|(_, _, raw)| {
-                                raw.trim()
-                                    .trim_start_matches('#')
-                                    .trim()
-                                    .eq_ignore_ascii_case(&anchor)
-                            })
-                            .nth(occurrence)
-                            .map(|(line, _, _)| line);
-                        if let Some(line) = line {
+                        if let Some(line) =
+                            crate::bookmarks::resolve_heading(&text, &anchor, occurrence)
+                        {
                             self.navigate_search_result(path, Some(line), window, cx);
                         } else {
                             self.note_status(
@@ -717,15 +736,56 @@ impl Workspace {
                     self.open_document(path, window, cx);
                 }
             }
-            BookmarkKind::Folder { path } => {
+            BookmarkKind::Folder { path, root } => {
                 if !path.is_dir() {
                     self.note_status(
                         self.tr("Folder target is missing", "Mappemålet mangler"),
                         cx,
                     );
-                } else {
-                    self.open_folder_page(path, window, cx);
+                    return;
                 }
+                let path_root = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let current_root = self.vault.read(cx).root.clone();
+                let current_canonical = current_root
+                    .as_ref()
+                    .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()));
+                let root = root
+                    .or_else(|| {
+                        current_root.clone().filter(|_| {
+                            current_canonical
+                                .as_ref()
+                                .is_some_and(|root| path_root.starts_with(root))
+                        })
+                    })
+                    .unwrap_or_else(|| path.clone());
+                let Ok(canonical_root) = root.canonicalize() else {
+                    self.note_status(
+                        self.tr("Folder vault is missing", "Mappens hvelv mangler"),
+                        cx,
+                    );
+                    return;
+                };
+                if !canonical_root.is_dir() {
+                    self.note_status(
+                        self.tr("Folder vault is missing", "Mappens hvelv mangler"),
+                        cx,
+                    );
+                    return;
+                }
+                if !path_root.starts_with(&canonical_root) {
+                    self.note_status(
+                        self.tr(
+                            "Folder is outside its saved vault",
+                            "Mappen er utenfor det lagrede hvelvet",
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+                if current_root.as_ref() != Some(&root) && !self.open_vault_at(root, window, cx) {
+                    return;
+                }
+                self.open_folder_page(path, window, cx);
             }
             BookmarkKind::Search {
                 root,
@@ -752,6 +812,13 @@ impl Workspace {
                     self.note_status(self.tr("Graph vault is missing", "Grafhvelvet mangler"), cx);
                     return;
                 }
+                if center.as_ref().is_some_and(|center| !center.is_file()) {
+                    self.note_status(
+                        self.tr("Graph center is missing", "Grafens midtpunkt mangler"),
+                        cx,
+                    );
+                    return;
+                }
                 if self.vault.read(cx).root.as_ref() != Some(&root)
                     && !self.open_vault_at(root, window, cx)
                 {
@@ -762,7 +829,6 @@ impl Workspace {
                 } else {
                     if self.graph.is_some() {
                         self.graph = None;
-                        self.graph_dock = None;
                     }
                     self.on_open_graph(&OpenGraph, window, cx);
                 }
@@ -776,6 +842,19 @@ impl Workspace {
                     return;
                 }
                 self.open_document(path.clone(), window, cx);
+                let Some(doc) = self.active_doc().cloned() else {
+                    return;
+                };
+                if doc.read(cx).path != path {
+                    self.note_status(
+                        self.tr(
+                            "Base view could not be opened",
+                            "Base-visningen kunne ikke åpnes",
+                        ),
+                        cx,
+                    );
+                    return;
+                }
                 let base = self
                     .active
                     .and_then(|ix| self.docs.get(ix))
@@ -809,20 +888,29 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.focus_handle.focus(window, cx);
         let input = cx.new(|cx| InputState::new(window, cx));
         let dialog_input = input.clone();
         let ok_input = input.clone();
         let view = cx.entity();
         let title = self.tr("New bookmark group", "Ny bokmerkegruppe");
+        let cancel_label = self.tr("Cancel", "Avbryt");
+        let ok_label = self.tr("OK", "OK");
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title)
                 .w(px(380.))
+                .button_props(
+                    gpui_kit::component::dialog::DialogButtonProps::default()
+                        .show_cancel(true)
+                        .cancel_text(cancel_label)
+                        .ok_text(ok_label),
+                )
                 .child(Input::new(&dialog_input).appearance(true))
                 .on_ok({
                     let input = ok_input.clone();
                     let view = view.clone();
-                    move |_, window, cx| {
+                    move |_, _window, cx| {
                         let name = input.read(cx).value().trim().to_string();
                         if name.is_empty() {
                             return false;
@@ -838,8 +926,14 @@ impl Workspace {
                             );
                             this.persist_bookmarks(cx);
                         });
-                        window.close_dialog(cx);
-                        false
+                        true
+                    }
+                })
+                .on_cancel(|_, _, _| true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| this.refocus(window, cx));
                     }
                 })
         });
@@ -854,6 +948,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.focus_handle.focus(window, cx);
         let Some(item) = self.settings.bookmarks.find(id) else {
             return;
         };
@@ -867,15 +962,23 @@ impl Workspace {
         input.update(cx, |input, cx| input.set_value(initial, window, cx));
         let view = cx.entity();
         let title = self.tr("Rename bookmark", "Gi nytt navn på bokmerke");
+        let cancel_label = self.tr("Cancel", "Avbryt");
+        let ok_label = self.tr("OK", "OK");
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title)
                 .w(px(380.))
+                .button_props(
+                    gpui_kit::component::dialog::DialogButtonProps::default()
+                        .show_cancel(true)
+                        .cancel_text(cancel_label)
+                        .ok_text(ok_label),
+                )
                 .child(Input::new(&dialog_input).appearance(true))
                 .on_ok({
                     let input = ok_input.clone();
                     let view = view.clone();
-                    move |_, window, cx| {
+                    move |_, _window, cx| {
                         let name = input.read(cx).value().trim().to_string();
                         let is_group = view
                             .read(cx)
@@ -892,8 +995,14 @@ impl Workspace {
                             }
                             this.persist_bookmarks(cx);
                         });
-                        window.close_dialog(cx);
-                        false
+                        true
+                    }
+                })
+                .on_cancel(|_, _, _| true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| this.refocus(window, cx));
                     }
                 })
         });
@@ -911,11 +1020,24 @@ impl Workspace {
             self.persist_bookmarks(cx);
             return;
         }
+        self.defer_bookmark_dialog(window, cx, move |this, window, cx| {
+            this.confirm_remove_bookmark(id, window, cx)
+        });
+    }
+
+    fn confirm_remove_bookmark(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let nonempty_group = self.settings.bookmarks.find(id).is_some_and(
+            |item| matches!(&item.kind, BookmarkKind::Group { items, .. } if !items.is_empty()),
+        );
+        if !nonempty_group {
+            return;
+        }
+        self.focus_handle.focus(window, cx);
         let view = cx.entity();
         let title = self.tr("Remove non-empty group?", "Fjerne gruppe som ikke er tom?");
         let description = self.tr(
             "Only bookmark references will be removed.",
-            "Bare bokmereferanser fjernes.",
+            "Bare bokmerkereferanser fjernes.",
         );
         let remove_label = self.tr("Remove", "Fjern");
         let cancel_label = self.tr("Cancel", "Avbryt");
@@ -929,15 +1051,36 @@ impl Workspace {
                 .ok_text(remove_label)
                 .on_ok({
                     let dialog_view = dialog_view.clone();
-                    move |_, window, cx| {
+                    move |_, _window, cx| {
                         dialog_view.update(cx, |this, cx| {
                             this.settings.bookmarks.remove(id);
                             this.persist_bookmarks(cx);
                         });
-                        window.close_dialog(cx);
-                        false
+                        true
                     }
                 })
+                .on_cancel(|_, _, _| true)
+                .on_close({
+                    let dialog_view = dialog_view.clone();
+                    move |_, window, cx| {
+                        dialog_view.update(cx, |this, cx| this.refocus(window, cx));
+                    }
+                })
+        });
+    }
+
+    fn defer_bookmark_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        open: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                this.focus_handle.focus(window, cx);
+                open(this, window, cx);
+            });
         });
     }
 
@@ -947,7 +1090,7 @@ impl Workspace {
             return;
         };
         let path = root.join(".obsidian/bookmarks.json");
-        match std::fs::read_to_string(path) {
+        match std::fs::read_to_string(&path) {
             Ok(raw) => match self.settings.bookmarks.import_vault(&root, &raw) {
                 Ok(result) => {
                     let imported = result.imported;
@@ -963,23 +1106,40 @@ impl Workspace {
                         cx,
                     );
                 }
-                Err(error) => self.note_status(
-                    if self.settings.language == crate::settings::Language::Norwegian {
-                        format!("Kunne ikke importere bokmerker: {error}")
+                Err(error) => {
+                    eprintln!(
+                        "Failed to parse vault bookmarks from {}: {error}",
+                        path.display()
+                    );
+                    self.note_status(
+                        self.tr(
+                            "The vault bookmark file contains invalid JSON",
+                            "Hvelvets bokmerkefil inneholder ugyldig JSON",
+                        ),
+                        cx,
+                    )
+                }
+            },
+            Err(error) => {
+                eprintln!(
+                    "Failed to read vault bookmarks from {}: {error}",
+                    path.display()
+                );
+                self.note_status(
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        self.tr(
+                            "No vault bookmark file was found",
+                            "Fant ingen bokmerkefil i hvelvet",
+                        )
                     } else {
-                        format!("Could not import bookmarks: {error}")
+                        self.tr(
+                            "Could not read the vault bookmark file",
+                            "Kunne ikke lese hvelvets bokmerkefil",
+                        )
                     },
                     cx,
-                ),
-            },
-            Err(error) => self.note_status(
-                if self.settings.language == crate::settings::Language::Norwegian {
-                    format!("Kunne ikke lese bokmerkefilen: {error}")
-                } else {
-                    format!("Could not read bookmark file: {error}")
-                },
-                cx,
-            ),
+                )
+            }
         }
     }
 }

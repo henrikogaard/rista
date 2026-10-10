@@ -1376,10 +1376,18 @@ impl Workspace {
         let action_context = window
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
+        let bookmark_root = if is_folder {
+            self.vault.read(cx).root.clone()
+        } else {
+            None
+        };
         let bookmarked = if is_folder {
             self.settings
                 .bookmarks
-                .find_kind(&BookmarkKind::Folder { path: path.clone() })
+                .find_kind(&BookmarkKind::Folder {
+                    path: path.clone(),
+                    root: bookmark_root,
+                })
                 .is_some()
         } else {
             self.settings
@@ -3753,7 +3761,14 @@ impl Workspace {
     }
 
     fn toggle_folder_bookmark(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let kind = BookmarkKind::Folder { path };
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.note_status(self.tr("Open a vault first", "Åpne et hvelv først"), cx);
+            return;
+        };
+        let kind = BookmarkKind::Folder {
+            path,
+            root: Some(root),
+        };
         let bookmarked = if let Some(id) = self.settings.bookmarks.find_kind(&kind) {
             self.settings.bookmarks.remove(id);
             false

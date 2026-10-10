@@ -25,6 +25,8 @@ pub enum BookmarkKind {
     },
     Folder {
         path: PathBuf,
+        #[serde(default)]
+        root: Option<PathBuf>,
     },
     Search {
         root: PathBuf,
@@ -74,6 +76,40 @@ pub enum DropTarget {
     Before(u64),
     After(u64),
     Into(u64),
+}
+
+pub(crate) fn capture_heading(source: &str, cursor: usize) -> Option<(String, usize)> {
+    let mut cursor = cursor.min(source.len());
+    while !source.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    let caret_line = source.as_bytes()[..cursor]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+    let headings = crate::preview::headings(source);
+    let (heading_line, _, raw) = headings
+        .iter()
+        .rev()
+        .find(|(line, _, _)| *line <= caret_line)?;
+    let heading = raw.trim().to_owned();
+    let occurrence = headings
+        .iter()
+        .filter(|(line, _, raw)| {
+            *line <= *heading_line && raw.trim().eq_ignore_ascii_case(&heading)
+        })
+        .count()
+        .saturating_sub(1);
+    Some((heading, occurrence))
+}
+
+pub(crate) fn resolve_heading(source: &str, heading: &str, occurrence: usize) -> Option<usize> {
+    crate::preview::headings(source)
+        .into_iter()
+        .filter(|(_, _, raw)| raw.trim().eq_ignore_ascii_case(heading))
+        .nth(occurrence)
+        .map(|(line, _, _)| line)
 }
 
 #[derive(Default)]
@@ -250,10 +286,14 @@ impl Bookmarks {
         fn visit(items: &mut [Bookmark], source: &Path, destination: &Path) {
             for item in items {
                 match &mut item.kind {
-                    BookmarkKind::File { path, .. }
-                    | BookmarkKind::Folder { path }
-                    | BookmarkKind::Base { path, .. } => {
+                    BookmarkKind::File { path, .. } | BookmarkKind::Base { path, .. } => {
                         crate::explorer::repoint_path(path, source, destination);
+                    }
+                    BookmarkKind::Folder { path, root } => {
+                        crate::explorer::repoint_path(path, source, destination);
+                        if let Some(root) = root {
+                            crate::explorer::repoint_path(root, source, destination);
+                        }
                     }
                     BookmarkKind::Search { root, .. } => {
                         crate::explorer::repoint_path(root, source, destination);
@@ -329,7 +369,10 @@ impl Bookmarks {
                     }
                     let path = root.join(relative);
                     if value.get("type")?.as_str()? == "folder" {
-                        BookmarkKind::Folder { path }
+                        BookmarkKind::Folder {
+                            path,
+                            root: Some(root.to_path_buf()),
+                        }
                     } else {
                         if relative.as_os_str().is_empty() {
                             return None;
@@ -337,24 +380,19 @@ impl Bookmarks {
                         let anchor = value
                             .get("subpath")
                             .and_then(|s| s.as_str())
-                            .map(|s| s.trim_start_matches('#'))
+                            .map(|s| s.strip_prefix('#').unwrap_or(s))
                             .filter(|s| !s.is_empty())
                             .map(str::to_owned);
-                        if path
+                        let is_base = path
                             .extension()
-                            .is_some_and(|extension| extension == "base")
-                            && anchor.is_some()
-                        {
-                            BookmarkKind::Base {
-                                path,
-                                view: anchor.unwrap(),
-                            }
-                        } else {
-                            BookmarkKind::File {
+                            .is_some_and(|extension| extension == "base");
+                        match (is_base, anchor) {
+                            (true, Some(view)) => BookmarkKind::Base { path, view },
+                            (_, anchor) => BookmarkKind::File {
                                 path,
                                 anchor,
                                 occurrence: 0,
-                            }
+                            },
                         }
                     }
                 }
@@ -505,6 +543,7 @@ mod tests {
             },
             BookmarkKind::Folder {
                 path: "/old/folder".into(),
+                root: Some("/old".into()),
             },
             BookmarkKind::Search {
                 root: "/old".into(),
@@ -533,6 +572,37 @@ mod tests {
     }
 
     #[test]
+    fn heading_capture_keeps_duplicates_and_literal_hashes() {
+        let source = "# Duplicate\n\n# \\# Literal\n\n# Duplicate\n";
+        let second_duplicate = source.rfind("# Duplicate").unwrap();
+        let (heading, occurrence) = capture_heading(source, second_duplicate).unwrap();
+        assert_eq!(heading, "Duplicate");
+        assert_eq!(occurrence, 1);
+        assert_eq!(resolve_heading(source, &heading, occurrence), Some(5));
+
+        let literal_hash = source.find("# \\# Literal").unwrap();
+        let (heading, occurrence) = capture_heading(source, literal_hash).unwrap();
+        assert_eq!(heading, "# Literal");
+        assert_eq!(occurrence, 0);
+        assert_eq!(resolve_heading(source, &heading, occurrence), Some(3));
+
+        let mut store = Bookmarks::default();
+        let result = store
+            .import_vault(
+                Path::new("/vault"),
+                r###"{"items":[{"type":"file","path":"literal.md","subpath":"## Literal"}]}"###,
+            )
+            .unwrap();
+        assert!(matches!(
+            &result.items[0].kind,
+            BookmarkKind::File {
+                anchor: Some(anchor),
+                ..
+            } if anchor == "# Literal"
+        ));
+    }
+
+    #[test]
     fn vault_import_preserves_groups_targets_titles_and_rejects_escaping_paths() {
         let raw = r##"{"items":[{"type":"group","title":"Work","items":[
             {"type":"file","path":"a.md","subpath":"#Heading","title":"Custom"},
@@ -555,6 +625,19 @@ mod tests {
         assert!(
             matches!(&items[1].kind, BookmarkKind::File { anchor: Some(anchor), .. } if anchor == "^block")
         );
+        assert!(
+            matches!(&items[2].kind, BookmarkKind::Folder { path, root: Some(root) } if path == Path::new("/vault/Folder") && root == Path::new("/vault"))
+        );
+        assert_eq!(
+            serde_json::to_value(&items[2]).unwrap()["root"],
+            serde_json::json!("/vault")
+        );
+        let legacy: BookmarkKind = serde_json::from_value(serde_json::json!({
+            "type": "folder",
+            "path": "/vault/Folder"
+        }))
+        .unwrap();
+        assert!(matches!(legacy, BookmarkKind::Folder { root: None, .. }));
         assert!(matches!(&items[5].kind, BookmarkKind::Base { view, .. } if view == "Cards"));
         let mut ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
         ids.push(result.items[0].id);
