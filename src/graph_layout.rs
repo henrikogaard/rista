@@ -1,4 +1,32 @@
-//! Force approximation and viewport fitting, independent of rendering.
+//! Force approximation, viewport fitting and label spacing, independent of rendering.
+
+use std::collections::HashSet;
+
+pub struct LabelGrid {
+    size: [f32; 2],
+    occupied: HashSet<(i32, i32)>,
+}
+
+impl LabelGrid {
+    pub fn new(size: [f32; 2]) -> Self {
+        Self {
+            size,
+            occupied: HashSet::new(),
+        }
+    }
+
+    /// Reserve the cells touched by a label, keeping dense graphs readable.
+    pub fn insert(&mut self, origin: [f32; 2]) -> bool {
+        let x = (origin[0] / self.size[0]).floor() as i32;
+        let y = (origin[1] / self.size[1]).floor() as i32;
+        let cells = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)];
+        if cells.iter().any(|cell| self.occupied.contains(cell)) {
+            return false;
+        }
+        self.occupied.extend(cells);
+        true
+    }
+}
 
 const EXACT_LIMIT: usize = 512;
 const THETA_SQUARED: f32 = 0.36;
@@ -163,6 +191,26 @@ pub fn fit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_keep_first_priority_and_cull_overlaps() {
+        let mut labels = LabelGrid::new([120., 20.]);
+        assert!(labels.insert([10., 10.]));
+        assert!(!labels.insert([11., 11.]));
+        assert!(!labels.insert([-10., 10.]));
+        assert!(!labels.insert([125., 10.]));
+        assert!(labels.insert([250., 10.]));
+        assert!(labels.insert([10., 60.]));
+    }
+
+    #[test]
+    fn dense_labels_are_bounded_by_viewport_area() {
+        let mut labels = LabelGrid::new([120., 20.]);
+        let count = (0..10000)
+            .filter(|i| labels.insert([(i % 100) as f32 * 8., (i / 100) as f32 * 6.]))
+            .count();
+        assert!((2..100).contains(&count));
+    }
 
     #[test]
     fn exact_small_graph_and_coincident_nodes() {

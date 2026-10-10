@@ -84,6 +84,7 @@ pub struct GraphView {
 const REPULSION: f32 = 110.0; // ideal spacing k
 const STEPS_INIT: u32 = 120; // silent warmup before first paint
 const STEPS_LIVE: u32 = 600; // animated settle
+const LABEL_SIZE: [f32; 2] = [120., 20.];
 /// Rebuild warm-up budget in node pairs × steps — a full
 /// `STEPS_INIT` up to ~300 nodes, fewer above so big vaults don't
 /// stall the UI thread on every save.
@@ -1118,12 +1119,13 @@ impl Render for GraphView {
             },
         );
 
-        // Labels — hubs (degree ≥ 3), hovered, or filter matches,
-        // positioned over the dot; they fade with their node.
+        // Prioritize the hovered label; cull overlapping titles before layout.
+        let mut labels = crate::graph_layout::LabelGrid::new(LABEL_SIZE);
         let label_layer = self
-            .nodes
-            .iter()
-            .enumerate()
+            .hovered
+            .into_iter()
+            .chain((0..self.nodes.len()).filter(|ix| Some(*ix) != self.hovered))
+            .map(|ix| (ix, &self.nodes[ix]))
             .filter(|(ix, n)| {
                 self.hovered == Some(*ix)
                     || if self.filter.is_empty() {
@@ -1141,6 +1143,13 @@ impl Render for GraphView {
                     && top > px(-20.)
                     && top < last_bounds.size.height
             })
+            .filter(|(ix, n)| {
+                let c = self.to_screen(n.pos, last_bounds) - last_bounds.origin;
+                labels.insert([
+                    f32::from(c.x) - LABEL_SIZE[0] / 2.,
+                    f32::from(c.y) + self.node_radius(*ix) * self.scale + 2.,
+                ])
+            })
             .map(|(ix, n)| {
                 // to_screen gives window-absolute points; absolute
                 // positioning here is relative to the pane's origin.
@@ -1150,9 +1159,9 @@ impl Render for GraphView {
                 let fade = self.base_fade(ix);
                 div()
                     .absolute()
-                    .left(c.x - px(60.))
+                    .left(c.x - px(LABEL_SIZE[0] / 2.))
                     .top(c.y + r + px(2.))
-                    .w(px(120.))
+                    .w(px(LABEL_SIZE[0]))
                     .flex()
                     .justify_center()
                     .child(
@@ -1163,7 +1172,8 @@ impl Render for GraphView {
                             } else {
                                 label_color.opacity(fade)
                             })
-                            .whitespace_nowrap()
+                            .max_w_full()
+                            .truncate()
                             .child(n.label.clone()),
                     )
             })
