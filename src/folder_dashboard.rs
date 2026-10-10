@@ -11,9 +11,11 @@ pub(super) struct FolderPage {
     banner: Option<preview::BannerSpec>,
     folds: preview::CalloutFolds,
     embeds: preview::EmbedViews,
+    query_embeds: preview::QueryEmbedViews,
     metadata: folder::Metadata,
     config: folder::Dashboard,
     cards: Vec<FolderCard>,
+    pub pages: [usize; 7],
 }
 
 struct FolderCard {
@@ -179,9 +181,11 @@ impl Workspace {
             banner,
             folds: preview::CalloutFolds::default(),
             embeds: preview::EmbedViews::default(),
+            query_embeds: preview::QueryEmbedViews::default(),
             metadata,
             config,
             cards,
+            pages: [0; 7],
         }
     }
 
@@ -402,6 +406,7 @@ impl Workspace {
                 vault: self.vault.clone(),
                 workspace: cx.weak_entity(),
                 views: page.embeds.clone(),
+                query_views: page.query_embeds.clone(),
                 doc_path: page
                     .contents
                     .as_ref()
@@ -470,14 +475,17 @@ impl Workspace {
                         .iter()
                         .position(|p| page.path.join(p) == card.path)
                 };
-                for (kind, is_pinned, en, nb) in [
+                for (section, (kind, is_pinned, en, nb)) in [
                     (Kind::Note, true, "Pinned", "Festet"),
                     (Kind::Folder, false, "Folders", "Mapper"),
                     (Kind::Note, false, "Notes", "Notater"),
                     (Kind::Database, false, "Databases", "Databaser"),
                     (Kind::Image, false, "Images", "Bilder"),
                     (Kind::Other, false, "Other files", "Andre filer"),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
                     let mut entries: Vec<_> = page
                         .cards
                         .iter()
@@ -512,16 +520,17 @@ impl Workspace {
                         continue;
                     }
                     let count = entries.len();
+                    let range = folder::page_range(count, page.pages[section]);
                     let mut group = v_flex().w_full().gap_2().child(
                         h_flex()
                             .justify_between()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(self.tr(en, nb))
-                            .child(count.to_string()),
+                            .child(self.folder_pagination(page, section, count, cx)),
                     );
                     let mut rows = h_flex().w_full().items_stretch().flex_wrap().gap_2();
-                    for entry in entries {
+                    for entry in &entries[range] {
                         rows = rows.child(self.folder_card(entry, page, is_pinned, cx));
                     }
                     group = group.child(rows);
@@ -722,7 +731,14 @@ impl Workspace {
                     )),
             );
         }
-        for (ix, (entry, metadata)) in entries.into_iter().enumerate() {
+        let count = entries.len();
+        let range = folder::page_range(count, page.pages[6]);
+        for (ix, (entry, metadata)) in entries
+            .into_iter()
+            .enumerate()
+            .skip(range.start)
+            .take(range.len())
+        {
             let path = entry.path.clone();
             let context_path = path.clone();
             let drag_path = path.clone();
@@ -855,6 +871,14 @@ impl Workspace {
                     .child(Input::new(&self.folder_search).small()),
             )
             .child(header)
+            .when(count > folder::page_range(count, 0).len(), |view| {
+                view.child(
+                    div()
+                        .px_4()
+                        .py_1()
+                        .child(self.folder_pagination(page, 6, count, cx)),
+                )
+            })
             .child(
                 div()
                     .id("folder-file-list")
@@ -863,6 +887,73 @@ impl Workspace {
                     .overflow_y_scroll()
                     .track_scroll(&page.scroll)
                     .child(rows),
+            )
+            .into_any_element()
+    }
+
+    fn folder_pagination(
+        &self,
+        page: &FolderPage,
+        section: usize,
+        total: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let first = folder::page_range(total, 0);
+        if total <= first.len() {
+            return div().text_xs().child(total.to_string()).into_any_element();
+        }
+        let range = folder::page_range(total, page.pages[section]);
+        let current = range.start / first.len();
+        let last = (total - 1) / first.len();
+        h_flex()
+            .gap_1()
+            .items_center()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(format!(
+                "{}–{} {} {total}",
+                range.start + 1,
+                range.end,
+                self.tr("of", "av")
+            ))
+            .children(
+                [
+                    ("first", "First page", "Første side", "«", 0),
+                    (
+                        "previous",
+                        "Previous page",
+                        "Forrige side",
+                        "‹",
+                        current.saturating_sub(1),
+                    ),
+                    (
+                        "next",
+                        "Next page",
+                        "Neste side",
+                        "›",
+                        (current + 1).min(last),
+                    ),
+                    ("last", "Last page", "Siste side", "»", last),
+                ]
+                .into_iter()
+                .map(|(id, en, nb, label, target)| {
+                    let path = page.path.clone();
+                    Button::new(SharedString::from(format!("folder-page-{section}-{id}")))
+                        .ghost()
+                        .xsmall()
+                        .label(label)
+                        .tooltip(self.tr(en, nb))
+                        .disabled(target == current)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(page) =
+                                this.folder.as_mut().filter(|page| page.path == path)
+                            {
+                                page.pages[section] = target;
+                                page.scroll.set_offset(point(px(0.), px(0.)));
+                                cx.notify();
+                            }
+                        }))
+                }),
             )
             .into_any_element()
     }

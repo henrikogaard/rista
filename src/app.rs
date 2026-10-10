@@ -7,6 +7,7 @@ use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
 use crate::properties;
 use crate::search;
+use crate::search_service::SearchService;
 use crate::settings::{Appearance, Period, Settings, TreeSort, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
@@ -117,6 +118,7 @@ fn canvas_panels(id: &'static str, axis: Axis) -> ResizablePanelGroup {
 
 pub struct Workspace {
     vault: Entity<Vault>,
+    search_service: SearchService,
     docs: Vec<OpenDoc>,
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
@@ -195,6 +197,7 @@ pub struct Workspace {
     needs_standalone_fs_check: bool,
     standalone_fs_task: Option<Task<()>>,
     focus_fallback_pending: bool,
+    pending_editor_focus: Option<(Entity<Document>, Option<usize>)>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -826,9 +829,18 @@ impl Workspace {
                     .text("Search this folder…", "Søk i denne mappen…"),
             )
         });
-        let folder_search_sub = cx.subscribe(&folder_search, |_, _, _: &input::InputEvent, cx| {
-            cx.notify()
-        });
+        let folder_search_sub = cx.subscribe(
+            &folder_search,
+            |this: &mut Self, _, event: &input::InputEvent, cx| {
+                if matches!(event, input::InputEvent::Change) {
+                    if let Some(page) = &mut this.folder {
+                        page.pages.fill(0);
+                        page.scroll.set_offset(point(px(0.), px(0.)));
+                    }
+                }
+                cx.notify();
+            },
+        );
         let explorer_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(
                 settings
@@ -861,6 +873,7 @@ impl Workspace {
 
         let mut this = Self {
             vault,
+            search_service: SearchService::new(),
             docs: Vec::new(),
             active: None,
             folder: None,
@@ -915,6 +928,7 @@ impl Workspace {
             needs_standalone_fs_check: false,
             standalone_fs_task: None,
             focus_fallback_pending: false,
+            pending_editor_focus: None,
             focus_handle,
             settings,
             _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
@@ -1387,6 +1401,9 @@ impl Workspace {
         // Flag docs whose files changed underneath; they reload themselves on
         // the next frame where a window handle is available.
         self.needs_fs_check = true;
+        if matches!(event, VaultEvent::Files) {
+            self.search_service.invalidate_all();
+        }
         cx.notify();
         // An open graph keeps its map in sync — positions carry over
         // so it settles instead of jumping.
@@ -1836,36 +1853,7 @@ impl Workspace {
         self.focus_handle.focus(window, cx);
         cx.notify();
 
-        // Focus the editor once the frame settles. Preview mode and
-        // image docs mount no editor — the workspace takes focus so
-        // ⌘ bindings keep working (same dead-handle fix as refocus).
-        let view = cx.entity();
-        let doc = doc.clone();
-        window.on_next_frame(move |window, cx| {
-            if window.has_active_dialog(cx) {
-                return;
-            }
-            let (is_active, graph_open, folder_open, preview_mode) = {
-                let workspace = view.read(cx);
-                (
-                    workspace.active_doc() == Some(&doc),
-                    workspace.graph.is_some(),
-                    workspace.folder.is_some(),
-                    workspace.settings.view_mode == ViewMode::Preview,
-                )
-            };
-            if !is_active || graph_open || folder_open {
-                return;
-            }
-            let focus_editor = !doc.read(cx).is_read_only() && !preview_mode;
-            if focus_editor {
-                doc.update(cx, |doc, cx| {
-                    doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-                });
-            } else {
-                view.update(cx, |ws, cx2| ws.focus_handle.focus(window, cx2));
-            }
-        });
+        self.pending_editor_focus = Some((doc, None));
     }
 
     /// Browser-style history: every activation truncates anything past
@@ -3674,11 +3662,11 @@ impl Workspace {
                         .on_cancel({
                             let view = view.clone();
                             move |window, cx| {
+                                window.close_dialog(cx);
                                 view.update(cx, |this, cx| {
                                     this.palette_sections.clear();
                                     this.refocus(window, cx);
                                 });
-                                window.close_dialog(cx);
                             }
                         }),
                 )
@@ -4022,7 +4010,28 @@ impl Workspace {
             }
         }
         let files_changed = self.settings.show_other_files != settings.show_other_files;
+        let language_changed = self.settings.language != settings.language;
         self.settings = settings.clone();
+        if language_changed {
+            self.folder_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    settings
+                        .language
+                        .text("Search this folder…", "Søk i denne mappen…"),
+                    window,
+                    cx,
+                );
+            });
+            self.explorer_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    settings
+                        .language
+                        .text("Find files or paths…", "Finn filer eller stier…"),
+                    window,
+                    cx,
+                );
+            });
+        }
         if files_changed {
             self.vault.update(cx, |vault, cx| {
                 vault.show_other_files = settings.show_other_files;
@@ -6015,6 +6024,46 @@ impl Workspace {
         self.open_document(path, window, cx);
     }
 
+    pub fn navigate_search_result(
+        &mut self,
+        path: PathBuf,
+        line: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_document(path.clone(), window, cx);
+        let Some(line) = line else {
+            return;
+        };
+        if self.settings.view_mode != ViewMode::Preview {
+            if let Some(document) = self
+                .active_doc()
+                .filter(|document| document.read(cx).path == path)
+                .cloned()
+            {
+                self.pending_editor_focus = Some((document, Some(line)));
+            }
+        }
+        cx.on_next_frame(window, move |workspace, window, cx| {
+            if window.has_active_dialog(cx)
+                || workspace.graph.is_some()
+                || workspace.folder.is_some()
+            {
+                return;
+            }
+            let Some(document) = workspace
+                .active_doc()
+                .filter(|document| document.read(cx).path == path)
+                .cloned()
+            else {
+                return;
+            };
+            document.update(cx, |document, cx| {
+                document.reveal_preview_line(line.saturating_sub(1), cx);
+            });
+        });
+    }
+
     /// ⌘+click on a row link: always open in a new tab.
     pub fn open_document_new_tab(
         &mut self,
@@ -6044,12 +6093,16 @@ impl Workspace {
         self.settings.save();
     }
 
-    pub fn iter_docs(&self) -> impl Iterator<Item = &Entity<Document>> {
-        self.docs.iter().map(|d| &d.entity)
-    }
-
     pub fn vault_entity(&self) -> &Entity<Vault> {
         &self.vault
+    }
+
+    pub fn language(&self) -> crate::settings::Language {
+        self.settings.language
+    }
+
+    pub(crate) fn search_service(&self) -> SearchService {
+        self.search_service.clone()
     }
 
     // ------------------------------------------------------------------
@@ -7980,13 +8033,24 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let (state, banner, folds, embeds, mentions, mentions_open, has_frontmatter, doc_path) = {
+        let (
+            state,
+            banner,
+            folds,
+            embeds,
+            query_embeds,
+            mentions,
+            mentions_open,
+            has_frontmatter,
+            doc_path,
+        ) = {
             let doc = doc.read(cx);
             (
                 doc.preview.clone(),
                 doc.banner.clone(),
                 doc.callout_folds.clone(),
                 doc.base_embeds.clone(),
+                doc.query_embeds.clone(),
                 doc.linked_mentions.clone(),
                 doc.mentions_open,
                 crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref()).is_some(),
@@ -7999,6 +8063,7 @@ impl Workspace {
             vault: self.vault.clone(),
             workspace: view.downgrade(),
             views: embeds,
+            query_views: query_embeds,
             doc_path: Some(doc_path),
             depth: 0,
         };
@@ -9167,6 +9232,28 @@ impl Render for Workspace {
                 doc.entity.update(cx, |doc, cx| {
                     if doc.vault_root.is_none() {
                         doc.check_external(window, cx);
+                    }
+                });
+            }
+        }
+
+        // Key events can draw before on_next_frame runs. Mount with focus and
+        // the destination selection already set so the first input is not lost.
+        if let Some((document, line)) = self.pending_editor_focus.take() {
+            if !window.has_active_dialog(cx)
+                && self.graph.is_none()
+                && self.folder.is_none()
+                && self.settings.view_mode != ViewMode::Preview
+                && self.active_doc() == Some(&document)
+                && !document.read(cx).is_read_only()
+            {
+                document.update(cx, |document, cx| {
+                    if let Some(line) = line {
+                        document.jump_to_line(line, window, cx);
+                    } else {
+                        document
+                            .editor
+                            .update(cx, |editor, cx| editor.focus(window, cx));
                     }
                 });
             }
