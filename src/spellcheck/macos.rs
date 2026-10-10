@@ -1,24 +1,106 @@
 use super::{utf16_range_to_utf8, SpellCheckReceiver, SpellChecker, SpellError};
 use block2::RcBlock;
-use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSSpellChecker, NSTextCheckingOrthographyKey};
+use gpui_kit::ForegroundExecutor;
+use objc2_app_kit::NSSpellChecker;
 use objc2_foundation::{
-    NSArray, NSDictionary, NSOrthography, NSRange, NSString, NSTextCheckingResult,
-    NSTextCheckingType,
+    NSArray, NSOrthography, NSRange, NSString, NSTextCheckingResult, NSTextCheckingType,
 };
+use std::cell::RefCell;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
-pub(crate) struct MacSpellChecker {
+struct NativeDocument {
     checker: objc2::rc::Retained<NSSpellChecker>,
     tag: isize,
 }
 
+impl NativeDocument {
+    fn new() -> Rc<Self> {
+        Rc::new(Self {
+            checker: NSSpellChecker::sharedSpellChecker(),
+            tag: NSSpellChecker::uniqueSpellDocumentTag(),
+        })
+    }
+}
+
+impl Drop for NativeDocument {
+    fn drop(&mut self) {
+        self.checker.closeSpellDocumentWithTag(self.tag);
+    }
+}
+
+struct SpellQueue {
+    gate: smol::lock::Mutex<()>,
+    original_language: RefCell<Option<String>>,
+}
+
+impl SpellQueue {
+    fn new() -> Self {
+        Self {
+            gate: smol::lock::Mutex::new(()),
+            original_language: RefCell::new(None),
+        }
+    }
+}
+
+thread_local! {
+    static SPELL_QUEUE: Rc<SpellQueue> = Rc::new(SpellQueue::new());
+}
+
+struct SpellPreferencesGuard {
+    native: Rc<NativeDocument>,
+    queue: Rc<SpellQueue>,
+    original_language: String,
+    original_automatic: bool,
+}
+
+impl SpellPreferencesGuard {
+    fn new(native: Rc<NativeDocument>, queue: Rc<SpellQueue>) -> Self {
+        let original_language = native.checker.language().to_string();
+        let original_automatic = native.checker.automaticallyIdentifiesLanguages();
+        queue
+            .original_language
+            .borrow_mut()
+            .replace(original_language.clone());
+        native.checker.setAutomaticallyIdentifiesLanguages(false);
+        Self {
+            native,
+            queue,
+            original_language,
+            original_automatic,
+        }
+    }
+
+    fn set_language(&self, language: &str) -> bool {
+        self.native
+            .checker
+            .setLanguage(&NSString::from_str(language))
+    }
+}
+
+impl Drop for SpellPreferencesGuard {
+    fn drop(&mut self) {
+        self.native
+            .checker
+            .setLanguage(&NSString::from_str(&self.original_language));
+        self.native
+            .checker
+            .setAutomaticallyIdentifiesLanguages(self.original_automatic);
+        self.queue.original_language.borrow_mut().take();
+    }
+}
+
+pub(crate) struct MacSpellChecker {
+    native: Rc<NativeDocument>,
+    foreground_executor: ForegroundExecutor,
+}
+
 impl MacSpellChecker {
-    pub(crate) fn new() -> Self {
-        let checker = NSSpellChecker::sharedSpellChecker();
-        let tag = NSSpellChecker::uniqueSpellDocumentTag();
-        Self { checker, tag }
+    pub(crate) fn new(foreground_executor: ForegroundExecutor) -> Self {
+        Self {
+            native: NativeDocument::new(),
+            foreground_executor,
+        }
     }
 }
 
@@ -45,73 +127,23 @@ impl SpellChecker for MacSpellChecker {
             return receiver;
         }
 
-        let selected = if languages.is_empty() {
-            vec![None]
-        } else {
-            languages.iter().map(Some).collect()
-        };
-        let aggregate = Arc::new(Mutex::new(vec![None; selected.len()]));
-        let projected = NSString::from_str(&text);
-        let range = NSRange::new(0, text.encode_utf16().count());
-
-        for (index, language) in selected.iter().enumerate() {
-            let options = language.map(|language| {
-                let language = NSString::from_str(language);
-                let orthography = NSOrthography::defaultOrthographyForLanguage(&language);
-                let key = unsafe { NSTextCheckingOrthographyKey };
-                let values: [&AnyObject; 1] = [orthography.as_ref()];
-                NSDictionary::from_slices(&[key], &values)
-            });
-            let results = aggregate.clone();
-            let text = text.clone();
-            let sender = sender.clone();
-            let block = RcBlock::new(
-                move |_sequence: isize,
-                      result_array: std::ptr::NonNull<NSArray<NSTextCheckingResult>>,
-                      _orthography: std::ptr::NonNull<NSOrthography>,
-                      _word_count: isize| {
-                    // SAFETY: The callback lends the result array for this call. Only primitive
-                    // ranges and the captured Rust-owned source string cross thread boundaries.
-                    let found = unsafe { result_array.as_ref() }
-                        .iter()
-                        .filter(|result| result.resultType() == NSTextCheckingType::Spelling)
-                        .filter_map(|result| {
-                            let range = result.range();
-                            let end = range.location.checked_add(range.length)?;
-                            utf16_range_to_utf8(&text, range.location..end)
-                        })
-                        .collect::<Vec<Range<usize>>>();
-                    let Ok(mut aggregate) = results.lock() else {
-                        return;
-                    };
-                    aggregate[index] = Some(found);
-                    if aggregate.iter().all(Option::is_some) {
-                        let Some(completed) = aggregate
-                            .iter_mut()
-                            .map(Option::take)
-                            .collect::<Option<Vec<_>>>()
-                        else {
-                            return;
-                        };
-                        let _ = sender.try_send(Ok(completed));
-                    }
-                },
-            );
-            let checking_types = NSTextCheckingType::Spelling.bits();
-            // SAFETY: NSSpellChecker retains the completion block for the asynchronous request.
-            // The captured callback state is Rust-owned and does not access AppKit or GPUI.
-            unsafe {
-                self.checker
-                    .requestCheckingOfString_range_types_options_inSpellDocumentWithTag_completionHandler(
-                        &projected,
-                        range,
-                        checking_types,
-                        options.as_deref(),
-                        self.tag,
-                        Some(&block),
-                    );
-            }
-        }
+        let selected = languages.to_vec();
+        let native = self.native.clone();
+        let foreground_executor = self.foreground_executor.clone();
+        let queue = SPELL_QUEUE.with(Rc::clone);
+        foreground_executor
+            .spawn(async move {
+                let gate = queue.gate.lock().await;
+                if sender.is_closed() {
+                    return;
+                }
+                let result = run_check(native, text, selected, sender.clone(), queue.clone()).await;
+                drop(gate);
+                if !sender.is_closed() {
+                    let _ = sender.try_send(result);
+                }
+            })
+            .detach();
         receiver
     }
 
@@ -123,23 +155,24 @@ impl SpellChecker for MacSpellChecker {
         {
             return Vec::new();
         }
+        let selected = if languages.is_empty() {
+            vec![SPELL_QUEUE.with(|queue| queue.original_language.borrow().clone())]
+        } else {
+            languages.iter().cloned().map(Some).collect()
+        };
         let native_word = NSString::from_str(word);
         let range = NSRange::new(0, word.encode_utf16().count());
-        let selected = if languages.is_empty() {
-            vec![None]
-        } else {
-            languages.iter().map(Some).collect()
-        };
         let mut suggestions = Vec::new();
         for language in selected {
-            let language = language.map(|language| NSString::from_str(language));
+            let language = language.map(|language| NSString::from_str(&language));
             if let Some(guesses) = self
+                .native
                 .checker
                 .guessesForWordRange_inString_language_inSpellDocumentWithTag(
                     range,
                     &native_word,
                     language.as_deref(),
-                    self.tag,
+                    self.native.tag,
                 )
             {
                 for guess in guesses.iter() {
@@ -157,17 +190,91 @@ impl SpellChecker for MacSpellChecker {
     }
 
     fn ignore(&self, word: &str) {
-        self.checker
-            .ignoreWord_inSpellDocumentWithTag(&NSString::from_str(word), self.tag);
+        self.native
+            .checker
+            .ignoreWord_inSpellDocumentWithTag(&NSString::from_str(word), self.native.tag);
     }
 
     fn learn(&self, word: &str) {
-        self.checker.learnWord(&NSString::from_str(word));
+        self.native.checker.learnWord(&NSString::from_str(word));
     }
 }
 
-impl Drop for MacSpellChecker {
-    fn drop(&mut self) {
-        self.checker.closeSpellDocumentWithTag(self.tag);
+async fn run_check(
+    native: Rc<NativeDocument>,
+    text: String,
+    languages: Vec<String>,
+    sender: smol::channel::Sender<Result<super::SpellResults, SpellError>>,
+    queue: Rc<SpellQueue>,
+) -> Result<super::SpellResults, SpellError> {
+    let mut results = Vec::new();
+    let preferences = if languages.is_empty() {
+        None
+    } else {
+        Some(SpellPreferencesGuard::new(native.clone(), queue))
+    };
+    if languages.is_empty() {
+        if sender.is_closed() {
+            drop(preferences);
+            return Ok(results);
+        }
+        if let Some(found) = request_check(native, &text).await {
+            results.push(found);
+        }
+    } else {
+        for language in languages {
+            if sender.is_closed() {
+                break;
+            }
+            let preferences = preferences.as_ref().expect("explicit languages");
+            if !preferences.set_language(&language) {
+                return Err(SpellError::InvalidLanguages(vec![language]));
+            }
+            if let Some(found) = request_check(native.clone(), &text).await {
+                results.push(found);
+            } else {
+                break;
+            }
+        }
     }
+    drop(preferences);
+    Ok(results)
+}
+
+async fn request_check(native: Rc<NativeDocument>, text: &str) -> Option<Vec<Range<usize>>> {
+    let (sender, receiver) = smol::channel::bounded(1);
+    let projected = NSString::from_str(text);
+    let range = NSRange::new(0, text.encode_utf16().count());
+    let callback_text = text.to_owned();
+    let block = RcBlock::new(
+        move |_sequence: isize,
+              result_array: std::ptr::NonNull<NSArray<NSTextCheckingResult>>,
+              _orthography: std::ptr::NonNull<NSOrthography>,
+              _word_count: isize| {
+            let found = unsafe { result_array.as_ref() }
+                .iter()
+                .filter(|result| result.resultType() == NSTextCheckingType::Spelling)
+                .filter_map(|result| {
+                    let range = result.range();
+                    let end = range.location.checked_add(range.length)?;
+                    utf16_range_to_utf8(&callback_text, range.location..end)
+                })
+                .collect::<Vec<Range<usize>>>();
+            let _ = sender.try_send(found);
+        },
+    );
+    let checking_types = NSTextCheckingType::Spelling.bits();
+    unsafe {
+        native
+            .checker
+            .requestCheckingOfString_range_types_options_inSpellDocumentWithTag_completionHandler(
+                &projected,
+                range,
+                checking_types,
+                None,
+                native.tag,
+                Some(&block),
+            );
+    }
+    receiver.recv().await.ok()
 }

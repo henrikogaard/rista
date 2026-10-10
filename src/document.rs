@@ -217,7 +217,7 @@ impl Document {
         );
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
-        let spell_checker = spellcheck::create_checker();
+        let spell_checker = spellcheck::create_checker(cx);
 
         let mut this = Self {
             preview_blocks: preview::navigation_blocks(&preview_text),

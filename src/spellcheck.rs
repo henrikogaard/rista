@@ -26,12 +26,14 @@ pub(crate) trait SpellChecker {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn create_checker() -> std::rc::Rc<dyn SpellChecker> {
-    std::rc::Rc::new(macos::MacSpellChecker::new())
+pub(crate) fn create_checker(cx: &gpui_kit::App) -> std::rc::Rc<dyn SpellChecker> {
+    std::rc::Rc::new(macos::MacSpellChecker::new(
+        cx.foreground_executor().clone(),
+    ))
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn create_checker() -> std::rc::Rc<dyn SpellChecker> {
+pub(crate) fn create_checker(_cx: &gpui_kit::App) -> std::rc::Rc<dyn SpellChecker> {
     std::rc::Rc::new(UnavailableSpellChecker)
 }
 
