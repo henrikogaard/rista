@@ -3680,11 +3680,11 @@ impl Workspace {
                         .on_cancel({
                             let view = view.clone();
                             move |window, cx| {
+                                window.close_dialog(cx);
                                 view.update(cx, |this, cx| {
                                     this.palette_sections.clear();
                                     this.refocus(window, cx);
                                 });
-                                window.close_dialog(cx);
                             }
                         }),
                 )
