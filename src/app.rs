@@ -21,6 +21,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, ResizablePanelGroup};
@@ -198,6 +199,7 @@ pub struct Workspace {
     standalone_fs_task: Option<Task<()>>,
     focus_fallback_pending: bool,
     pending_editor_focus: Option<(Entity<Document>, Option<usize>)>,
+    hotkey_warning: Option<crate::hotkeys::HotkeyNotice>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -285,8 +287,8 @@ enum PaletteEntry {
     Tool(crate::extensions::Launcher),
 }
 
-#[derive(Clone)]
-enum PaletteCmd {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PaletteCmd {
     NewFile,
     NewFolder,
     OpenFile,
@@ -377,7 +379,287 @@ enum PaletteCmd {
 }
 
 impl PaletteCmd {
-    fn spec(&self) -> (assets::IconName, &'static str, &'static [&'static str]) {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::NewFile,
+        Self::NewUniqueNote,
+        Self::NewFromTemplate,
+        Self::NewBase,
+        Self::DailyNote,
+        Self::WeeklyNote,
+        Self::MonthlyNote,
+        Self::QuarterlyNote,
+        Self::YearlyNote,
+        Self::PrevPeriodic,
+        Self::NextPeriodic,
+        Self::AppendDaily,
+        Self::OpenFile,
+        Self::OpenFolder,
+        Self::NewFolder,
+        Self::Save,
+        Self::SaveAs,
+        Self::SourceMode,
+        Self::SplitMode,
+        Self::PreviewMode,
+        Self::ToggleSidebar,
+        Self::ToggleZen,
+        Self::ProjectSearch,
+        Self::Graph,
+        Self::LocalGraph,
+        Self::ToggleLocalGraphPanel,
+        Self::ToggleAgentPanel,
+        Self::MoveLineUp,
+        Self::MoveLineDown,
+        Self::ToggleCheckbox,
+        Self::ToggleBold,
+        Self::ToggleItalic,
+        Self::ToggleHighlight,
+        Self::ToggleStrike,
+        Self::ExtractSelection,
+        Self::ToggleCode,
+        Self::ToggleQuote,
+        Self::CodeBlock,
+        Self::ListBullet,
+        Self::ListNumbered,
+        Self::ListTask,
+        Self::Heading1,
+        Self::Heading2,
+        Self::Heading3,
+        Self::Heading4,
+        Self::Heading5,
+        Self::Heading6,
+        Self::InsertLink,
+        Self::InsertHr,
+        Self::InsertCallout,
+        Self::InsertDate,
+        Self::InsertTime,
+        Self::InsertImage,
+        Self::InsertTable,
+        Self::FormatTable,
+        Self::InsertFootnote,
+        Self::DeleteLine,
+        Self::PageHistory,
+        Self::RestoreDeleted,
+        Self::InsertTemplate,
+        Self::DuplicateNote,
+        Self::EditProperties,
+        Self::BrowseTags,
+        Self::Backlinks,
+        Self::Outline,
+        Self::ToggleFocus,
+        Self::GoBack,
+        Self::GoForward,
+        Self::FollowLink,
+        Self::ToggleStar,
+        Self::ReopenTab,
+        Self::CopyLink,
+        Self::CopyLinkHeading,
+        Self::CopyLinkBlock,
+        Self::CopyEmbedBlock,
+        Self::RandomNote,
+        Self::RevealFile,
+        Self::CloseOtherTabs,
+        Self::CloseTabsRight,
+        Self::CloseAllTabs,
+        Self::TogglePin,
+        Self::ToggleReadable,
+        Self::ExportHtml,
+        Self::ToggleTheme,
+        Self::Settings,
+        Self::CloseFolder,
+        Self::Quit,
+    ];
+
+    pub(crate) fn id(self) -> &'static str {
+        use PaletteCmd::*;
+        match self {
+            NewFile => "new_file",
+            NewUniqueNote => "new_unique_note",
+            NewFromTemplate => "new_from_template",
+            NewBase => "new_base",
+            DailyNote => "open_daily_note",
+            WeeklyNote => "open_weekly_note",
+            MonthlyNote => "open_monthly_note",
+            QuarterlyNote => "open_quarterly_note",
+            YearlyNote => "open_yearly_note",
+            PrevPeriodic => "previous_periodic_note",
+            NextPeriodic => "next_periodic_note",
+            AppendDaily => "append_daily_note",
+            OpenFile => "open_file",
+            OpenFolder => "open_folder",
+            NewFolder => "new_folder",
+            Save => "save",
+            SaveAs => "save_as",
+            SourceMode => "view_source",
+            SplitMode => "view_split",
+            PreviewMode => "view_preview",
+            ToggleSidebar => "toggle_sidebar",
+            ToggleZen => "toggle_zen",
+            ProjectSearch => "open_project_search",
+            Graph => "open_graph",
+            LocalGraph => "open_local_graph",
+            ToggleLocalGraphPanel => "toggle_local_graph_panel",
+            ToggleAgentPanel => "toggle_agent_panel",
+            MoveLineUp => "move_line_up",
+            MoveLineDown => "move_line_down",
+            ToggleCheckbox => "toggle_checkbox",
+            ToggleBold => "toggle_bold",
+            ToggleItalic => "toggle_italic",
+            ToggleHighlight => "toggle_highlight",
+            ToggleStrike => "toggle_strikethrough",
+            ExtractSelection => "extract_selection",
+            ToggleCode => "toggle_code",
+            ToggleQuote => "toggle_quote",
+            CodeBlock => "insert_code_block",
+            ListBullet => "toggle_bulleted_list",
+            ListNumbered => "toggle_numbered_list",
+            ListTask => "toggle_task_list",
+            Heading1 => "heading_1",
+            Heading2 => "heading_2",
+            Heading3 => "heading_3",
+            Heading4 => "heading_4",
+            Heading5 => "heading_5",
+            Heading6 => "heading_6",
+            InsertLink => "insert_link",
+            InsertHr => "insert_horizontal_rule",
+            InsertCallout => "insert_callout",
+            InsertDate => "insert_date",
+            InsertTime => "insert_time",
+            InsertImage => "insert_image",
+            InsertTable => "insert_table",
+            FormatTable => "format_table",
+            InsertFootnote => "insert_footnote",
+            DeleteLine => "delete_line",
+            PageHistory => "open_page_history",
+            RestoreDeleted => "restore_deleted",
+            InsertTemplate => "insert_template",
+            DuplicateNote => "duplicate_note",
+            EditProperties => "edit_properties",
+            BrowseTags => "browse_tags",
+            Backlinks => "open_backlinks",
+            Outline => "open_outline",
+            ToggleFocus => "toggle_focus_mode",
+            GoBack => "navigate_back",
+            GoForward => "navigate_forward",
+            FollowLink => "follow_link",
+            ToggleStar => "toggle_star",
+            ReopenTab => "reopen_tab",
+            CopyLink => "copy_link",
+            CopyLinkHeading => "copy_link_to_heading",
+            CopyLinkBlock => "copy_block_link",
+            CopyEmbedBlock => "copy_block_embed",
+            RandomNote => "open_random_note",
+            RevealFile => "reveal_file",
+            CloseOtherTabs => "close_other_tabs",
+            CloseTabsRight => "close_tabs_right",
+            CloseAllTabs => "close_all_tabs",
+            TogglePin => "toggle_pin",
+            ToggleReadable => "toggle_readable_width",
+            ExportHtml => "export_html",
+            ToggleTheme => "toggle_theme",
+            Settings => "open_settings",
+            CloseFolder => "close_folder",
+            Quit => "quit",
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        self.spec().1
+    }
+
+    pub(crate) fn label_norwegian(self) -> &'static str {
+        use PaletteCmd::*;
+        match self {
+            NewFile => "Ny fil",
+            NewUniqueNote => "Nytt unikt notat",
+            NewFromTemplate => "Nytt notat fra mal",
+            NewBase => "Ny base",
+            DailyNote => "Åpne dagsnotat",
+            WeeklyNote => "Åpne ukenotat",
+            MonthlyNote => "Åpne månedsnotat",
+            QuarterlyNote => "Åpne kvartalsnotat",
+            YearlyNote => "Åpne årsnotat",
+            PrevPeriodic => "Forrige periodiske notat",
+            NextPeriodic => "Neste periodiske notat",
+            AppendDaily => "Legg til i dagsnotat",
+            OpenFile => "Åpne fil…",
+            OpenFolder => "Åpne mappe…",
+            NewFolder => "Ny mappe",
+            Save => "Lagre",
+            SaveAs => "Lagre som",
+            SourceMode => "Kildemodus",
+            SplitMode => "Delt visning",
+            PreviewMode => "Forhåndsvisning",
+            ToggleSidebar => "Veksle sidepanel",
+            ToggleZen => "Veksle fokusmodus",
+            ProjectSearch => "Søk i prosjektet",
+            Graph => "Åpne graf",
+            LocalGraph => "Åpne lokal graf",
+            ToggleLocalGraphPanel => "Vis/skjul lokalt grafpanel",
+            ToggleAgentPanel => "Vis/skjul agentpanel",
+            MoveLineUp => "Flytt linje opp",
+            MoveLineDown => "Flytt linje ned",
+            ToggleCheckbox => "Veksle avkryssing",
+            ToggleBold => "Veksle fet skrift",
+            ToggleItalic => "Veksle kursiv",
+            ToggleHighlight => "Veksle utheving",
+            ToggleStrike => "Veksle gjennomstreking",
+            ExtractSelection => "Trekk ut markering",
+            ToggleCode => "Veksle kode",
+            ToggleQuote => "Veksle sitat",
+            CodeBlock => "Sett inn kodeblokk",
+            ListBullet => "Veksle punktliste",
+            ListNumbered => "Veksle nummerert liste",
+            ListTask => "Veksle oppgaveliste",
+            Heading1 => "Overskrift 1",
+            Heading2 => "Overskrift 2",
+            Heading3 => "Overskrift 3",
+            Heading4 => "Overskrift 4",
+            Heading5 => "Overskrift 5",
+            Heading6 => "Overskrift 6",
+            InsertLink => "Sett inn lenke",
+            InsertHr => "Sett inn vannrett linje",
+            InsertCallout => "Sett inn uthevet blokk",
+            InsertDate => "Sett inn dato",
+            InsertTime => "Sett inn klokkeslett",
+            InsertImage => "Sett inn bilde",
+            InsertTable => "Sett inn tabell",
+            FormatTable => "Formater tabell",
+            InsertFootnote => "Sett inn fotnote",
+            DeleteLine => "Slett linje",
+            PageHistory => "Åpne sidehistorikk",
+            RestoreDeleted => "Gjenopprett slettet notat",
+            InsertTemplate => "Sett inn mal",
+            DuplicateNote => "Dupliser notat",
+            EditProperties => "Rediger egenskaper",
+            BrowseTags => "Bla gjennom emneknagger",
+            Backlinks => "Åpne tilbakekoblinger",
+            Outline => "Åpne disposisjon",
+            ToggleFocus => "Veksle fokusmodus",
+            GoBack => "Gå tilbake",
+            GoForward => "Gå frem",
+            FollowLink => "Åpne lenke under markøren",
+            ToggleStar => "Veksle stjernemerking",
+            ReopenTab => "Gjenåpne lukket fane",
+            CopyLink => "Kopier lenke",
+            CopyLinkHeading => "Kopier lenke til overskrift",
+            CopyLinkBlock => "Kopier lenke til blokk",
+            CopyEmbedBlock => "Kopier blokkinnbygging",
+            RandomNote => "Åpne tilfeldig notat",
+            RevealFile => "Vis fil i filbehandler",
+            CloseOtherTabs => "Lukk andre faner",
+            CloseTabsRight => "Lukk faner til høyre",
+            CloseAllTabs => "Lukk alle faner",
+            TogglePin => "Veksle festet fane",
+            ToggleReadable => "Veksle lesbar bredde",
+            ExportHtml => "Eksporter HTML",
+            ToggleTheme => "Veksle tema",
+            Settings => "Innstillinger",
+            CloseFolder => "Lukk mappe",
+            Quit => "Avslutt",
+        }
+    }
+
+    pub(crate) fn spec(&self) -> (assets::IconName, &'static str, &'static [&'static str]) {
         use PaletteCmd::*;
         match self {
             NewFile => (assets::IconName::FilePlus, "New file", &["create", "note"]),
@@ -929,6 +1211,7 @@ impl Workspace {
             standalone_fs_task: None,
             focus_fallback_pending: false,
             pending_editor_focus: None,
+            hotkey_warning: crate::hotkeys::warning(cx),
             focus_handle,
             settings,
             _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
@@ -3434,95 +3717,7 @@ impl Workspace {
     }
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let commands = [
-            PaletteCmd::NewFile,
-            PaletteCmd::NewUniqueNote,
-            PaletteCmd::NewFromTemplate,
-            PaletteCmd::NewBase,
-            PaletteCmd::DailyNote,
-            PaletteCmd::WeeklyNote,
-            PaletteCmd::MonthlyNote,
-            PaletteCmd::QuarterlyNote,
-            PaletteCmd::YearlyNote,
-            PaletteCmd::PrevPeriodic,
-            PaletteCmd::NextPeriodic,
-            PaletteCmd::AppendDaily,
-            PaletteCmd::OpenFile,
-            PaletteCmd::OpenFolder,
-            PaletteCmd::NewFolder,
-            PaletteCmd::Save,
-            PaletteCmd::SaveAs,
-            PaletteCmd::SourceMode,
-            PaletteCmd::SplitMode,
-            PaletteCmd::PreviewMode,
-            PaletteCmd::ToggleSidebar,
-            PaletteCmd::ToggleZen,
-            PaletteCmd::ProjectSearch,
-            PaletteCmd::Graph,
-            PaletteCmd::LocalGraph,
-            PaletteCmd::ToggleLocalGraphPanel,
-            PaletteCmd::ToggleAgentPanel,
-            PaletteCmd::MoveLineUp,
-            PaletteCmd::MoveLineDown,
-            PaletteCmd::ToggleCheckbox,
-            PaletteCmd::ToggleBold,
-            PaletteCmd::ToggleItalic,
-            PaletteCmd::ToggleHighlight,
-            PaletteCmd::ToggleStrike,
-            PaletteCmd::ExtractSelection,
-            PaletteCmd::ToggleCode,
-            PaletteCmd::ToggleQuote,
-            PaletteCmd::CodeBlock,
-            PaletteCmd::ListBullet,
-            PaletteCmd::ListNumbered,
-            PaletteCmd::ListTask,
-            PaletteCmd::Heading1,
-            PaletteCmd::Heading2,
-            PaletteCmd::Heading3,
-            PaletteCmd::Heading4,
-            PaletteCmd::Heading5,
-            PaletteCmd::Heading6,
-            PaletteCmd::InsertLink,
-            PaletteCmd::InsertHr,
-            PaletteCmd::InsertCallout,
-            PaletteCmd::InsertDate,
-            PaletteCmd::InsertTime,
-            PaletteCmd::InsertImage,
-            PaletteCmd::InsertTable,
-            PaletteCmd::FormatTable,
-            PaletteCmd::InsertFootnote,
-            PaletteCmd::DeleteLine,
-            PaletteCmd::PageHistory,
-            PaletteCmd::RestoreDeleted,
-            PaletteCmd::InsertTemplate,
-            PaletteCmd::DuplicateNote,
-            PaletteCmd::EditProperties,
-            PaletteCmd::BrowseTags,
-            PaletteCmd::Backlinks,
-            PaletteCmd::Outline,
-            PaletteCmd::ToggleFocus,
-            PaletteCmd::GoBack,
-            PaletteCmd::GoForward,
-            PaletteCmd::FollowLink,
-            PaletteCmd::ToggleStar,
-            PaletteCmd::ReopenTab,
-            PaletteCmd::CopyLink,
-            PaletteCmd::CopyLinkHeading,
-            PaletteCmd::CopyLinkBlock,
-            PaletteCmd::CopyEmbedBlock,
-            PaletteCmd::RandomNote,
-            PaletteCmd::RevealFile,
-            PaletteCmd::CloseOtherTabs,
-            PaletteCmd::CloseTabsRight,
-            PaletteCmd::CloseAllTabs,
-            PaletteCmd::TogglePin,
-            PaletteCmd::ToggleReadable,
-            PaletteCmd::ExportHtml,
-            PaletteCmd::ToggleTheme,
-            PaletteCmd::Settings,
-            PaletteCmd::CloseFolder,
-            PaletteCmd::Quit,
-        ];
+        let commands = PaletteCmd::ALL;
         let notes: Vec<PaletteEntry> = self
             .vault
             .read(cx)
@@ -3572,25 +3767,32 @@ impl Workspace {
         let command_items: Vec<CommandItem> = commands
             .iter()
             .map(|cmd| {
-                let (icon, label, keywords) = cmd.spec();
+                let (icon, filter_label, keywords) = cmd.spec();
+                let shortcut_id = cmd.id().to_string();
+                let label = crate::hotkeys::command(cmd.id())
+                    .map(|spec| spec.label(self.settings.language))
+                    .unwrap_or(filter_label)
+                    .to_string();
                 CommandItem::new()
                     .icon(icon)
-                    .label(match cmd {
-                        PaletteCmd::ToggleLocalGraphPanel => {
-                            self.tr("Toggle local graph panel", "Vis/skjul lokalt grafpanel")
+                    .label(label.clone())
+                    .keywords(std::iter::once(filter_label).chain(keywords.iter().copied()))
+                    .child(move |_, cx| {
+                        let mut row = h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_2()
+                            .child(Icon::new(icon).size_4().flex_shrink_0())
+                            .child(div().flex_1().min_w_0().truncate().child(label.clone()));
+                        if let Some(shortcut) = crate::hotkeys::shortcut(cx, &shortcut_id) {
+                            let keys = shortcut
+                                .split_whitespace()
+                                .filter_map(|stroke| Keystroke::parse(stroke).ok())
+                                .map(Kbd::new);
+                            row = row.child(h_flex().items_center().gap_1().children(keys));
                         }
-                        PaletteCmd::ToggleAgentPanel => {
-                            self.tr("Toggle agent panel", "Vis/skjul agentpanel")
-                        }
-                        PaletteCmd::CopyLinkBlock => {
-                            self.tr("Copy link to block", "Kopier lenke til blokk")
-                        }
-                        PaletteCmd::CopyEmbedBlock => {
-                            self.tr("Copy embed to block", "Kopier innbygging av blokk")
-                        }
-                        _ => label,
+                        row
                     })
-                    .keywords(keywords.iter().copied())
             })
             .collect();
         let notes_section = self.palette_sections.len() - 1;
@@ -3693,6 +3895,30 @@ impl Workspace {
             Some(PaletteEntry::Tool(tool)) => self.confirm_tool(tool, window, cx),
             None => {}
         }
+    }
+
+    pub(crate) fn run_palette_hotkey(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(command) = PaletteCmd::ALL
+            .iter()
+            .copied()
+            .find(|command| command.id() == id)
+        {
+            self.run_command(command, window, cx);
+        }
+    }
+
+    fn on_run_palette_command(
+        &mut self,
+        action: &RunPaletteCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_hotkey(&action.id, window, cx);
     }
 
     fn run_command(&mut self, cmd: PaletteCmd, window: &mut Window, cx: &mut Context<Self>) {
@@ -9197,6 +9423,10 @@ impl Workspace {
                     ),
             )
     }
+    pub(crate) fn sync_hotkey_warning(&mut self, cx: &mut Context<Self>) {
+        self.hotkey_warning = crate::hotkeys::warning(cx);
+        cx.notify();
+    }
 }
 
 impl Render for Workspace {
@@ -9325,6 +9555,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_run_palette_command))
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
@@ -9336,8 +9567,21 @@ impl Render for Workspace {
         let root = root.on_action(cx.listener(Self::on_about));
         root
             .on_action(cx.listener(Self::on_check_for_updates))
-            .when(!self.zen, |this| {
+            .when(!self.zen || self.hotkey_warning.is_some(), |this| {
                 this.child(self.render_title_bar(window, cx))
+            })
+            .when_some(self.hotkey_warning.clone(), |this, notice| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .bg(cx.theme().warning.opacity(0.12))
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child(notice.startup_message(self.settings.language)),
+                )
             })
             .child(
                 div()

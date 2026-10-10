@@ -63,6 +63,12 @@ actions!(
     ]
 );
 
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct RunPaletteCommand {
+    pub id: String,
+}
+
 /// Auto-pair actions — `pair` is the two-character pair string
 /// ("()", "\"\"", "~~", …) whose first half opens and second half closes.
 /// `PairInsert` is bound on openers and symmetric chars; `PairClose` on the
