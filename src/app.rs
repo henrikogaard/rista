@@ -199,6 +199,7 @@ pub struct Workspace {
     standalone_fs_task: Option<Task<()>>,
     focus_fallback_pending: bool,
     pending_editor_focus: Option<(Entity<Document>, Option<usize>)>,
+    hotkey_warning: Option<crate::hotkeys::HotkeyNotice>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -1210,6 +1211,7 @@ impl Workspace {
             standalone_fs_task: None,
             focus_fallback_pending: false,
             pending_editor_focus: None,
+            hotkey_warning: crate::hotkeys::warning(cx),
             focus_handle,
             settings,
             _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
@@ -3908,6 +3910,15 @@ impl Workspace {
         {
             self.run_command(command, window, cx);
         }
+    }
+
+    fn on_run_palette_command(
+        &mut self,
+        action: &RunPaletteCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_hotkey(&action.id, window, cx);
     }
 
     fn run_command(&mut self, cmd: PaletteCmd, window: &mut Window, cx: &mut Context<Self>) {
@@ -9412,6 +9423,10 @@ impl Workspace {
                     ),
             )
     }
+    pub(crate) fn sync_hotkey_warning(&mut self, cx: &mut Context<Self>) {
+        self.hotkey_warning = crate::hotkeys::warning(cx);
+        cx.notify();
+    }
 }
 
 impl Render for Workspace {
@@ -9540,6 +9555,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_run_palette_command))
             .on_action(cx.listener(Self::on_quick_open))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_open_project_search))
@@ -9550,6 +9566,19 @@ impl Render for Workspace {
         #[cfg(not(target_os = "macos"))]
         let root = root.on_action(cx.listener(Self::on_about));
         root
+            .when_some(self.hotkey_warning.clone(), |this, notice| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .bg(cx.theme().warning.opacity(0.12))
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child(notice.startup_message(self.settings.language)),
+                )
+            })
             .on_action(cx.listener(Self::on_check_for_updates))
             .when(!self.zen, |this| {
                 this.child(self.render_title_bar(window, cx))

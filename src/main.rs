@@ -127,17 +127,6 @@ fn main() {
                     .update(cx, |workspace, cx| workspace.quit(cx));
             }
         });
-        cx.on_action(|action: &RunPaletteCommand, cx| {
-            let Some(current) = cx.try_global::<WorkspaceWindow>().cloned() else {
-                return;
-            };
-            let id = action.id.clone();
-            let _ = current.window.update(cx, |_, window, cx| {
-                current.workspace.update(cx, |workspace, cx| {
-                    workspace.run_palette_hotkey(&id, window, cx);
-                })
-            });
-        });
         cx.activate(true);
         updater::start();
 
@@ -174,7 +163,7 @@ fn apply_ui_settings(settings: &settings::Settings, cx: &mut App) {
     });
 }
 
-fn internal_keymap() -> Vec<KeyBinding> {
+pub(crate) fn internal_keymap() -> Vec<KeyBinding> {
     vec![
         // Auto-pairs — "RistaEditor" scopes them to the document
         // editor so search/dialog inputs still type the plain characters.

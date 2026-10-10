@@ -510,6 +510,20 @@ impl HotkeyNotice {
                 .to_string(),
         }
     }
+
+    pub(crate) fn startup_message(&self, language: Language) -> String {
+        if matches!(self, Self::InvalidFile | Self::SaveFailed) {
+            return self.message(language);
+        }
+        format!(
+            "{} {}",
+            self.message(language),
+            language.text(
+                "Default shortcuts are active.",
+                "Standardsnarveiene er aktive.",
+            )
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -779,12 +793,20 @@ fn rebuild_runtime(
     config: &KeymapConfig,
     cx: &App,
 ) -> Result<Vec<KeyBinding>, HotkeyNotice> {
+    rebuild_runtime_with_mapper(runtime, config, cx.keyboard_mapper().as_ref())
+}
+
+fn rebuild_runtime_with_mapper(
+    runtime: &HotkeyRuntime,
+    config: &KeymapConfig,
+    mapper: &dyn PlatformKeyboardMapper,
+) -> Result<Vec<KeyBinding>, HotkeyNotice> {
     resolve_bindings(
         &runtime.framework,
         &runtime.defaults,
         &runtime.internal,
         config,
-        cx.keyboard_mapper().as_ref(),
+        mapper,
     )
 }
 
@@ -866,20 +888,35 @@ pub(crate) fn warning(cx: &App) -> Option<HotkeyNotice> {
 
 fn commit_config(cx: &mut App, config: KeymapConfig) -> Result<(), HotkeyNotice> {
     let runtime = cx.global::<HotkeyRuntime>().clone();
-    let bindings = resolve_bindings(
-        &runtime.framework,
-        &runtime.defaults,
-        &runtime.internal,
+    let bindings = prepare_config_commit(
+        &runtime,
         &config,
+        &keymap_path(),
         cx.keyboard_mapper().as_ref(),
     )?;
-    atomic_write(&keymap_path(), &config).map_err(|_| HotkeyNotice::SaveFailed)?;
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
     let state = cx.global_mut::<HotkeyRuntime>();
     state.config = config;
     state.warning = None;
     Ok(())
+}
+
+fn prepare_config_commit(
+    runtime: &HotkeyRuntime,
+    config: &KeymapConfig,
+    path: &Path,
+    mapper: &dyn PlatformKeyboardMapper,
+) -> Result<Vec<KeyBinding>, HotkeyNotice> {
+    let bindings = resolve_bindings(
+        &runtime.framework,
+        &runtime.defaults,
+        &runtime.internal,
+        config,
+        mapper,
+    )?;
+    atomic_write(path, config).map_err(|_| HotkeyNotice::SaveFailed)?;
+    Ok(bindings)
 }
 
 pub(crate) fn set_binding(
@@ -938,9 +975,16 @@ pub(crate) fn reload(cx: &mut App) {
 mod tests {
     use super::{
         binding_sequence, command, commands, default_bindings, effective_shortcut, input,
-        parse_config, parse_keystrokes, resolve_bindings, DummyKeyboardMapper, HotkeyNotice,
-        KeyBinding, KeymapConfig, ACTION_COMMANDS,
+        parse_config, parse_keystrokes, prepare_config_commit, read_config,
+        rebuild_runtime_with_mapper, resolve_bindings, DummyKeyboardMapper, HotkeyNotice,
+        HotkeyRuntime, KeyBinding, KeymapConfig, ACTION_COMMANDS,
     };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn test_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("rista-hotkeys-{name}-{}", std::process::id()))
+    }
 
     fn mapper() -> DummyKeyboardMapper {
         DummyKeyboardMapper
@@ -1034,6 +1078,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reset.len(), repeated.len());
+    }
+
+    #[test]
+    fn hotkey_malformed_file_preserves_bytes_and_falls_back_to_defaults() {
+        let path = test_path("malformed");
+        let bytes = br#"{"version":1,"bindings":{"new_file":"cmd-s""#;
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(read_config(&path), Err(HotkeyNotice::InvalidFile)));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            effective_shortcut(&KeymapConfig::default(), "new_file").as_deref(),
+            Some("cmd-n")
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn hotkey_atomic_write_failure_preserves_existing_saved_bytes() {
+        let parent = test_path("write-failure");
+        let bytes = b"saved keymap bytes";
+        fs::write(&parent, bytes).unwrap();
+        let target = parent.join("keymap.json");
+        let runtime = HotkeyRuntime {
+            framework: Vec::new(),
+            defaults: test_bindings(),
+            internal: Vec::new(),
+            config: KeymapConfig::default(),
+            warning: None,
+        };
+        let before = runtime.config.clone();
+        assert!(matches!(
+            prepare_config_commit(&runtime, &KeymapConfig::default(), &target, &mapper()),
+            Err(HotkeyNotice::SaveFailed)
+        ));
+        assert_eq!(runtime.config, before);
+        assert_eq!(fs::read(&parent).unwrap(), bytes);
+        let _ = fs::remove_file(parent);
+    }
+
+    #[test]
+    fn hotkey_normalized_modifier_aliases_conflict() {
+        let mapper = mapper();
+        let defaults = test_bindings();
+        let config = parse_config(
+            r#"{"version":1,"bindings":{"new_file":"ctrl-alt-z","open_file":"alt-ctrl-z"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve_bindings(&[], &defaults, &[], &config, &mapper),
+            Err(HotkeyNotice::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn hotkey_rebuild_retains_contextual_framework_and_internal_bindings() {
+        let mapper = mapper();
+        let framework = vec![KeyBinding::new("cmd-f", input::Search, Some("Editor"))];
+        let internal = crate::internal_keymap();
+        let defaults = test_bindings();
+        let runtime = HotkeyRuntime {
+            framework: framework.clone(),
+            defaults: defaults.clone(),
+            internal: internal.clone(),
+            config: KeymapConfig::default(),
+            warning: None,
+        };
+        let config = parse_config(r#"{"version":1,"bindings":{"new_file":"ctrl-alt-z"}}"#).unwrap();
+        let rebuilt = rebuild_runtime_with_mapper(&runtime, &config, &mapper).unwrap();
+        for baseline in framework.iter().chain(internal.iter()) {
+            let predicate = baseline.predicate().unwrap();
+            assert!(rebuilt.iter().any(|binding| {
+                binding_sequence(binding) == binding_sequence(baseline)
+                    && binding
+                        .predicate()
+                        .is_some_and(|actual| std::rc::Rc::ptr_eq(&actual, &predicate))
+                    && binding.action().partial_eq(baseline.action())
+            }));
+        }
     }
 
     #[test]

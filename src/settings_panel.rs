@@ -488,10 +488,16 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Patch the workspace settings and flush to disk + live apply.
     fn apply_hotkey_result(&mut self, result: Result<(), HotkeyNotice>, cx: &mut Context<Self>) {
         self.hotkey_notice = result.err();
+        self.sync_hotkey_warning(cx);
         cx.notify();
+    }
+
+    fn sync_hotkey_warning(&self, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.sync_hotkey_warning(cx));
+        }
     }
 
     fn start_hotkey_recording(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -607,6 +613,8 @@ impl SettingsView {
             .gap_2()
             .child(
                 h_flex()
+                    .w_full()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .child(
@@ -618,10 +626,12 @@ impl SettingsView {
                     )
                     .child(
                         h_flex()
+                            .flex_wrap()
                             .gap_1()
                             .child(
                                 Button::new("hotkeys-reset-all")
                                     .label(language.text("Reset all", "Tilbakestill alle"))
+                                    .small()
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let result = hotkeys::reset_all(&mut *cx);
@@ -631,41 +641,18 @@ impl SettingsView {
                             .child(
                                 Button::new("hotkeys-reload")
                                     .label(language.text("Reload", "Last på nytt"))
+                                    .small()
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         hotkeys::reload(&mut *cx);
                                         this.hotkey_notice = None;
+                                        this.sync_hotkey_warning(cx);
                                         cx.notify();
                                     })),
                             ),
                     ),
             )
             .child(Input::new(&self.hotkey_search).w_full())
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .child(language.text("Command", "Handling")),
-                    )
-                    .child(
-                        div()
-                            .w(px(104.))
-                            .text_xs()
-                            .child(language.text("Current", "Nåværende")),
-                    )
-                    .child(
-                        div()
-                            .w(px(104.))
-                            .text_xs()
-                            .child(language.text("Default", "Standard")),
-                    )
-                    .child(div().w(px(150.))),
-            )
             .child(rows);
         if let Some(notice) = self.hotkey_notice.clone().or_else(|| hotkeys::warning(cx)) {
             section = section.child(
@@ -704,27 +691,48 @@ impl SettingsView {
         let record_id = id.clone();
         let unbind_id = id.clone();
         let reset_id = id;
-        h_flex()
+        v_flex()
             .w_full()
             .min_w_0()
-            .items_center()
-            .gap_2()
+            .gap_1()
             .child(
                 div()
-                    .flex_1()
+                    .w_full()
                     .min_w_0()
                     .text_sm()
                     .child(spec.label(language)),
             )
-            .child(div().w(px(104.)).child(current_label))
-            .child(div().w(px(104.)).child(default_label))
             .child(
                 h_flex()
-                    .w(px(150.))
+                    .w_full()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.text("Current", "Nåværende")),
+                    )
+                    .child(current_label)
+                    .child(
+                        div()
+                            .ml_2()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.text("Default", "Standard")),
+                    )
+                    .child(default_label),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
                     .gap_1()
                     .child(
                         Button::new(format!("hotkey-record-{record_id}"))
                             .label(record_text)
+                            .small()
                             .ghost()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.start_hotkey_recording(record_id.clone(), window, cx);
@@ -733,6 +741,7 @@ impl SettingsView {
                     .child(
                         Button::new(format!("hotkey-unbind-{unbind_id}"))
                             .label(language.text("Unbind", "Fjern"))
+                            .small()
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let result = hotkeys::set_binding(&mut *cx, &unbind_id, None);
@@ -742,6 +751,7 @@ impl SettingsView {
                     .child(
                         Button::new(format!("hotkey-reset-{reset_id}"))
                             .label(language.text("Reset", "Tilbakestill"))
+                            .small()
                             .ghost()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let result = hotkeys::reset_command(&mut *cx, &reset_id);
@@ -751,6 +761,7 @@ impl SettingsView {
             )
     }
 
+    /// Patch the workspace settings and flush to disk + live apply.
     fn update_setting(
         &mut self,
         cx: &mut Context<Self>,
@@ -760,11 +771,20 @@ impl SettingsView {
         let Some(ws) = self.workspace.upgrade() else {
             return;
         };
-        ws.update(cx, |ws, cx| {
-            let mut settings = ws.settings().clone();
-            patch(&mut settings);
-            ws.apply_settings(settings, window, cx);
-        });
+        let old_language = ws.read(cx).settings().language;
+        let mut settings = ws.read(cx).settings().clone();
+        patch(&mut settings);
+        let new_language = settings.language;
+        ws.update(cx, |ws, cx| ws.apply_settings(settings, window, cx));
+        if old_language != new_language {
+            self.hotkey_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    new_language.text("Search shortcuts…", "Søk etter snarveier…"),
+                    window,
+                    cx,
+                );
+            });
+        }
     }
 
     fn row(cx: &App, label: &'static str, control: impl IntoElement) -> gpui_kit::Div {
