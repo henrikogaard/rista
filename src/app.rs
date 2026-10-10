@@ -1833,7 +1833,10 @@ impl Workspace {
             !doc.read(cx).is_read_only() && self.settings.view_mode != ViewMode::Preview;
         let view = cx.entity();
         let doc = doc.clone();
-        window.defer(cx, move |window, cx| {
+        window.on_next_frame(move |window, cx| {
+            if window.has_active_dialog(cx) || view.read(cx).active_doc() != Some(&doc) {
+                return;
+            }
             if focus_editor {
                 doc.update(cx, |doc, cx| {
                     doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
@@ -5462,9 +5465,14 @@ impl Workspace {
                         .child(div().w_full().child(Input::new(&input).appearance(true)))
                         .on_ok(move |_, window, cx| {
                             let answer = input.read(cx).value().to_string();
+                            window.close_dialog(cx);
                             next(answer, window, cx);
-                            true
+                            false
                         })
+                });
+                let input = self.cell_input.clone();
+                window.on_next_frame(move |window, cx| {
+                    input.update(cx, |input, cx| input.focus(window, cx));
                 });
             }
             crate::templater::Prompt::Choice {
@@ -5534,15 +5542,20 @@ impl Workspace {
                     let template = template.clone();
                     move |_, window, cx| {
                         let name = view.read(cx).cell_input.read(cx).value().to_string();
+                        window.close_dialog(cx);
                         let (view, template) = (view.clone(), template.clone());
                         window.defer(cx, move |window, cx| {
                             view.update(cx, |this, cx| {
                                 this.create_note_from_template(&template, &name, window, cx);
                             });
                         });
-                        true
+                        false
                     }
                 })
+        });
+        let input = self.cell_input.clone();
+        window.on_next_frame(move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
         });
     }
 
