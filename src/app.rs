@@ -197,6 +197,7 @@ pub struct Workspace {
     needs_standalone_fs_check: bool,
     standalone_fs_task: Option<Task<()>>,
     focus_fallback_pending: bool,
+    pending_editor_focus: Option<(Entity<Document>, Option<usize>)>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -927,6 +928,7 @@ impl Workspace {
             needs_standalone_fs_check: false,
             standalone_fs_task: None,
             focus_fallback_pending: false,
+            pending_editor_focus: None,
             focus_handle,
             settings,
             _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
@@ -1851,36 +1853,7 @@ impl Workspace {
         self.focus_handle.focus(window, cx);
         cx.notify();
 
-        // Focus the editor once the frame settles. Preview mode and
-        // image docs mount no editor — the workspace takes focus so
-        // ⌘ bindings keep working (same dead-handle fix as refocus).
-        let view = cx.entity();
-        let doc = doc.clone();
-        window.on_next_frame(move |window, cx| {
-            if window.has_active_dialog(cx) {
-                return;
-            }
-            let (is_active, graph_open, folder_open, preview_mode) = {
-                let workspace = view.read(cx);
-                (
-                    workspace.active_doc() == Some(&doc),
-                    workspace.graph.is_some(),
-                    workspace.folder.is_some(),
-                    workspace.settings.view_mode == ViewMode::Preview,
-                )
-            };
-            if !is_active || graph_open || folder_open {
-                return;
-            }
-            let focus_editor = !doc.read(cx).is_read_only() && !preview_mode;
-            if focus_editor {
-                doc.update(cx, |doc, cx| {
-                    doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
-                });
-            } else {
-                view.update(cx, |ws, cx2| ws.focus_handle.focus(window, cx2));
-            }
-        });
+        self.pending_editor_focus = Some((doc, None));
     }
 
     /// Browser-style history: every activation truncates anything past
@@ -4037,7 +4010,28 @@ impl Workspace {
             }
         }
         let files_changed = self.settings.show_other_files != settings.show_other_files;
+        let language_changed = self.settings.language != settings.language;
         self.settings = settings.clone();
+        if language_changed {
+            self.folder_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    settings
+                        .language
+                        .text("Search this folder…", "Søk i denne mappen…"),
+                    window,
+                    cx,
+                );
+            });
+            self.explorer_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    settings
+                        .language
+                        .text("Find files or paths…", "Finn filer eller stier…"),
+                    window,
+                    cx,
+                );
+            });
+        }
         if files_changed {
             self.vault.update(cx, |vault, cx| {
                 vault.show_other_files = settings.show_other_files;
@@ -6041,6 +6035,15 @@ impl Workspace {
         let Some(line) = line else {
             return;
         };
+        if self.settings.view_mode != ViewMode::Preview {
+            if let Some(document) = self
+                .active_doc()
+                .filter(|document| document.read(cx).path == path)
+                .cloned()
+            {
+                self.pending_editor_focus = Some((document, Some(line)));
+            }
+        }
         cx.on_next_frame(window, move |workspace, window, cx| {
             if window.has_active_dialog(cx)
                 || workspace.graph.is_some()
@@ -6048,7 +6051,6 @@ impl Workspace {
             {
                 return;
             }
-            let mode = workspace.settings.view_mode;
             let Some(document) = workspace
                 .active_doc()
                 .filter(|document| document.read(cx).path == path)
@@ -6056,15 +6058,9 @@ impl Workspace {
             else {
                 return;
             };
-            if mode == ViewMode::Preview {
-                document.update(cx, |document, cx| {
-                    document.reveal_preview_line(line.saturating_sub(1), cx);
-                });
-            } else {
-                document.update(cx, |document, cx| {
-                    document.jump_to_line(line, window, cx);
-                });
-            }
+            document.update(cx, |document, cx| {
+                document.reveal_preview_line(line.saturating_sub(1), cx);
+            });
         });
     }
 
@@ -9236,6 +9232,28 @@ impl Render for Workspace {
                 doc.entity.update(cx, |doc, cx| {
                     if doc.vault_root.is_none() {
                         doc.check_external(window, cx);
+                    }
+                });
+            }
+        }
+
+        // Key events can draw before on_next_frame runs. Mount with focus and
+        // the destination selection already set so the first input is not lost.
+        if let Some((document, line)) = self.pending_editor_focus.take() {
+            if !window.has_active_dialog(cx)
+                && self.graph.is_none()
+                && self.folder.is_none()
+                && self.settings.view_mode != ViewMode::Preview
+                && self.active_doc() == Some(&document)
+                && !document.read(cx).is_read_only()
+            {
+                document.update(cx, |document, cx| {
+                    if let Some(line) = line {
+                        document.jump_to_line(line, window, cx);
+                    } else {
+                        document
+                            .editor
+                            .update(cx, |editor, cx| editor.focus(window, cx));
                     }
                 });
             }
