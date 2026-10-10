@@ -19,6 +19,14 @@ use std::time::SystemTime;
 
 type SpellRequestKey = (u64, String, Vec<std::ops::Range<usize>>);
 
+#[derive(Clone)]
+pub(crate) struct SpellMenuContext {
+    pub(crate) revision: u64,
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) word: String,
+    pub(crate) suggestions: Vec<String>,
+}
+
 pub type ImageResolver = Rc<dyn Fn(&str) -> Option<PathBuf>>;
 
 pub enum DocumentEvent {
@@ -81,6 +89,7 @@ pub struct Document {
     spell_task: Option<Task<()>>,
     spell_request_key: Option<SpellRequestKey>,
     spell_request_pending: bool,
+    spell_menu_context: Option<SpellMenuContext>,
     /// Focus mode: only the block under the caret stays lit —
     /// decorations recompute on cursor moves while this is on.
     pub focus_mode: bool,
@@ -248,6 +257,7 @@ impl Document {
             spell_task: None,
             spell_request_key: None,
             spell_request_pending: false,
+            spell_menu_context: None,
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
@@ -448,6 +458,7 @@ impl Document {
     }
 
     fn clear_spellcheck(&mut self, cx: &mut Context<Self>) {
+        self.spell_menu_context = None;
         self.spell_generation = self.spell_generation.wrapping_add(1);
         self.spell_task.take();
         self.spell_request_key = None;
@@ -2805,18 +2816,37 @@ impl Document {
         });
     }
 
-    pub(crate) fn spell_context_at(
+    pub(crate) fn prepare_spell_menu(&mut self, position: Point<Pixels>, cx: &App) {
+        self.spell_menu_context =
+            self.spell_context_at(position, cx)
+                .map(|(range, word, suggestions)| SpellMenuContext {
+                    revision: self.revision,
+                    range,
+                    word,
+                    suggestions,
+                });
+    }
+
+    // GPUI calls the menu builder while its editor entity is leased for update.
+    pub(crate) fn spell_menu_context(&self) -> Option<SpellMenuContext> {
+        self.spell_menu_context
+            .as_ref()
+            .filter(|context| self.spell_enabled && context.revision == self.revision)
+            .cloned()
+    }
+
+    fn spell_context_at(
         &self,
         position: Point<Pixels>,
         cx: &App,
     ) -> Option<(std::ops::Range<usize>, String, Vec<String>)> {
-        let source = self.editor.read(cx).value();
         let analysis = self
             .spell_analysis
             .as_ref()
             .filter(|(revision, _)| *revision == self.revision)?
             .1
             .clone();
+        let source = &analysis.text;
         let visible_words = {
             let editor = self.editor.read(cx);
             let viewport = editor.input_bounds();
@@ -2847,10 +2877,6 @@ impl Document {
         let word = source.get(range.clone())?.to_string();
         let suggestions = self.spell_checker.suggestions(&word, &self.spell_languages);
         Some((range, word, suggestions))
-    }
-
-    pub(crate) fn spell_revision(&self) -> u64 {
-        self.revision
     }
 
     pub(crate) fn apply_spell_correction(
@@ -2930,7 +2956,9 @@ impl Document {
         cx: &App,
     ) -> bool {
         let text = self.editor.read(cx).value();
-        spellcheck::target_matches(&text, self.revision, revision, start, end, original)
+        self.spell_enabled
+            && !self.is_read_only()
+            && spellcheck::target_matches(&text, self.revision, revision, start, end, original)
     }
 
     /// Apply live-editing settings onto this editor.

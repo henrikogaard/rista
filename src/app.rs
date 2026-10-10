@@ -8798,6 +8798,7 @@ impl Workspace {
     /// handler (⌘V arrives as the action, not a raw key event — the menu's
     /// key equivalent intercepts it on macOS).
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
+        let context_doc = doc.clone();
         div()
             .size_full()
             .px_3()
@@ -8806,6 +8807,11 @@ impl Workspace {
             // document editor is focused, so dialog/search inputs keep the
             // plain characters.
             .key_context("RistaEditor")
+            .capture_any_mouse_down(move |event, _window, cx| {
+                if event.button == MouseButton::Right {
+                    context_doc.update(cx, |doc, cx| doc.prepare_spell_menu(event.position, cx));
+                }
+            })
             .on_action(cx.listener(Self::on_pair_insert))
             .on_action(cx.listener(Self::on_set_highlight_color))
             .on_action(cx.listener(Self::on_pair_close))
@@ -8886,13 +8892,16 @@ impl Workspace {
                     .h_full()
                     .appearance(false)
                     .context_menu(move |menu, _window, cx| {
-                        let spell_context = spell_doc
-                            .read(cx)
-                            .spell_context_at(_window.mouse_position(), cx);
+                        let spell_context = spell_doc.read(cx).spell_menu_context();
                         let spell_id = spell_doc.entity_id().as_non_zero_u64().get();
-                        let spell_revision = spell_doc.read(cx).spell_revision();
                         let mut menu = menu;
-                        if let Some((range, word, suggestions)) = spell_context.clone() {
+                        if let Some(crate::document::SpellMenuContext {
+                            revision: spell_revision,
+                            range,
+                            word,
+                            suggestions,
+                        }) = spell_context
+                        {
                             let mut spelling = gpui_kit::component::native_menu::NativeMenu::new();
                             let no_suggestions = suggestions.is_empty();
                             for suggestion in suggestions {
