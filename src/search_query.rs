@@ -1238,18 +1238,21 @@ fn evaluate_term(
         }
         CompiledTerm::Tag(value) => {
             let needle = normalize(value, options.match_case);
-            let tags = text
-                .map(|text| {
-                    extract_tags(
+            let tags: std::borrow::Cow<'_, [String]> =
+                if allow_frontmatter_tags && !document.tags.is_empty() {
+                    std::borrow::Cow::Borrowed(&document.tags)
+                } else if let Some(text) = text {
+                    std::borrow::Cow::Owned(extract_tags(
                         text,
                         if allow_frontmatter_tags {
                             &document.properties
                         } else {
                             &[]
                         },
-                    )
-                })
-                .unwrap_or_else(|| document.tags.clone());
+                    ))
+                } else {
+                    std::borrow::Cow::Borrowed(&document.tags)
+                };
             let matched = tags.iter().any(|tag| {
                 let tag = normalize(tag, options.match_case);
                 tag == needle || tag.starts_with(&(needle.clone() + "/"))
@@ -1689,6 +1692,9 @@ pub fn extract_tags(text: &str, properties: &[(String, Value)]) -> Vec<String> {
                 }
             }
         }
+    }
+    if inline_tags(text).is_empty() {
+        return tags.into_iter().collect();
     }
     let Some(root) = markdown_root(text) else {
         return tags.into_iter().collect();

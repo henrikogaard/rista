@@ -259,7 +259,10 @@ impl SearchService {
             }
             if requirements.parse_properties || requirements.extract_tags {
                 if let Ok(mut cache) = self.cache.lock() {
-                    if let Some(entry) = cache.entries.get_mut(path) {
+                    if let Some(entry) = (cache.generation == cache_generation)
+                        .then(|| cache.entries.get_mut(path))
+                        .flatten()
+                    {
                         if entry.modified == cached.modified && entry.len == cached.len {
                             entry.properties = cached.properties;
                             entry.tags = cached.tags;
