@@ -1832,6 +1832,8 @@ impl Workspace {
         if is_standalone {
             self.start_standalone_fs_check(cx);
         }
+        // Keep actions dispatchable until the new editor has mounted.
+        self.focus_handle.focus(window, cx);
         cx.notify();
 
         // Focus the editor once the frame settles. Preview mode and
@@ -1954,9 +1956,21 @@ impl Workspace {
         let language = self.settings.language;
         let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, language, window, cx));
         graph.update(cx, |g, _cx| g.active = active);
-        graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
+        self.focus_graph_after_mount(window, cx);
         cx.notify();
+    }
+
+    fn focus_graph_after_mount(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(graph) = self.graph.clone() else {
+            return;
+        };
+        self.focus_handle.focus(window, cx);
+        cx.on_next_frame(window, move |this, window, cx| {
+            if !window.has_active_dialog(cx) && this.graph.as_ref() == Some(&graph) {
+                graph.read(cx).focus_handle(cx).focus(window, cx);
+            }
+        });
     }
 
     fn ensure_graph_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2045,8 +2059,8 @@ impl Workspace {
         let language = self.settings.language;
         let graph = cx
             .new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, language, window, cx));
-        graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
+        self.focus_graph_after_mount(window, cx);
         cx.notify();
     }
 
