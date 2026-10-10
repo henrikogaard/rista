@@ -93,3 +93,38 @@ pub struct SetHighlightColor {
 pub struct PairClose {
     pub pair: &'static str,
 }
+
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct SpellCorrection {
+    pub document_id: u64,
+    pub revision: u64,
+    pub start: usize,
+    pub end: usize,
+    pub original: String,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct SpellIgnore {
+    pub document_id: u64,
+    pub revision: u64,
+    pub start: usize,
+    pub end: usize,
+    pub original: String,
+}
+
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct SpellLearn {
+    pub document_id: u64,
+    pub revision: u64,
+    pub start: usize,
+    pub end: usize,
+    pub original: String,
+}
+
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct SpellNoSuggestions;
