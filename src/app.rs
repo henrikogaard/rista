@@ -9566,6 +9566,10 @@ impl Render for Workspace {
         #[cfg(not(target_os = "macos"))]
         let root = root.on_action(cx.listener(Self::on_about));
         root
+            .on_action(cx.listener(Self::on_check_for_updates))
+            .when(!self.zen || self.hotkey_warning.is_some(), |this| {
+                this.child(self.render_title_bar(window, cx))
+            })
             .when_some(self.hotkey_warning.clone(), |this, notice| {
                 this.child(
                     div()
@@ -9578,10 +9582,6 @@ impl Render for Workspace {
                         .text_color(cx.theme().warning)
                         .child(notice.startup_message(self.settings.language)),
                 )
-            })
-            .on_action(cx.listener(Self::on_check_for_updates))
-            .when(!self.zen, |this| {
-                this.child(self.render_title_bar(window, cx))
             })
             .child(
                 div()
