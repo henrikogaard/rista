@@ -810,6 +810,19 @@ fn rebuild_runtime_with_mapper(
     )
 }
 
+fn replace_bindings(cx: &mut App, bindings: Vec<KeyBinding>) {
+    cx.clear_key_bindings();
+    cx.bind_keys(bindings);
+    // Native menu key equivalents are snapshots, not live keymap references.
+    if let Some(workspace) = cx
+        .try_global::<crate::WorkspaceWindow>()
+        .and_then(|current| current.workspace.upgrade())
+    {
+        let language = workspace.read(cx).settings().language;
+        cx.set_menus(crate::menus(language));
+    }
+}
+
 fn apply_runtime(cx: &mut App, config: KeymapConfig, warning: Option<HotkeyNotice>) {
     let runtime = cx.global::<HotkeyRuntime>().clone();
     let resolved = resolve_bindings(
@@ -828,8 +841,7 @@ fn apply_runtime(cx: &mut App, config: KeymapConfig, warning: Option<HotkeyNotic
             .cloned()
             .collect()
     });
-    cx.clear_key_bindings();
-    cx.bind_keys(resolved);
+    replace_bindings(cx, resolved);
     let state = cx.global_mut::<HotkeyRuntime>();
     state.config = config;
     state.warning = warning;
@@ -861,8 +873,7 @@ pub(crate) fn initialize(cx: &mut App, internal: Vec<KeyBinding>) {
         cx.keyboard_mapper().as_ref(),
     )
     .expect("default key bindings must be valid");
-    cx.clear_key_bindings();
-    cx.bind_keys(resolved);
+    replace_bindings(cx, resolved);
     cx.set_global(runtime);
 }
 
@@ -894,8 +905,7 @@ fn commit_config(cx: &mut App, config: KeymapConfig) -> Result<(), HotkeyNotice>
         &keymap_path(),
         cx.keyboard_mapper().as_ref(),
     )?;
-    cx.clear_key_bindings();
-    cx.bind_keys(bindings);
+    replace_bindings(cx, bindings);
     let state = cx.global_mut::<HotkeyRuntime>();
     state.config = config;
     state.warning = None;
@@ -959,8 +969,7 @@ pub(crate) fn reload(cx: &mut App) {
             cx.keyboard_mapper().as_ref(),
         ) {
             Ok(bindings) => {
-                cx.clear_key_bindings();
-                cx.bind_keys(bindings);
+                replace_bindings(cx, bindings);
                 let state = cx.global_mut::<HotkeyRuntime>();
                 state.config = config;
                 state.warning = None;
@@ -1078,6 +1087,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reset.len(), repeated.len());
+    }
+
+    #[test]
+    fn hotkey_new_file_menu_binding_tracks_override_unbind_and_reset() {
+        let defaults = test_bindings();
+        for (source, expected) in [
+            (
+                r#"{"version":1,"bindings":{"new_file":"cmd-alt-n"}}"#,
+                Some("cmd-alt-n"),
+            ),
+            (r#"{"version":1,"bindings":{"new_file":null}}"#, None),
+            (r#"{"version":1,"bindings":{}}"#, Some("cmd-n")),
+        ] {
+            let config = parse_config(source).unwrap();
+            let bindings = resolve_bindings(&[], &defaults, &[], &config, &mapper()).unwrap();
+            let keymap = gpui_kit::Keymap::new(bindings);
+            let bindings = keymap.bindings_for_action(&crate::actions::NewFile);
+            let sequences = bindings.map(binding_sequence).collect::<Vec<_>>();
+            let expected = expected
+                .map(|shortcut| parse_keystrokes(shortcut).unwrap())
+                .into_iter()
+                .collect::<Vec<_>>();
+            assert_eq!(sequences, expected);
+        }
     }
 
     #[test]
