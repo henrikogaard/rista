@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 
+const PAGE_SIZE: usize = 120;
+
+pub fn page_range(total: usize, page: usize) -> std::ops::Range<usize> {
+    let last = total.saturating_sub(1) / PAGE_SIZE;
+    let start = page.min(last) * PAGE_SIZE;
+    start..start.saturating_add(PAGE_SIZE).min(total)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layout {
@@ -274,6 +282,23 @@ pub fn read(dir: &Path) -> io::Result<Contents> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_pages_cover_every_entry_and_clamp_after_filtering() {
+        for total in [0usize, 1, 119, 120, 121, 10_000] {
+            let pages = total.div_ceil(PAGE_SIZE);
+            let actual: Vec<_> = (0..pages)
+                .flat_map(|page| page_range(total, page))
+                .collect();
+            assert_eq!(actual, (0..total).collect::<Vec<_>>());
+        }
+        assert_eq!(page_range(0, usize::MAX), 0..0);
+        assert_eq!(page_range(2, 50), 0..2);
+        assert_eq!(page_range(10_000, usize::MAX), 9960..10_000);
+        let last = page_range(usize::MAX, usize::MAX);
+        assert_eq!(last.end, usize::MAX);
+        assert!(last.len() <= PAGE_SIZE);
+    }
 
     #[test]
     fn dashboard_metadata_and_filters_are_portable() {

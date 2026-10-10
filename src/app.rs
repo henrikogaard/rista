@@ -828,9 +828,18 @@ impl Workspace {
                     .text("Search this folder…", "Søk i denne mappen…"),
             )
         });
-        let folder_search_sub = cx.subscribe(&folder_search, |_, _, _: &input::InputEvent, cx| {
-            cx.notify()
-        });
+        let folder_search_sub = cx.subscribe(
+            &folder_search,
+            |this: &mut Self, _, event: &input::InputEvent, cx| {
+                if matches!(event, input::InputEvent::Change) {
+                    if let Some(page) = &mut this.folder {
+                        page.pages.fill(0);
+                        page.scroll.set_offset(point(px(0.), px(0.)));
+                    }
+                }
+                cx.notify();
+            },
+        );
         let explorer_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(
                 settings
