@@ -1,7 +1,7 @@
 use crate::properties;
 use crate::search_query::{
-    compile_query, evaluate_compiled, extract_tags, parse_query, requirements, EvaluationOptions,
-    QueryError, QueryRequirements, SearchDocument,
+    compile_query, evaluate_compiled, explain, extract_tags, parse_query, requirements,
+    EvaluationOptions, QueryError, QueryRequirements, SearchDocument,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
@@ -45,6 +45,8 @@ pub struct SearchResponse {
     pub results: Vec<SearchResult>,
     pub total: usize,
     pub more: bool,
+    pub explanation: String,
+    pub explanation_norwegian: String,
 }
 
 #[derive(Clone, Debug)]
@@ -56,14 +58,29 @@ struct CachedFile {
     tags: Option<Vec<String>>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
+struct CacheState {
+    entries: HashMap<PathBuf, CachedFile>,
+    retained_bytes: usize,
+    generation: u64,
+}
+
+#[derive(Clone)]
 pub struct SearchService {
-    cache: Arc<Mutex<HashMap<PathBuf, CachedFile>>>,
+    cache: Arc<Mutex<CacheState>>,
+}
+
+impl Default for SearchService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SearchService {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            cache: Arc::new(Mutex::new(CacheState::default())),
+        }
     }
 
     pub fn search(
@@ -84,14 +101,32 @@ impl SearchService {
         options: SearchOptions,
         cancellation: Option<(Arc<AtomicU64>, u64)>,
     ) -> Result<SearchResponse, QueryError> {
+        if is_cancelled(&cancellation) {
+            return Ok(SearchResponse::default());
+        }
         let query = parse_query(input)?;
+        if is_cancelled(&cancellation) {
+            return Ok(SearchResponse::default());
+        }
         let requirements = requirements(&query);
+        let cache_generation = self
+            .cache
+            .lock()
+            .map(|cache| cache.generation)
+            .unwrap_or_default();
+        if is_cancelled(&cancellation) {
+            return Ok(SearchResponse::default());
+        }
         let compiled = compile_query(
             &query,
             EvaluationOptions {
                 match_case: options.match_case,
             },
         )?;
+        if is_cancelled(&cancellation) {
+            return Ok(SearchResponse::default());
+        }
+        self.prune_cache(paths);
         let mut results = Vec::new();
         for path in paths {
             if is_cancelled(&cancellation) {
@@ -117,7 +152,13 @@ impl SearchService {
                         .any(|known| extension.eq_ignore_ascii_case(known))
                 });
             let document = if requirements.read_content && is_text {
-                self.document(path, &metadata, &relative_path, requirements)
+                self.document(
+                    path,
+                    &metadata,
+                    &relative_path,
+                    requirements,
+                    cache_generation,
+                )
             } else {
                 SearchDocument::path_only(path.clone(), relative_path.clone())
                     .with_times(metadata.modified().ok(), metadata.created().ok())
@@ -158,6 +199,8 @@ impl SearchService {
             results,
             total,
             more,
+            explanation: explain(&query, false),
+            explanation_norwegian: explain(&query, true),
         })
     }
 
@@ -167,6 +210,7 @@ impl SearchService {
         metadata: &fs::Metadata,
         relative_path: &str,
         requirements: QueryRequirements,
+        cache_generation: u64,
     ) -> SearchDocument {
         let modified = metadata.modified().ok();
         let len = metadata.len();
@@ -174,7 +218,7 @@ impl SearchService {
             self.cache
                 .lock()
                 .ok()
-                .and_then(|cache| cache.get(path).cloned())
+                .and_then(|cache| cache.entries.get(path).cloned())
                 .filter(|entry| entry.modified == modified && entry.len == len)
                 .filter(|_| {
                     fs::metadata(path).ok().is_some_and(|current| {
@@ -215,7 +259,7 @@ impl SearchService {
             }
             if requirements.parse_properties || requirements.extract_tags {
                 if let Ok(mut cache) = self.cache.lock() {
-                    if let Some(entry) = cache.get_mut(path) {
+                    if let Some(entry) = cache.entries.get_mut(path) {
                         if entry.modified == cached.modified && entry.len == cached.len {
                             entry.properties = cached.properties;
                             entry.tags = cached.tags;
@@ -256,7 +300,9 @@ impl SearchService {
             .is_some_and(|current| current.len() == len && current.modified().ok() == modified);
         if unchanged && modified.is_some() && content.len() <= MAX_CACHE_BYTES {
             if let Ok(mut cache) = self.cache.lock() {
-                cache.insert(
+                insert_cache_if_current(
+                    &mut cache,
+                    cache_generation,
                     path.to_path_buf(),
                     CachedFile {
                         modified,
@@ -266,7 +312,6 @@ impl SearchService {
                         tags,
                     },
                 );
-                trim_cache(&mut cache);
             }
         }
         document
@@ -274,15 +319,37 @@ impl SearchService {
 
     pub fn invalidate(&self, paths: impl IntoIterator<Item = PathBuf>) {
         if let Ok(mut cache) = self.cache.lock() {
+            cache.generation = cache.generation.wrapping_add(1);
             for path in paths {
-                cache.remove(&path);
+                if let Some(entry) = cache.entries.remove(&path) {
+                    cache.retained_bytes = cache.retained_bytes.saturating_sub(entry.content.len());
+                }
             }
         }
     }
 
     pub fn invalidate_all(&self) {
         if let Ok(mut cache) = self.cache.lock() {
-            cache.clear();
+            cache.generation = cache.generation.wrapping_add(1);
+            cache.entries.clear();
+            cache.retained_bytes = 0;
+        }
+    }
+
+    fn prune_cache(&self, paths: &[PathBuf]) {
+        let paths = paths.iter().collect::<std::collections::HashSet<_>>();
+        if let Ok(mut cache) = self.cache.lock() {
+            let removed = cache
+                .entries
+                .keys()
+                .filter(|path| !paths.contains(path))
+                .cloned()
+                .collect::<Vec<_>>();
+            for path in removed {
+                if let Some(entry) = cache.entries.remove(&path) {
+                    cache.retained_bytes = cache.retained_bytes.saturating_sub(entry.content.len());
+                }
+            }
         }
     }
 }
@@ -293,19 +360,33 @@ fn is_cancelled(cancellation: &Option<(Arc<AtomicU64>, u64)>) -> bool {
         .is_some_and(|(generation, expected)| generation.load(Ordering::Relaxed) != *expected)
 }
 
-fn trim_cache(cache: &mut HashMap<PathBuf, CachedFile>) {
-    let mut bytes = cache
-        .values()
-        .map(|entry| entry.content.len())
-        .sum::<usize>();
-    while bytes > MAX_CACHE_BYTES {
-        let Some(path) = cache.keys().next().cloned() else {
+fn insert_cache(cache: &mut CacheState, path: PathBuf, entry: CachedFile) {
+    if let Some(previous) = cache.entries.remove(&path) {
+        cache.retained_bytes = cache.retained_bytes.saturating_sub(previous.content.len());
+    }
+    cache.retained_bytes += entry.content.len();
+    cache.entries.insert(path, entry);
+    while cache.retained_bytes > MAX_CACHE_BYTES {
+        let Some(path) = cache.entries.keys().next().cloned() else {
             break;
         };
-        if let Some(entry) = cache.remove(&path) {
-            bytes = bytes.saturating_sub(entry.content.len());
+        if let Some(entry) = cache.entries.remove(&path) {
+            cache.retained_bytes = cache.retained_bytes.saturating_sub(entry.content.len());
         }
     }
+}
+
+fn insert_cache_if_current(
+    cache: &mut CacheState,
+    generation: u64,
+    path: PathBuf,
+    entry: CachedFile,
+) -> bool {
+    if cache.generation != generation {
+        return false;
+    }
+    insert_cache(cache, path, entry);
+    true
 }
 
 fn sort_results(results: &mut [SearchResult], sort: SearchSort) {
@@ -371,7 +452,8 @@ mod tests {
     fn cache_invalidation_purges_changed_paths() {
         let service = SearchService::new();
         let path = PathBuf::from("renamed.md");
-        service.cache.lock().unwrap().insert(
+        insert_cache(
+            &mut service.cache.lock().unwrap(),
             path.clone(),
             CachedFile {
                 modified: None,
@@ -382,7 +464,61 @@ mod tests {
             },
         );
         service.invalidate([path.clone()]);
-        assert!(!service.cache.lock().unwrap().contains_key(&path));
+        let cache = service.cache.lock().unwrap();
+        assert!(!cache.entries.contains_key(&path));
+        assert_eq!(cache.retained_bytes, 0);
+    }
+
+    #[test]
+    fn edits_and_renames_do_not_reuse_stale_content() {
+        let root = test_root();
+        let path = root.join("note.md");
+        fs::write(&path, "before").unwrap();
+        let service = SearchService::new();
+        let paths = [path.clone()];
+        assert_eq!(
+            service
+                .search(&root, &paths, "before", SearchOptions::default())
+                .unwrap()
+                .total,
+            1
+        );
+        fs::write(&path, "after-edit").unwrap();
+        assert_eq!(
+            service
+                .search(&root, &paths, "after-edit", SearchOptions::default())
+                .unwrap()
+                .total,
+            1
+        );
+
+        let renamed = root.join("renamed.md");
+        fs::rename(&path, &renamed).unwrap();
+        let renamed_paths = [renamed.clone()];
+        assert_eq!(
+            service
+                .search(
+                    &root,
+                    &renamed_paths,
+                    "after-edit",
+                    SearchOptions::default()
+                )
+                .unwrap()
+                .total,
+            1
+        );
+        let cache = service.cache.lock().unwrap();
+        assert!(!cache.entries.contains_key(&path));
+        assert!(cache.entries.contains_key(&renamed));
+        assert_eq!(
+            cache.retained_bytes,
+            cache
+                .entries
+                .values()
+                .map(|entry| entry.content.len())
+                .sum::<usize>()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -399,6 +535,28 @@ mod tests {
             .unwrap();
         assert!(response.results.is_empty());
         assert_eq!(response.total, 0);
+    }
+
+    #[test]
+    fn invalidation_prevents_old_generation_from_repopulating_cache() {
+        let mut cache = CacheState {
+            generation: 2,
+            ..CacheState::default()
+        };
+        assert!(!insert_cache_if_current(
+            &mut cache,
+            1,
+            PathBuf::from("note.md"),
+            CachedFile {
+                modified: None,
+                len: 6,
+                content: Arc::from("stale!"),
+                properties: None,
+                tags: None,
+            },
+        ));
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.retained_bytes, 0);
     }
 
     #[test]
@@ -447,7 +605,14 @@ mod tests {
                 SearchOptions::default(),
             )
             .unwrap();
-        let cached = service.cache.lock().unwrap().get(&path).unwrap().clone();
+        let cached = service
+            .cache
+            .lock()
+            .unwrap()
+            .entries
+            .get(&path)
+            .unwrap()
+            .clone();
         assert!(cached.properties.is_none());
         assert!(cached.tags.is_none());
 
@@ -460,7 +625,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(response.total, 1);
-        let cached = service.cache.lock().unwrap().get(&path).unwrap().clone();
+        let cached = service
+            .cache
+            .lock()
+            .unwrap()
+            .entries
+            .get(&path)
+            .unwrap()
+            .clone();
         assert!(cached.properties.is_some());
         assert!(cached.tags.is_some());
         fs::remove_dir_all(root).unwrap();

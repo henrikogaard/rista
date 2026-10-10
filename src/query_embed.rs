@@ -142,6 +142,12 @@ impl QueryView {
     }
 }
 
+impl Drop for QueryView {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 impl Render for QueryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let results = self.results.clone();
@@ -232,25 +238,9 @@ impl Render for QueryView {
                             ),
                     )
                     .on_click(move |_, window, cx| {
-                        let path = path.clone();
                         let _ = workspace.update(cx, |workspace, cx| {
-                            workspace.open_document_pub(path.clone(), window, cx);
+                            workspace.navigate_search_result(path.clone(), line, window, cx);
                         });
-                        if let Some(line) = line {
-                            let workspace = workspace.clone();
-                            window.defer(cx, move |window, cx| {
-                                let _ = workspace.update(cx, |workspace, cx| {
-                                    if let Some(document) = workspace
-                                        .iter_docs()
-                                        .find(|document| document.read(cx).path == path)
-                                    {
-                                        document.update(cx, |document, cx| {
-                                            document.jump_to_line(line, window, cx);
-                                        });
-                                    }
-                                });
-                            });
-                        }
                     })
             }))
     }

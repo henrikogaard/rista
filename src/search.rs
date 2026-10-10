@@ -40,7 +40,10 @@ pub struct ProjectSearch {
     sort: SearchSort,
     total: usize,
     more: bool,
+    explanation: Option<String>,
+    explanation_open: bool,
     selected_index: usize,
+    results_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -94,7 +97,10 @@ impl ProjectSearch {
             sort: SearchSort::Relevance,
             total: 0,
             more: false,
+            explanation: None,
+            explanation_open: false,
             selected_index: 0,
+            results_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -106,6 +112,7 @@ impl ProjectSearch {
         let query = self.query_input.read(cx).value().trim().to_string();
         self.busy = !query.is_empty();
         self.error = None;
+        self.explanation = None;
         self.results.clear();
         self.total = 0;
         self.more = false;
@@ -164,6 +171,12 @@ impl ProjectSearch {
                             .collect();
                         search.total = response.total;
                         search.more = response.more;
+                        search.explanation =
+                            Some(if language == crate::settings::Language::Norwegian {
+                                response.explanation_norwegian
+                            } else {
+                                response.explanation
+                            });
                         search.selected_index = 0;
                     }
                     Err(error) => {
@@ -188,24 +201,8 @@ impl ProjectSearch {
         window.close_dialog(cx);
         window.defer(cx, move |window, cx| {
             let _ = workspace.update(cx, |workspace, cx| {
-                workspace.open_document_pub(path.clone(), window, cx);
+                workspace.navigate_search_result(path, line, window, cx);
             });
-            if let Some(line) = line {
-                let workspace = workspace.clone();
-                let path = path.clone();
-                window.defer(cx, move |window, cx| {
-                    let _ = workspace.update(cx, |workspace, cx| {
-                        if let Some(document) = workspace
-                            .iter_docs()
-                            .find(|document| document.read(cx).path == path)
-                        {
-                            document.update(cx, |document, cx| {
-                                document.jump_to_line(line, window, cx);
-                            });
-                        }
-                    });
-                });
-            }
         });
     }
 
@@ -217,6 +214,7 @@ impl ProjectSearch {
     ) {
         if !self.results.is_empty() {
             self.selected_index = (self.selected_index + 1).min(self.results.len() - 1);
+            self.results_scroll.scroll_to_item(self.selected_index);
             cx.notify();
         }
     }
@@ -228,6 +226,7 @@ impl ProjectSearch {
         cx: &mut Context<Self>,
     ) {
         self.selected_index = self.selected_index.saturating_sub(1);
+        self.results_scroll.scroll_to_item(self.selected_index);
         cx.notify();
     }
 }
@@ -242,6 +241,8 @@ impl Render for ProjectSearch {
         let match_case = self.match_case;
         let sort = self.sort;
         let selected_index = self.selected_index;
+        let explanation = self.explanation.clone();
+        let explanation_open = self.explanation_open;
         let status = if self.busy {
             Some(
                 if norwegian {
@@ -371,10 +372,45 @@ impl Render for ProjectSearch {
                         }),
                 )
             })
+            .when_some(explanation, |this, explanation| {
+                this.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("search-explain")
+                                .ghost()
+                                .xsmall()
+                                .label(if explanation_open {
+                                    if norwegian {
+                                        "Skjul forklaring"
+                                    } else {
+                                        "Hide explanation"
+                                    }
+                                } else if norwegian {
+                                    "Forklar søket"
+                                } else {
+                                    "Explain query"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.explanation_open = !this.explanation_open;
+                                    cx.notify();
+                                })),
+                        )
+                        .when(explanation_open, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(explanation),
+                            )
+                        }),
+                )
+            })
             .child(
                 v_flex()
                     .id("project-search-results")
                     .w_full()
+                    .track_scroll(&self.results_scroll)
                     .children(results.iter().enumerate().map(|(ix, hit)| {
                         let name = hit
                             .path

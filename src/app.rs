@@ -5992,6 +5992,44 @@ impl Workspace {
         self.open_document(path, window, cx);
     }
 
+    pub fn navigate_search_result(
+        &mut self,
+        path: PathBuf,
+        line: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_document(path.clone(), window, cx);
+        let Some(line) = line else {
+            return;
+        };
+        cx.on_next_frame(window, move |workspace, window, cx| {
+            if window.has_active_dialog(cx)
+                || workspace.graph.is_some()
+                || workspace.folder.is_some()
+            {
+                return;
+            }
+            let mode = workspace.settings.view_mode;
+            let Some(document) = workspace
+                .active_doc()
+                .filter(|document| document.read(cx).path == path)
+                .cloned()
+            else {
+                return;
+            };
+            if mode == ViewMode::Preview {
+                document.update(cx, |document, cx| {
+                    document.reveal_preview_line(line.saturating_sub(1), cx);
+                });
+            } else {
+                document.update(cx, |document, cx| {
+                    document.jump_to_line(line, window, cx);
+                });
+            }
+        });
+    }
+
     /// ⌘+click on a row link: always open in a new tab.
     pub fn open_document_new_tab(
         &mut self,
@@ -6019,10 +6057,6 @@ impl Workspace {
             self.settings.base_sorts.remove(&key);
         }
         self.settings.save();
-    }
-
-    pub fn iter_docs(&self) -> impl Iterator<Item = &Entity<Document>> {
-        self.docs.iter().map(|d| &d.entity)
     }
 
     pub fn vault_entity(&self) -> &Entity<Vault> {

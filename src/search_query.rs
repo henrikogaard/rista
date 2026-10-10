@@ -24,6 +24,7 @@ pub enum Query {
     And(Vec<Query>),
     Or(Vec<Query>),
     Not(Box<Query>),
+    Case { match_case: bool, query: Box<Query> },
     Term(Term),
     Scope { kind: Scope, query: Box<Query> },
     TaskState { done: bool, query: Box<Query> },
@@ -54,6 +55,7 @@ pub fn requirements(query: &Query) -> QueryRequirements {
             .map(requirements)
             .fold(QueryRequirements::default(), merge_requirements),
         Query::Not(child)
+        | Query::Case { query: child, .. }
         | Query::Scope { query: child, .. }
         | Query::TaskState { query: child, .. } => {
             let mut requirements = requirements(child);
@@ -278,6 +280,10 @@ enum CompiledNode {
     And(Vec<CompiledNode>),
     Or(Vec<CompiledNode>),
     Not(Box<CompiledNode>),
+    Case {
+        match_case: bool,
+        query: Box<CompiledNode>,
+    },
     Term(CompiledTerm),
     Scope {
         kind: Scope,
@@ -377,7 +383,11 @@ impl<'a> Lexer<'a> {
                     self.tokens.push(Token::Minus);
                 }
                 '"' => self.lex_phrase()?,
-                '/' if self.is_value_start() => self.lex_regex()?,
+                '/' if self.looks_like_regex()
+                    || !self.input[self.offset + 1..].chars().any(|ch| ch == '/') =>
+                {
+                    self.lex_regex()?
+                }
                 '[' => self.lex_property()?,
                 _ => self.lex_word(),
             }
@@ -385,16 +395,30 @@ impl<'a> Lexer<'a> {
         Ok(self.tokens)
     }
 
-    fn is_value_start(&self) -> bool {
-        self.tokens.is_empty()
-            || matches!(
-                self.tokens.last(),
-                Some(Token::LeftParen | Token::Minus | Token::Or)
-            )
-            || matches!(
-                self.tokens.last(),
-                Some(Token::Word(word)) if word.ends_with(':')
-            )
+    fn looks_like_regex(&self) -> bool {
+        let mut escaped = false;
+        let mut offset = self.offset + 1;
+        while offset < self.input.len() {
+            let ch = self.input[offset..]
+                .chars()
+                .next()
+                .expect("offset is on a character boundary");
+            let width = ch.len_utf8();
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '/'
+                && self.input[offset + width..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| next.is_whitespace() || matches!(next, ')' | '('))
+            {
+                return true;
+            }
+            offset += width;
+        }
+        false
     }
 
     fn lex_phrase(&mut self) -> Result<(), QueryError> {
@@ -462,6 +486,8 @@ impl<'a> Lexer<'a> {
         let start = self.offset;
         let mut escaped = false;
         let mut nested_brackets = 0;
+        let mut quoted = false;
+        let mut regex = false;
         while self.offset < self.input.len() {
             let ch = self.input[self.offset..]
                 .chars()
@@ -474,6 +500,28 @@ impl<'a> Lexer<'a> {
             }
             if ch == '\\' {
                 escaped = true;
+            } else if quoted {
+                if ch == '"' {
+                    quoted = false;
+                }
+            } else if regex {
+                if ch == '/' {
+                    regex = false;
+                }
+            } else if ch == '"' {
+                quoted = true;
+            } else if ch == '/' {
+                let value_start = self.input[start..self.offset - ch.len_utf8()]
+                    .rsplit_once(':')
+                    .is_some_and(|(_, value)| {
+                        value.trim().is_empty()
+                            || value.trim_end().ends_with('(')
+                            || value.trim_end().ends_with("OR")
+                            || value.chars().next_back().is_some_and(char::is_whitespace)
+                    });
+                if value_start {
+                    regex = true;
+                }
             } else if ch == '[' {
                 nested_brackets += 1;
             } else if ch == ']' {
@@ -514,7 +562,15 @@ impl<'a> Lexer<'a> {
                                 | "task-done"
                         )
                 });
-                if is_regex_operator {
+                if is_regex_operator
+                    || prefix.split_once(':').is_some_and(|(operator, value)| {
+                        value.is_empty()
+                            && matches!(
+                                operator.to_ascii_lowercase().as_str(),
+                                "match-case" | "ignore-case"
+                            )
+                    })
+                {
                     break;
                 }
             }
@@ -595,14 +651,11 @@ impl<'a> Parser<'a> {
                 if self.depth >= MAX_NESTING {
                     return Err(QueryError::new(QueryErrorCode::TooDeep));
                 }
-                let mut query = self.with_depth(|parser| parser.parse_or())?;
+                let query = self.with_depth(|parser| parser.parse_or())?;
                 if !matches!(self.tokens.get(self.index), Some(Token::RightParen)) {
                     return Err(QueryError::new(QueryErrorCode::UnexpectedToken));
                 }
                 self.index += 1;
-                if let Query::And(children) = query {
-                    query = Query::Or(children);
-                }
                 return Ok(Query::Not(Box::new(query)));
             }
             return Ok(Query::Not(Box::new(self.parse_unary()?)));
@@ -707,6 +760,14 @@ impl<'a> Parser<'a> {
             }),
             "task-todo" | "task-done" => Ok(Query::TaskState {
                 done: operator == "task-done",
+                query: Box::new(value.into_query()?),
+            }),
+            "match-case" => Ok(Query::Case {
+                match_case: true,
+                query: Box::new(value.into_query()?),
+            }),
+            "ignore-case" => Ok(Query::Case {
+                match_case: false,
                 query: Box::new(value.into_query()?),
             }),
             _ => {
@@ -814,7 +875,24 @@ fn parse_property(raw: &str, depth: usize) -> Result<PropertyFilter, QueryError>
         return Err(QueryError::new(QueryErrorCode::InvalidProperty));
     }
     let (key, condition) = if let Some((key, value)) = raw.split_once(':') {
-        (key.trim(), parse_property_value(value.trim(), depth)?)
+        let value = value.trim();
+        if let Some((_, operator, number)) =
+            split_comparison(value).filter(|(prefix, _, _)| prefix.trim().is_empty())
+        {
+            let number = number
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| QueryError::new(QueryErrorCode::InvalidProperty))?;
+            (
+                key.trim(),
+                PropertyCondition::Number {
+                    operator,
+                    value: number,
+                },
+            )
+        } else {
+            (key.trim(), parse_property_value(value, depth)?)
+        }
     } else if let Some((key, operator, value)) = split_comparison(raw) {
         let number = value
             .trim()
@@ -872,37 +950,16 @@ fn parse_property_value(raw: &str, depth: usize) -> Result<PropertyCondition, Qu
             depth + 1,
         )?)));
     }
-    let value = if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
-        let body = &raw[1..raw.len() - 1];
-        unescape_phrase(body)
-    } else {
-        raw.to_string()
-    };
-    Ok(PropertyCondition::Contains(value))
-}
-
-fn unescape_phrase(raw: &str) -> String {
-    let mut value = String::new();
-    let mut escaped = false;
-    for ch in raw.chars() {
-        if escaped {
-            if matches!(ch, '"' | '\\') {
-                value.push(ch);
-            } else {
-                value.push('\\');
-                value.push(ch);
-            }
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else {
-            value.push(ch);
-        }
+    if let [Token::Phrase(value)] = Lexer::new(raw).lex()?.as_slice() {
+        return Ok(PropertyCondition::Contains(value.clone()));
     }
-    if escaped {
-        value.push('\\');
+    if depth >= MAX_NESTING {
+        return Err(QueryError::new(QueryErrorCode::TooDeep));
     }
-    value
+    Ok(PropertyCondition::Query(Box::new(Parser::parse(
+        raw,
+        depth + 1,
+    )?)))
 }
 
 pub fn parse_query(input: &str) -> Result<Query, QueryError> {
@@ -935,6 +992,15 @@ fn compile_node(query: &Query, options: EvaluationOptions) -> Result<CompiledNod
                 .collect::<Result<_, _>>()?,
         ),
         Query::Not(child) => CompiledNode::Not(Box::new(compile_node(child, options)?)),
+        Query::Case { match_case, query } => CompiledNode::Case {
+            match_case: *match_case,
+            query: Box::new(compile_node(
+                query,
+                EvaluationOptions {
+                    match_case: *match_case,
+                },
+            )?),
+        },
         Query::Term(term) => CompiledNode::Term(match term {
             Term::Content(value) => CompiledTerm::Content(value.clone()),
             Term::Phrase(value) => CompiledTerm::Phrase(value.clone()),
@@ -1000,6 +1066,7 @@ pub fn evaluate_compiled(
         document.content.as_deref(),
         1,
         options,
+        true,
     )
 }
 
@@ -1009,12 +1076,20 @@ fn evaluate_node(
     text: Option<&str>,
     first_line: usize,
     options: EvaluationOptions,
+    allow_frontmatter_tags: bool,
 ) -> Evaluation {
     match query {
         CompiledNode::And(children) => {
             let mut result = Evaluation::default();
             for child in children {
-                let current = evaluate_node(child, document, text, first_line, options);
+                let current = evaluate_node(
+                    child,
+                    document,
+                    text,
+                    first_line,
+                    options,
+                    allow_frontmatter_tags,
+                );
                 if !current.matched {
                     return Evaluation::default();
                 }
@@ -1027,7 +1102,14 @@ fn evaluate_node(
         CompiledNode::Or(children) => {
             let mut result = Evaluation::default();
             for child in children {
-                let current = evaluate_node(child, document, text, first_line, options);
+                let current = evaluate_node(
+                    child,
+                    document,
+                    text,
+                    first_line,
+                    options,
+                    allow_frontmatter_tags,
+                );
                 if current.matched && (!result.matched || current.occurrences > result.occurrences)
                 {
                     result = current;
@@ -1036,13 +1118,37 @@ fn evaluate_node(
             result
         }
         CompiledNode::Not(child) => {
-            let current = evaluate_node(child, document, text, first_line, options);
+            let current = evaluate_node(
+                child,
+                document,
+                text,
+                first_line,
+                options,
+                allow_frontmatter_tags,
+            );
             Evaluation {
                 matched: !current.matched,
                 ..Evaluation::default()
             }
         }
-        CompiledNode::Term(term) => evaluate_term(term, document, text, first_line, options),
+        CompiledNode::Case { match_case, query } => evaluate_node(
+            query,
+            document,
+            text,
+            first_line,
+            EvaluationOptions {
+                match_case: *match_case,
+            },
+            allow_frontmatter_tags,
+        ),
+        CompiledNode::Term(term) => evaluate_term(
+            term,
+            document,
+            text,
+            first_line,
+            options,
+            allow_frontmatter_tags,
+        ),
         CompiledNode::Scope { kind, query } => {
             let regions = match kind {
                 Scope::Line => line_regions(text.unwrap_or_default(), first_line),
@@ -1058,6 +1164,7 @@ fn evaluate_node(
                     Some(region.text),
                     region.first_line,
                     options,
+                    false,
                 );
                 if current.matched {
                     result.matched = true;
@@ -1079,6 +1186,7 @@ fn evaluate_node(
                     Some(region.text),
                     region.first_line,
                     options,
+                    false,
                 );
                 if current.matched {
                     result.matched = true;
@@ -1088,7 +1196,9 @@ fn evaluate_node(
             }
             result
         }
-        CompiledNode::Property(property) => evaluate_property(property, document, options),
+        CompiledNode::Property(property) => {
+            evaluate_property(property, document, text, first_line, options)
+        }
     }
 }
 
@@ -1098,6 +1208,7 @@ fn evaluate_term(
     text: Option<&str>,
     first_line: usize,
     options: EvaluationOptions,
+    allow_frontmatter_tags: bool,
 ) -> Evaluation {
     match term {
         CompiledTerm::Content(value) => match text {
@@ -1127,11 +1238,28 @@ fn evaluate_term(
         }
         CompiledTerm::Tag(value) => {
             let needle = normalize(value, options.match_case);
-            let matched = document.tags.iter().any(|tag| {
+            let tags = text
+                .map(|text| {
+                    extract_tags(
+                        text,
+                        if allow_frontmatter_tags {
+                            &document.properties
+                        } else {
+                            &[]
+                        },
+                    )
+                })
+                .unwrap_or_else(|| document.tags.clone());
+            let matched = tags.iter().any(|tag| {
                 let tag = normalize(tag, options.match_case);
                 tag == needle || tag.starts_with(&(needle.clone() + "/"))
             });
-            Evaluation::matched(1, Some(first_line)).with_matched(matched)
+            let first_line = matched
+                .then(|| {
+                    text.and_then(|text| tag_line(text, value, first_line, options.match_case))
+                })
+                .flatten();
+            Evaluation::matched(1, first_line).with_matched(matched)
         }
         CompiledTerm::Path(value) => {
             let haystack = normalize(&document.relative_path, options.match_case);
@@ -1166,6 +1294,8 @@ impl EvaluationExt for Evaluation {
 fn evaluate_property(
     property: &CompiledProperty,
     document: &SearchDocument,
+    text: Option<&str>,
+    first_line: usize,
     options: EvaluationOptions,
 ) -> Evaluation {
     let Some((_, value)) = document
@@ -1191,10 +1321,60 @@ fn evaluate_property(
         CompiledPropertyCondition::Query(query) => property_value_matches(value, &|scalar| {
             let mut nested = SearchDocument::new("", "", scalar.to_string());
             nested.content = Some(scalar.to_string());
-            evaluate_node(query, &nested, nested.content.as_deref(), 1, options).matched
+            evaluate_node(query, &nested, nested.content.as_deref(), 1, options, false).matched
         }),
     };
-    Evaluation::matched(usize::from(matched), Some(1)).with_matched(matched)
+    let first_line = matched
+        .then(|| text.and_then(|text| property_line(text, &property.key, first_line)))
+        .flatten();
+    Evaluation::matched(usize::from(matched), first_line).with_matched(matched)
+}
+
+fn tag_line(text: &str, value: &str, first_line: usize, match_case: bool) -> Option<usize> {
+    fn visible_text(line: &str) -> String {
+        let mut visible = String::with_capacity(line.len());
+        let mut in_code = false;
+        for ch in line.chars() {
+            if ch == '`' {
+                in_code = !in_code;
+            } else if !in_code {
+                visible.push(ch);
+            }
+        }
+        visible
+    }
+
+    let value = normalize(value, match_case);
+    let mut in_fence = false;
+    text.lines().enumerate().find_map(|(line, source)| {
+        let trimmed = source.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            return None;
+        }
+        if in_fence {
+            return None;
+        }
+        inline_tags(&visible_text(source))
+            .iter()
+            .any(|tag| {
+                let tag = normalize(tag, match_case);
+                tag == value || tag.starts_with(&(value.clone() + "/"))
+            })
+            .then_some(first_line + line)
+    })
+}
+
+fn property_line(text: &str, key: &str, first_line: usize) -> Option<usize> {
+    let span = crate::properties::frontmatter_span(text)?;
+    text[..span.end]
+        .lines()
+        .enumerate()
+        .find(|(_, line)| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
+        })
+        .map(|(line, _)| first_line + line)
 }
 
 fn property_value_matches(value: &Value, matcher: &impl Fn(&str) -> bool) -> bool {
@@ -1433,10 +1613,18 @@ fn collect_task_ranges(node: &Node, ranges: &mut Vec<(std::ops::Range<usize>, bo
     if let Node::ListItem(item) = node {
         if item.checked.is_some() {
             if let Some(position) = &item.position {
-                ranges.push((
-                    position.start.offset..position.end.offset,
-                    item.checked == Some(true),
-                ));
+                let end = item
+                    .children
+                    .iter()
+                    .filter_map(|child| match child {
+                        Node::List(list) => {
+                            list.position.as_ref().map(|position| position.start.offset)
+                        }
+                        _ => None,
+                    })
+                    .min()
+                    .unwrap_or(position.end.offset);
+                ranges.push((position.start.offset..end, item.checked == Some(true)));
             }
         }
     }
@@ -1553,20 +1741,41 @@ fn inline_tags(text: &str) -> Vec<String> {
 pub fn explain(query: &Query, norwegian: bool) -> String {
     fn render(query: &Query, norwegian: bool) -> String {
         match query {
-            Query::And(children) => children
-                .iter()
-                .map(|child| render(child, norwegian))
-                .collect::<Vec<_>>()
-                .join(if norwegian { " og " } else { " and " }),
-            Query::Or(children) => children
-                .iter()
-                .map(|child| render(child, norwegian))
-                .collect::<Vec<_>>()
-                .join(if norwegian { " eller " } else { " or " }),
+            Query::And(children) => format!(
+                "({})",
+                children
+                    .iter()
+                    .map(|child| render(child, norwegian))
+                    .collect::<Vec<_>>()
+                    .join(if norwegian { " og " } else { " and " })
+            ),
+            Query::Or(children) => format!(
+                "({})",
+                children
+                    .iter()
+                    .map(|child| render(child, norwegian))
+                    .collect::<Vec<_>>()
+                    .join(if norwegian { " eller " } else { " or " })
+            ),
             Query::Not(child) => format!(
                 "{} {}",
                 if norwegian { "ikke" } else { "not" },
                 render(child, norwegian)
+            ),
+            Query::Case { match_case, query } => format!(
+                "{} ({})",
+                if *match_case {
+                    if norwegian {
+                        "store/små bokstaver"
+                    } else {
+                        "match case"
+                    }
+                } else if norwegian {
+                    "ignorer store/små bokstaver"
+                } else {
+                    "ignore case"
+                },
+                render(query, norwegian)
             ),
             Query::Term(term) => match term {
                 Term::Content(value) => format!(
@@ -1711,10 +1920,14 @@ mod tests {
     }
 
     fn matches(query: &str, text: &str) -> bool {
+        matches_with_options(query, text, EvaluationOptions::default())
+    }
+
+    fn matches_with_options(query: &str, text: &str, options: EvaluationOptions) -> bool {
         evaluate(
             &parse_query(query).expect("query parses"),
             &doc(text),
-            EvaluationOptions::default(),
+            options,
         )
         .expect("query compiles")
         .matched
@@ -1734,13 +1947,21 @@ mod tests {
             "meeting (work OR meetup) personal",
             "meeting work"
         ));
+        let explanation = explain(&parse_query("meeting work OR meetup").unwrap(), false);
+        assert!(explanation.contains("(content “meeting” and content “work”)"));
+        assert!(explanation.contains(" or content “meetup”"));
+        assert!(explain(&parse_query("meeting work").unwrap(), true).contains(" og "));
     }
 
     #[test]
     fn negated_groups_are_supported() {
         assert!(matches("meeting -(work meetup)", "meeting personal"));
-        assert!(!matches("meeting -(work meetup)", "meeting work"));
-        assert!(!matches("meeting -(work meetup)", "meeting meetup"));
+        assert!(matches("meeting -(work meetup)", "meeting work"));
+        assert!(matches("meeting -(work meetup)", "meeting meetup"));
+        assert!(!matches("meeting -(work meetup)", "meeting work meetup"));
+        assert!(!matches("meeting -(work OR meetup)", "meeting work"));
+        assert!(!matches("meeting -(work OR meetup)", "meeting meetup"));
+        assert!(matches("meeting -(work OR meetup)", "meeting personal"));
     }
 
     #[test]
@@ -1774,6 +1995,47 @@ mod tests {
         assert!(!matches("block:(alpha beta)", "alpha\n\nbeta"));
         assert!(matches("task:(alpha beta)", "- [ ] alpha beta"));
         assert!(!matches("task:(alpha beta)", "- [ ] alpha\n- [ ] beta"));
+        assert!(!matches("line:(alpha tag:work)", "alpha\n#work"));
+        assert!(matches("line:(alpha tag:work)", "alpha #work"));
+        assert!(!matches("task-todo:child", "- [ ] parent\n  - [x] child"));
+        let frontmatter = "---\ntags: [work]\n---\nalpha\n";
+        let properties = crate::properties::properties(frontmatter);
+        let frontmatter_doc = doc(frontmatter)
+            .with_metadata(properties.clone(), extract_tags(frontmatter, &properties));
+        assert!(!matches_with_doc("line:(alpha tag:work)", &frontmatter_doc));
+        assert!(matches_with_doc("tag:work", &frontmatter_doc));
+    }
+
+    #[test]
+    fn tag_and_property_hits_report_real_source_lines_only() {
+        let text = "---\nstatus: ready\ntags: [work]\n---\nbody\n`#hidden`\n#work";
+        let properties = crate::properties::properties(text);
+        let document = doc(text).with_metadata(properties.clone(), extract_tags(text, &properties));
+        let tag = evaluate(
+            &parse_query("tag:work").unwrap(),
+            &document,
+            EvaluationOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(tag.first_line, Some(7));
+        let property = evaluate(
+            &parse_query("[status:ready]").unwrap(),
+            &document,
+            EvaluationOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(property.first_line, Some(2));
+
+        let text = "---\ntags: [work]\n---\nbody\n`#work`\n";
+        let frontmatter_only =
+            doc(text).with_metadata(crate::properties::properties(text), vec!["work".into()]);
+        let tag = evaluate(
+            &parse_query("tag:work").unwrap(),
+            &frontmatter_only,
+            EvaluationOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(tag.first_line, None);
     }
 
     #[test]
@@ -1833,6 +2095,96 @@ mod tests {
         assert!(matches("/m[eé]eting/", "meeting"));
         assert!(matches("line:/meeting/", "meeting"));
         assert!(matches("/a\\/b/", "a/b"));
+        assert!(matches("meeting /work/", "meeting work"));
+        assert!(matches_with_options(
+            "match-case:/Work/",
+            "Work",
+            EvaluationOptions { match_case: false }
+        ));
+        assert!(!matches_with_options(
+            "match-case:/Work/",
+            "work",
+            EvaluationOptions { match_case: false }
+        ));
+        assert!(matches_with_options(
+            "ignore-case:/work/",
+            "Work",
+            EvaluationOptions { match_case: true }
+        ));
+        assert!(matches("match-case: /Work/", "Work"));
+        assert!(!matches_with_options(
+            "match-case:work",
+            "WORK",
+            EvaluationOptions { match_case: false }
+        ));
+        assert!(matches_with_options(
+            "match-case:foo bar",
+            "foo BAR",
+            EvaluationOptions { match_case: false }
+        ));
+        assert!(!matches_with_options(
+            "match-case:foo bar",
+            "FOO BAR",
+            EvaluationOptions { match_case: false }
+        ));
+        assert!(matches_with_options(
+            "ignore-case:foo",
+            "FOO",
+            EvaluationOptions { match_case: true }
+        ));
+        assert!(matches_with_doc("[score:>=3]", &{
+            let mut document = doc("body");
+            document.properties =
+                vec![("score".into(), Value::Number(serde_yaml::Number::from(7)))];
+            document
+        }));
+        assert!(matches_with_doc("[score>=3]", &{
+            let mut document = doc("body");
+            document.properties =
+                vec![("score".into(), Value::Number(serde_yaml::Number::from(7)))];
+            document
+        }));
+        let property_query = parse_query("[status:/ready|waiting/]").unwrap();
+        assert!(matches!(
+            property_query,
+            Query::Property(PropertyFilter {
+                condition: PropertyCondition::Query(_),
+                ..
+            })
+        ));
+        let status_text = "---\nstatus: waiting\n---\n";
+        let status_document =
+            doc(status_text).with_metadata(crate::properties::properties(status_text), Vec::new());
+        assert!(matches_with_doc(
+            "[status:/ready|waiting/]",
+            &status_document
+        ));
+        assert!(matches_with_doc(
+            "[status:ready OR waiting]",
+            &status_document
+        ));
+        let property_text = "---\ntitle: 'a>b] ready later waiting'\n---\n";
+        let property_document = doc(property_text)
+            .with_metadata(crate::properties::properties(property_text), Vec::new());
+        assert!(matches_with_doc(r#"[title:"a>b]"]"#, &property_document));
+        assert!(matches_with_doc(
+            "[title:ready waiting]",
+            &property_document
+        ));
+        assert!(matches_with_doc(
+            r#"[title:"ready" "waiting"]"#,
+            &property_document
+        ));
+        assert!(matches_with_doc(r"[title:ready /b\]/]", &property_document));
+        assert!(!matches_with_doc(
+            "[title:ready absent]",
+            &property_document
+        ));
+        assert!(parse_query(r#"[title:"a]b"]"#).is_ok());
+        assert!(matches!(
+            parse_query("path:/work/notes").unwrap(),
+            Query::Term(Term::Path(value)) if value == "/work/notes"
+        ));
         assert!(!matches("/missing/", "present"));
         assert_eq!(
             parse_query("/(unclosed/").unwrap_err().code,
