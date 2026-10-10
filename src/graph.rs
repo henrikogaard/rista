@@ -668,6 +668,9 @@ impl GraphView {
                 self.local = None;
             }
         }
+        // A vault refresh can remove or reorder indexed nodes.
+        self.hovered = None;
+        self.drag = None;
         self.nodes = nodes;
         self.edges = edges;
         self.adjacent = adjacent;
