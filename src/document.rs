@@ -593,12 +593,16 @@ impl Document {
         {
             return None;
         }
-        let text = self.editor.read(cx).value().to_string();
         let analysis = self
             .spell_analysis
             .as_ref()
             .filter(|(revision, _)| *revision == self.revision)
             .map(|(_, analysis)| analysis.clone());
+        let text = if analysis.is_some() {
+            String::new()
+        } else {
+            self.editor.read(cx).value().to_string()
+        };
         Some((self.revision, text, analysis))
     }
 

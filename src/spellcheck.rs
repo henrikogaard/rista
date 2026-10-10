@@ -108,8 +108,10 @@ impl Analysis {
             prose_ranges(&root, &mut prose);
         }
         static EXCLUDED: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"!?\[\[[^\]\r\n]*\]\]|(?:https?://|www\.|mailto:)[^\s<>()]+|(?:^|[\s(])#[\p{L}\p{N}_/-]+|(?s:\\\[.*?\\\]|\\\(.*?\\\))")
-                .expect("spellcheck exclusion pattern")
+            Regex::new(
+                r"!?\[\[[^\]\r\n]*\]\]|(?:https?://|www\.|mailto:)[^\s<>()]+|(?:^|[\s(])#[\p{L}\p{N}_/-]+|(?s:\\\[.*?\\\]|\\\(.*?\\\))|&(?:#[0-9]+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);",
+            )
+            .expect("spellcheck exclusion pattern")
         });
         let excluded = EXCLUDED
             .find_iter(&text)
@@ -277,7 +279,7 @@ mod tests {
 
     #[test]
     fn spellcheck_only_checks_prose_not_markdown_targets_or_code() {
-        let input = "---\nmykey: badvalue\n---\n# Helo **wrld**\n`codebad` [linkbad](https://hostbad) [[wikibad|aliasbad]] #tagbad\n```rs\ncodebad\n```\n$$\nmathbad\n$$\n$inlinebad$ \\(latexwrong\\) https://urlbad www.hostbad\nHei Øgård café isn't naïve.\n";
+        let input = "---\nmykey: badvalue\n---\n# Helo **wrld**\n`codebad` [linkbad](https://hostbad) [[wikibad|aliasbad]] #tagbad\n```rs\ncodebad\n```\n$$\nmathbad\n$$\n$inlinebad$ \\(latexwrong\\) https://urlbad www.hostbad\nHei Øgård café isn't naïve. Entities &amp; &#123; &#x1F600; remain source text.\n";
         let analysis = Analysis::new(input.into());
         let words = analysis
             .words
@@ -286,7 +288,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             words,
-            ["Helo", "wrld", "Hei", "Øgård", "café", "isn't", "naïve"]
+            [
+                "Helo", "wrld", "Hei", "Øgård", "café", "isn't", "naïve", "Entities", "remain",
+                "source", "text"
+            ]
         );
     }
 

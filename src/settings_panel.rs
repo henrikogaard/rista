@@ -29,6 +29,7 @@ pub struct SettingsView {
     workspace: WeakEntity<Workspace>,
     hotkey_search: Entity<InputState>,
     spell_language_search: Entity<InputState>,
+    installed_spell_languages: Vec<String>,
     capture_focus: FocusHandle,
     recording: Option<String>,
     hotkey_notice: Option<HotkeyNotice>,
@@ -62,6 +63,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = settings.clone();
+        let installed_spell_languages = spellcheck::available_languages();
         let hotkey_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(
                 settings
@@ -436,6 +438,7 @@ impl SettingsView {
             workspace,
             hotkey_search,
             spell_language_search,
+            installed_spell_languages,
             capture_focus,
             recording: None,
             hotkey_notice: None,
@@ -849,11 +852,10 @@ impl Render for SettingsView {
             .value()
             .to_string()
             .to_lowercase();
-        let installed_spell_languages = spellcheck::available_languages();
         let has_invalid_spell_language = settings
             .spellcheck_languages
             .iter()
-            .any(|language| !installed_spell_languages.contains(language));
+            .any(|language| !self.installed_spell_languages.contains(language));
         let hotkeys = self.hotkeys_section(settings.language, window, cx);
 
         v_flex()
@@ -1210,31 +1212,59 @@ impl Render for SettingsView {
                             ),
                     )
                     .when(spellcheck::is_supported(), |view| {
-                        view.children(installed_spell_languages.into_iter().filter(|language| {
-                            language.to_lowercase().contains(&language_query)
-                        }).map(|language| {
-                            let selected = settings.spellcheck_languages.contains(&language);
-                            let language_id = language.clone();
-                            Self::row(
-                                cx,
-                                language,
-                                Switch::new(format!("spell-language-{language_id}"))
-                                    .checked(selected)
-                                    .on_click(cx.listener(move |this, checked, window, cx| {
-                                        let checked = *checked;
-                                        let language_id = language_id.clone();
-                                        this.update_setting(cx, |s| {
-                                            if checked {
-                                                if !s.spellcheck_languages.contains(&language_id) {
-                                                    s.spellcheck_languages.push(language_id.clone());
-                                                }
-                                            } else {
-                                                s.spellcheck_languages.retain(|item| item != &language_id);
-                                            }
-                                        }, window);
-                                    })),
-                            )
-                        }))
+                        view.child(
+                            div()
+                                .id("spellcheck-language-list")
+                                .max_h(px(160.))
+                                .overflow_y_scrollbar()
+                                .children(
+                                    self.installed_spell_languages
+                                        .iter()
+                                        .filter(|language| {
+                                            language.to_lowercase().contains(&language_query)
+                                        })
+                                        .map(|language| {
+                                            let language = language.to_string();
+                                            let selected = settings
+                                                .spellcheck_languages
+                                                .contains(&language);
+                                            let language_id = language.clone();
+                                            Self::row(
+                                                cx,
+                                                language,
+                                                Switch::new(format!(
+                                                    "spell-language-{language_id}"
+                                                ))
+                                                .checked(selected)
+                                                .on_click(cx.listener(
+                                                    move |this, checked, window, cx| {
+                                                        let checked = *checked;
+                                                        let language_id = language_id.clone();
+                                                        this.update_setting(
+                                                            cx,
+                                                            |s| {
+                                                                if checked {
+                                                                    if !s
+                                                                        .spellcheck_languages
+                                                                        .contains(&language_id)
+                                                                    {
+                                                                        s.spellcheck_languages
+                                                                            .push(language_id.clone());
+                                                                    }
+                                                                } else {
+                                                                    s.spellcheck_languages.retain(
+                                                                        |item| item != &language_id,
+                                                                    );
+                                                                }
+                                                            },
+                                                            window,
+                                                        );
+                                                    },
+                                                )),
+                                            )
+                                        }),
+                                ),
+                        )
                     })
             )
             .child(v_flex().gap_2()
