@@ -34,6 +34,7 @@ pub struct Vault {
     /// Shared behind one `Rc`: resolvers handed out to documents stay live
     /// and see files added later (paste/drop, watcher refreshes).
     pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
+    attachments: std::collections::HashMap<String, PathBuf>,
     /// `(tag, note_count)` pairs, rebuilt with the index — completions read
     /// this snapshot instead of re-parsing every note per keystroke.
     pub tags: Vec<(String, usize)>,
@@ -95,6 +96,7 @@ impl Vault {
             tree,
             notes: Vec::new(),
             images: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            attachments: std::collections::HashMap::new(),
             watcher: None,
             pending_events: 0,
             tags: Vec::new(),
@@ -144,6 +146,7 @@ impl Vault {
         self.all_items.clear();
         self.search_paths = Arc::new(Vec::new());
         self.notes.clear();
+        self.attachments.clear();
         self.by_rel.clear();
         self.by_stem.clear();
         self.aliases.clear();
@@ -166,7 +169,11 @@ impl Vault {
             &self.explorer_query,
             self.explorer_filter,
         );
-        let (notes, images) = collect_files(&root);
+        let FileIndex {
+            notes,
+            images,
+            attachments,
+        } = collect_files(&root);
         // Template files are scaffolding, not notes — they stay in the
         // tree and resolve as links, but their tags/tasks/aliases don't
         // index (a `- [ ] {{cursor}}` placeholder is not a vault task).
@@ -237,6 +244,7 @@ impl Vault {
         });
         self.notes = notes;
         *self.images.borrow_mut() = images;
+        self.attachments = attachments;
         cx.notify();
     }
 
@@ -512,8 +520,7 @@ impl Vault {
         candidate.is_file().then_some(candidate)
     }
 
-    /// `resolve_wikilink` plus embedded-file targets (`![[image.png]]`),
-    /// which resolve by basename against the image index.
+    /// Note links and attachments, including files hidden from the sidebar.
     fn resolve_link_target(&self, target: &str) -> Option<PathBuf> {
         self.resolve_wikilink(target).or_else(|| {
             let name = target
@@ -522,7 +529,7 @@ impl Vault {
                 .unwrap_or(target)
                 .trim()
                 .to_lowercase();
-            self.images.borrow().get(&name).cloned()
+            self.attachments.get(&name).cloned()
         })
     }
 
@@ -919,6 +926,42 @@ pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
 #[cfg(test)]
 mod link_diagnostics_tests {
     #[test]
+    fn attachment_index_includes_non_images_and_drops_removed_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rista-attachment-index-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        let report = root.join("attachments/QA-report.txt");
+        let image = root.join("attachments/image.png");
+        let note = root.join("note.md");
+        std::fs::write(&report, "Report").unwrap();
+        std::fs::write(&image, b"image fixture").unwrap();
+        std::fs::write(&note, "[[QA-report.txt]]").unwrap();
+        let index = super::collect_files(&root);
+        assert_eq!(index.attachments.get("qa-report.txt"), Some(&report));
+        assert_eq!(
+            index.attachments.get("attachments/qa-report.txt"),
+            Some(&report)
+        );
+        assert_eq!(index.attachments.get("image.png"), Some(&image));
+        assert_eq!(index.images.get("image.png"), Some(&image));
+        assert!(!index.images.contains_key("qa-report.txt"));
+        assert_eq!(index.notes, vec![note]);
+        std::fs::remove_file(&report).unwrap();
+        let refreshed = super::collect_files(&root);
+        assert!(!refreshed.attachments.contains_key("qa-report.txt"));
+        assert!(!refreshed
+            .attachments
+            .contains_key("attachments/qa-report.txt"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn links_and_images_ignore_code_frontmatter_urls_and_anchors() {
         let source = "---\nexample: '[[metadata]]'\n---\n[[Note|Label]] ![[missing.png]] [file](missing.md) ![photo][pic]\n\n[pic]: photo.png\n\n`[[inline]]`\n~~~\n[[code]]\n~~~\n[web](https://example.com) [mail](mailto:a@b.com) [anchor](#here) [[#Heading]]";
         assert_eq!(
@@ -933,9 +976,15 @@ mod link_diagnostics_tests {
     }
 }
 
-fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String, PathBuf>) {
-    let mut notes = Vec::new();
-    let mut images = std::collections::HashMap::new();
+#[derive(Default)]
+struct FileIndex {
+    notes: Vec<PathBuf>,
+    images: std::collections::HashMap<String, PathBuf>,
+    attachments: std::collections::HashMap<String, PathBuf>,
+}
+
+fn collect_files(root: &Path) -> FileIndex {
+    let mut files = FileIndex::default();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(read) = std::fs::read_dir(&dir) else {
@@ -950,21 +999,35 @@ fn collect_files(root: &Path) -> (Vec<PathBuf>, std::collections::HashMap<String
                 stack.push(path);
                 continue;
             }
+            if !path.is_file() {
+                continue;
+            }
             let ext = path
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase());
             match ext.as_deref() {
-                Some("md") | Some("base") => notes.push(path),
-                Some(e) if IMAGE_EXTS.contains(&e) => {
+                Some("md") | Some("base") => files.notes.push(path),
+                _ => {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        images.entry(name.to_lowercase()).or_insert(path.clone());
+                        files
+                            .attachments
+                            .entry(name.to_lowercase())
+                            .or_insert_with(|| path.clone());
+                        if ext.as_deref().is_some_and(|ext| IMAGE_EXTS.contains(&ext)) {
+                            files
+                                .images
+                                .entry(name.to_lowercase())
+                                .or_insert_with(|| path.clone());
+                        }
+                    }
+                    if let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str()) {
+                        files.attachments.insert(relative.to_lowercase(), path);
                     }
                 }
-                _ => {}
             }
         }
     }
-    notes.sort();
-    (notes, images)
+    files.notes.sort();
+    files
 }
