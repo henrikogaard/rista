@@ -1345,6 +1345,14 @@ impl Workspace {
     /// Put keyboard focus back where it belongs after a dialog or sheet
     /// closes: the active editor when a note is open, else the workspace.
     fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(graph) = &self.graph {
+            graph.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        if self.folder.is_some() {
+            self.focus_handle.focus(window, cx);
+            return;
+        }
         // In Preview (and on image docs) no editor is mounted — its
         // focus handle is dead weight and ⌘ bindings go nowhere, so
         // the workspace itself takes focus.
@@ -1829,14 +1837,25 @@ impl Workspace {
         // Focus the editor once the frame settles. Preview mode and
         // image docs mount no editor — the workspace takes focus so
         // ⌘ bindings keep working (same dead-handle fix as refocus).
-        let focus_editor =
-            !doc.read(cx).is_read_only() && self.settings.view_mode != ViewMode::Preview;
         let view = cx.entity();
         let doc = doc.clone();
         window.on_next_frame(move |window, cx| {
-            if window.has_active_dialog(cx) || view.read(cx).active_doc() != Some(&doc) {
+            if window.has_active_dialog(cx) {
                 return;
             }
+            let (is_active, graph_open, folder_open, preview_mode) = {
+                let workspace = view.read(cx);
+                (
+                    workspace.active_doc() == Some(&doc),
+                    workspace.graph.is_some(),
+                    workspace.folder.is_some(),
+                    workspace.settings.view_mode == ViewMode::Preview,
+                )
+            };
+            if !is_active || graph_open || folder_open {
+                return;
+            }
+            let focus_editor = !doc.read(cx).is_read_only() && !preview_mode;
             if focus_editor {
                 doc.update(cx, |doc, cx| {
                     doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
