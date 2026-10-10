@@ -3,6 +3,7 @@
 
 use crate::actions::*;
 use crate::bases;
+use crate::bookmarks::{BookmarkKind, DropTarget};
 use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::preview;
 use crate::properties;
@@ -42,6 +43,8 @@ use std::time::SystemTime;
 
 #[path = "agent_panel.rs"]
 mod agent_panel;
+#[path = "bookmarks_panel.rs"]
+mod bookmarks_panel;
 #[path = "explorer_panel.rs"]
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
@@ -173,6 +176,8 @@ pub struct Workspace {
     sidebar_details_scroll: ScrollHandle,
     /// Whether the sidebar's Starred group is expanded.
     starred_open: bool,
+    bookmark_drop_target: Option<DropTarget>,
+    dragged_bookmark: Option<u64>,
     /// Whether the sidebar's Tags group is expanded.
     tags_open: bool,
     /// Nested-tag paths expanded in the Tags pane (collapsed by
@@ -638,7 +643,7 @@ impl PaletteCmd {
             GoBack => "Gå tilbake",
             GoForward => "Gå frem",
             FollowLink => "Åpne lenke under markøren",
-            ToggleStar => "Veksle stjernemerking",
+            ToggleStar => "Veksle bokmerke",
             ReopenTab => "Gjenåpne lukket fane",
             CopyLink => "Kopier lenke",
             CopyLinkHeading => "Kopier lenke til overskrift",
@@ -978,7 +983,7 @@ impl PaletteCmd {
             ),
             ToggleStar => (
                 assets::IconName::Star,
-                "Star/unstar current note",
+                "Bookmark/remove bookmark",
                 &["star", "favorite", "bookmark", "pin"],
             ),
             CopyLink => (
@@ -1186,6 +1191,8 @@ impl Workspace {
             nav_suppress: false,
             sidebar_details_scroll: ScrollHandle::new(),
             starred_open: settings.panes.starred,
+            bookmark_drop_target: None,
+            dragged_bookmark: None,
             tags_open: settings.panes.tags,
             tags_expanded: Default::default(),
             tasks_open: settings.panes.tasks,
@@ -1217,8 +1224,10 @@ impl Workspace {
             _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
         };
 
-        // `.base` `file.starred` reads this set — `toggle_star` keeps
-        // it in sync with `settings.starred`.
+        this.settings
+            .bookmarks
+            .migrate_stars(&this.settings.starred);
+        this.settings.starred = this.settings.bookmarks.starred_paths();
         this.vault.update(cx, |vault, _cx| {
             vault.starred = this.settings.starred.iter().cloned().collect();
         });
@@ -1367,13 +1376,31 @@ impl Workspace {
         let action_context = window
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
-        let starred_list = self.settings.starred.clone();
+        let bookmark_root = if is_folder {
+            self.vault.read(cx).root.clone()
+        } else {
+            None
+        };
+        let bookmarked = if is_folder {
+            self.settings
+                .bookmarks
+                .find_kind(&BookmarkKind::Folder {
+                    path: path.clone(),
+                    root: bookmark_root,
+                })
+                .is_some()
+        } else {
+            self.settings
+                .bookmarks
+                .find_kind(&BookmarkKind::file(path.clone()))
+                .is_some()
+        };
         let language = self.settings.language;
         let view = cx.entity();
         self.clear_file_menu();
 
         let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
-            Self::build_file_menu(menu, path, is_folder, starred_list, language, view)
+            Self::build_file_menu(menu, path, is_folder, bookmarked, language, view)
                 .action_context(action_context)
         });
         menu.focus_handle(cx).focus(window, cx);
@@ -1393,7 +1420,7 @@ impl Workspace {
         menu: PopupMenu,
         path: PathBuf,
         is_folder: bool,
-        starred_list: Vec<String>,
+        bookmarked: bool,
         language: crate::settings::Language,
         view: Entity<Self>,
     ) -> PopupMenu {
@@ -1496,24 +1523,44 @@ impl Workspace {
                         }
                     }),
             )
+            .item(
+                PopupMenuItem::new(if bookmarked {
+                    language.text("Remove bookmark", "Fjern bokmerke")
+                } else {
+                    language.text("Bookmark folder", "Bokmerk mappe")
+                })
+                .icon(assets::IconName::Folder)
+                .on_click({
+                    let path = path.clone();
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.toggle_folder_bookmark(path.clone(), cx);
+                        });
+                    }
+                }),
+            )
         } else {
-            let starred = starred_list.contains(&path.to_string_lossy().to_string());
             menu.item(
-                PopupMenuItem::new(if starred { "Unstar" } else { "Star" })
-                    .icon(if starred {
-                        assets::IconName::StarOff
-                    } else {
-                        assets::IconName::Star
-                    })
-                    .on_click({
-                        let path = path.clone();
-                        let view = view.clone();
-                        move |_, _window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.toggle_star(path.clone(), cx);
-                            });
-                        }
-                    }),
+                PopupMenuItem::new(if bookmarked {
+                    language.text("Remove bookmark", "Fjern bokmerke")
+                } else {
+                    language.text("Bookmark", "Bokmerk")
+                })
+                .icon(if bookmarked {
+                    assets::IconName::StarOff
+                } else {
+                    assets::IconName::Star
+                })
+                .on_click({
+                    let path = path.clone();
+                    let view = view.clone();
+                    move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.toggle_star(path.clone(), cx);
+                        });
+                    }
+                }),
             )
         };
         menu.item(
@@ -3669,27 +3716,123 @@ impl Workspace {
     /// Star/unstar a note — pinned group at the top of the sidebar,
     /// persisted in settings (absolute paths).
     fn toggle_star(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let key = path.to_string_lossy().to_string();
-        let starred = if let Some(ix) = self.settings.starred.iter().position(|s| s == &key) {
-            self.settings.starred.remove(ix);
+        fn whole_file_ids(items: &[crate::bookmarks::Bookmark], path: &Path, ids: &mut Vec<u64>) {
+            for item in items {
+                match &item.kind {
+                    BookmarkKind::File {
+                        path: bookmark_path,
+                        anchor: None,
+                        ..
+                    } if bookmark_path == path => ids.push(item.id),
+                    BookmarkKind::Group { items, .. } => whole_file_ids(items, path, ids),
+                    _ => {}
+                }
+            }
+        }
+        let mut ids = Vec::new();
+        whole_file_ids(&self.settings.bookmarks.items, &path, &mut ids);
+        let bookmarked = if ids.is_empty() {
+            self.settings
+                .bookmarks
+                .add(BookmarkKind::file(path), None, None)
+                .is_some()
+        } else {
+            for id in ids {
+                self.settings.bookmarks.remove(id);
+            }
+            false
+        };
+        self.note_status(
+            self.tr(
+                if bookmarked {
+                    "Bookmarked"
+                } else {
+                    "Bookmark removed"
+                },
+                if bookmarked {
+                    "Bokmerket"
+                } else {
+                    "Bokmerke fjernet"
+                },
+            ),
+            cx,
+        );
+        self.persist_bookmarks(cx);
+    }
+
+    fn toggle_folder_bookmark(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.note_status(self.tr("Open a vault first", "Åpne et hvelv først"), cx);
+            return;
+        };
+        let kind = BookmarkKind::Folder {
+            path,
+            root: Some(root),
+        };
+        let bookmarked = if let Some(id) = self.settings.bookmarks.find_kind(&kind) {
+            self.settings.bookmarks.remove(id);
             false
         } else {
-            self.settings.starred.push(key.clone());
-            true
+            self.settings.bookmarks.add(kind, None, None).is_some()
         };
-        self.note_status(if starred { "Starred" } else { "Unstarred" }, cx);
-        // `file.starred` in .base reads the vault copy; the event
-        // re-renders any open base views.
-        self.vault.update(cx, |vault, cx| {
-            if starred {
-                vault.starred.insert(key);
-            } else {
-                vault.starred.remove(&key);
-            }
+        self.note_status(
+            self.tr(
+                if bookmarked {
+                    "Folder bookmarked"
+                } else {
+                    "Bookmark removed"
+                },
+                if bookmarked {
+                    "Mappe bokmerket"
+                } else {
+                    "Bokmerke fjernet"
+                },
+            ),
+            cx,
+        );
+        self.persist_bookmarks(cx);
+    }
+
+    fn persist_bookmarks(&mut self, cx: &mut Context<Self>) {
+        self.settings.starred = self.settings.bookmarks.starred_paths();
+        self.starred_open = true;
+        self.settings.panes.starred = true;
+        let starred = self.settings.starred.iter().cloned().collect();
+        let vault = self.vault.clone();
+        vault.update(cx, |vault, cx| {
+            vault.starred = starred;
             cx.emit(VaultEvent::Starred);
         });
         self.settings.save();
         cx.notify();
+    }
+
+    pub(crate) fn bookmark_search(
+        &mut self,
+        query: String,
+        match_case: bool,
+        sort: crate::search_service::SearchSort,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let kind = BookmarkKind::Search {
+            root,
+            query: query.trim().to_string(),
+            match_case,
+            sort,
+        };
+        if self.settings.bookmarks.find_kind(&kind).is_some() {
+            self.note_status(
+                self.tr("Search already bookmarked", "Søket er allerede bokmerket"),
+                cx,
+            );
+            return;
+        }
+        self.settings.bookmarks.add(kind, None, None);
+        self.note_status(self.tr("Search bookmarked", "Søket er bokmerket"), cx);
+        self.persist_bookmarks(cx);
     }
 
     fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
@@ -4540,16 +4683,13 @@ impl Workspace {
                     let _ = std::fs::write(target, text);
                 }
             }
-            // Starred + recent entries point at the old path too.
+            self.settings.bookmarks.repoint(&path, &new_path);
+            self.persist_bookmarks(cx);
+            // Recent and pinned entries point at the old path too.
             let old_s = path.to_string_lossy().to_string();
             let new_s = new_path.to_string_lossy().to_string();
             let mut touched = false;
-            for s in self
-                .settings
-                .starred
-                .iter_mut()
-                .chain(self.settings.pinned_tabs.iter_mut())
-            {
+            for s in self.settings.pinned_tabs.iter_mut() {
                 if *s == old_s {
                     *s = new_s.clone();
                     touched = true;
@@ -6533,106 +6673,9 @@ impl Workspace {
             )
     }
 
-    /// The Starred group pinned at the top of the sidebar — collapsible,
-    /// rows open their note, unstar via the tree's context menu below.
+    /// Bookmarks pane mounted at the top of the sidebar.
     fn render_starred(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let root = self.vault.read(cx).root.clone().unwrap_or_default();
-        let rows: Vec<PathBuf> = self
-            .settings
-            .starred
-            .iter()
-            .map(PathBuf::from)
-            .filter(|p| p.exists())
-            .collect();
-
-        v_flex()
-            .w_full()
-            .child(
-                div()
-                    .id("starred-toggle")
-                    .w_full()
-                    .px_2()
-                    .py_1p5()
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .child(
-                                Icon::new(if self.starred_open {
-                                    assets::IconName::ChevronDown
-                                } else {
-                                    assets::IconName::ChevronRight
-                                })
-                                .size_4()
-                                .text_color(theme.muted_foreground),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(format!("Starred · {}", rows.len())),
-                            ),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.starred_open = !this.starred_open;
-                        this.settings.panes.starred = this.starred_open;
-                        this.settings.save();
-                        cx.notify();
-                    })),
-            )
-            .when(self.starred_open, |this| {
-                this.children(rows.iter().enumerate().map(|(ix, path)| {
-                    let name = path
-                        .file_stem()
-                        .and_then(|f| f.to_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let dir = path
-                        .parent()
-                        .and_then(|p| p.strip_prefix(&root).ok())
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let open_path = path.clone();
-                    div()
-                        .id(("starred-row", ix))
-                        .w_full()
-                        .px_2()
-                        .py_0p5()
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .child(
-                                    Icon::new(assets::IconName::StarFill)
-                                        .size_4()
-                                        .text_color(theme.info),
-                                )
-                                .child(div().text_sm().truncate().child(name))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .truncate()
-                                        .child(dir),
-                                ),
-                        )
-                        .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_document(open_path.clone(), window, cx);
-                        }))
-                }))
-            })
-            .when(self.starred_open && rows.is_empty(), |this| {
-                this.child(
-                    div().w_full().px_2().pb_1().child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("No starred notes — star one from its context menu"),
-                    ),
-                )
-            })
+        self.render_bookmarks(cx)
     }
 
     /// Sidebar outline of the active note's headings — click jumps the
@@ -7923,7 +7966,7 @@ impl Workspace {
                                                 }
                                             });
                                         // Folders accept drops; files only drag.
-                                        let row = if entry.is_folder() {
+                                        let row = if is_folder {
                                             let dest_dir = path.clone();
                                             row.drag_over::<PathBuf>(|style, _, _, cx| {
                                                 style.bg(cx.theme().accent.opacity(0.2))
@@ -10301,6 +10344,10 @@ struct TreeDragPreview {
 
 /// Drag payload for reordering document tabs — carries the source index.
 struct DraggedTab(usize);
+
+/// Drag payload for reordering nested bookmarks.
+#[derive(Clone)]
+struct DraggedBookmark(u64);
 
 /// What a hover-peek card shows: a note excerpt, or arbitrary text
 /// (footnote definitions carry their resolved body inline).
