@@ -29,6 +29,8 @@ actions!(
         // Navigation
         NextTab,
         PrevTab,
+        SearchNextResult,
+        SearchPreviousResult,
         NavigateBack,
         NavigateForward,
         FollowLink,

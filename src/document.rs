@@ -40,6 +40,7 @@ pub struct Document {
     pub callout_folds: preview::CalloutFolds,
     /// ```` ```base ```` embeds in this note's preview — spec-hash → live view.
     pub base_embeds: preview::EmbedViews,
+    pub query_embeds: preview::QueryEmbedViews,
     pub preview: Entity<TextViewState>,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
@@ -203,6 +204,7 @@ impl Document {
             editor,
             callout_folds: preview::CalloutFolds::default(),
             base_embeds: preview::EmbedViews::default(),
+            query_embeds: preview::QueryEmbedViews::default(),
             preview,
             dirty: false,
             conflict: false,
@@ -335,6 +337,12 @@ impl Document {
     }
 
     fn sync_preview(&mut self, cx: &mut Context<Self>) {
+        if let Ok(mut views) = self.query_embeds.lock() {
+            for view in views.values() {
+                view.update(cx, |view, _cx| view.cancel());
+            }
+            views.clear();
+        }
         let (raw, resolver, doc_dir) = {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())

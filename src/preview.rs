@@ -37,6 +37,7 @@ pub struct PreviewCtx {
     pub vault: Entity<crate::vault::Vault>,
     pub workspace: WeakEntity<crate::app::Workspace>,
     pub views: EmbedViews,
+    pub query_views: QueryEmbedViews,
     /// The note being rendered — bound as `this` in ```` ```base ````
     /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
@@ -46,6 +47,9 @@ pub struct PreviewCtx {
 /// The per-document embed map shared with [`PreviewCtx::views`].
 pub type EmbedViews = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::bases::BaseView>>>,
+>;
+pub type QueryEmbedViews = std::sync::Arc<
+    std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::query_embed::QueryView>>>,
 >;
 
 /// Markdown extensions Rísta renders with. `doc_anchored` is true only
@@ -76,6 +80,7 @@ pub fn extensions(
         Some(ctx) => ext
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
+            .plugin(QueryEmbedPlugin { ctx: ctx.clone() })
             .plugin(ColumnBlockPlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
@@ -2269,6 +2274,67 @@ impl MarkdownPlugin for BaseEmbedPlugin {
             .rounded(cx.theme().radius)
             .overflow_hidden()
             .child(view)
+    }
+}
+
+struct QueryEmbed {
+    query: String,
+}
+
+struct QueryEmbedPlugin {
+    ctx: PreviewCtx,
+}
+
+impl MarkdownPlugin for QueryEmbedPlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "query-embed"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Code(code) = node else {
+            return None;
+        };
+        if code.lang.as_deref() != Some("query") {
+            return None;
+        }
+        Some(MarkdownNode::new(
+            "query-embed",
+            QueryEmbed {
+                query: code.value.clone(),
+            },
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let embed = node.data::<QueryEmbed>().expect("query-embed node data");
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            embed.query.hash(&mut hasher);
+            self.ctx.doc_path.hash(&mut hasher);
+            hasher.finish()
+        };
+        let view = {
+            let mut views = self.ctx.query_views.lock().expect("query embed views");
+            match views.get(&key) {
+                Some(view) => view.clone(),
+                None => {
+                    let query = embed.query.clone();
+                    let vault = self.ctx.vault.clone();
+                    let workspace = self.ctx.workspace.clone();
+                    let view = cx
+                        .new(|cx| crate::query_embed::QueryView::new(query, vault, workspace, cx));
+                    view.update(cx, |view, cx| view.start(cx));
+                    views.insert(key, view.clone());
+                    view
+                }
+            }
+        };
+        div().w_full().my_2().child(view)
     }
 }
 
