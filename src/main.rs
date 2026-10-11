@@ -28,6 +28,7 @@ mod mermaid;
 mod note_icons;
 mod pdf;
 mod pdf_backend;
+mod pdf_export;
 mod preview;
 mod properties;
 mod query_embed;

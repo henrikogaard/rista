@@ -51,6 +51,8 @@ mod bookmarks_panel;
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "pdf_export_ui.rs"]
+mod pdf_export_ui;
 #[path = "saved_workspaces.rs"]
 mod saved_workspaces;
 #[path = "tools_panel.rs"]
@@ -395,6 +397,7 @@ pub(crate) enum PaletteCmd {
     TogglePin,
     ToggleReadable,
     ExportHtml,
+    ExportPdf,
     Settings,
     ToggleTheme,
     Quit,
@@ -499,6 +502,7 @@ impl PaletteCmd {
         Self::TogglePin,
         Self::ToggleReadable,
         Self::ExportHtml,
+        Self::ExportPdf,
         Self::ToggleTheme,
         Self::Settings,
         Self::CloseFolder,
@@ -601,6 +605,7 @@ impl PaletteCmd {
             TogglePin => "toggle_pin",
             ToggleReadable => "toggle_readable_width",
             ExportHtml => "export_html",
+            ExportPdf => "export_pdf",
             ToggleTheme => "toggle_theme",
             Settings => "open_settings",
             CloseFolder => "close_folder",
@@ -708,6 +713,7 @@ impl PaletteCmd {
             TogglePin => "Veksle festet fane",
             ToggleReadable => "Veksle lesbar bredde",
             ExportHtml => "Eksporter HTML",
+            ExportPdf => "Eksporter notat som PDF…",
             ToggleTheme => "Veksle tema",
             Settings => "Innstillinger",
             CloseFolder => "Lukk mappe",
@@ -1158,6 +1164,11 @@ impl PaletteCmd {
                 assets::IconName::FileText,
                 "Export note as HTML…",
                 &["export", "html", "share", "publish", "save"],
+            ),
+            ExportPdf => (
+                assets::IconName::FileText,
+                "Export note as PDF…",
+                &["export", "pdf", "print", "share", "save"],
             ),
             Settings => (
                 assets::IconName::Settings,
@@ -5066,6 +5077,7 @@ impl Workspace {
                 cx.notify();
             }
             PaletteCmd::ExportHtml => self.export_html(window, cx),
+            PaletteCmd::ExportPdf => self.export_pdf(window, cx),
             PaletteCmd::Settings => self.defer_dialog(
                 |ws, window, cx| ws.on_open_settings(&OpenSettings, window, cx),
                 window,
