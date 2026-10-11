@@ -52,6 +52,18 @@ const MAX_PAGES: usize = 1000;
 static EXPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+pub fn font_is_available(name: &str) -> bool {
+    autoreleasepool(|_| {
+        let Some(class) = AnyClass::get(c"NSFont") else {
+            return false;
+        };
+        let name = NSString::from_str(name);
+        let font: Option<Retained<AnyObject>> =
+            unsafe { msg_send![class, fontWithName: &*name, size: 14.0_f64] };
+        font.is_some()
+    })
+}
+
 struct ActiveExport;
 
 impl ActiveExport {

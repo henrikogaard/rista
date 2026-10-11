@@ -116,7 +116,7 @@ impl Style {
             theme.apply_config(&theme.light_theme.clone());
         }
         Self {
-            font: settings.editor_font_family.clone(),
+            font: font_family(&settings.editor_font_family).to_owned(),
             size: settings.editor_font_size.clamp(8., 48.),
             foreground: theme.foreground,
             background: theme.background,
@@ -125,6 +125,14 @@ impl Style {
             accent: theme.primary,
         }
     }
+}
+
+pub fn font_family(requested: &str) -> &str {
+    #[cfg(target_os = "macos")]
+    if !native::font_is_available(requested) {
+        return "Menlo";
+    }
+    requested
 }
 
 fn escape(value: &str) -> String {
@@ -543,6 +551,27 @@ mod tests {
         }
         assert!(Options::default().valid());
         assert_eq!(Paper::Letter.points(), (612., 792.));
+    }
+
+    #[test]
+    fn pdf_export_resolves_nested_unicode_image_basenames() {
+        let dir =
+            std::env::temp_dir().join(format!("rista-pdf-unicode-test-{}", std::process::id()));
+        let assets = dir.join("Assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let image = assets.join("Bla\u{030a} chart 314.png");
+        let png = crate::math::render("x", 14., 1., style().foreground, true).unwrap();
+        std::fs::write(&image, png.image.bytes()).unwrap();
+        let out = html(
+            "![chart](<Assets/Bla\u{030a} chart 314.png>)\n\n![[Blå chart 314.png]]",
+            &dir.join("Note.md"),
+            Some(&dir),
+            &[image],
+            &style(),
+        )
+        .unwrap();
+        assert_eq!(out.matches("src=\"data:image/png;base64,").count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

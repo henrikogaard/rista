@@ -264,6 +264,13 @@ impl Vault {
         self.search_paths.clone()
     }
 
+    pub fn attachment_path_snapshot(&self) -> Arc<Vec<PathBuf>> {
+        let mut paths: Vec<_> = self.attachments.values().cloned().collect();
+        paths.sort();
+        paths.dedup();
+        Arc::new(paths)
+    }
+
     pub fn filter_tree(&mut self, cx: &mut Context<Self>) {
         let Some(root) = &self.root else {
             return;

@@ -29,8 +29,20 @@ impl Workspace {
         let source = doc.path.clone();
         let text = doc.editor.read(cx).value().to_string();
         let root = doc.vault_root.clone();
-        let files = self.vault.read(cx).explorer_path_snapshot();
+        let files = self.vault.read(cx).attachment_path_snapshot();
         let language = self.settings.language;
+        let export_font = crate::pdf_export::font_family(&self.settings.editor_font_family);
+        let font_warning = (export_font != self.settings.editor_font_family).then(|| {
+            format!(
+                "{}: {} → {}",
+                language.text(
+                    "Selected font unavailable; export will use a fallback",
+                    "Valgt skrifttype er utilgjengelig; eksporten bruker en erstatning",
+                ),
+                self.settings.editor_font_family,
+                export_font
+            )
+        });
         let view = cx.entity();
         let options = Rc::new(RefCell::new(Options::default()));
         let error = Rc::new(RefCell::new(None::<SharedString>));
@@ -106,6 +118,14 @@ impl Workspace {
                                     "Bruker gjeldende notat og skrifttype. Kun lokale bilder.",
                                 )),
                         )
+                        .when_some(font_warning.clone(), |col, warning| {
+                            col.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(warning),
+                            )
+                        })
                         .when_some(error.borrow().clone(), |col, error| {
                             col.child(div().text_sm().text_color(cx.theme().danger).child(error))
                         }),
