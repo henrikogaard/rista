@@ -432,6 +432,12 @@ impl PdfView {
         self.request_page(page, raster_width, cx);
         let image = self.images.get(&(page, raster_width)).cloned();
         let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+        // PDF paper stays light even when the chrome uses a dark theme.
+        let highlight = Hsla {
+            l: cx.theme().selection.l.min(0.5),
+            a: 0.3,
+            ..cx.theme().selection
+        };
         let rectangles = self
             .selected
             .as_ref()
@@ -513,7 +519,7 @@ impl PdfView {
                     .top(px(rect.y as f32 * height))
                     .w(px(rect.width as f32 * width))
                     .h(px(rect.height as f32 * height))
-                    .bg(cx.theme().selection.opacity(0.4))
+                    .bg(highlight)
             }));
         v_flex()
             .w_full()
