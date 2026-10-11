@@ -896,7 +896,7 @@ impl Workspace {
         let title = self.tr("New bookmark group", "Ny bokmerkegruppe");
         let cancel_label = self.tr("Cancel", "Avbryt");
         let ok_label = self.tr("OK", "OK");
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title)
                 .w(px(380.))
@@ -964,7 +964,7 @@ impl Workspace {
         let title = self.tr("Rename bookmark", "Gi nytt navn på bokmerke");
         let cancel_label = self.tr("Cancel", "Avbryt");
         let ok_label = self.tr("OK", "OK");
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title)
                 .w(px(380.))
