@@ -3762,6 +3762,7 @@ impl Workspace {
         self.refocus(window, cx);
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let view = view.clone();
+            let close_view = view.clone();
             let doc = doc.clone();
             dialog
                 .title(format!("Reload “{}” from disk?", title))
@@ -3776,6 +3777,11 @@ impl Workspace {
                         Err(err) => this.note_status(format!("Could not reload: {err}"), cx),
                     });
                     true
+                })
+                .on_close(move |_, window, cx| {
+                    close_view.update(cx, |this, cx| {
+                        this.focus_active_pane_after_mount(window, cx);
+                    });
                 })
         });
     }
