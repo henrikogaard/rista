@@ -1,3 +1,4 @@
+use block2::RcBlock;
 use objc2::{
     msg_send,
     rc::{autoreleasepool, Retained},
@@ -6,6 +7,8 @@ use objc2::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::{
+    cell::Cell,
+    ffi::c_void,
     fs::{self, File},
     io::Read,
     marker::PhantomData,
@@ -20,13 +23,31 @@ unsafe extern "C" {
     static NSPrintSaveJob: &'static NSString;
     static NSPrintJobSavingURL: &'static NSString;
     static NSPrintHeaderAndFooter: &'static NSString;
+    static NSPrintAllPages: &'static NSString;
+    static NSPrintFirstPage: &'static NSString;
+    static NSPrintLastPage: &'static NSString;
+    static NSModalPanelRunLoopMode: &'static NSString;
 }
+
+#[link(name = "Foundation", kind = "framework")]
+unsafe extern "C" {
+    static NSRunLoopCommonModes: &'static NSString;
+}
+
+#[link(name = "PDFKit", kind = "framework")]
+unsafe extern "C" {}
 
 #[link(name = "WebKit", kind = "framework")]
 unsafe extern "C" {}
 
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn PMSessionSetError(session: *mut c_void, error: i32) -> i32;
+}
+
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PDF_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PAGES: usize = 1000;
 static EXPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -168,14 +189,84 @@ impl ExportJob {
         unsafe {
             let _: () = msg_send![&*operation, setShowsPrintPanel: false];
             let _: () = msg_send![&*operation, setShowsProgressPanel: false];
-            let _: () = msg_send![&*operation, setCanSpawnSeparateThread: false];
+            // WebKit computes page ranges on the main run loop while AppKit prints on its worker.
+            let _: () = msg_send![&*operation, setCanSpawnSeparateThread: true];
         }
+        let watchdog = PrintWatchdog::start(&operation, &self.temporary.path, self.started)?;
         let succeeded: bool = unsafe { msg_send![&*operation, runOperation] };
+        if let Some(error) = watchdog.error.get() {
+            return Err(error);
+        }
         if !succeeded || self.started.elapsed() >= LOAD_TIMEOUT {
             return Err(super::ExportError::Render);
         }
 
         read_pdf(&self.temporary.path)
+    }
+}
+
+struct PrintWatchdog {
+    timer: Retained<AnyObject>,
+    error: Rc<Cell<Option<super::ExportError>>>,
+}
+
+impl PrintWatchdog {
+    fn start(
+        operation: &AnyObject,
+        path: &Path,
+        started: Instant,
+    ) -> Result<Self, super::ExportError> {
+        let info: Option<Retained<AnyObject>> = unsafe { msg_send![operation, printInfo] };
+        let info = info.ok_or(super::ExportError::Render)?;
+        let path = path.to_path_buf();
+        let error = Rc::new(Cell::new(None));
+        let callback_error = error.clone();
+        let block = RcBlock::new(move |_timer: *mut AnyObject| {
+            let bytes = fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if let Some(limit) = print_limit_error(bytes, started.elapsed()) {
+                callback_error.set(Some(limit));
+                let session: *mut c_void = unsafe { msg_send![&*info, PMPrintSession] };
+                if !session.is_null() {
+                    unsafe {
+                        PMSessionSetError(session, 0x0080);
+                    }
+                }
+            }
+        });
+        let class = AnyClass::get(c"NSTimer").ok_or(super::ExportError::Render)?;
+        let timer: Option<Retained<AnyObject>> = unsafe {
+            msg_send![class, timerWithTimeInterval: 0.1_f64, repeats: true, block: &*block]
+        };
+        let timer = timer.ok_or(super::ExportError::Render)?;
+        let class = AnyClass::get(c"NSRunLoop").ok_or(super::ExportError::Render)?;
+        let run_loop: Option<Retained<AnyObject>> = unsafe { msg_send![class, mainRunLoop] };
+        let run_loop = run_loop.ok_or(super::ExportError::Render)?;
+        for mode in unsafe { [NSRunLoopCommonModes, NSModalPanelRunLoopMode] } {
+            unsafe {
+                let _: () = msg_send![&*run_loop, addTimer: &*timer, forMode: mode];
+            }
+        }
+        Ok(Self { timer, error })
+    }
+}
+
+impl Drop for PrintWatchdog {
+    fn drop(&mut self) {
+        unsafe {
+            let _: () = msg_send![&*self.timer, invalidate];
+        }
+    }
+}
+
+fn print_limit_error(bytes: u64, elapsed: Duration) -> Option<super::ExportError> {
+    if bytes > MAX_PDF_BYTES {
+        Some(super::ExportError::TooLarge)
+    } else if elapsed >= LOAD_TIMEOUT {
+        Some(super::ExportError::Render)
+    } else {
+        None
     }
 }
 
@@ -296,6 +387,8 @@ fn print_info(
         let _: () = msg_send![&*print_info, setRightMargin: margin];
         let _: () = msg_send![&*print_info, setTopMargin: margin];
         let _: () = msg_send![&*print_info, setBottomMargin: margin];
+        let _: () = msg_send![&*print_info, setOrientation: 0_isize];
+        let _: () = msg_send![&*print_info, setScalingFactor: 1.0_f64];
         let _: () = msg_send![&*print_info, setHorizontallyCentered: false];
         let _: () = msg_send![&*print_info, setVerticallyCentered: false];
         let _: () = msg_send![&*print_info, setHorizontalPagination: 1_usize];
@@ -313,6 +406,21 @@ fn print_info(
     }
 
     let number_class = AnyClass::get(c"NSNumber").ok_or(super::ExportError::Render)?;
+    // Print one overflow page so a truncated document is rejected, never saved as complete.
+    for (key, value) in unsafe {
+        [
+            (NSPrintAllPages, 0_usize),
+            (NSPrintFirstPage, 1),
+            (NSPrintLastPage, MAX_PAGES + 1),
+        ]
+    } {
+        let number: Option<Retained<AnyObject>> =
+            unsafe { msg_send![number_class, numberWithUnsignedInteger: value] };
+        let number = number.ok_or(super::ExportError::Render)?;
+        unsafe {
+            let _: () = msg_send![&*dictionary, setObject: &*number, forKey: key];
+        }
+    }
     let no_header_footer: Option<Retained<AnyObject>> =
         unsafe { msg_send![number_class, numberWithBool: false] };
     let no_header_footer = no_header_footer.ok_or(super::ExportError::Render)?;
@@ -352,6 +460,21 @@ fn read_pdf(path: &Path) -> Result<Vec<u8>, super::ExportError> {
     if !bytes.starts_with(b"%PDF-") {
         return Err(super::ExportError::Render);
     }
+    let class = AnyClass::get(c"PDFDocument").ok_or(super::ExportError::Render)?;
+    let url = file_url(path)?;
+    let allocated: *mut AnyObject = unsafe { msg_send![class, alloc] };
+    if allocated.is_null() {
+        return Err(super::ExportError::Render);
+    }
+    let initialized: *mut AnyObject = unsafe { msg_send![allocated, initWithURL: &*url] };
+    let document = unsafe { Retained::from_raw(initialized) }.ok_or(super::ExportError::Render)?;
+    let pages: usize = unsafe { msg_send![&*document, pageCount] };
+    if pages == 0 {
+        return Err(super::ExportError::Render);
+    }
+    if pages > MAX_PAGES {
+        return Err(super::ExportError::TooLarge);
+    }
     Ok(bytes)
 }
 
@@ -359,6 +482,22 @@ fn read_pdf(path: &Path) -> Result<Vec<u8>, super::ExportError> {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn print_watchdog_bounds_output_and_duration() {
+        assert_eq!(
+            print_limit_error(MAX_PDF_BYTES, Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            print_limit_error(MAX_PDF_BYTES + 1, Duration::from_secs(1)),
+            Some(super::super::ExportError::TooLarge)
+        );
+        assert_eq!(
+            print_limit_error(0, LOAD_TIMEOUT),
+            Some(super::super::ExportError::Render)
+        );
+    }
 
     #[test]
     fn temporary_pdf_directory_is_private_and_removed_on_drop() {
