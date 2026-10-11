@@ -51,6 +51,8 @@ mod bookmarks_panel;
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "saved_workspaces.rs"]
+mod saved_workspaces;
 #[path = "tools_panel.rs"]
 mod tools_panel;
 
@@ -129,6 +131,7 @@ pub struct Workspace {
     docs: Vec<OpenDoc>,
     doc_tokens: Vec<TabToken>,
     layout: EditorLayout,
+    layout_epoch: u64,
     restoring_session: bool,
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
@@ -302,6 +305,10 @@ enum PaletteEntry {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PaletteCmd {
+    SaveWorkspace,
+    LoadWorkspace,
+    RenameWorkspace,
+    DeleteWorkspace,
     NewWindow,
     OpenInNewWindow,
     NewFile,
@@ -399,6 +406,10 @@ pub(crate) enum PaletteCmd {
 
 impl PaletteCmd {
     pub(crate) const ALL: &'static [Self] = &[
+        Self::SaveWorkspace,
+        Self::LoadWorkspace,
+        Self::RenameWorkspace,
+        Self::DeleteWorkspace,
         Self::NewWindow,
         Self::OpenInNewWindow,
         Self::NewFile,
@@ -497,6 +508,10 @@ impl PaletteCmd {
     pub(crate) fn id(self) -> &'static str {
         use PaletteCmd::*;
         match self {
+            SaveWorkspace => "save_workspace",
+            LoadWorkspace => "load_workspace",
+            RenameWorkspace => "rename_workspace",
+            DeleteWorkspace => "delete_workspace",
             NewWindow => "new_window",
             OpenInNewWindow => "open_in_new_window",
             NewFile => "new_file",
@@ -600,6 +615,10 @@ impl PaletteCmd {
     pub(crate) fn label_norwegian(self) -> &'static str {
         use PaletteCmd::*;
         match self {
+            SaveWorkspace => "Lagre arbeidsoppsett…",
+            LoadWorkspace => "Åpne arbeidsoppsett…",
+            RenameWorkspace => "Gi arbeidsoppsett nytt navn…",
+            DeleteWorkspace => "Slett arbeidsoppsett…",
             NewWindow => "Nytt vindu",
             OpenInNewWindow => "Åpne i nytt vindu",
             NewFile => "Ny fil",
@@ -699,6 +718,26 @@ impl PaletteCmd {
     pub(crate) fn spec(&self) -> (assets::IconName, &'static str, &'static [&'static str]) {
         use PaletteCmd::*;
         match self {
+            SaveWorkspace => (
+                assets::IconName::AppWindow,
+                "Save workspace layout…",
+                &["workspace", "layout", "save"],
+            ),
+            LoadWorkspace => (
+                assets::IconName::AppWindow,
+                "Load workspace layout…",
+                &["workspace", "layout", "restore"],
+            ),
+            RenameWorkspace => (
+                assets::IconName::SquarePen,
+                "Rename workspace layout…",
+                &["workspace", "layout", "rename"],
+            ),
+            DeleteWorkspace => (
+                assets::IconName::Trash,
+                "Delete workspace layout…",
+                &["workspace", "layout", "delete"],
+            ),
             NewWindow => (
                 assets::IconName::AppWindow,
                 "New window",
@@ -1256,6 +1295,7 @@ impl Workspace {
             docs: Vec::new(),
             doc_tokens: Vec::new(),
             layout: EditorLayout::empty(),
+            layout_epoch: 0,
             restoring_session: false,
             active: None,
             folder: None,
@@ -4726,6 +4766,16 @@ impl Workspace {
 
     fn run_command(&mut self, cmd: PaletteCmd, window: &mut Window, cx: &mut Context<Self>) {
         match cmd {
+            PaletteCmd::SaveWorkspace => self.show_workspace_name(None, window, cx),
+            PaletteCmd::LoadWorkspace => {
+                self.show_workspace_picker(PaletteCmd::LoadWorkspace, window, cx)
+            }
+            PaletteCmd::RenameWorkspace => {
+                self.show_workspace_picker(PaletteCmd::RenameWorkspace, window, cx)
+            }
+            PaletteCmd::DeleteWorkspace => {
+                self.show_workspace_picker(PaletteCmd::DeleteWorkspace, window, cx)
+            }
             PaletteCmd::NewWindow => window.dispatch_action(NewWindow.boxed_clone(), cx),
             PaletteCmd::OpenInNewWindow => {
                 window.dispatch_action(OpenInNewWindow.boxed_clone(), cx)
@@ -5140,7 +5190,7 @@ impl Workspace {
     }
 
     pub(crate) fn persist_settings(&mut self, cx: &mut Context<Self>) {
-        if cx.global::<crate::windows::WindowManager>().restoring {
+        if self.restoring_session || cx.global::<crate::windows::WindowManager>().restoring {
             return;
         }
         crate::windows::publish(self.window_id, &self.settings_baseline, &self.settings, cx);
@@ -7296,6 +7346,15 @@ impl Workspace {
                             .label("⌘K")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_palette(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("workspace-layouts")
+                            .ghost()
+                            .small()
+                            .label(self.tr("Layouts…", "Oppsett…"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_workspace_picker(PaletteCmd::LoadWorkspace, window, cx);
                             })),
                     )
                     .child(
@@ -10672,6 +10731,10 @@ impl Render for Workspace {
         let vault_open = self.vault.read(cx).is_open();
         let has_workspace = vault_open || !self.docs.is_empty();
         let sidebar_visible = vault_open && !self.settings.sidebar_collapsed && !self.zen;
+        let dock_visible = !self.zen
+            && (self.settings.graph_dock_open
+                || self.settings.agent_open
+                || self.settings.inspector_open);
         let background = cx.theme().background;
 
         let root = v_flex()
@@ -10767,10 +10830,21 @@ impl Render for Workspace {
                             .into_any_element()
                     } else {
                         let workspace_view = cx.entity();
-                        canvas_panels("workspace", Axis::Horizontal)
+                        let dock_view = workspace_view.clone();
+                        let epoch = self.layout_epoch;
+                        let dock_names = [
+                            ("graph", self.settings.graph_dock_open),
+                            ("agent", self.settings.agent_open),
+                            ("inspector", self.settings.inspector_open),
+                        ].into_iter().filter_map(|(name, visible)| visible.then_some(name)).collect::<Vec<_>>();
+                        let panel_group_id = SharedString::from(format!(
+                            "workspace-{sidebar_visible}-{dock_visible}-{epoch}"
+                        ));
+                        canvas_panels(panel_group_id, Axis::Horizontal)
                             .when(sidebar_visible, |this| {
                                 this.child(
                                     resizable_panel()
+                                        .flex_none()
                                         .size(px(
                                             self.settings
                                                 .sidebar_width
@@ -10865,22 +10939,21 @@ impl Render for Workspace {
                                 ),
                             )
                             .when(
-                                !self.zen
-                                    && (self.settings.graph_dock_open
-                                        || self.settings.agent_open
-                                        || self.settings.inspector_open),
+                                dock_visible,
                                 |columns| {
                                 columns.child(
                                     resizable_panel()
-                                        .size(px(310.))
+                                        .flex_none()
+                                        .size(px(self.settings.dock_width.filter(|width| crate::settings::valid_dock_width(*width)).unwrap_or(310.)))
                                         .size_range(px(220.)..px(520.))
                                         .child(
                                             div().size_full().child(
-                                                canvas_panels("right-dock", Axis::Vertical)
+                                                canvas_panels(SharedString::from(format!("right-dock-{}", dock_names.join("-"))), Axis::Vertical)
                                                     .when(self.settings.graph_dock_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
                                                                 .when(self.settings.agent_open || self.settings.inspector_open, |panel| panel.size(px(220.)))
+                                                                .when_some(self.saved_dock_height("graph"), |panel, height| panel.size(height))
                                                                 .size_range(px(150.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
@@ -10894,6 +10967,7 @@ impl Render for Workspace {
                                                         panes.child(
                                                             resizable_panel()
                                                                 .when(self.settings.inspector_open, |panel| panel.size(px(300.)))
+                                                                .when_some(self.saved_dock_height("agent"), |panel, height| panel.size(height))
                                                                 .size_range(px(220.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
@@ -10919,6 +10993,7 @@ impl Render for Workspace {
                                                     .when(self.settings.inspector_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
+                                                                .when_some(self.saved_dock_height("inspector"), |panel, height| panel.size(height))
                                                                 .size_range(px(170.)..Pixels::MAX)
                                                                 .child(
                                                                     div()
@@ -10934,6 +11009,20 @@ impl Render for Workspace {
                                                                         ),
                                                                 ),
                                                         )
+                                                    })
+                                                    .on_resize(move |state, _, cx| {
+                                                        let heights = state.read(cx).sizes().iter().copied().map(f32::from).collect::<Vec<_>>();
+                                                        dock_view.update(cx, |this, cx| {
+                                                            if this.layout_epoch != epoch || this.restoring_session { return; }
+                                                            let mut changed = false;
+                                                            for (name, height) in dock_names.iter().zip(heights) {
+                                                                if height.is_finite() && height > 0. && this.settings.dock_heights.get(*name) != Some(&height) {
+                                                                    this.settings.dock_heights.insert((*name).into(), height);
+                                                                    changed = true;
+                                                                }
+                                                            }
+                                                            if changed { this.persist_settings(cx); }
+                                                        });
                                                     }),
                                             ),
                                         ),
@@ -10941,6 +11030,7 @@ impl Render for Workspace {
                             },
                             )
                             .on_resize(move |state, _, cx| {
+                                let dock_width = state.read(cx).sizes().last().copied().map(f32::from);
                                 let width = state
                                     .read(cx)
                                     .sizes()
@@ -10953,6 +11043,14 @@ impl Render for Workspace {
                                         return;
                                     }
                                     workspace_view.update(cx, |workspace, cx| {
+                                        if workspace.layout_epoch != epoch || workspace.restoring_session { return; }
+                                        let dock_visible = !workspace.zen && (workspace.settings.graph_dock_open || workspace.settings.agent_open || workspace.settings.inspector_open);
+                                        if let Some(width) = dock_width.filter(|width| dock_visible && crate::settings::valid_dock_width(*width)) {
+                                            if workspace.settings.dock_width != Some(width) {
+                                                workspace.settings.dock_width = Some(width);
+                                                workspace.persist_settings(cx);
+                                            }
+                                        }
                                         let visible = workspace.vault.read(cx).is_open()
                                             && !workspace.settings.sidebar_collapsed
                                             && !workspace.zen;

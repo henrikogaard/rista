@@ -247,6 +247,15 @@ impl Vault {
         self.expanded.iter().cloned().collect()
     }
 
+    pub(crate) fn restore_expanded_folders(
+        &mut self,
+        folders: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.expanded = folders.into_iter().collect();
+        self.filter_tree(cx);
+    }
+
     pub fn explorer_paths(&self) -> Vec<PathBuf> {
         self.search_paths.as_ref().clone()
     }
