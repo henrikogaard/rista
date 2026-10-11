@@ -1292,15 +1292,12 @@ impl Document {
     /// Load `text` into the editor as a user edit (dirty, syncs preview).
     /// Used to restore a history snapshot.
     pub fn restore_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_read_only() {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
-            editor.set_value(text, window, cx);
+            editor.replace_all(text, window, cx);
         });
-        self.dirty = true;
-        self.revision += 1;
-        self.reschedule_spellcheck_for_revision(true, cx);
-        self.sync_preview(cx);
-        cx.emit(DocumentEvent::Changed);
-        cx.notify();
     }
 
     /// Insert an expanded template at the caret, replacing any selection.
