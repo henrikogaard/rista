@@ -3200,12 +3200,19 @@ impl Workspace {
         if ix >= self.docs.len() {
             return;
         }
+        let closing_active = self.active == Some(ix);
         let closed_focus = self.docs[ix]
             .entity
             .read(cx)
             .editor
             .read(cx)
             .focus_handle(cx);
+        let closed_pdf_focus = self.docs[ix]
+            .entity
+            .read(cx)
+            .pdf
+            .as_ref()
+            .map(|pdf| pdf.read(cx).focus_handle(cx));
         let path = self.docs[ix].entity.read(cx).path.clone();
         let token = self.doc_tokens.get(ix).copied();
         self.docs.remove(ix);
@@ -3233,11 +3240,15 @@ impl Workspace {
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
                 let focused = window.focused(cx);
-                if focused
-                    .as_ref()
-                    .is_none_or(|focused| focused == &closed_focus)
+                if !window.has_active_dialog(cx)
+                    && (focused.is_none()
+                        || closed_focus.contains_focused(window, cx)
+                        || closed_pdf_focus
+                            .as_ref()
+                            .is_some_and(|focus| focus.contains_focused(window, cx))
+                        || (closing_active && focused.as_ref() == Some(&this.focus_handle)))
                 {
-                    this.refocus(window, cx);
+                    this.focus_active_pane_after_mount(window, cx);
                 }
             });
         });
