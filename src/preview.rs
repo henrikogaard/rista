@@ -84,7 +84,14 @@ pub fn extensions(
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
             .plugin(QueryEmbedPlugin { ctx: ctx.clone() })
-            .plugin(PdfEmbedPlugin { ctx: ctx.clone() })
+            .plugin(PdfEmbedPlugin {
+                ctx: ctx.clone(),
+                block: true,
+            })
+            .plugin(PdfEmbedPlugin {
+                ctx: ctx.clone(),
+                block: false,
+            })
             .plugin(ColumnBlockPlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
@@ -365,6 +372,20 @@ mod navigation_tests {
         );
     }
     use std::path::Path;
+
+    #[test]
+    fn pdf_standalone_embeds_use_block_layout_without_consuming_inline_text() {
+        let source = "![](<rista-pdf:embed?target=Small.pdf>)\n\nBefore ![](<rista-pdf:embed?target=Small.pdf>) after\n\n![image](image.png)";
+        let ast = markdown::to_mdast(source, &markdown::ParseOptions::default()).unwrap();
+        let paragraphs = ast.children().unwrap();
+        let block = super::PdfEmbed::parse_block(&paragraphs[0], 100).unwrap();
+        assert_eq!(
+            block,
+            super::PdfEmbed::parse(&paragraphs[0].children().unwrap()[0], 100).unwrap()
+        );
+        assert!(super::PdfEmbed::parse_block(&paragraphs[1], 0).is_none());
+        assert!(super::PdfEmbed::parse_block(&paragraphs[2], 0).is_none());
+    }
 
     #[test]
     fn pdf_repeated_embeds_have_distinct_stable_occurrence_keys() {
@@ -2342,6 +2363,16 @@ struct PdfEmbed {
 }
 
 impl PdfEmbed {
+    fn parse_block(node: &mdast::Node, offset: usize) -> Option<Self> {
+        let mdast::Node::Paragraph(paragraph) = node else {
+            return None;
+        };
+        let [image] = paragraph.children.as_slice() else {
+            return None;
+        };
+        Self::parse(image, offset)
+    }
+
     fn parse(node: &mdast::Node, offset: usize) -> Option<Self> {
         let mdast::Node::Image(image) = node else {
             return None;
@@ -2360,17 +2391,30 @@ impl PdfEmbed {
 
 struct PdfEmbedPlugin {
     ctx: PreviewCtx,
+    block: bool,
 }
 
 impl MarkdownPlugin for PdfEmbedPlugin {
+    fn is_block(&self) -> bool {
+        self.block
+    }
+
     fn name(&self) -> &str {
-        "pdf-embed"
+        if self.block {
+            "pdf-embed-block"
+        } else {
+            "pdf-embed"
+        }
     }
 
     fn parse(&self, node: &mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
         Some(MarkdownNode::new(
-            "pdf-embed",
-            PdfEmbed::parse(node, cx.offset())?,
+            self.name(),
+            if self.block {
+                PdfEmbed::parse_block(node, cx.offset())?
+            } else {
+                PdfEmbed::parse(node, cx.offset())?
+            },
         ))
     }
 
