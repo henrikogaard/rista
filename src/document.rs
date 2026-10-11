@@ -840,6 +840,18 @@ impl Document {
 
     /// Write the buffer to disk only if its loaded bytes are still current.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
+        self.save_inner(cx, true)
+    }
+
+    pub(crate) fn save_without_history(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
+        self.save_inner(cx, false)
+    }
+
+    fn save_inner(
+        &mut self,
+        cx: &mut Context<Self>,
+        snapshot_history: bool,
+    ) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
         let Some(baseline) = self.disk_bytes.as_deref() else {
             return Err(io::Error::new(
@@ -851,8 +863,10 @@ impl Document {
             self.mark_conflict(cx);
             return Err(err);
         }
-        if let Some(root) = &self.vault_root {
-            history::snapshot_before_write(root, &self.path, &text);
+        if snapshot_history {
+            if let Some(root) = &self.vault_root {
+                history::snapshot_before_write(root, &self.path, &text);
+            }
         }
         match guarded_write(&self.path, baseline, text.as_bytes()) {
             Ok(()) => {
@@ -875,6 +889,34 @@ impl Document {
                 Err(err)
             }
         }
+    }
+
+    pub(crate) fn cli_snapshot_before_write(
+        &self,
+        replacement: &[u8],
+    ) -> Result<(), crate::cli::CliError> {
+        let baseline = self.disk_bytes.as_deref().ok_or_else(|| {
+            crate::cli::CliError::new(
+                "The open document cannot be saved as text",
+                "Det åpne dokumentet kan ikke lagres som tekst",
+            )
+        })?;
+        if crate::cli::read_bounded_bytes(&self.path)? != baseline {
+            return Err(crate::cli::CliError::new(
+                "The note changed on disk while appending; no changes were written",
+                "Notatet ble endret på disk under tilføying; ingen endringer ble skrevet",
+            ));
+        }
+        if let Some(root) = &self.vault_root {
+            history::snapshot_before_write_checked(root, &self.path, baseline, replacement)
+                .map_err(|error| {
+                    crate::cli::CliError::new(
+                        format!("Could not save the pre-append history snapshot: {error}"),
+                        format!("Kunne ikke lagre historikkbildet før tilføying: {error}"),
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     pub fn flush_and_save(&mut self, cx: &mut Context<Self>) -> io::Result<()> {

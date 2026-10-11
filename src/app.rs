@@ -19,9 +19,10 @@ use gpui_kit::assets;
 use gpui_kit::base::Placement;
 use gpui_kit::base::Selectable;
 use gpui_kit::base::StyledExt;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
+use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::list::ListItem;
@@ -84,6 +85,12 @@ fn file_metadata_snapshot(path: &Path) -> Option<FileMetadataSnapshot> {
         len: metadata.len(),
         identity,
     })
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    left == right
 }
 
 fn update_observed_snapshot(
@@ -1956,10 +1963,257 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(crate) fn show_cli_results(
+        &mut self,
+        title: String,
+        lines: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut visible = lines
+            .iter()
+            .take(100)
+            .map(|line| line.chars().take(500).collect::<String>())
+            .collect::<Vec<_>>();
+        if lines.len() > 100 {
+            let remaining = lines.len() - 100;
+            visible.push(
+                if self.settings.language == crate::settings::Language::Norwegian {
+                    format!("… og {remaining} til")
+                } else {
+                    format!("… and {remaining} more")
+                },
+            );
+        }
+        let close = self.tr("Close", "Lukk");
+        let visible = visible;
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(title.clone())
+                .w(px(560.))
+                .child(
+                    v_flex()
+                        .max_h(px(420.))
+                        .gap_1()
+                        .overflow_y_scrollbar()
+                        .children(
+                            visible
+                                .iter()
+                                .cloned()
+                                .map(|line| div().text_sm().child(line).into_any_element()),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label(close))),
+                )
+        });
+    }
+
+    pub(crate) fn cli_is_showing_vault(&self, root: &Path, cx: &Context<Self>) -> bool {
+        self.vault
+            .read(cx)
+            .root
+            .as_deref()
+            .is_some_and(|current| same_canonical_path(current, root))
+    }
+
+    pub(crate) fn cli_guard_destination(
+        &self,
+        destination: &Path,
+        cx: &Context<Self>,
+    ) -> Result<bool, crate::cli::CliError> {
+        let mut open = false;
+        for tab in &self.docs {
+            let result = tab.entity.read(cx);
+            if !same_canonical_path(&result.path, destination) {
+                continue;
+            }
+            open = true;
+            if result.is_read_only() {
+                return Err(crate::cli::CliError::new(
+                    "The note is open read-only; close it before writing",
+                    "Notatet er åpnet skrivebeskyttet; lukk det før du skriver",
+                ));
+            }
+            let disk = crate::cli::read_bounded_bytes(&result.path)?;
+            crate::cli::preflight_open_buffer(
+                result.dirty,
+                result.conflict,
+                result.editor.read(cx).value().as_bytes(),
+                &disk,
+            )?;
+        }
+        Ok(open)
+    }
+
+    pub(crate) fn cli_refresh_vault(&mut self, root: &Path, cx: &mut Context<Self>) {
+        if self.cli_is_showing_vault(root, cx) {
+            self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        }
+    }
+
+    pub(crate) fn confirm_cli_write(
+        &mut self,
+        request: crate::cli::CliRequest,
+        settings: crate::settings::Settings,
+        now: chrono::NaiveDateTime,
+        destination: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let (title, action) = match &request.command {
+            crate::cli::Command::New { .. } => (
+                language.text("Create this note?", "Opprette dette notatet?"),
+                language.text("Create", "Opprett"),
+            ),
+            crate::cli::Command::Daily { .. } => (
+                language.text(
+                    "Create or use today's note?",
+                    "Opprette eller bruke dagens notat?",
+                ),
+                language.text("Continue", "Fortsett"),
+            ),
+            crate::cli::Command::Append { .. } => (
+                language.text("Append to this note?", "Legge til tekst i dette notatet?"),
+                language.text("Append", "Legg til"),
+            ),
+            _ => return,
+        };
+        let destination_display = destination.display().to_string();
+        let description = if language == crate::settings::Language::Norwegian {
+            format!("Den forespurte handlingen påvirker:\n{destination_display}")
+        } else {
+            format!("The requested action will affect:\n{destination_display}")
+        };
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let request = request.clone();
+            let settings = settings.clone();
+            let now = now;
+            let view = view.clone();
+            let destination = destination.clone();
+            dialog
+                .title(title)
+                .description(description.clone())
+                .show_cancel(false)
+                .on_ok(|_, _, _| true)
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| {
+                            button
+                                .label(language.text("Cancel", "Avbryt"))
+                                .with_variant(ButtonVariant::Primary)
+                        }))
+                        .child(
+                            Button::new("confirm-cli-write")
+                                .label(action)
+                                .with_variant(ButtonVariant::Secondary)
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let request = request.clone();
+                                    let settings = settings.clone();
+                                    let now = now;
+                                    let destination = destination.clone();
+                                    let view = view.clone();
+                                    cx.defer(move |cx| {
+                                        let result = crate::windows::execute_cli_write_confirmed(
+                                            request,
+                                            destination,
+                                            settings,
+                                            now,
+                                            cx,
+                                        );
+                                        view.update(cx, |workspace, cx| match result {
+                                            Ok(paths) => {
+                                                let paths = paths.join(", ");
+                                                let message = if language
+                                                    == crate::settings::Language::Norwegian
+                                                {
+                                                    format!("Lagret {paths}")
+                                                } else {
+                                                    format!("Saved {paths}")
+                                                };
+                                                workspace.note_status(message, cx)
+                                            }
+                                            Err(error) => workspace.note_status(
+                                                error.message(language).to_owned(),
+                                                cx,
+                                            ),
+                                        });
+                                    });
+                                }),
+                        ),
+                )
+        });
+    }
+
+    pub(crate) fn cli_append_open_document(
+        &mut self,
+        destination: &Path,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, crate::cli::CliError> {
+        let matches = self
+            .docs
+            .iter()
+            .filter(|tab| same_canonical_path(&tab.entity.read(cx).path, destination))
+            .map(|tab| tab.entity.clone())
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return Ok(false);
+        }
+        let document = matches.into_iter().next().expect("checked non-empty");
+        document.update(cx, |document, cx| {
+            let current = document.editor.read(cx).value().to_string();
+            let size = current.len().checked_add(text.len());
+            if size.is_none_or(|size| size > crate::cli::MAX_NOTE_BYTES) {
+                return Err(crate::cli::CliError::new(
+                    "The note or appended text exceeds the 2 MiB limit",
+                    "Notatet eller den tilføyde teksten overskrider grensen på 2 MiB",
+                ));
+            }
+            let mut replacement = current;
+            replacement.push_str(text);
+            document.cli_snapshot_before_write(replacement.as_bytes())?;
+            document
+                .editor
+                .update(cx, |editor, cx| editor.replace_all(replacement, window, cx));
+            document.save_without_history(cx).map_err(|error| {
+                crate::cli::CliError::new(
+                    format!("Could not save the appended note: {error}"),
+                    format!("Kunne ikke lagre notatet med tilføyelsen: {error}"),
+                )
+            })?;
+            Ok(())
+        })?;
+        Ok(true)
+    }
+
+    pub(crate) fn cli_refresh_open_document(
+        &mut self,
+        destination: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for tab in &self.docs {
+            if same_canonical_path(&tab.entity.read(cx).path, destination) {
+                tab.entity
+                    .update(cx, |document, cx| document.check_external(window, cx));
+            }
+        }
+    }
+
     pub(crate) fn focus_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !window.has_active_dialog(cx) {
             self.refocus(window, cx);
         }
+    }
+
+    pub(crate) fn cli_focus_after_mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_active_pane_after_mount(window, cx);
     }
 
     /// Put keyboard focus back where it belongs after a dialog or sheet
@@ -2315,9 +2569,61 @@ impl Workspace {
         if path.is_dir() {
             self.open_vault_at(path, window, cx);
         } else if path.is_file() {
-            self.open_document(path, window, cx);
+            self.open_document(path.clone(), window, cx);
         } else {
             self.note_status(format!("Could not open {}", path.display()), cx);
+        }
+    }
+
+    pub(crate) fn cli_open_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), crate::cli::CliError> {
+        let path = path.canonicalize().map_err(|error| {
+            crate::cli::CliError::new(
+                format!("Could not open '{}': {error}", path.display()),
+                format!("Kunne ikke åpne '{}': {error}", path.display()),
+            )
+        })?;
+        if path.is_dir() {
+            if !self.open_vault_at(path.clone(), window, cx) {
+                return Err(crate::cli::CliError::new(
+                    format!("Could not open folder '{}'", path.display()),
+                    format!("Kunne ikke åpne mappen '{}'", path.display()),
+                ));
+            }
+            let opened_root = self.vault.read(cx).root.as_ref() == Some(&path);
+            if opened_root {
+                Ok(())
+            } else {
+                Err(crate::cli::CliError::new(
+                    format!("Folder '{}' did not open", path.display()),
+                    format!("Mappen '{}' ble ikke åpnet", path.display()),
+                ))
+            }
+        } else if path.is_file() {
+            self.open_document(path.clone(), window, cx);
+            if self.docs.iter().any(|doc| doc.entity.read(cx).path == path) {
+                Ok(())
+            } else {
+                Err(crate::cli::CliError::new(
+                    format!("Could not open file '{}'", path.display()),
+                    format!("Kunne ikke åpne filen '{}'", path.display()),
+                ))
+            }
+        } else {
+            Err(crate::cli::CliError::new(
+                format!(
+                    "Could not open '{}': it is not a file or folder",
+                    path.display()
+                ),
+                format!(
+                    "Kunne ikke åpne '{}': den er ikke en fil eller mappe",
+                    path.display()
+                ),
+            ))
         }
     }
 
@@ -4548,6 +4854,43 @@ impl Workspace {
         self.retheme_previews(cx);
         self.persist_settings(cx);
         cx.notify();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn on_install_cli(&mut self, _: &InstallCli, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.settings.language;
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let view = view.clone();
+            dialog
+                .title(language.text(
+                    "Install the command-line tool?",
+                    "Installere kommandolinjeverktøyet?",
+                ))
+                .description(language.text(
+                    "This adds /usr/local/bin/rista for the current packaged app. Existing commands are never replaced.",
+                    "Dette legger til /usr/local/bin/rista for den pakkede appen. Eksisterende kommandoer erstattes aldri.",
+                ))
+                .show_cancel(true)
+                .cancel_text(language.text("Cancel", "Avbryt"))
+                .ok_text(language.text("Install", "Installer"))
+                .on_ok(move |_, _window, cx| {
+                    let result = crate::cli_install::install_current();
+                    view.update(cx, |workspace, cx| match result {
+                        Ok(()) => workspace.note_status(
+                            language.text(
+                                "Command-line tool installed at /usr/local/bin/rista",
+                                "Kommandolinjeverktøy installert i /usr/local/bin/rista",
+                            ),
+                            cx,
+                        ),
+                        Err(error) => {
+                            workspace.note_status(error.message(language).to_owned(), cx)
+                        }
+                    });
+                    true
+                })
+        });
     }
 
     /// Re-render open previews after a theme change — colored highlights
@@ -10859,6 +11202,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_terminal))
             .on_action(cx.listener(Self::on_open_tools))
             .on_action(cx.listener(Self::on_toggle_theme));
+        #[cfg(target_os = "macos")]
+        let root = root.on_action(cx.listener(Self::on_install_cli));
         #[cfg(not(target_os = "macos"))]
         let root = root.on_action(cx.listener(Self::on_about));
         root
