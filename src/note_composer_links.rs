@@ -10,17 +10,22 @@ struct Destination {
     raw: String,
 }
 
+type DefinitionEntry<'a> = (Range<usize>, String, &'a Node);
+type DefinitionIndex<'a> = std::collections::HashMap<String, Vec<DefinitionEntry<'a>>>;
+
 fn protected_ranges(text: &str) -> Result<Vec<Range<usize>>, ComposeError> {
     let root = parse(text)?;
     let mut ranges = Vec::new();
-    fn collect(node: &Node, text: &str, out: &mut Vec<Range<usize>>) {
+    fn collect(node: &Node, text: &str, base: usize, out: &mut Vec<Range<usize>>) {
+        if matches!(node, Node::Html(_)) {
+            return;
+        }
         if matches!(
             node,
             Node::Code(_)
                 | Node::InlineCode(_)
                 | Node::Math(_)
                 | Node::InlineMath(_)
-                | Node::Html(_)
                 | Node::Yaml(_)
                 | Node::Toml(_)
                 | Node::MdxjsEsm(_)
@@ -33,17 +38,32 @@ fn protected_ranges(text: &str) -> Result<Vec<Range<usize>>, ComposeError> {
                 let start = position.start.offset.min(text.len());
                 let end = position.end.offset.min(text.len());
                 if start <= end && text.is_char_boundary(start) && text.is_char_boundary(end) {
-                    out.push(start..end);
+                    out.push((start + base)..(end + base));
                 }
             }
             return;
         }
         for child in node.children().into_iter().flatten() {
-            collect(child, text, out);
+            collect(child, text, base, out);
         }
     }
-    collect(&root, text, &mut ranges);
-    ranges.extend(raw_html_ranges(text));
+    collect(&root, text, 0, &mut ranges);
+    let html_ranges = raw_html_ranges(text);
+    let mut segment_start = 0;
+    for html_range in &html_ranges {
+        if segment_start < html_range.start {
+            let segment = &text[segment_start..html_range.start];
+            let segment_root = parse(segment)?;
+            collect(&segment_root, segment, segment_start, &mut ranges);
+        }
+        segment_start = segment_start.max(html_range.end);
+    }
+    if segment_start < text.len() {
+        let segment = &text[segment_start..];
+        let segment_root = parse(segment)?;
+        collect(&segment_root, segment, segment_start, &mut ranges);
+    }
+    ranges.extend(html_ranges);
     if let Some(range) = crate::properties::frontmatter_span(text) {
         ranges.push(range);
     }
@@ -53,7 +73,6 @@ fn protected_ranges(text: &str) -> Result<Vec<Range<usize>>, ComposeError> {
 
 fn raw_html_ranges(text: &str) -> Vec<Range<usize>> {
     let bytes = text.as_bytes();
-    let lower = text.to_ascii_lowercase();
     let mut ranges = Vec::new();
     let mut cursor = 0;
     while cursor < bytes.len() {
@@ -104,26 +123,91 @@ fn raw_html_ranges(text: &str) -> Vec<Range<usize>> {
             cursor = tag_end + 1;
             continue;
         }
-        let mut range_end = tag_end + 1;
-        if !closing && !contents.ends_with('/') {
-            let close = format!("</{}", name.to_ascii_lowercase());
-            if let Some(close_start) = lower[range_end..]
-                .find(&close)
-                .map(|found| range_end + found)
-            {
-                let close_end = text[close_start..]
-                    .find('>')
-                    .map(|found| close_start + found + 1)
-                    .unwrap_or(text.len());
-                range_end = close_end;
-            } else {
-                range_end = text.len();
-            }
-        }
+        let range_end = if !closing && !contents.ends_with('/') && !html_void_element(name) {
+            matching_html_element_end(text, tag_end + 1, name)
+        } else {
+            tag_end + 1
+        };
         ranges.push(offset..range_end);
         cursor = range_end;
     }
     ranges
+}
+
+fn html_void_element(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+fn matching_html_element_end(text: &str, mut cursor: usize, name: &str) -> usize {
+    let bytes = text.as_bytes();
+    let name = name.to_ascii_lowercase();
+    let mut depth = 1usize;
+    while cursor < bytes.len() {
+        let Some(offset) = text[cursor..].find('<').map(|found| cursor + found) else {
+            break;
+        };
+        if text[offset..].starts_with("<!--") {
+            cursor = text[offset + 4..]
+                .find("-->")
+                .map(|found| offset + 4 + found + 3)
+                .unwrap_or(text.len());
+            continue;
+        }
+        let mut end = offset + 1;
+        let mut quote = None;
+        while end < bytes.len() {
+            let byte = bytes[end];
+            if let Some(delimiter) = quote {
+                if byte == delimiter {
+                    quote = None;
+                }
+            } else if byte == b'\'' || byte == b'"' {
+                quote = Some(byte);
+            } else if byte == b'>' {
+                break;
+            }
+            end += 1;
+        }
+        if end >= bytes.len() {
+            break;
+        }
+        let contents = text[offset + 1..end].trim();
+        let closing = contents.starts_with('/');
+        let tag_name = contents
+            .trim_start_matches('/')
+            .trim_start()
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == ':'))
+            .next()
+            .unwrap_or_default();
+        if tag_name.eq_ignore_ascii_case(&name) {
+            if closing {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return end + 1;
+                }
+            } else if !contents.ends_with('/') && !html_void_element(tag_name) {
+                depth += 1;
+            }
+        }
+        cursor = end + 1;
+    }
+    text.len()
 }
 
 fn matching_label_end(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
@@ -220,8 +304,9 @@ fn destination_range(text: &str, span: Range<usize>, definition: bool) -> Option
 
 fn markdown_destinations(text: &str) -> Result<Vec<Destination>, ComposeError> {
     let root = parse(text)?;
+    let protected = protected_ranges(text)?;
     let mut out = Vec::new();
-    fn collect(node: &Node, text: &str, out: &mut Vec<Destination>) {
+    fn collect(node: &Node, text: &str, protected: &[Range<usize>], out: &mut Vec<Destination>) {
         let (position, definition) = match node {
             Node::Link(link) => (link.position.as_ref(), false),
             Node::Image(image) => (image.position.as_ref(), false),
@@ -229,25 +314,28 @@ fn markdown_destinations(text: &str) -> Result<Vec<Destination>, ComposeError> {
             _ => (None, false),
         };
         if let Some(position) = position {
-            if let Some(range) =
-                destination_range(text, position.start.offset..position.end.offset, definition)
-            {
-                out.push(Destination {
-                    raw: text[range.clone()].to_string(),
-                    range,
-                });
+            let span = position.start.offset..position.end.offset;
+            let intersects_protected = protected
+                .iter()
+                .any(|range| range.start < span.end && span.start < range.end);
+            if !intersects_protected {
+                if let Some(range) = destination_range(text, span, definition) {
+                    out.push(Destination {
+                        raw: text[range.clone()].to_string(),
+                        range,
+                    });
+                }
             }
         }
         for child in node.children().into_iter().flatten() {
-            collect(child, text, out);
+            collect(child, text, protected, out);
         }
     }
-    collect(&root, text, &mut out);
+    collect(&root, text, &protected, &mut out);
     // The Markdown parser keeps a definition immediately following a
     // paragraph as paragraph text. Recover that source-level definition
     // without reparsing an extracted fragment; fenced/code ranges remain
     // excluded by the AST protection map.
-    let protected = protected_ranges(text)?;
     let mut line_start = 0;
     for line in text.split_inclusive('\n') {
         let line_end = line_start + line.len();
@@ -335,9 +423,7 @@ fn local_target(value: &str, from_note: &Path, root: &Path) -> Option<PathBuf> {
 
 fn relative_url(target: &Path, from_note: &Path, root: &Path) -> Result<String, ComposeError> {
     let root = root.canonicalize().map_err(|_| ComposeError::InvalidPath)?;
-    let target = target
-        .canonicalize()
-        .map_err(|_| ComposeError::InvalidPath)?;
+    let target = canonical_or_new_vault_path(target, &root)?;
     let from = from_note
         .parent()
         .and_then(|path| path.canonicalize().ok())
@@ -370,6 +456,30 @@ fn relative_url(target: &Path, from_note: &Path, root: &Path) -> Result<String, 
         })
         .collect::<Vec<_>>()
         .join("/"))
+}
+
+fn canonical_or_new_vault_path(target: &Path, root: &Path) -> Result<PathBuf, ComposeError> {
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        root.join(target)
+    };
+    if let Ok(canonical) = target.canonicalize() {
+        return canonical
+            .starts_with(root)
+            .then_some(canonical)
+            .ok_or(ComposeError::InvalidPath);
+    }
+    let parent = target
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .filter(|parent| parent.starts_with(root))
+        .ok_or(ComposeError::InvalidPath)?;
+    let target = parent.join(target.file_name().ok_or(ComposeError::InvalidPath)?);
+    target
+        .starts_with(root)
+        .then_some(target)
+        .ok_or(ComposeError::InvalidPath)
 }
 
 fn apply_edits(text: &str, mut edits: Vec<(Range<usize>, String)>) -> Result<String, ComposeError> {
@@ -442,6 +552,98 @@ pub struct LinkSnapshot {
     notes: Vec<PathBuf>,
     texts: std::collections::HashMap<PathBuf, String>,
     identities: IdentityIndex,
+}
+
+pub struct ExtractionAnchors {
+    headings: std::collections::HashMap<String, Vec<(Range<usize>, bool)>>,
+    blocks: std::collections::HashMap<String, Vec<(Range<usize>, bool)>>,
+}
+
+impl ExtractionAnchors {
+    pub fn new(source: &str, section: Range<usize>) -> Result<Self, ComposeError> {
+        let root = parse(source)?;
+        let mut headings = std::collections::HashMap::<String, Vec<(Range<usize>, bool)>>::new();
+        fn collect_headings(
+            node: &Node,
+            section: &Range<usize>,
+            out: &mut std::collections::HashMap<String, Vec<(Range<usize>, bool)>>,
+        ) -> Result<(), ComposeError> {
+            if let Node::Heading(_) = node {
+                if let Some(position) = node.position() {
+                    let range = position.start.offset..position.end.offset;
+                    let intersects = range.start < section.end && section.start < range.end;
+                    let moved = range.start >= section.start && range.end <= section.end;
+                    if intersects && !moved {
+                        return Err(ComposeError::UnsupportedLink);
+                    }
+                    let title = node.to_string();
+                    out.entry(note_key(title.trim()))
+                        .or_default()
+                        .push((range, moved));
+                }
+            }
+            for child in node.children().into_iter().flatten() {
+                collect_headings(child, section, out)?;
+            }
+            Ok(())
+        }
+        collect_headings(&root, &section, &mut headings)?;
+
+        let lines = source.split_inclusive('\n').collect::<Vec<_>>();
+        let mut offsets = Vec::with_capacity(lines.len());
+        let mut offset = 0;
+        for line in &lines {
+            let start = offset;
+            offset += line.len();
+            offsets.push(start..offset);
+        }
+        let mut blocks = std::collections::HashMap::<String, Vec<(Range<usize>, bool)>>::new();
+        for candidate in crate::document::block_candidates(source) {
+            let Some(id) = candidate.id else {
+                continue;
+            };
+            let Some((first, last)) = crate::preview::block_lines(&lines, &id) else {
+                continue;
+            };
+            let Some(start) = offsets.get(first).map(|range| range.start) else {
+                continue;
+            };
+            let Some(end) = offsets.get(last).map(|range| range.end) else {
+                continue;
+            };
+            let range = start..end;
+            let intersects = range.start < section.end && section.start < range.end;
+            let moved = range.start >= section.start && range.end <= section.end;
+            if intersects && !moved {
+                return Err(ComposeError::UnsupportedLink);
+            }
+            blocks.entry(id).or_default().push((range, moved));
+        }
+        Ok(Self { headings, blocks })
+    }
+
+    fn moved(&self, fragment: &str) -> Result<Option<bool>, ComposeError> {
+        let fragment = fragment
+            .strip_prefix('#')
+            .unwrap_or(fragment)
+            .split(['|', '?'])
+            .next()
+            .unwrap_or_default();
+        if fragment.is_empty() {
+            return Ok(None);
+        }
+        let decoded = decode_percent(fragment).ok_or(ComposeError::UnsupportedLink)?;
+        let matches = if let Some(id) = decoded.strip_prefix('^') {
+            self.blocks.get(id)
+        } else {
+            self.headings.get(&note_key(decoded.trim()))
+        };
+        match matches {
+            Some(matches) if matches.len() == 1 => Ok(Some(matches[0].1)),
+            Some(matches) if matches.len() > 1 => Err(ComposeError::AmbiguousLink),
+            _ => Ok(None),
+        }
+    }
 }
 
 impl LinkSnapshot {
@@ -533,6 +735,108 @@ impl LinkSnapshot {
             new_target,
         )
     }
+
+    pub fn rewrite_extraction_links(
+        &self,
+        text: &str,
+        referring_note: &Path,
+        source_note: &Path,
+        destination: &Path,
+        anchors: &ExtractionAnchors,
+        moved_body: bool,
+    ) -> Result<String, ComposeError> {
+        let source = source_note
+            .canonicalize()
+            .map_err(|_| ComposeError::InvalidPath)?;
+        let destination = canonical_or_new_vault_path(destination, &self.root)?;
+        let referring = canonical_or_new_vault_path(referring_note, &self.root)?;
+        let mut edits = Vec::new();
+
+        for destination_link in markdown_destinations(text)? {
+            let raw = destination_link.raw.trim();
+            let (_, suffix) = split_suffix(raw);
+            let state = if suffix.starts_with('#') {
+                anchors.moved(suffix)?
+            } else {
+                None
+            };
+            let target = if raw.starts_with('#') {
+                None
+            } else {
+                local_target(raw, &referring, &self.root)
+            };
+            let replacement_target = match (target.as_deref(), raw.starts_with('#'), state) {
+                (Some(target), _, Some(true)) if target == source => Some(&destination),
+                (_, true, Some(true)) if referring == source => Some(&destination),
+                (_, true, Some(false)) if moved_body && referring == destination => Some(&source),
+                _ => None,
+            };
+            if let Some(target) = replacement_target {
+                edits.push((
+                    destination_link.range,
+                    format!("{}{suffix}", relative_url(target, &referring, &self.root)?),
+                ));
+            }
+        }
+
+        let protected = protected_ranges(text)?;
+        let mut cursor = 0;
+        while cursor + 1 < text.len() {
+            let Some(found) = text[cursor..].find("[[").map(|offset| cursor + offset) else {
+                break;
+            };
+            let mut slashes = 0;
+            let mut preceding = found;
+            while preceding > 0 && text.as_bytes()[preceding - 1] == b'\\' {
+                slashes += 1;
+                preceding -= 1;
+            }
+            if slashes % 2 == 1 {
+                cursor = found + 2;
+                continue;
+            }
+            if let Some(range) = protected.iter().find(|range| range.contains(&found)) {
+                cursor = range.end.max(found + 2);
+                continue;
+            }
+            let Some(end) = text[found + 2..]
+                .find("]]")
+                .map(|offset| found + 2 + offset)
+            else {
+                break;
+            };
+            let raw = &text[found + 2..end];
+            let note = wikilink_target(raw);
+            let (_, suffix) = split_suffix(raw);
+            let state = if suffix.starts_with('#') {
+                anchors.moved(suffix)?
+            } else {
+                None
+            };
+            let target = if note.is_empty() {
+                Some(referring.clone())
+            } else {
+                resolve_wikilink(&self.identities, raw)?
+            };
+            let replacement_target = match (target.as_deref(), note.is_empty(), state) {
+                (Some(target), _, Some(true)) if target == source => Some(&destination),
+                (_, true, Some(true)) if referring == source => Some(&destination),
+                (_, true, Some(false)) if moved_body && referring == destination => Some(&source),
+                _ => None,
+            };
+            if let Some(target) = replacement_target {
+                let relative = target
+                    .strip_prefix(&self.root)
+                    .map_err(|_| ComposeError::InvalidPath)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let relative = relative.strip_suffix(".md").unwrap_or(&relative);
+                edits.push(((found + 2)..end, format!("{relative}{suffix}")));
+            }
+            cursor = end + 2;
+        }
+        apply_edits(text, edits)
+    }
 }
 
 pub fn rebase_markdown_links(
@@ -585,12 +889,14 @@ fn rewrite_inbound_with_index(
     old_target: &Path,
     new_target: &Path,
 ) -> Result<String, ComposeError> {
+    let canonical_root = root.canonicalize().map_err(|_| ComposeError::InvalidPath)?;
     let old_target = old_target
         .canonicalize()
         .map_err(|_| ComposeError::InvalidPath)?;
-    let new_target = new_target
-        .canonicalize()
-        .map_err(|_| ComposeError::InvalidPath)?;
+    if !old_target.starts_with(&canonical_root) {
+        return Err(ComposeError::InvalidPath);
+    }
+    let new_target = canonical_or_new_vault_path(new_target, &canonical_root)?;
     let mut edits = Vec::new();
     for destination in markdown_destinations(text)? {
         if local_target(&destination.raw, referring_note, root).as_deref() != Some(&old_target) {
@@ -612,6 +918,16 @@ fn rewrite_inbound_with_index(
         let Some(found) = text[cursor..].find("[[").map(|offset| cursor + offset) else {
             break;
         };
+        let mut slash_count = 0;
+        let mut preceding = found;
+        while preceding > 0 && text.as_bytes()[preceding - 1] == b'\\' {
+            slash_count += 1;
+            preceding -= 1;
+        }
+        if slash_count % 2 == 1 {
+            cursor = found + 2;
+            continue;
+        }
         if let Some(range) = protected.iter().find(|range| range.contains(&found)) {
             cursor = range.end.max(found + 2);
             continue;
@@ -628,9 +944,8 @@ fn rewrite_inbound_with_index(
                 .find(['#', '|'])
                 .map(|at| &raw[at..])
                 .unwrap_or_default();
-            let canonical_root = root.canonicalize().map_err(|_| ComposeError::InvalidPath)?;
             let relative = new_target
-                .strip_prefix(canonical_root)
+                .strip_prefix(&canonical_root)
                 .map_err(|_| ComposeError::InvalidPath)?
                 .to_string_lossy()
                 .replace('\\', "/");
@@ -646,22 +961,129 @@ pub fn extract_reference_definitions(
     source: &str,
     section: Range<usize>,
     body: &str,
-) -> Result<String, ComposeError> {
+) -> Result<(String, String), ComposeError> {
     let source_root = parse(source)?;
-    let mut references = std::collections::HashSet::new();
+    let mut definition_nodes = Vec::new();
+    fn collect_definitions<'a>(
+        node: &'a Node,
+        section: &Range<usize>,
+        definitions: &mut Vec<(String, Range<usize>, &'a Node)>,
+    ) -> Result<(), ComposeError> {
+        let identifier = match node {
+            Node::Definition(definition) => Some(definition.identifier.to_lowercase()),
+            Node::FootnoteDefinition(definition) => {
+                Some(format!("footnote:{}", definition.identifier.to_lowercase()))
+            }
+            _ => None,
+        };
+        if let Some(identifier) = identifier {
+            let position = node.position().ok_or(ComposeError::InvalidMarkdown)?;
+            let range = position.start.offset..position.end.offset;
+            if range.start < section.end
+                && section.start < range.end
+                && !(range.start >= section.start && range.end <= section.end)
+            {
+                return Err(ComposeError::UnsupportedLink);
+            }
+            definitions.push((identifier, range, node));
+        }
+        for child in node.children().into_iter().flatten() {
+            collect_definitions(child, section, definitions)?;
+        }
+        Ok(())
+    }
+    collect_definitions(&source_root, &section, &mut definition_nodes)?;
+
+    let mut moved_references = std::collections::HashSet::new();
+    let mut source_references = std::collections::HashSet::new();
     fn collect_references(
         node: &Node,
-        range: Option<&Range<usize>>,
-        references: &mut std::collections::HashSet<String>,
-    ) {
-        let in_range = range.is_none_or(|range| {
-            node.position().is_some_and(|position| {
-                position.start.offset < range.end && position.end.offset > range.start
-            })
-        });
-        if !in_range {
-            return;
+        section: &Range<usize>,
+        moved: &mut std::collections::HashSet<String>,
+        remaining: &mut std::collections::HashSet<String>,
+    ) -> Result<(), ComposeError> {
+        let identifier = match node {
+            Node::LinkReference(reference) => Some(reference.identifier.to_lowercase()),
+            Node::ImageReference(reference) => Some(reference.identifier.to_lowercase()),
+            Node::FootnoteReference(reference) => {
+                Some(format!("footnote:{}", reference.identifier.to_lowercase()))
+            }
+            _ => None,
+        };
+        if let Some(identifier) = identifier {
+            let position = node.position().ok_or(ComposeError::InvalidMarkdown)?;
+            let start = position.start.offset;
+            let end = position.end.offset;
+            let intersects = start < section.end && section.start < end;
+            let inside = start >= section.start && end <= section.end;
+            if intersects && !inside {
+                return Err(ComposeError::UnsupportedLink);
+            }
+            if inside {
+                moved.insert(identifier);
+            } else {
+                remaining.insert(identifier);
+            }
         }
+        for child in node.children().into_iter().flatten() {
+            collect_references(child, section, moved, remaining)?;
+        }
+        Ok(())
+    }
+    // Use the original tree: selected references can point to definitions
+    // outside the fragment and would otherwise parse as ordinary text.
+    collect_references(
+        &source_root,
+        &section,
+        &mut moved_references,
+        &mut source_references,
+    )?;
+
+    let definition_text = |range: &Range<usize>| -> Result<String, ComposeError> {
+        if range.start > range.end
+            || range.end > source.len()
+            || !source.is_char_boundary(range.start)
+            || !source.is_char_boundary(range.end)
+        {
+            return Err(ComposeError::InvalidMarkdown);
+        }
+        Ok(source[range.clone()].to_string())
+    };
+    let mut definitions_by_id = DefinitionIndex::new();
+    for (identifier, range, node) in &definition_nodes {
+        definitions_by_id
+            .entry(identifier.clone())
+            .or_default()
+            .push((range.clone(), definition_text(range)?, *node));
+    }
+    fn close_references(
+        references: &mut std::collections::HashSet<String>,
+        definitions: &DefinitionIndex<'_>,
+    ) -> Result<(), ComposeError> {
+        let mut pending = references.iter().cloned().collect::<Vec<_>>();
+        while let Some(identifier) = pending.pop() {
+            let matches = definitions
+                .get(&identifier)
+                .ok_or(ComposeError::AmbiguousLink)?;
+            if matches.iter().any(|(_, text, _)| text != &matches[0].1) {
+                return Err(ComposeError::AmbiguousLink);
+            }
+            let mut nested = std::collections::HashSet::new();
+            for (_, _, node) in matches {
+                collect_definition_references(node, &mut nested)?;
+            }
+            for nested_identifier in nested {
+                if references.insert(nested_identifier.clone()) {
+                    pending.push(nested_identifier);
+                }
+            }
+        }
+        Ok(())
+    }
+    fn collect_definition_references(
+        node: &Node,
+        references: &mut std::collections::HashSet<String>,
+    ) -> Result<(), ComposeError> {
         match node {
             Node::LinkReference(reference) => {
                 references.insert(reference.identifier.to_lowercase());
@@ -675,105 +1097,71 @@ pub fn extract_reference_definitions(
             _ => {}
         }
         for child in node.children().into_iter().flatten() {
-            collect_references(child, range, references);
+            collect_definition_references(child, references)?;
         }
-    }
-    // Walk the original tree, rather than reparsing the selected bytes. A
-    // reference whose definition is outside the selection is otherwise
-    // represented as plain text by the fragment parser.
-    collect_references(&source_root, Some(&section), &mut references);
-
-    let mut definition_nodes = Vec::new();
-    fn collect_definitions<'a>(node: &'a Node, definitions: &mut Vec<(String, &'a Node)>) {
-        let identifier = match node {
-            Node::Definition(definition) => Some(definition.identifier.to_lowercase()),
-            Node::FootnoteDefinition(definition) => {
-                Some(format!("footnote:{}", definition.identifier.to_lowercase()))
-            }
-            _ => None,
-        };
-        if let Some(identifier) = identifier {
-            definitions.push((identifier, node));
-        }
-        for child in node.children().into_iter().flatten() {
-            collect_definitions(child, definitions);
-        }
-    }
-    collect_definitions(&source_root, &mut definition_nodes);
-    let available = definition_nodes
-        .iter()
-        .map(|(identifier, _)| identifier.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    if references
-        .iter()
-        .any(|identifier| !available.contains(identifier.as_str()))
-    {
-        return Err(ComposeError::AmbiguousLink);
+        Ok(())
     }
 
-    // Footnote bodies may themselves contain references. Resolve those
-    // anchors transitively before copying definitions to the extracted note.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (identifier, node) in &definition_nodes {
-            if references.contains(identifier) {
-                let before = references.len();
-                collect_references(node, None, &mut references);
-                changed |= before != references.len();
-            }
-        }
-    }
-    let mut definitions = Vec::new();
-    let mut seen = std::collections::HashMap::<String, String>::new();
-    for (identifier, node) in definition_nodes {
-        let Some(position) = node.position() else {
+    close_references(&mut moved_references, &definitions_by_id)?;
+    close_references(&mut source_references, &definitions_by_id)?;
+
+    let mut moved_definitions = Vec::new();
+    let mut source_definitions = Vec::new();
+    for (identifier, definitions) in &definitions_by_id {
+        let Some((_, text, _)) = definitions.first() else {
             continue;
         };
-        let start = position.start.offset;
-        let end = position.end.offset;
-        if !references.contains(&identifier)
-            || (start >= section.start && end <= section.end)
-            || start > end
-            || end > source.len()
-            || !source.is_char_boundary(start)
-            || !source.is_char_boundary(end)
+        if moved_references.contains(identifier)
+            && definitions
+                .iter()
+                .all(|(range, _, _)| range.start < section.start || range.end > section.end)
         {
-            continue;
+            moved_definitions.push((definitions[0].0.start, text.clone()));
         }
-        let definition = source[start..end].to_string();
-        if let Some(existing) = seen.get(&identifier) {
-            if existing != &definition {
-                return Err(ComposeError::AmbiguousLink);
+        if source_references.contains(identifier)
+            && definitions
+                .iter()
+                .all(|(range, _, _)| range.start >= section.start && range.end <= section.end)
+        {
+            source_definitions.push((definitions[0].0.start, text.clone()));
+        }
+    }
+    moved_definitions.sort_by_key(|(offset, _)| *offset);
+    source_definitions.sort_by_key(|(offset, _)| *offset);
+    let append = |mut base: String, definitions: &[(usize, String)]| {
+        for (_, definition) in definitions {
+            if !base.ends_with("\n\n") {
+                if base.ends_with('\n') {
+                    base.push('\n');
+                } else {
+                    base.push_str("\n\n");
+                }
             }
-        } else {
-            seen.insert(identifier, definition.clone());
-            definitions.push(definition);
+            base.push_str(definition);
         }
-    }
-    if definitions.is_empty() {
-        return Ok(body.to_string());
-    }
-    let mut result = body.trim_end().to_string();
-    for definition in definitions {
-        result.push_str("\n\n");
-        result.push_str(&definition);
-    }
-    Ok(result)
+        base
+    };
+    Ok((
+        append(body.to_string(), &moved_definitions),
+        source_definitions
+            .into_iter()
+            .map(|(_, definition)| definition)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
 
     fn test_root() -> PathBuf {
-        let id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("rista-composer-{id}"));
+        let id = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("rista-composer-{}-{id}", std::process::id()));
         fs::create_dir_all(root.join("notes/sub")).unwrap();
         fs::create_dir_all(root.join("assets")).unwrap();
         fs::write(
@@ -834,8 +1222,126 @@ mod tests {
     fn copies_out_of_section_reference_definitions() {
         let source = "# A\n\nSee [the note][ref] and footnote[^note].\n\n# B\n\n[ref]: https://example.invalid\n\n[^note]: Preserved note.\n";
         let range = 0.."# A\n\nSee [the note][ref] and footnote[^note].\n\n".len();
-        let body = extract_reference_definitions(source, range.clone(), &source[range]).unwrap();
+        let (body, source_definitions) =
+            extract_reference_definitions(source, range.clone(), &source[range]).unwrap();
         assert!(body.contains("[ref]: https://example.invalid"));
         assert!(body.contains("[^note]: Preserved note."));
+        assert!(source_definitions.is_empty());
+    }
+
+    #[test]
+    fn preserves_definitions_still_used_by_source_after_extraction() {
+        let source = "# Kept\n\nStill [linked][ref].\n\n# Moved\n\nMoved [linked][ref].\n\n[ref]: /same \"title\"\n";
+        let start = source.find("# Moved").unwrap();
+        let range = start..source.len();
+        let (body, source_definitions) =
+            extract_reference_definitions(source, range.clone(), &source[range]).unwrap();
+        assert!(body.contains("[ref]: /same \"title\""));
+        assert!(source_definitions.contains("[ref]: /same \"title\""));
+    }
+
+    #[test]
+    fn rejects_reference_definitions_with_conflicting_titles() {
+        let source = "See [the note][ref].\n\n[ref]: /same \"first title\"\n\n[ref]: /same \"second title\"\n";
+        let range = 0.."See [the note][ref].\n\n".len();
+
+        assert_eq!(
+            extract_reference_definitions(source, range.clone(), &source[range]).unwrap_err(),
+            ComposeError::AmbiguousLink
+        );
+    }
+
+    #[test]
+    fn refuses_to_rebase_a_relative_resource_outside_the_vault() {
+        let root = test_root();
+        let from = root.join("notes/old.md");
+        let to = root.join("notes/sub/new.md");
+        let test_name = root.file_name().unwrap().to_string_lossy();
+        let outside = root
+            .parent()
+            .unwrap()
+            .join(format!("{test_name}-outside-resource.bin"));
+        fs::write(&outside, b"outside").unwrap();
+
+        assert_eq!(
+            rebase_markdown_links("[resource](../../outside-resource.bin)", &from, &to, &root,)
+                .unwrap_err(),
+            ComposeError::InvalidPath
+        );
+
+        let _ = fs::remove_file(outside);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extraction_rewrites_only_moved_anchors_and_supports_new_targets() {
+        let root = test_root();
+        let source_path = root.join("notes/old.md");
+        let other = root.join("notes/sub/other.md");
+        let source = "# Stay\n\n[[#Move]]\n\n# Move\n\n[[#Move]] [[#Stay]]\n";
+        fs::write(&source_path, source).unwrap();
+        fs::write(
+            &other,
+            "[[Old#Move]] [[Old#Stay]] [moved](../old.md#Move)\n",
+        )
+        .unwrap();
+        let notes = vec![source_path.clone(), other.clone()];
+        let snapshot = LinkSnapshot::new(&root, &notes).unwrap();
+        let start = source.find("# Move").unwrap();
+        let range = start..source.len();
+        let anchors = ExtractionAnchors::new(source, range.clone()).unwrap();
+        let destination = root.join("notes/sub/moved.md");
+        let incoming = snapshot
+            .rewrite_extraction_links(
+                snapshot.text(&other).unwrap(),
+                &other,
+                &source_path,
+                &destination,
+                &anchors,
+                false,
+            )
+            .unwrap();
+        assert!(incoming.contains("[[notes/sub/moved#Move]]"));
+        assert!(incoming.contains("[[Old#Stay]]"));
+        assert!(incoming.contains("moved.md#Move"));
+
+        let body = &source[range];
+        let moved = snapshot
+            .rewrite_extraction_links(
+                body,
+                &destination,
+                &source_path,
+                &destination,
+                &anchors,
+                true,
+            )
+            .unwrap();
+        assert!(moved.contains("[[notes/old#Stay]]"));
+        assert!(moved.contains("[[#Move]]"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn respects_escaped_wikilinks_math_and_html_void_elements() {
+        let root = test_root();
+        let old = root.join("notes/old.md");
+        let new = root.join("notes/new name.md");
+        let other = root.join("notes/sub/other.md");
+        fs::write(&other, "# Other\n").unwrap();
+        let notes = vec![old.clone(), new.clone(), other.clone()];
+        let text = concat!(
+            "<br> [[Old]]\n",
+            "<div>[[Old]] [x](../old.md)</div>\n",
+            "\\[[Old]]\n",
+            "$[[Old]]$\n",
+            "[[Old]]\n"
+        );
+        let result = rewrite_inbound_links(&text, &other, &root, &notes, &old, &new).unwrap();
+        assert!(result.starts_with("<br> [[notes/new name]]"));
+        assert!(result.contains("<div>[[Old]] [x](../old.md)</div>"));
+        assert!(result.contains("\\[[Old]]"));
+        assert!(result.contains("$[[Old]]$"));
+        assert!(result.ends_with("[[notes/new name]]\n"));
+        let _ = fs::remove_dir_all(root);
     }
 }

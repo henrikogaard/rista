@@ -19,7 +19,7 @@ use gpui_kit::assets;
 use gpui_kit::base::Placement;
 use gpui_kit::base::Selectable;
 use gpui_kit::base::StyledExt;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
@@ -86,6 +86,31 @@ fn file_metadata_snapshot(path: &Path) -> Option<FileMetadataSnapshot> {
         len: metadata.len(),
         identity,
     })
+}
+
+fn bookmark_kinds(items: &[crate::bookmarks::Bookmark], kinds: &mut HashMap<u64, BookmarkKind>) {
+    for item in items {
+        kinds.insert(item.id, item.kind.clone());
+        if let BookmarkKind::Group { items, .. } = &item.kind {
+            bookmark_kinds(items, kinds);
+        }
+    }
+}
+
+fn apply_composer_path_list<T: Clone + PartialEq>(
+    values: &mut [T],
+    changes: &[crate::document::ComposerPathValueChange<T>],
+    direction: crate::document::ComposerHistoryDirection,
+) {
+    for change in changes {
+        let (expected, desired) = match direction {
+            crate::document::ComposerHistoryDirection::Undo => (&change.after, &change.before),
+            crate::document::ComposerHistoryDirection::Redo => (&change.before, &change.after),
+        };
+        if values.get(change.index) == Some(expected) {
+            values[change.index] = desired.clone();
+        }
+    }
 }
 
 fn update_observed_snapshot(
@@ -2523,8 +2548,8 @@ impl Workspace {
                 DocumentEvent::ComposerHistoryConflict => {
                     this.note_status(
                         this.tr(
-                            "Composer undo could not safely restore related files.",
-                            "Angring av sammensetningen kunne ikke trygt gjenopprette tilknyttede filer.",
+                            "Composer Undo/Redo could not complete safely; the editor was restored.",
+                            "Composer-angring eller gjentaking kunne ikke fullføres trygt; redigeringsvinduet ble gjenopprettet.",
                         ),
                         cx,
                     );
@@ -2532,7 +2557,14 @@ impl Workspace {
                 DocumentEvent::ComposerHistoryApplied {
                     direction,
                     changes,
-                } => this.apply_composer_history_changes(*direction, changes, window, cx),
+                    path_references,
+                } => this.apply_composer_history_changes(
+                    *direction,
+                    changes,
+                    path_references,
+                    window,
+                    cx,
+                ),
                 DocumentEvent::SourceScrolled => {
                     let follows_in_group = this
                         .docs
@@ -3348,35 +3380,58 @@ impl Workspace {
             let path = doc.path.canonicalize().unwrap_or_else(|_| doc.path.clone());
             changes.iter().any(|(changed_path, before, _)| {
                 path == *changed_path
-                    && (doc.dirty || doc.conflict || doc.composer_source(cx).as_bytes() != before)
+                    && (doc.dirty
+                        || doc.conflict
+                        || doc.composer_source(cx).as_bytes() != before
+                        || doc.composer_disk_baseline().as_deref() != Some(before.as_slice())
+                        || std::fs::read(&path).ok().as_deref() != Some(before.as_slice()))
             })
         })
     }
 
     fn composer_history_buffer_conflict(
         &self,
+        owner: Option<&Entity<Document>>,
         changes: &[crate::document::ComposerFileChange],
         direction: crate::document::ComposerHistoryDirection,
         cx: &mut Context<Self>,
     ) -> bool {
-        let buffers = changes
-            .iter()
-            .filter_map(|(path, before, after)| {
+        let conflicts = |workspace: &Workspace, owner: Option<&Entity<Document>>, cx: &App| {
+            changes.iter().any(|(path, before, after)| {
                 if path.extension().is_none_or(|extension| extension != "md") {
-                    return None;
+                    return false;
                 }
                 let expected = match direction {
                     crate::document::ComposerHistoryDirection::Undo => after,
                     crate::document::ComposerHistoryDirection::Redo => before,
                 };
-                let desired = match direction {
-                    crate::document::ComposerHistoryDirection::Undo => before,
-                    crate::document::ComposerHistoryDirection::Redo => after,
-                };
-                Some((path.clone(), expected.clone()?, desired.clone()?))
+                workspace.docs.iter().any(|open| {
+                    if owner.is_some_and(|owner| open.entity.entity_id() == owner.entity_id()) {
+                        return false;
+                    }
+                    let document = open.entity.read(cx);
+                    if document
+                        .path
+                        .canonicalize()
+                        .unwrap_or_else(|_| document.path.clone())
+                        != *path
+                    {
+                        return false;
+                    }
+                    let current = document.composer_source(cx);
+                    crate::document::composer_history_buffer_conflicts(
+                        expected.as_deref(),
+                        current.as_bytes(),
+                        document.composer_disk_baseline().as_deref(),
+                        document.dirty,
+                        document.conflict,
+                    ) || expected.as_deref().is_some_and(|expected| {
+                        std::fs::read(path).ok().as_deref() != Some(expected)
+                    })
+                })
             })
-            .collect::<Vec<_>>();
-        if self.composer_change_conflicts(&buffers, cx) {
+        };
+        if conflicts(self, owner, cx) {
             return true;
         }
         let peers = cx.global::<crate::windows::WindowManager>().records.clone();
@@ -3385,9 +3440,8 @@ impl Workspace {
             .filter(|peer| peer.id != self.window_id)
             .any(|peer| {
                 let conflict = peer.window.update(cx, |_, _window, cx| {
-                    peer.workspace.update(cx, |workspace, cx| {
-                        workspace.composer_change_conflicts(&buffers, cx)
-                    })
+                    peer.workspace
+                        .update(cx, |workspace, cx| conflicts(workspace, None, cx))
                 });
                 !matches!(conflict, Ok(Ok(false)))
             })
@@ -3430,26 +3484,30 @@ impl Workspace {
         &mut self,
         direction: crate::document::ComposerHistoryDirection,
         changes: &[crate::document::ComposerFileChange],
+        path_references: &crate::document::ComposerPathReferenceDelta,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let text_changes = changes
-            .iter()
-            .filter_map(|(path, before, after)| {
-                if path.extension().is_none_or(|extension| extension != "md") {
-                    return None;
+        let mut text_changes = Vec::new();
+        let mut deleted_paths = Vec::new();
+        for (path, before, after) in changes {
+            if path.extension().is_none_or(|extension| extension != "md") {
+                continue;
+            }
+            let (expected, desired) = match direction {
+                crate::document::ComposerHistoryDirection::Undo => (after, before),
+                crate::document::ComposerHistoryDirection::Redo => (before, after),
+            };
+            match (expected, desired) {
+                (Some(expected), Some(desired)) => {
+                    text_changes.push((path.clone(), expected.clone(), desired.clone()));
                 }
-                let (before, after) = match direction {
-                    crate::document::ComposerHistoryDirection::Undo => {
-                        (after.as_ref()?, before.as_ref()?)
-                    }
-                    crate::document::ComposerHistoryDirection::Redo => {
-                        (before.as_ref()?, after.as_ref()?)
-                    }
-                };
-                Some((path.clone(), before.clone(), after.clone()))
-            })
-            .collect::<Vec<_>>();
+                (Some(_), None) => deleted_paths.push(path.clone()),
+                _ => {}
+            }
+        }
+        self.apply_composer_path_references(direction, path_references, cx);
+        self.close_composer_deleted_paths(&deleted_paths, window, cx);
         self.apply_composer_changes(&text_changes, window, cx);
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
 
@@ -3457,11 +3515,87 @@ impl Workspace {
         for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
             let _ = peer.window.update(cx, |_, window, cx| {
                 peer.workspace.update(cx, |workspace, cx| {
+                    workspace.apply_composer_path_references(direction, path_references, cx);
+                    workspace.close_composer_deleted_paths(&deleted_paths, window, cx);
                     workspace.apply_composer_changes(&text_changes, window, cx);
                     workspace.vault.update(cx, |vault, cx| vault.refresh(cx));
                 })
             });
         }
+    }
+
+    fn apply_composer_path_references(
+        &mut self,
+        direction: crate::document::ComposerHistoryDirection,
+        delta: &crate::document::ComposerPathReferenceDelta,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(delta) = delta
+            .workspaces
+            .iter()
+            .find(|delta| delta.window_id == self.window_id)
+        else {
+            return;
+        };
+        for (id, before, after) in &delta.bookmarks {
+            let (expected_kind, desired_kind) = match direction {
+                crate::document::ComposerHistoryDirection::Undo => (after, before),
+                crate::document::ComposerHistoryDirection::Redo => (before, after),
+            };
+            if let Some(bookmark) = self.settings.bookmarks.find_mut(*id) {
+                if &bookmark.kind == expected_kind {
+                    bookmark.kind = desired_kind.clone();
+                }
+            }
+        }
+        apply_composer_path_list(
+            &mut self.settings.pinned_tabs,
+            &delta.pinned_tabs,
+            direction,
+        );
+        apply_composer_path_list(&mut self.recent, &delta.recent, direction);
+        apply_composer_path_list(&mut self.closed_tabs, &delta.closed_tabs, direction);
+        apply_composer_path_list(&mut self.nav_stack, &delta.navigation, direction);
+        self.settings.starred = self.settings.bookmarks.starred_paths();
+        let starred = self.settings.starred.iter().cloned().collect();
+        self.vault.update(cx, |vault, cx| {
+            vault.starred = starred;
+            cx.emit(VaultEvent::Starred);
+        });
+        self.persist_settings(cx);
+        self.persist_tabs(cx);
+    }
+
+    fn close_composer_deleted_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let deleted = paths
+            .iter()
+            .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+            .collect::<HashSet<_>>();
+        let indices = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, open)| {
+                let path = open.entity.read(cx).path.clone();
+                deleted
+                    .contains(&path.canonicalize().unwrap_or(path))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in indices.into_iter().rev() {
+            if let Some(open) = self.docs.get(index) {
+                open.entity.update(cx, |doc, _| doc.cancel_composer_save());
+            }
+            self.close_tab_now(index, window, cx);
+        }
+        self.closed_tabs.retain(|path| {
+            !deleted.contains(&path.canonicalize().unwrap_or_else(|_| path.clone()))
+        });
     }
 
     pub(crate) fn flush_path_for_new_window(
@@ -4153,7 +4287,7 @@ impl Workspace {
                     let body = body.clone();
                     let source_before = source_before.clone();
                     move |_, window, cx| {
-                        view.update(cx, |this, cx| {
+                        let committed = view.update(cx, |this, cx| {
                             this.commit_extract(
                                 doc.clone(),
                                 source_before.clone(),
@@ -4161,10 +4295,15 @@ impl Workspace {
                                 body.clone(),
                                 window,
                                 cx,
-                            );
-                            this.refocus(window, cx);
+                            )
                         });
-                        true
+                        if committed {
+                            let deferred_view = view.clone();
+                            window.defer(cx, move |window, cx| {
+                                deferred_view.update(cx, |this, cx| this.refocus(window, cx));
+                            });
+                        }
+                        committed
                     }
                 })
         });
@@ -4233,7 +4372,7 @@ impl Workspace {
                     let body = body.clone();
                     let source_before = source_before.clone();
                     move |_, window, cx| {
-                        view.update(cx, |this, cx| {
+                        let committed = view.update(cx, |this, cx| {
                             this.commit_extract(
                                 doc.clone(),
                                 source_before.clone(),
@@ -4241,10 +4380,15 @@ impl Workspace {
                                 body.clone(),
                                 window,
                                 cx,
-                            );
-                            this.refocus(window, cx);
+                            )
                         });
-                        true
+                        if committed {
+                            let deferred_view = view.clone();
+                            window.defer(cx, move |window, cx| {
+                                deferred_view.update(cx, |this, cx| this.refocus(window, cx));
+                            });
+                        }
+                        committed
                     }
                 })
         });
@@ -4330,20 +4474,32 @@ impl Workspace {
                                 .children(target_rows),
                         )
                         .child(
-                            TabBar::new("note-merge-order")
-                                .segmented()
-                                .children([
-                                    Tab::new().label(language.text("Append", "Legg til sist")),
-                                    Tab::new().label(language.text("Prepend", "Legg til først")),
-                                ])
+                            ButtonGroup::new("note-merge-order")
+                                .child(
+                                    Button::new("note-merge-append")
+                                        .label(language.text("Append", "Legg til sist"))
+                                        .selected(
+                                            *tab_order.borrow()
+                                                == crate::note_composer::MergeOrder::Append,
+                                        ),
+                                )
+                                .child(
+                                    Button::new("note-merge-prepend")
+                                        .label(language.text("Prepend", "Legg til først"))
+                                        .selected(
+                                            *tab_order.borrow()
+                                                == crate::note_composer::MergeOrder::Prepend,
+                                        ),
+                                )
                                 .on_click({
                                     let tab_order = tab_order.clone();
-                                    move |index, _, _| {
-                                        *tab_order.borrow_mut() = if *index == 1 {
+                                    move |indices, window, _| {
+                                        *tab_order.borrow_mut() = if indices.contains(&1) {
                                             crate::note_composer::MergeOrder::Prepend
                                         } else {
                                             crate::note_composer::MergeOrder::Append
                                         };
+                                        window.refresh();
                                     }
                                 }),
                         ),
@@ -4405,6 +4561,11 @@ impl Workspace {
                                                 window,
                                                 cx,
                                             )
+                                        });
+                                        let deferred_view = view.clone();
+                                        window.defer(cx, move |window, cx| {
+                                            deferred_view
+                                                .update(cx, |this, cx| this.refocus(window, cx));
                                         });
                                         true
                                     })
@@ -4509,51 +4670,137 @@ impl Workspace {
             );
             return;
         }
-        if self.save_all(cx).is_err() {
+        if source.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
             self.note_status(
                 self.tr(
-                    "Open notes could not be saved; the merge was cancelled.",
-                    "Åpne notater kunne ikke lagres; sammenslåingen ble avbrutt.",
+                    "The source note could not be flushed safely; the merge was cancelled.",
+                    "Kildenotatet kunne ikke lagres trygt; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let source_text = source.read(cx).composer_source(cx);
+        let source_bytes = source_text.as_bytes().to_vec();
+        if source.read(cx).dirty
+            || source.read(cx).conflict
+            || source.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed on disk; the merge was cancelled.",
+                    "Kildenotatet ble endret på disken; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let source_views = self
+            .docs
+            .iter()
+            .filter(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == source_path
+            })
+            .map(|open| open.entity.clone())
+            .collect::<Vec<_>>();
+        if source_views.iter().any(|view| {
+            let doc = view.read(cx);
+            doc.dirty
+                || doc.conflict
+                || doc.composer_source(cx).as_bytes() != source_bytes
+                || doc.composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+        }) {
+            self.note_status(
+                self.tr(
+                    "A duplicate source tab has conflicting or unsaved content.",
+                    "En duplisert kildefane har motstridende eller ulagret innhold.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
+        let local_targets = self
+            .docs
+            .iter()
+            .filter(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == target_path
+            })
+            .count();
+        if local_targets > 1 {
+            self.note_status(
+                self.tr(
+                    "The target is open in duplicate tabs; close duplicates before merging.",
+                    "Målet er åpent i dupliserte faner; lukk duplikatene før sammenslåing.",
+                ),
+                cx,
+            );
+            return;
+        }
+        self.open_document(target_path.clone(), window, cx);
+        let Some(target_doc) = self
+            .docs
+            .iter()
+            .find(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == target_path
+            })
+            .map(|open| open.entity.clone())
+        else {
+            self.note_status(
+                self.tr(
+                    "The target note could not be opened safely.",
+                    "Målnotatet kunne ikke åpnes trygt.",
                 ),
                 cx,
             );
             return;
         };
-        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
-        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
-            let related_open = peer.window.update(cx, |_, _window, cx| {
-                peer.workspace.update(cx, |workspace, cx| {
-                    workspace.save_all(cx)?;
-                    Ok::<_, std::io::Error>(workspace.docs.iter().any(|open| {
-                        open.entity
-                            .read(cx)
-                            .path
-                            .canonicalize()
-                            .unwrap_or_else(|_| open.entity.read(cx).path.clone())
-                            == source_path
-                            || open
-                                .entity
-                                .read(cx)
-                                .path
-                                .canonicalize()
-                                .unwrap_or_else(|_| open.entity.read(cx).path.clone())
-                                == target_path
-                    }))
-                })
-            });
-            if !matches!(related_open, Ok(Ok(Ok(false)))) {
-                self.note_status(
-                    self.tr(
-                        "Another window has the source or target note open; close it there before merging.",
-                        "Et annet vindu har kilde- eller målnotatet åpent; lukk det der før sammenslåing.",
-                    ),
-                    cx,
-                );
-                return;
-            }
+        if target_doc
+            .update(cx, |doc, cx| doc.flush_and_save(cx))
+            .is_err()
+        {
+            self.note_status(
+                self.tr(
+                    "The target note could not be flushed safely; the merge was cancelled.",
+                    "Målnotatet kunne ikke lagres trygt; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
         }
-
-        let source_text = source.read(cx).composer_source(cx);
+        let target_text = target_doc.read(cx).composer_source(cx);
+        let target_bytes = target_text.as_bytes().to_vec();
+        if target_doc.read(cx).dirty
+            || target_doc.read(cx).conflict
+            || target_doc.read(cx).composer_disk_baseline().as_deref()
+                != Some(target_bytes.as_slice())
+            || std::fs::read(&target_path).ok().as_deref() != Some(target_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The target note changed on disk; the merge was cancelled.",
+                    "Målnotatet ble endret på disken; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
         let note_paths = self.vault.read(cx).notes.clone();
         let snapshot = match crate::note_composer::LinkSnapshot::new(&root, &note_paths) {
             Ok(snapshot) => snapshot,
@@ -4565,6 +4812,18 @@ impl Workspace {
                 return;
             }
         };
+        if snapshot.text(&source_path) != Some(source_text.as_str())
+            || snapshot.text(&target_path) != Some(target_text.as_str())
+        {
+            self.note_status(
+                self.tr(
+                    "A source or target note changed while preparing the merge.",
+                    "Et kilde- eller målnotat ble endret under klargjøring av sammenslåingen.",
+                ),
+                cx,
+            );
+            return;
+        }
         let Some(target_text) = snapshot.text(&target_path).map(str::to_string) else {
             self.note_status(
                 self.tr(
@@ -4574,6 +4833,21 @@ impl Workspace {
                 cx,
             );
             return;
+        };
+        let target_rewritten = match snapshot.rewrite_inbound(
+            &target_text,
+            &target_path,
+            &source_path,
+            &target_path,
+        ) {
+            Ok(text) => text,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return;
+            }
         };
         let source_text = match snapshot
             .rewrite_inbound(&source_text, &source_path, &source_path, &target_path)
@@ -4594,7 +4868,8 @@ impl Workspace {
                 return;
             }
         };
-        let Ok(merged) = crate::note_composer::merge_text(&target_text, &source_text, order) else {
+        let Ok(merged) = crate::note_composer::merge_text(&target_rewritten, &source_text, order)
+        else {
             self.note_status(
                 self.tr(
                     "The notes cannot be merged safely.",
@@ -4642,10 +4917,12 @@ impl Workspace {
                 changes.push((note.clone(), before.as_bytes().to_vec(), after.into_bytes()));
             }
         }
+        let mut buffer_changes = changes.clone();
+        buffer_changes.push((source_path.clone(), source_bytes.clone(), Vec::new()));
         for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
             let conflict = peer.window.update(cx, |_, _window, cx| {
                 peer.workspace.update(cx, |workspace, cx| {
-                    workspace.composer_change_conflicts(&changes, cx)
+                    workspace.composer_change_conflicts(&buffer_changes, cx)
                 })
             });
             if !matches!(conflict, Ok(Ok(false))) {
@@ -4659,7 +4936,7 @@ impl Workspace {
                 return;
             }
         }
-        if self.composer_change_conflicts(&changes, cx) {
+        if self.composer_change_conflicts(&buffer_changes, cx) {
             self.note_status(
                 self.tr(
                     "A related note changed while preparing the merge.",
@@ -4669,8 +4946,21 @@ impl Workspace {
             );
             return;
         }
+        if source.read(cx).composer_source(cx).as_bytes() != source_bytes
+            || source.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed before the merge could commit.",
+                    "Kildenotatet ble endret før sammenslåingen kunne fullføres.",
+                ),
+                cx,
+            );
+            return;
+        }
         let (_trash_entry, trash_changes) =
-            match crate::history::prepare_trash_transaction(&root, &source_path) {
+            match crate::history::prepare_trash_transaction(&root, &source_path, &source_bytes) {
                 Ok(plan) => plan,
                 Err(_) => {
                     self.note_status(
@@ -4720,35 +5010,72 @@ impl Workspace {
             return;
         }
         self.apply_composer_changes(&changes, window, cx);
+        let mut workspace_path_references = Vec::new();
         for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
-            let _ = peer.window.update(cx, |_, window, cx| {
+            if let Ok(Ok(delta)) = peer.window.update(cx, |_, window, cx| {
                 peer.workspace.update(cx, |workspace, cx| {
                     workspace.apply_composer_changes(&changes, window, cx);
-                    workspace.repoint_trashed_composer_source(&source_path, &target_path, cx);
+                    let delta =
+                        workspace.repoint_trashed_composer_source(&source_path, &target_path, cx);
+                    workspace.close_composer_deleted_paths(
+                        std::slice::from_ref(&source_path),
+                        window,
+                        cx,
+                    );
+                    delta
                 })
-            });
+            }) {
+                workspace_path_references.push(delta);
+            }
         }
-        if let Some(source_index) = self.docs.iter().position(|open| {
-            open.entity
-                .read(cx)
-                .path
-                .canonicalize()
-                .unwrap_or_else(|_| open.entity.read(cx).path.clone())
-                == source_path
-        }) {
+        workspace_path_references.push(self.repoint_trashed_composer_source(
+            &source_path,
+            &target_path,
+            cx,
+        ));
+        for view in &source_views {
+            view.update(cx, |doc, _| doc.cancel_composer_save());
+        }
+        let mut source_indices = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, open)| {
+                (open
+                    .entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == source_path)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        source_indices.sort_unstable_by(|left, right| right.cmp(left));
+        for source_index in source_indices {
             self.close_tab_now(source_index, window, cx);
         }
-        self.repoint_trashed_composer_source(&source_path, &target_path, cx);
+        self.closed_tabs.retain(|path| path != &source_path);
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
-        self.open_document(target_path, window, cx);
-        if let Some(target) = self.active_doc().cloned() {
-            target.update(cx, |doc, _| {
-                doc.record_composer_edit(
-                    changes[0].1.clone(),
-                    changes[0].2.clone(),
-                    transaction_changes.clone(),
-                );
-            });
+        target_doc.update(cx, |doc, _| {
+            doc.record_composer_edit(
+                changes[0].1.clone(),
+                changes[0].2.clone(),
+                transaction_changes.clone(),
+                crate::document::ComposerPathReferenceDelta {
+                    workspaces: workspace_path_references,
+                },
+            );
+        });
+        if let Some(index) = self
+            .docs
+            .iter()
+            .position(|open| open.entity.entity_id() == target_doc.entity_id())
+        {
+            self.active = Some(index);
+            if let Some(token) = self.doc_tokens.get(index).copied() {
+                self.layout.activate(token);
+            }
         }
         self.note_status(
             self.tr(
@@ -4769,7 +5096,7 @@ impl Workspace {
         body: String,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let name = self.rename_input.read(cx).value().to_string();
         let name = name.trim().trim_end_matches(".md").replace('\\', "/");
         let name = name.trim();
@@ -4781,13 +5108,42 @@ impl Workspace {
                 .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'));
         if bad_name {
             self.note_status(self.tr("Invalid note name.", "Ugyldig notatnavn."), cx);
-            return;
+            return false;
         }
         let Some(root) = self.vault.read(cx).root.clone() else {
-            return;
+            return false;
         };
-        let source_path = doc.read(cx).path.clone();
+        if doc.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
+            self.note_status(
+                self.tr(
+                    "The source note could not be flushed safely; extraction was cancelled.",
+                    "Kildenotatet kunne ikke lagres trygt; uttrekket ble avbrutt.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        let source_path = doc
+            .read(cx)
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| doc.read(cx).path.clone());
         let source = doc.read(cx).composer_source(cx);
+        let source_bytes = source.as_bytes().to_vec();
+        if doc.read(cx).dirty
+            || doc.read(cx).conflict
+            || doc.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed on disk; extraction was cancelled.",
+                    "Kildenotatet ble endret på disken; uttrekket ble avbrutt.",
+                ),
+                cx,
+            );
+            return false;
+        }
         if source != source_before || source.get(range.clone()) != Some(body.as_str()) {
             self.note_status(
                 self.tr(
@@ -4796,7 +5152,61 @@ impl Workspace {
                 ),
                 cx,
             );
-            return;
+            return false;
+        }
+        let source_views = self
+            .docs
+            .iter()
+            .filter(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == source_path
+            })
+            .map(|open| open.entity.clone())
+            .collect::<Vec<_>>();
+        if source_views.iter().any(|view| {
+            let open = view.read(cx);
+            open.dirty
+                || open.conflict
+                || open.composer_source(cx).as_bytes() != source_bytes
+                || open.composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+        }) {
+            self.note_status(
+                self.tr(
+                    "A duplicate source tab has conflicting or unsaved content.",
+                    "En duplisert kildefane har motstridende eller ulagret innhold.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let open = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.docs.iter().any(|open| {
+                        open.entity
+                            .read(cx)
+                            .path
+                            .canonicalize()
+                            .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                            == source_path
+                    })
+                })
+            });
+            if !matches!(open, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "The source note is open in another window; close it before extracting.",
+                        "Kildenotatet er åpent i et annet vindu; lukk det før uttrekk.",
+                    ),
+                    cx,
+                );
+                return false;
+            }
         }
         let dir = if name.contains('/') {
             root.clone()
@@ -4819,25 +5229,76 @@ impl Workspace {
                 self.tr("Invalid extraction path.", "Ugyldig uttrekkssti."),
                 cx,
             );
-            return;
+            return false;
         };
-        let body = match crate::note_composer::extract_reference_definitions(
-            &source,
-            range.clone(),
-            &body,
-        )
-        .and_then(|body| {
-            crate::note_composer::rebase_markdown_links(&body, &source_path, &path, &root)
-        }) {
-            Ok(body) => body,
+        let note_paths = self.vault.read(cx).notes.clone();
+        let snapshot = match crate::note_composer::LinkSnapshot::new(&root, &note_paths) {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 self.note_status(
                     error.message(self.settings.language == crate::settings::Language::Norwegian),
                     cx,
                 );
-                return;
+                return false;
             }
         };
+        if snapshot.text(&source_path) != Some(source.as_str()) {
+            self.note_status(
+                self.tr(
+                    "A source or linked note changed while preparing the extraction.",
+                    "Kilde- eller lenkenotatet ble endret under klargjøring av uttrekket.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        let anchors = match crate::note_composer::ExtractionAnchors::new(&source, range.clone()) {
+            Ok(anchors) => anchors,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        let (body, source_definitions) = match crate::note_composer::extract_reference_definitions(
+            &source,
+            range.clone(),
+            &body,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        let body =
+            match crate::note_composer::rebase_markdown_links(&body, &source_path, &path, &root)
+                .and_then(|body| {
+                    snapshot.rewrite_extraction_links(
+                        &body,
+                        &path,
+                        &source_path,
+                        &path,
+                        &anchors,
+                        true,
+                    )
+                }) {
+                Ok(body) => body,
+                Err(error) => {
+                    self.note_status(
+                        error.message(
+                            self.settings.language == crate::settings::Language::Norwegian,
+                        ),
+                        cx,
+                    );
+                    return false;
+                }
+            };
         let relative = path
             .strip_prefix(&root)
             .ok()
@@ -4849,21 +5310,134 @@ impl Workspace {
             .replacement(relative.trim_end_matches(".md"));
         let mut source_after = source.clone();
         source_after.replace_range(range.clone(), &replacement);
-        if crate::history::snapshot_before_write_checked(
-            &root,
+        if !source_definitions.is_empty() {
+            if !source_after.ends_with("\n\n") {
+                if source_after.ends_with('\n') {
+                    source_after.push('\n');
+                } else {
+                    source_after.push_str("\n\n");
+                }
+            }
+            source_after.push_str(&source_definitions);
+        }
+        source_after = match snapshot.rewrite_extraction_links(
+            &source_after,
             &source_path,
-            source_after.as_bytes(),
-        )
-        .is_err()
-        {
+            &source_path,
+            &path,
+            &anchors,
+            false,
+        ) {
+            Ok(source_after) => source_after,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        let mut additional_changes = Vec::new();
+        for note in snapshot.notes() {
+            if note == &source_path {
+                continue;
+            }
+            let Some(before) = snapshot.text(note) else {
+                self.note_status(
+                    self.tr(
+                        "A linked note could not be read safely.",
+                        "Et lenket notat kunne ikke leses trygt.",
+                    ),
+                    cx,
+                );
+                return false;
+            };
+            let after = match snapshot.rewrite_extraction_links(
+                before,
+                note,
+                &source_path,
+                &path,
+                &anchors,
+                false,
+            ) {
+                Ok(after) => after,
+                Err(error) => {
+                    self.note_status(
+                        error.message(
+                            self.settings.language == crate::settings::Language::Norwegian,
+                        ),
+                        cx,
+                    );
+                    return false;
+                }
+            };
+            if after != before {
+                additional_changes.push((
+                    note.clone(),
+                    Some(before.as_bytes().to_vec()),
+                    Some(after.into_bytes()),
+                ));
+            }
+        }
+        let affected_paths = additional_changes
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        if self.docs.iter().any(|open| {
+            let path = open
+                .entity
+                .read(cx)
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| open.entity.read(cx).path.clone());
+            affected_paths.contains(&path)
+        }) {
             self.note_status(
                 self.tr(
-                    "Could not create a history snapshot; extraction was cancelled.",
-                    "Kunne ikke opprette et historikkøyeblikksbilde; uttrekket ble avbrutt.",
+                    "A linked note that needs updating is open in another tab; close it before extracting.",
+                    "Et lenket notat som må oppdateres er åpent i en annen fane; lukk det før uttrekk.",
                 ),
                 cx,
             );
-            return;
+            return false;
+        }
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let open = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.docs.iter().any(|open| {
+                        let path = open
+                            .entity
+                            .read(cx)
+                            .path
+                            .canonicalize()
+                            .unwrap_or_else(|_| open.entity.read(cx).path.clone());
+                        affected_paths.contains(&path)
+                    })
+                })
+            });
+            if !matches!(open, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "A linked note that needs updating is open in another window; close it before extracting.",
+                        "Et lenket notat som må oppdateres er åpent i et annet vindu; lukk det før uttrekk.",
+                    ),
+                    cx,
+                );
+                return false;
+            }
+        }
+        if source.as_bytes() != source_bytes
+            || doc.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed before extraction could commit.",
+                    "Kildenotatet ble endret før uttrekket kunne fullføres.",
+                ),
+                cx,
+            );
+            return false;
         }
         if let Err(error) = crate::note_composer::extract_transaction(
             &root,
@@ -4872,29 +5446,38 @@ impl Workspace {
             source_after.as_bytes(),
             &path,
             body.as_bytes(),
+            &additional_changes,
         ) {
             self.note_status(
                 error.message(self.settings.language == crate::settings::Language::Norwegian),
                 cx,
             );
-            return;
+            return false;
         }
-        doc.update(cx, |doc, cx| {
-            doc.replace_range(range, replacement, window, cx);
-            doc.mark_composer_written(source_after.as_bytes().to_vec(), cx);
-            doc.record_composer_edit(
-                source.as_bytes().to_vec(),
-                source_after.as_bytes().to_vec(),
-                vec![
-                    (
-                        source_path.clone(),
-                        Some(source.as_bytes().to_vec()),
-                        Some(source_after.as_bytes().to_vec()),
-                    ),
-                    (path.clone(), None, Some(body.as_bytes().to_vec())),
-                ],
-            );
-        });
+        let mut history_changes = vec![
+            (
+                source_path.clone(),
+                Some(source.as_bytes().to_vec()),
+                Some(source_after.as_bytes().to_vec()),
+            ),
+            (path.clone(), None, Some(body.as_bytes().to_vec())),
+        ];
+        history_changes.extend(additional_changes);
+        for source_view in source_views {
+            let owner = source_view.entity_id() == doc.entity_id();
+            source_view.update(cx, |source_doc, cx| {
+                source_doc.replace_range(0..source.len(), source_after.clone(), window, cx);
+                source_doc.mark_composer_written(source_after.as_bytes().to_vec(), cx);
+                if owner {
+                    source_doc.record_composer_edit(
+                        source.as_bytes().to_vec(),
+                        source_after.as_bytes().to_vec(),
+                        history_changes.clone(),
+                        crate::document::ComposerPathReferenceDelta::default(),
+                    );
+                }
+            });
+        }
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
         self.note_status(
             if self.settings.language == crate::settings::Language::Norwegian {
@@ -4904,6 +5487,7 @@ impl Workspace {
             },
             cx,
         );
+        true
     }
 
     /// Palette list toggles — bulleted/numbered/checklist.
@@ -5326,23 +5910,73 @@ impl Workspace {
         source: &Path,
         target: &Path,
         cx: &mut Context<Self>,
-    ) {
+    ) -> crate::document::ComposerWorkspacePathReferenceDelta {
+        fn repoint_paths(
+            paths: &mut [PathBuf],
+            source: &Path,
+            target: &Path,
+        ) -> Vec<crate::document::ComposerPathValueChange<PathBuf>> {
+            paths
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(index, path)| {
+                    let before = path.clone();
+                    crate::explorer::repoint_path(path, source, target);
+                    (before != *path).then(|| crate::document::ComposerPathValueChange {
+                        index,
+                        before,
+                        after: path.clone(),
+                    })
+                })
+                .collect()
+        }
+
+        let mut before = HashMap::new();
+        bookmark_kinds(&self.settings.bookmarks.items, &mut before);
         self.settings.bookmarks.repoint(source, target);
-        for value in &mut self.settings.pinned_tabs {
-            let mut path = PathBuf::from(&*value);
+        let mut pinned_tabs = Vec::new();
+        for (index, value) in self.settings.pinned_tabs.iter_mut().enumerate() {
+            let before = value.clone();
+            let mut path = PathBuf::from(&before);
             crate::explorer::repoint_path(&mut path, source, target);
-            *value = path.to_string_lossy().to_string();
+            let after = path.to_string_lossy().to_string();
+            if before != after {
+                *value = after.clone();
+                pinned_tabs.push(crate::document::ComposerPathValueChange {
+                    index,
+                    before,
+                    after,
+                });
+            }
         }
-        for path in self
-            .recent
-            .iter_mut()
-            .chain(self.closed_tabs.iter_mut())
-            .chain(self.nav_stack.iter_mut())
-        {
-            crate::explorer::repoint_path(path, source, target);
-        }
-        self.persist_bookmarks(cx);
+        let recent = repoint_paths(&mut self.recent, source, target);
+        let closed_tabs = repoint_paths(&mut self.closed_tabs, source, target);
+        let navigation = repoint_paths(&mut self.nav_stack, source, target);
+        let mut after = HashMap::new();
+        bookmark_kinds(&self.settings.bookmarks.items, &mut after);
+        let bookmarks = before
+            .into_iter()
+            .filter_map(|(id, before)| {
+                let after = after.get(&id)?;
+                (before != *after).then(|| (id, before, after.clone()))
+            })
+            .collect();
+        self.settings.starred = self.settings.bookmarks.starred_paths();
+        let starred = self.settings.starred.iter().cloned().collect();
+        self.vault.update(cx, |vault, cx| {
+            vault.starred = starred;
+            cx.emit(VaultEvent::Starred);
+        });
+        self.persist_settings(cx);
         self.persist_tabs(cx);
+        crate::document::ComposerWorkspacePathReferenceDelta {
+            window_id: self.window_id,
+            bookmarks,
+            pinned_tabs,
+            recent,
+            closed_tabs,
+            navigation,
+        }
     }
 
     pub(crate) fn bookmark_search(
@@ -10872,11 +11506,17 @@ impl Workspace {
                 this.on_editor_paste_action(window, cx);
             }))
             .capture_action::<input::Undo>(cx.listener(move |this, _, window, cx| {
+                if undo_doc.read(cx).composer_rollback_action(
+                    crate::document::ComposerHistoryDirection::Undo,
+                ) {
+                    return;
+                }
                 let changes = undo_doc.read(cx).composer_history_changes_for_action(
                     crate::document::ComposerHistoryDirection::Undo,
                     cx,
                 );
                 if this.composer_history_buffer_conflict(
+                    Some(&undo_doc),
                     &changes,
                     crate::document::ComposerHistoryDirection::Undo,
                     cx,
@@ -10910,11 +11550,17 @@ impl Workspace {
                 }
             }))
             .capture_action::<input::Redo>(cx.listener(move |this, _, window, cx| {
+                if redo_doc.read(cx).composer_rollback_action(
+                    crate::document::ComposerHistoryDirection::Redo,
+                ) {
+                    return;
+                }
                 let changes = redo_doc.read(cx).composer_history_changes_for_action(
                     crate::document::ComposerHistoryDirection::Redo,
                     cx,
                 );
                 if this.composer_history_buffer_conflict(
+                    Some(&redo_doc),
                     &changes,
                     crate::document::ComposerHistoryDirection::Redo,
                     cx,
@@ -12685,6 +13331,46 @@ mod preview_tab_tests {
         assert!(!preview_tab_is_replaceable(true, true, false, false));
         assert!(!preview_tab_is_replaceable(true, false, true, false));
         assert!(!preview_tab_is_replaceable(true, false, false, true));
+    }
+}
+
+#[cfg(test)]
+mod composer_path_reference_tests {
+    use super::apply_composer_path_list;
+    use crate::document::{ComposerHistoryDirection, ComposerPathValueChange};
+
+    #[test]
+    fn note_composer_path_history_only_changes_the_captured_unchanged_slot() {
+        let change = ComposerPathValueChange {
+            index: 0,
+            before: "source.md".to_string(),
+            after: "target.md".to_string(),
+        };
+        let mut paths = vec!["target.md".to_string(), "target.md".to_string()];
+
+        apply_composer_path_list(
+            &mut paths,
+            std::slice::from_ref(&change),
+            ComposerHistoryDirection::Undo,
+        );
+        assert_eq!(
+            paths,
+            vec!["source.md".to_string(), "target.md".to_string()]
+        );
+
+        apply_composer_path_list(
+            &mut paths,
+            std::slice::from_ref(&change),
+            ComposerHistoryDirection::Redo,
+        );
+        assert_eq!(
+            paths,
+            vec!["target.md".to_string(), "target.md".to_string()]
+        );
+
+        paths[0] = "later.md".to_string();
+        apply_composer_path_list(&mut paths, &[change], ComposerHistoryDirection::Undo);
+        assert_eq!(paths, vec!["later.md".to_string(), "target.md".to_string()]);
     }
 }
 

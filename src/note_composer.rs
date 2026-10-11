@@ -8,10 +8,13 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 pub(crate) type ComposerTransactionChange = (PathBuf, Option<Vec<u8>>, Option<Vec<u8>>);
+type ReferenceDefinitions = std::collections::HashMap<String, Vec<(String, Option<String>)>>;
 
 #[path = "note_composer_links.rs"]
 mod links;
-pub use links::{extract_reference_definitions, rebase_markdown_links, LinkSnapshot};
+pub use links::{
+    extract_reference_definitions, rebase_markdown_links, ExtractionAnchors, LinkSnapshot,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,11 +49,13 @@ pub enum ComposeError {
     PropertyConflict,
     AnchorConflict,
     AmbiguousLink,
+    UnsupportedLink,
     InvalidPath,
     FileTooLarge,
     UnreadableNote,
     DestinationExists,
     ExternalChange,
+    RecoveryConflict,
     TransactionFailed,
 }
 
@@ -67,6 +72,12 @@ impl ComposeError {
             (Self::AnchorConflict, true) => "Notatene har dupliserte overskrifter eller ankere.",
             (Self::AmbiguousLink, false) => "A link is ambiguous and cannot be updated safely.",
             (Self::AmbiguousLink, true) => "En lenke er tvetydig og kan ikke oppdateres trygt.",
+            (Self::UnsupportedLink, false) => {
+                "An unsupported link prevents this section from being extracted safely."
+            }
+            (Self::UnsupportedLink, true) => {
+                "En lenke som ikke støttes hindrer trygg uttrekking av denne delen."
+            }
             (Self::InvalidPath, false) => "The path is outside the vault or unsupported.",
             (Self::InvalidPath, true) => "Stien er utenfor hvelvet eller støttes ikke.",
             (Self::FileTooLarge, false) => "A note is too large to process safely.",
@@ -77,6 +88,12 @@ impl ComposeError {
             (Self::DestinationExists, true) => "Målfilen finnes allerede.",
             (Self::ExternalChange, false) => "A file changed during the operation.",
             (Self::ExternalChange, true) => "En fil ble endret under operasjonen.",
+            (Self::RecoveryConflict, false) => {
+                "Pending Composer recovery was kept in .rista/composer because a file no longer matches."
+            }
+            (Self::RecoveryConflict, true) => {
+                "Ventende Composer-gjenoppretting ble beholdt i .rista/composer fordi en fil ikke lenger stemmer."
+            }
             (Self::TransactionFailed, false) => "The note operation could not be completed safely.",
             (Self::TransactionFailed, true) => "Notatoperasjonen kunne ikke fullføres trygt.",
         }
@@ -84,7 +101,7 @@ impl ComposeError {
 }
 
 pub const MAX_NOTE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const COMPOSER_DIRECTORY: &str = ".rista/composer";
 
 #[derive(Clone)]
@@ -123,6 +140,81 @@ fn checked_path(root: &Path, path: &Path) -> Result<PathBuf, ComposeError> {
         .ok_or(ComposeError::InvalidPath)
 }
 
+pub(crate) fn checked_vault_dir(root: &Path, path: &Path) -> Result<PathBuf, ComposeError> {
+    let original_root = root;
+    let root = root.canonicalize().map_err(|_| ComposeError::InvalidPath)?;
+    let requested = if path.is_absolute() {
+        path.strip_prefix(original_root)
+            .map(|relative| root.join(relative))
+            .unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        root.join(path)
+    };
+    let relative = requested
+        .strip_prefix(&root)
+        .map_err(|_| ComposeError::InvalidPath)?;
+    let mut current = root.clone();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(ComposeError::InvalidPath);
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    current = current
+                        .canonicalize()
+                        .map_err(|_| ComposeError::InvalidPath)?;
+                }
+                if !fs::metadata(&current)
+                    .map_err(|_| ComposeError::InvalidPath)?
+                    .is_dir()
+                    || !current.starts_with(&root)
+                {
+                    return Err(ComposeError::InvalidPath);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let parent = current.parent().ok_or(ComposeError::InvalidPath)?;
+                let parent = parent
+                    .canonicalize()
+                    .map_err(|_| ComposeError::InvalidPath)?;
+                if !parent.starts_with(&root) {
+                    return Err(ComposeError::InvalidPath);
+                }
+                match fs::create_dir(parent.join(component)) {
+                    Ok(()) => current = parent.join(component),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        current = parent.join(component);
+                        let metadata = fs::symlink_metadata(&current)
+                            .map_err(|_| ComposeError::InvalidPath)?;
+                        if metadata.file_type().is_symlink() {
+                            current = current
+                                .canonicalize()
+                                .map_err(|_| ComposeError::InvalidPath)?;
+                        }
+                        if !fs::metadata(&current)
+                            .map_err(|_| ComposeError::InvalidPath)?
+                            .is_dir()
+                            || !current.starts_with(&root)
+                        {
+                            return Err(ComposeError::InvalidPath);
+                        }
+                    }
+                    Err(_) => return Err(ComposeError::TransactionFailed),
+                }
+            }
+            Err(_) => return Err(ComposeError::InvalidPath),
+        }
+    }
+    current
+        .canonicalize()
+        .map_err(|_| ComposeError::InvalidPath)?
+        .starts_with(&root)
+        .then_some(current)
+        .ok_or(ComposeError::InvalidPath)
+}
+
 fn read_bounded(path: &Path, total: &mut usize) -> Result<Vec<u8>, ComposeError> {
     if fs::metadata(path)
         .map_err(|_| ComposeError::UnreadableNote)?
@@ -147,41 +239,23 @@ fn guarded_write(path: &Path, before: Option<&[u8]>, after: &[u8]) -> Result<(),
             {
                 return Err(ComposeError::ExternalChange);
             }
-            let temp = path.with_extension(format!(
-                "rista-compose-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_nanos())
-                    .unwrap_or_default()
-            ));
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-                .map_err(|_| ComposeError::TransactionFailed)?;
-            use std::io::Write;
-            file.write_all(after)
-                .and_then(|_| file.sync_all())
-                .map_err(|_| ComposeError::TransactionFailed)?;
-            fs::rename(temp, path).map_err(|_| ComposeError::TransactionFailed)?;
+            let temp = write_temporary(path, after)?;
+            if fs::rename(&temp, path).is_err() {
+                let _ = fs::remove_file(temp);
+                return Err(ComposeError::TransactionFailed);
+            }
         }
         None => {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|err| {
-                    if err.kind() == io::ErrorKind::AlreadyExists {
-                        ComposeError::DestinationExists
-                    } else {
-                        ComposeError::TransactionFailed
-                    }
-                })?;
-            use std::io::Write;
-            file.write_all(after)
-                .and_then(|_| file.sync_all())
-                .map_err(|_| ComposeError::TransactionFailed)?;
+            let temp = write_temporary(path, after)?;
+            let install = fs::hard_link(&temp, path);
+            let _ = fs::remove_file(&temp);
+            install.map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    ComposeError::DestinationExists
+                } else {
+                    ComposeError::TransactionFailed
+                }
+            })?;
         }
     }
     if let Some(parent) = path.parent() {
@@ -190,6 +264,38 @@ fn guarded_write(path: &Path, before: Option<&[u8]>, after: &[u8]) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn write_temporary(path: &Path, bytes: &[u8]) -> Result<PathBuf, ComposeError> {
+    let parent = path.parent().ok_or(ComposeError::InvalidPath)?;
+    let name = path
+        .file_name()
+        .ok_or(ComposeError::InvalidPath)?
+        .to_string_lossy();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    for attempt in 0..16u8 {
+        let temp = parent.join(format!(
+            ".{name}.rista-compose-{}-{timestamp}-{attempt}.tmp",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(ComposeError::TransactionFailed),
+        };
+        use std::io::Write;
+        let result = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file);
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
+            return Err(ComposeError::TransactionFailed);
+        }
+        return Ok(temp);
+    }
+    Err(ComposeError::TransactionFailed)
 }
 
 fn guarded_change(
@@ -241,20 +347,17 @@ fn write_staged(path: &Path, bytes: &[u8]) -> Result<(), ComposeError> {
         .open(path)
         .map_err(|_| ComposeError::TransactionFailed)?;
     use std::io::Write;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| ComposeError::TransactionFailed)
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+        return Err(ComposeError::TransactionFailed);
+    }
+    Ok(())
 }
 
 fn composer_stage_root(root: &Path) -> Result<PathBuf, ComposeError> {
-    let path = root.join(COMPOSER_DIRECTORY);
-    fs::create_dir_all(&path).map_err(|_| ComposeError::TransactionFailed)?;
-    let path = path
-        .canonicalize()
-        .map_err(|_| ComposeError::TransactionFailed)?;
-    path.starts_with(root)
-        .then_some(path)
-        .ok_or(ComposeError::InvalidPath)
+    checked_vault_dir(root, &root.join(COMPOSER_DIRECTORY))
 }
 
 fn create_transaction_stage(
@@ -272,44 +375,50 @@ fn create_transaction_stage(
     );
     let stage = stage_root.join(id);
     fs::create_dir(&stage).map_err(|_| ComposeError::TransactionFailed)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&stage, fs::Permissions::from_mode(0o700))
+    let result = (|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&stage, fs::Permissions::from_mode(0o700))
+                .map_err(|_| ComposeError::TransactionFailed)?;
+        }
+        let mut files = Vec::with_capacity(changes.len());
+        for (index, change) in changes.iter().enumerate() {
+            let relative = change
+                .path
+                .strip_prefix(root)
+                .map_err(|_| ComposeError::InvalidPath)?;
+            let before_name = change.before.as_ref().map(|_| format!("before-{index}"));
+            let after_name = format!("after-{index}");
+            if let (Some(name), Some(bytes)) = (&before_name, &change.before) {
+                write_staged(&stage.join(name), bytes)?;
+            }
+            if let Some(after) = &change.after {
+                write_staged(&stage.join(&after_name), after)?;
+            }
+            files.push(RecoveryFile {
+                path: relative.to_string_lossy().to_string(),
+                before: before_name,
+                after: change.after.as_ref().map(|_| after_name),
+            });
+        }
+        let manifest = RecoveryManifest {
+            committed: false,
+            files,
+        };
+        let bytes = serde_json::to_vec(&manifest).map_err(|_| ComposeError::TransactionFailed)?;
+        write_staged(&stage.join("manifest.tmp"), &bytes)?;
+        fs::rename(stage.join("manifest.tmp"), stage.join("manifest.json"))
             .map_err(|_| ComposeError::TransactionFailed)?;
-    }
-    let mut files = Vec::with_capacity(changes.len());
-    for (index, change) in changes.iter().enumerate() {
-        let relative = change
-            .path
-            .strip_prefix(root)
-            .map_err(|_| ComposeError::InvalidPath)?;
-        let before_name = change.before.as_ref().map(|_| format!("before-{index}"));
-        let after_name = format!("after-{index}");
-        if let (Some(name), Some(bytes)) = (&before_name, &change.before) {
-            write_staged(&stage.join(name), bytes)?;
+        if let Ok(directory) = OpenOptions::new().read(true).open(&stage) {
+            let _ = directory.sync_all();
         }
-        if let Some(after) = &change.after {
-            write_staged(&stage.join(&after_name), after)?;
-        }
-        files.push(RecoveryFile {
-            path: relative.to_string_lossy().to_string(),
-            before: before_name,
-            after: change.after.as_ref().map(|_| after_name),
-        });
+        Ok((stage.clone(), manifest))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&stage);
     }
-    let manifest = RecoveryManifest {
-        committed: false,
-        files,
-    };
-    let bytes = serde_json::to_vec(&manifest).map_err(|_| ComposeError::TransactionFailed)?;
-    write_staged(&stage.join("manifest.tmp"), &bytes)?;
-    fs::rename(stage.join("manifest.tmp"), stage.join("manifest.json"))
-        .map_err(|_| ComposeError::TransactionFailed)?;
-    if let Ok(directory) = OpenOptions::new().read(true).open(&stage) {
-        let _ = directory.sync_all();
-    }
-    Ok((stage, manifest))
+    result
 }
 
 fn mark_transaction_committed(
@@ -331,8 +440,12 @@ fn apply_transaction(root: &Path, changes: &[TransactionChange]) -> Result<(), C
     let root = root.canonicalize().map_err(|_| ComposeError::InvalidPath)?;
     let mut total = 0usize;
     let mut canonical_changes = Vec::with_capacity(changes.len());
+    let mut paths = std::collections::HashSet::new();
     for change in changes {
         let path = checked_path(&root, &change.path)?;
+        if !paths.insert(path.clone()) {
+            return Err(ComposeError::InvalidPath);
+        }
         if change
             .after
             .as_ref()
@@ -426,24 +539,26 @@ pub fn recover_pending_transactions(root: &Path) -> Result<usize, ComposeError> 
             Err(_) => return Err(ComposeError::TransactionFailed),
         };
         if metadata.file_type().is_symlink() || metadata.len() > MAX_TOTAL_BYTES as u64 {
-            return Err(ComposeError::InvalidPath);
+            return Err(ComposeError::RecoveryConflict);
         }
         let manifest: RecoveryManifest = serde_json::from_slice(
             &fs::read(&manifest_path).map_err(|_| ComposeError::TransactionFailed)?,
         )
-        .map_err(|_| ComposeError::TransactionFailed)?;
+        .map_err(|_| ComposeError::RecoveryConflict)?;
         let marker = stage.join("committed");
         let committed = manifest.committed || marker.exists();
-        if marker.exists()
-            && fs::symlink_metadata(&marker)
-                .map_err(|_| ComposeError::TransactionFailed)?
-                .file_type()
-                .is_symlink()
-        {
-            return Err(ComposeError::InvalidPath);
+        if marker.exists() {
+            let marker_metadata =
+                fs::symlink_metadata(&marker).map_err(|_| ComposeError::RecoveryConflict)?;
+            if marker_metadata.file_type().is_symlink() || !marker_metadata.is_file() {
+                return Err(ComposeError::RecoveryConflict);
+            }
         }
         if !committed {
-            let mut total = 0usize;
+            let mut stage_total = 0usize;
+            let mut actual_total = 0usize;
+            let mut seen_paths = std::collections::HashSet::new();
+            let mut rollback = Vec::new();
             for file in manifest.files.iter().rev() {
                 let safe_stage_name = |name: &str| {
                     let mut components = Path::new(name).components();
@@ -459,7 +574,7 @@ pub fn recover_pending_transactions(root: &Path) -> Result<usize, ComposeError> 
                         .as_deref()
                         .is_some_and(|name| !safe_stage_name(name))
                 {
-                    return Err(ComposeError::InvalidPath);
+                    return Err(ComposeError::RecoveryConflict);
                 }
                 let relative = PathBuf::from(&file.path);
                 if relative.is_absolute()
@@ -470,54 +585,63 @@ pub fn recover_pending_transactions(root: &Path) -> Result<usize, ComposeError> 
                         )
                     })
                 {
-                    return Err(ComposeError::InvalidPath);
+                    return Err(ComposeError::RecoveryConflict);
                 }
                 let path = checked_path(&root, &root.join(relative))?;
+                if !seen_paths.insert(path.clone()) || file.before.is_none() && file.after.is_none()
+                {
+                    return Err(ComposeError::RecoveryConflict);
+                }
+                let read_stage_file =
+                    |name: &str, total: &mut usize| -> Result<Vec<u8>, ComposeError> {
+                        let stage_path = stage.join(name);
+                        let metadata = fs::symlink_metadata(&stage_path)
+                            .map_err(|_| ComposeError::RecoveryConflict)?;
+                        if !metadata.is_file()
+                            || metadata.file_type().is_symlink()
+                            || metadata.len() > MAX_NOTE_BYTES as u64
+                        {
+                            return Err(ComposeError::RecoveryConflict);
+                        }
+                        read_bounded(&stage_path, total).map_err(|_| ComposeError::RecoveryConflict)
+                    };
                 let after = file
                     .after
                     .as_deref()
-                    .map(|name| {
-                        let after_path = stage.join(name);
-                        let after_meta = fs::symlink_metadata(&after_path)
-                            .map_err(|_| ComposeError::TransactionFailed)?;
-                        if after_meta.file_type().is_symlink()
-                            || after_meta.len() > MAX_NOTE_BYTES as u64
-                        {
-                            return Err(ComposeError::InvalidPath);
-                        }
-                        read_bounded(&after_path, &mut total)
-                    })
+                    .map(|name| read_stage_file(name, &mut stage_total))
                     .transpose()?;
-                match &file.before {
-                    Some(name) => {
-                        let before_path = stage.join(name);
-                        let before_meta = fs::symlink_metadata(&before_path)
-                            .map_err(|_| ComposeError::TransactionFailed)?;
-                        if before_meta.file_type().is_symlink()
-                            || before_meta.len() > MAX_NOTE_BYTES as u64
-                        {
-                            return Err(ComposeError::InvalidPath);
-                        }
-                        let before = read_bounded(&before_path, &mut total)?;
-                        let actual = read_optional_bounded(&path, &mut total)?;
-                        if actual == after {
-                            guarded_change(&path, after.as_deref(), Some(&before))?;
-                        } else if actual.as_deref() != Some(before.as_slice()) {
-                            return Err(ComposeError::ExternalChange);
-                        }
-                    }
-                    None => {
-                        let actual = read_optional_bounded(&path, &mut total)?;
-                        if actual == after {
-                            guarded_change(&path, after.as_deref(), None)?;
-                        } else if actual.is_some() {
-                            return Err(ComposeError::ExternalChange);
-                        }
-                    }
+                let before = file
+                    .before
+                    .as_deref()
+                    .map(|name| read_stage_file(name, &mut stage_total))
+                    .transpose()?;
+                if stage_total > MAX_TOTAL_BYTES {
+                    return Err(ComposeError::RecoveryConflict);
                 }
+                let actual = read_optional_bounded(&path, &mut actual_total)
+                    .map_err(|_| ComposeError::RecoveryConflict)?;
+                if actual == before {
+                    continue;
+                }
+                if actual != after {
+                    return Err(ComposeError::RecoveryConflict);
+                }
+                rollback.push(TransactionChange {
+                    path,
+                    before: after,
+                    after: before,
+                });
+            }
+            for change in rollback {
+                guarded_change(
+                    &change.path,
+                    change.before.as_deref(),
+                    change.after.as_deref(),
+                )
+                .map_err(|_| ComposeError::RecoveryConflict)?;
             }
         }
-        fs::remove_dir_all(stage).map_err(|_| ComposeError::TransactionFailed)?;
+        fs::remove_dir_all(stage).map_err(|_| ComposeError::RecoveryConflict)?;
         recovered += 1;
     }
     Ok(recovered)
@@ -533,22 +657,36 @@ pub fn extract_transaction(
     source_after: &[u8],
     destination: &Path,
     payload: &[u8],
+    additional: &[ComposerTransactionChange],
 ) -> Result<(), ComposeError> {
-    apply_transaction(
-        root,
-        &[
-            TransactionChange {
-                path: destination.to_path_buf(),
-                before: None,
-                after: Some(payload.to_vec()),
-            },
-            TransactionChange {
-                path: source_path.to_path_buf(),
-                before: Some(source_before.to_vec()),
-                after: Some(source_after.to_vec()),
-            },
-        ],
-    )
+    let mut changes = vec![
+        (
+            source_path.to_path_buf(),
+            Some(source_before.to_vec()),
+            Some(source_after.to_vec()),
+        ),
+        (destination.to_path_buf(), None, Some(payload.to_vec())),
+    ];
+    changes.extend(additional.iter().cloned());
+    let mut transaction = changes
+        .iter()
+        .map(|(path, before, after)| TransactionChange {
+            path: path.clone(),
+            before: before.clone(),
+            after: after.clone(),
+        })
+        .collect::<Vec<_>>();
+    transaction.extend(
+        crate::history::prepare_composer_snapshots(root, &changes)
+            .map_err(|_| ComposeError::TransactionFailed)?
+            .into_iter()
+            .map(|(path, before, after)| TransactionChange {
+                path,
+                before,
+                after,
+            }),
+    );
+    apply_transaction(root, &transaction)
 }
 
 pub(crate) fn merge_transaction_changes(
@@ -571,6 +709,8 @@ pub(crate) fn merge_transaction_changes(
 pub fn parse(text: &str) -> Result<Node, ComposeError> {
     let mut options = markdown::ParseOptions::gfm();
     options.constructs.frontmatter = true;
+    options.constructs.math_flow = true;
+    options.constructs.math_text = true;
     markdown::to_mdast(text, &options).map_err(|_| ComposeError::InvalidMarkdown)
 }
 
@@ -709,23 +849,24 @@ fn block_ids(text: &str) -> Result<Vec<String>, ComposeError> {
     Ok(ids)
 }
 
-fn reference_definitions(
-    text: &str,
-) -> Result<std::collections::HashMap<String, Vec<String>>, ComposeError> {
+fn reference_definitions(text: &str) -> Result<ReferenceDefinitions, ComposeError> {
     let root = parse(text)?;
-    let mut definitions = std::collections::HashMap::<String, Vec<String>>::new();
-    fn collect(node: &Node, text: &str, out: &mut std::collections::HashMap<String, Vec<String>>) {
+    let mut definitions = ReferenceDefinitions::new();
+    fn collect(node: &Node, text: &str, out: &mut ReferenceDefinitions) {
         match node {
             Node::Definition(definition) => {
                 out.entry(definition.identifier.to_lowercase())
                     .or_default()
-                    .push(definition.url.clone());
+                    .push((definition.url.clone(), definition.title.clone()));
             }
             Node::FootnoteDefinition(definition) => {
                 if let Some(position) = &definition.position {
                     out.entry(format!("footnote:{}", definition.identifier.to_lowercase()))
                         .or_default()
-                        .push(text[position.start.offset..position.end.offset].to_string());
+                        .push((
+                            text[position.start.offset..position.end.offset].to_string(),
+                            None,
+                        ));
                 }
             }
             _ => {}
@@ -914,13 +1055,29 @@ mod tests {
         fs::write(&source, "before").unwrap();
         fs::write(&destination, "existing").unwrap();
         assert_eq!(
-            extract_transaction(&root, &source, b"before", b"after", &destination, b"body"),
+            extract_transaction(
+                &root,
+                &source,
+                b"before",
+                b"after",
+                &destination,
+                b"body",
+                &[],
+            ),
             Err(ComposeError::DestinationExists)
         );
         fs::remove_file(&destination).unwrap();
         fs::write(&source, "external").unwrap();
         assert_eq!(
-            extract_transaction(&root, &source, b"before", b"after", &destination, b"body"),
+            extract_transaction(
+                &root,
+                &source,
+                b"before",
+                b"after",
+                &destination,
+                b"body",
+                &[],
+            ),
             Err(ComposeError::ExternalChange)
         );
         assert_eq!(fs::read_to_string(source).unwrap(), "external");
@@ -949,12 +1106,96 @@ mod tests {
             b"[[new]]",
             &destination,
             b"body",
+            &[],
         )
         .unwrap();
         assert_eq!(fs::read(&source).unwrap(), b"[[new]]");
         assert_eq!(fs::read(&destination).unwrap(), b"body");
+        let source_snapshot = crate::history::snapshots(&root, &source);
+        let destination_snapshot = crate::history::snapshots(&root, &destination);
+        assert_eq!(fs::read(&source_snapshot[0].1).unwrap(), b"selected");
+        assert_eq!(fs::read(&destination_snapshot[0].1).unwrap(), b"body");
         assert_eq!(recover_pending_transactions(&root).unwrap(), 0);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_preflights_every_file_before_rolling_back_any() {
+        let root = std::env::temp_dir().join(format!(
+            "rista-compose-recovery-conflict-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.md");
+        let destination = root.join("new.md");
+        fs::write(&source, b"after").unwrap();
+        fs::write(&destination, b"external").unwrap();
+        let stage = root.join(COMPOSER_DIRECTORY).join("interrupted");
+        fs::create_dir_all(&stage).unwrap();
+        write_staged(&stage.join("before-1"), b"before").unwrap();
+        write_staged(&stage.join("after-1"), b"after").unwrap();
+        write_staged(&stage.join("after-0"), b"created").unwrap();
+        let manifest = RecoveryManifest {
+            committed: false,
+            files: vec![
+                RecoveryFile {
+                    path: "new.md".into(),
+                    before: None,
+                    after: Some("after-0".into()),
+                },
+                RecoveryFile {
+                    path: "source.md".into(),
+                    before: Some("before-1".into()),
+                    after: Some("after-1".into()),
+                },
+            ],
+        };
+        write_staged(
+            &stage.join("manifest.json"),
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            recover_pending_transactions(&root),
+            Err(ComposeError::RecoveryConflict)
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"after");
+        assert_eq!(fs::read(&destination).unwrap(), b"external");
+        assert!(stage.exists());
+        fs::write(&destination, b"created").unwrap();
+        assert_eq!(recover_pending_transactions(&root).unwrap(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"before");
+        assert!(!destination.exists());
+        assert!(!stage.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composer_metadata_rejects_escaping_symlink_before_creating_children() {
+        let root = std::env::temp_dir().join(format!(
+            "rista-compose-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".rista")).unwrap();
+        assert_eq!(
+            checked_vault_dir(&root, &root.join(".rista/composer")),
+            Err(ComposeError::InvalidPath)
+        );
+        assert!(!outside.join("composer").exists());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[test]

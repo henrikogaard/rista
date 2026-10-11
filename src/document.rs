@@ -30,12 +30,64 @@ struct ComposerHistoryEntry {
     before: Vec<u8>,
     after: Vec<u8>,
     changes: Vec<ComposerFileChange>,
+    path_references: ComposerPathReferenceDelta,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ComposerPathReferenceDelta {
+    pub(crate) workspaces: Vec<ComposerWorkspacePathReferenceDelta>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ComposerWorkspacePathReferenceDelta {
+    pub(crate) window_id: u64,
+    pub(crate) bookmarks: Vec<(
+        u64,
+        crate::bookmarks::BookmarkKind,
+        crate::bookmarks::BookmarkKind,
+    )>,
+    pub(crate) pinned_tabs: Vec<ComposerPathValueChange<String>>,
+    pub(crate) recent: Vec<ComposerPathValueChange<PathBuf>>,
+    pub(crate) closed_tabs: Vec<ComposerPathValueChange<PathBuf>>,
+    pub(crate) navigation: Vec<ComposerPathValueChange<PathBuf>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ComposerPathValueChange<T> {
+    pub(crate) index: usize,
+    pub(crate) before: T,
+    pub(crate) after: T,
 }
 
 struct PendingComposerHistory {
     token: u64,
     direction: ComposerHistoryDirection,
     expected: Vec<u8>,
+}
+
+fn composer_history_boundary_matches(
+    direction: ComposerHistoryDirection,
+    current: &[u8],
+    before: &[u8],
+    after: &[u8],
+) -> bool {
+    match direction {
+        ComposerHistoryDirection::Undo => current == after,
+        ComposerHistoryDirection::Redo => current == before,
+    }
+}
+
+pub(crate) fn composer_history_buffer_conflicts(
+    expected: Option<&[u8]>,
+    current: &[u8],
+    baseline: Option<&[u8]>,
+    dirty: bool,
+    conflict: bool,
+) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    dirty || conflict || current != expected || baseline != Some(expected)
 }
 
 fn composer_files_match(root: &Path, changes: &[ComposerFileChange], reverse: bool) -> bool {
@@ -91,6 +143,7 @@ pub enum DocumentEvent {
     ComposerHistoryApplied {
         direction: ComposerHistoryDirection,
         changes: Vec<ComposerFileChange>,
+        path_references: ComposerPathReferenceDelta,
     },
     /// Caret moved — the status bar's Ln/Col display tracks it.
     Selection,
@@ -154,6 +207,7 @@ pub struct Document {
     composer_redo: Vec<ComposerHistoryEntry>,
     composer_history_token: u64,
     pending_composer_history: Option<PendingComposerHistory>,
+    composer_rollback_action: Option<ComposerHistoryDirection>,
     /// Focus mode: only the block under the caret stays lit —
     /// decorations recompute on cursor moves while this is on.
     pub focus_mode: bool,
@@ -331,6 +385,7 @@ impl Document {
             composer_redo: Vec::new(),
             composer_history_token: 0,
             pending_composer_history: None,
+            composer_rollback_action: None,
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
@@ -412,8 +467,22 @@ impl Document {
             .to_string()
     }
 
-    fn on_edited(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.reloading || self.is_read_only() {
+            return;
+        }
+        if self.composer_rollback_action.take().is_some() {
+            let current = self.editor.read(cx).value().to_string().into_bytes();
+            self.dirty = self.disk_bytes.as_ref() != Some(&current);
+            self.save_task.take();
+            self.revision += 1;
+            self.spell_analysis = None;
+            self.spell_request_key = None;
+            self.clear_spellcheck(cx);
+            self.schedule_spellcheck(cx);
+            self.sync_preview(cx);
+            cx.emit(DocumentEvent::Changed);
+            cx.notify();
             return;
         }
         if !self.dirty
@@ -452,7 +521,7 @@ impl Document {
                 }
             });
         }));
-        self.complete_composer_history_action(cx);
+        self.complete_composer_history_action(window, cx);
         cx.notify();
     }
 
@@ -461,6 +530,7 @@ impl Document {
         before: Vec<u8>,
         after: Vec<u8>,
         changes: Vec<ComposerFileChange>,
+        path_references: ComposerPathReferenceDelta,
     ) {
         self.pending_composer_history = None;
         self.composer_redo.clear();
@@ -468,6 +538,7 @@ impl Document {
             before,
             after,
             changes,
+            path_references,
         });
         if self.composer_undo.len() > 64 {
             self.composer_undo.remove(0);
@@ -481,17 +552,19 @@ impl Document {
     ) -> Vec<ComposerFileChange> {
         let current = self.editor.read(cx).value().to_string().into_bytes();
         match direction {
-            ComposerHistoryDirection::Undo => self
-                .composer_undo
-                .last()
-                .filter(|entry| entry.after == current),
-            ComposerHistoryDirection::Redo => self
-                .composer_redo
-                .last()
-                .filter(|entry| entry.before == current),
+            ComposerHistoryDirection::Undo => self.composer_undo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
+            ComposerHistoryDirection::Redo => self.composer_redo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
         }
         .map(|entry| entry.changes.clone())
         .unwrap_or_default()
+    }
+
+    pub(crate) fn composer_rollback_action(&self, direction: ComposerHistoryDirection) -> bool {
+        self.composer_rollback_action == Some(direction)
     }
 
     pub(crate) fn prepare_composer_history_action(
@@ -502,14 +575,12 @@ impl Document {
     ) -> bool {
         let current = self.editor.read(cx).value().to_string().into_bytes();
         let candidate = match direction {
-            ComposerHistoryDirection::Undo => self
-                .composer_undo
-                .last()
-                .filter(|entry| entry.after == current),
-            ComposerHistoryDirection::Redo => self
-                .composer_redo
-                .last()
-                .filter(|entry| entry.before == current),
+            ComposerHistoryDirection::Undo => self.composer_undo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
+            ComposerHistoryDirection::Redo => self.composer_redo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
         };
         let Some(entry) = candidate else {
             self.pending_composer_history = None;
@@ -530,6 +601,7 @@ impl Document {
         };
         self.composer_history_token = self.composer_history_token.wrapping_add(1);
         let token = self.composer_history_token;
+        self.save_task.take();
         self.pending_composer_history = Some(PendingComposerHistory {
             token,
             direction,
@@ -550,16 +622,41 @@ impl Document {
         true
     }
 
-    fn complete_composer_history_action(&mut self, cx: &mut Context<Self>) {
+    fn rollback_composer_history_action(
+        &mut self,
+        direction: ComposerHistoryDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_task.take();
+        let rollback = match direction {
+            ComposerHistoryDirection::Undo => ComposerHistoryDirection::Redo,
+            ComposerHistoryDirection::Redo => ComposerHistoryDirection::Undo,
+        };
+        self.composer_rollback_action = Some(rollback);
+        window.defer(cx, move |window, cx| match rollback {
+            ComposerHistoryDirection::Undo => {
+                window.dispatch_action(Box::new(gpui_kit::component::input::Undo), cx)
+            }
+            ComposerHistoryDirection::Redo => {
+                window.dispatch_action(Box::new(gpui_kit::component::input::Redo), cx)
+            }
+        });
+        cx.emit(DocumentEvent::ComposerHistoryConflict);
+    }
+
+    fn complete_composer_history_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_composer_history.take() else {
             return;
         };
         let current = self.editor.read(cx).value().to_string().into_bytes();
         if current != pending.expected {
+            self.rollback_composer_history_action(pending.direction, window, cx);
             return;
         }
         let root = self.vault_root.as_deref();
         let Some(root) = root else {
+            self.rollback_composer_history_action(pending.direction, window, cx);
             return;
         };
         let (entry, reverse) = match pending.direction {
@@ -567,9 +664,11 @@ impl Document {
             ComposerHistoryDirection::Redo => (self.composer_redo.last(), false),
         };
         let Some(entry) = entry else {
+            self.rollback_composer_history_action(pending.direction, window, cx);
             return;
         };
         let history_changes = entry.changes.clone();
+        let path_references = entry.path_references.clone();
         let changes = entry
             .changes
             .iter()
@@ -582,8 +681,7 @@ impl Document {
             })
             .collect::<Vec<_>>();
         if crate::note_composer::merge_transaction_changes(root, &changes).is_err() {
-            self.conflict = true;
-            cx.emit(DocumentEvent::ComposerHistoryConflict);
+            self.rollback_composer_history_action(pending.direction, window, cx);
             return;
         }
         match pending.direction {
@@ -602,6 +700,7 @@ impl Document {
         cx.emit(DocumentEvent::ComposerHistoryApplied {
             direction: pending.direction,
             changes: history_changes,
+            path_references,
         });
     }
 
@@ -2764,6 +2863,14 @@ impl Document {
         self.editor.read(cx).value().to_string()
     }
 
+    pub(crate) fn composer_disk_baseline(&self) -> Option<Vec<u8>> {
+        self.disk_bytes.clone()
+    }
+
+    pub(crate) fn cancel_composer_save(&mut self) {
+        self.save_task.take();
+    }
+
     pub(crate) fn composer_heading(
         &self,
         cx: &App,
@@ -3837,8 +3944,9 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_anchor, block_candidates, block_link_targets, format_table_md, guarded_write,
-        highlight_color_edit, linked_block_id_edit, new_block_id,
+        block_anchor, block_candidates, block_link_targets, composer_history_boundary_matches,
+        composer_history_buffer_conflicts, format_table_md, guarded_write, highlight_color_edit,
+        linked_block_id_edit, new_block_id, ComposerHistoryDirection,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3850,6 +3958,73 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn composer_history_requires_the_exact_native_editor_boundary() {
+        assert!(composer_history_boundary_matches(
+            ComposerHistoryDirection::Undo,
+            b"after",
+            b"before",
+            b"after"
+        ));
+        assert!(!composer_history_boundary_matches(
+            ComposerHistoryDirection::Undo,
+            b"later typing",
+            b"before",
+            b"after"
+        ));
+        assert!(composer_history_boundary_matches(
+            ComposerHistoryDirection::Redo,
+            b"before",
+            b"before",
+            b"after"
+        ));
+        assert!(!composer_history_boundary_matches(
+            ComposerHistoryDirection::Redo,
+            b"changed",
+            b"before",
+            b"after"
+        ));
+    }
+
+    #[test]
+    fn composer_history_preflights_created_and_deleted_buffers() {
+        assert!(!composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"created",
+            Some(b"created"),
+            false,
+            false
+        ));
+        assert!(composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"edited",
+            Some(b"created"),
+            true,
+            false
+        ));
+        assert!(composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"created",
+            Some(b"created"),
+            false,
+            true
+        ));
+        assert!(composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"created",
+            Some(b"older"),
+            false,
+            false
+        ));
+        assert!(composer_history_buffer_conflicts(
+            None,
+            b"stale view",
+            None,
+            false,
+            false
+        ));
     }
 
     #[test]
