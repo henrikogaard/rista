@@ -16,7 +16,11 @@ use std::{
 };
 
 #[link(name = "AppKit", kind = "framework")]
-unsafe extern "C" {}
+unsafe extern "C" {
+    static NSPrintSaveJob: &'static NSString;
+    static NSPrintJobSavingURL: &'static NSString;
+    static NSPrintHeaderAndFooter: &'static NSString;
+}
 
 #[link(name = "WebKit", kind = "framework")]
 unsafe extern "C" {}
@@ -298,26 +302,23 @@ fn print_info(
         let _: () = msg_send![&*print_info, setVerticalPagination: 0_usize];
     }
 
-    let saving = NSString::from_str("NSPrintSaveJob");
     unsafe {
-        let _: () = msg_send![&*print_info, setJobDisposition: &*saving];
+        let _: () = msg_send![&*print_info, setJobDisposition: NSPrintSaveJob];
     }
     let dictionary: Option<Retained<AnyObject>> = unsafe { msg_send![&*print_info, dictionary] };
     let dictionary = dictionary.ok_or(super::ExportError::Render)?;
     let saving_url = file_url(path)?;
-    let saving_key = NSString::from_str("NSPrintJobSavingURL");
     unsafe {
-        let _: () = msg_send![&*dictionary, setObject: &*saving_url, forKey: &*saving_key];
+        let _: () = msg_send![&*dictionary, setObject: &*saving_url, forKey: NSPrintJobSavingURL];
     }
 
     let number_class = AnyClass::get(c"NSNumber").ok_or(super::ExportError::Render)?;
     let no_header_footer: Option<Retained<AnyObject>> =
         unsafe { msg_send![number_class, numberWithBool: false] };
     let no_header_footer = no_header_footer.ok_or(super::ExportError::Render)?;
-    let header_footer_key = NSString::from_str("NSPrintHeaderAndFooter");
     unsafe {
         let _: () =
-            msg_send![&*dictionary, setObject: &*no_header_footer, forKey: &*header_footer_key];
+            msg_send![&*dictionary, setObject: &*no_header_footer, forKey: NSPrintHeaderAndFooter];
     }
 
     Ok(print_info)
