@@ -237,8 +237,9 @@ body{{font-family:'{font}',monospace;font-size:{size}px;line-height:1.55;overflo
 h1,h2,h3,h4,h5,h6{{line-height:1.2;break-after:avoid;margin:1.2em 0 .5em}}h1{{font-size:2em}}h2{{font-size:1.5em}}
 p{{margin:.6em 0;orphans:3;widows:3}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:{muted};padding:.8em;border-radius:4px}}
 code{{font-family:inherit;font-size:.9em}}blockquote{{border-left:3px solid {border};padding:.3em 1em;margin:1em 0}}.callout{{background:{muted}}}
-table{{border-collapse:collapse;width:100%;table-layout:fixed;margin:1em 0}}thead{{display:table-header-group}}tr{{break-inside:avoid}}
-th,td{{border:1px solid {border};padding:.4em;text-align:left;overflow-wrap:anywhere}}th{{background:{muted}}}
+table,thead,tbody{{display:block}}table{{width:100%;margin:1em 0}}thead{{break-after:avoid;page-break-after:avoid}}
+tr{{display:flex;break-inside:avoid;page-break-inside:avoid}}
+th,td{{display:block;flex:1;min-width:0;border:1px solid {border};padding:.4em;text-align:left;overflow-wrap:anywhere}}th{{background:{muted}}}
 img{{max-width:100%;height:auto;break-inside:avoid}}.math{{vertical-align:middle}}.display-math{{text-align:center;margin:1em 0;break-inside:avoid}}
 a{{color:{accent};text-decoration:underline}}hr{{border:0;border-top:1px solid {border}}}li{{margin:.2em 0}}
 </style></head><body>{body}</body></html>"#,
