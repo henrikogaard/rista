@@ -20,12 +20,25 @@ use std::{
 
 type RasterKey = (usize, u32);
 
-fn top_page_index(scroll: &UniformListScrollHandle) -> usize {
+fn top_page_index(scroll: &UniformListScrollHandle, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
     let state = scroll.0.borrow();
-    state.deferred_scroll_to_item.as_ref().map_or_else(
-        || state.base_handle.top_item(),
-        |deferred| deferred.item_index,
-    )
+    if let Some(deferred) = &state.deferred_scroll_to_item {
+        return deferred.item_index.min(count - 1);
+    }
+    let Some(size) = state.last_item_size else {
+        return 0;
+    };
+    let row_height = f32::from(size.contents.height) / count as f32;
+    if row_height <= 0. || !row_height.is_finite() {
+        return 0;
+    }
+    ((-f32::from(state.base_handle.offset().y) / row_height)
+        .max(0.)
+        .floor() as usize)
+        .min(count - 1)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -108,6 +121,7 @@ pub struct PdfView {
     zoom: f32,
     width: f32,
     initial_page: usize,
+    displayed_page: usize,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     page_input: Entity<InputState>,
@@ -172,6 +186,7 @@ impl PdfView {
             zoom: 1.,
             width: 640.,
             initial_page: page,
+            displayed_page: 0,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             page_input,
@@ -265,12 +280,19 @@ impl PdfView {
     pub fn jump(&mut self, page: usize, cx: &mut Context<Self>) {
         self.initial_page = page;
         if let Some(info) = &self.info {
-            self.scroll.scroll_to_item(
+            self.scroll.scroll_to_item_strict(
                 page.min(info.pages.len().saturating_sub(1)),
                 ScrollStrategy::Top,
             );
         }
         cx.notify();
+    }
+
+    fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        let count = self.info.as_ref().map_or(0, |info| info.pages.len());
+        let page = top_page_index(&self.scroll, count);
+        self.zoom = zoom.clamp(0.5, 3.);
+        self.jump(page, cx);
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -375,7 +397,8 @@ impl PdfView {
                 }
                 this.raster_tasks.remove(&key);
                 if this.images.len() >= 8 {
-                    let current = top_page_index(&this.scroll);
+                    let count = this.info.as_ref().map_or(0, |info| info.pages.len());
+                    let current = top_page_index(&this.scroll, count);
                     if let Some(farthest) = this
                         .images
                         .keys()
@@ -515,10 +538,16 @@ impl Focusable for PdfView {
 }
 
 impl Render for PdfView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
         let count = self.info.as_ref().map(|info| info.pages.len()).unwrap_or(0);
-        let current = top_page_index(&self.scroll).min(count.saturating_sub(1));
+        let current = top_page_index(&self.scroll, count);
+        if self.displayed_page != current {
+            self.displayed_page = current;
+            self.page_input.update(cx, |input, cx| {
+                input.set_placeholder((current + 1).to_string(), window, cx)
+            });
+        }
         let result_count = self.search_results.matches.len();
         let toolbar = h_flex()
             .flex_wrap()
@@ -537,7 +566,10 @@ impl Render for PdfView {
                     ),
             )
             .child(Input::new(&self.page_input).w(px(48.)))
-            .child(div().text_xs().child(format!("{} / {count}", current + 1)))
+            .child(div().text_xs().child(format!(
+                "{} / {count}",
+                if count == 0 { 0 } else { current + 1 }
+            )))
             .child(
                 Button::new("pdf-next")
                     .ghost()
@@ -554,8 +586,7 @@ impl Render for PdfView {
                     .label("−")
                     .tooltip(language.text("Zoom out", "Zoom ut"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.zoom = (this.zoom / 1.25).max(0.5);
-                        cx.notify();
+                        this.set_zoom(this.zoom / 1.25, cx);
                     })),
             )
             .child(
@@ -565,8 +596,7 @@ impl Render for PdfView {
                     .label(format!("{}%", (self.zoom * 100.).round() as u32))
                     .tooltip(language.text("Fit width", "Tilpass bredde"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.zoom = 1.;
-                        cx.notify();
+                        this.set_zoom(1., cx);
                     })),
             )
             .child(
@@ -576,8 +606,7 @@ impl Render for PdfView {
                     .label("+")
                     .tooltip(language.text("Zoom in", "Zoom inn"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.zoom = (this.zoom * 1.25).min(3.);
-                        cx.notify();
+                        this.set_zoom(this.zoom * 1.25, cx);
                     })),
             )
             .child(
@@ -800,6 +829,50 @@ fn error_message(error: backend::PdfError, language: Language) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::PdfTarget;
+
+    #[test]
+    fn pdf_page_index_uses_uniform_content_offset_after_layout() {
+        use super::top_page_index;
+        use gpui_kit::{point, px, ScrollStrategy, UniformListScrollHandle};
+        let scroll = UniformListScrollHandle::new();
+        assert_eq!(top_page_index(&scroll, 0), 0);
+        scroll.0.borrow_mut().last_item_size = Some(Default::default());
+        scroll
+            .0
+            .borrow_mut()
+            .last_item_size
+            .as_mut()
+            .unwrap()
+            .contents
+            .height = px(2500.);
+        scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-530.)));
+        assert_eq!(top_page_index(&scroll, 5), 1);
+        scroll.scroll_to_item_strict(3, ScrollStrategy::Top);
+        assert_eq!(top_page_index(&scroll, 5), 3);
+        scroll.0.borrow_mut().deferred_scroll_to_item = None;
+        scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-1500.)));
+        assert_eq!(top_page_index(&scroll, 5), 3);
+        scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-9999.)));
+        assert_eq!(top_page_index(&scroll, 5), 4);
+        scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(12.)));
+        assert_eq!(top_page_index(&scroll, 5), 0);
+    }
 
     #[test]
     fn pdf_targets_keep_local_names_and_parse_bounded_options() {
