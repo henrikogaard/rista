@@ -20,7 +20,7 @@ use std::{
 
 type RasterKey = (usize, u32);
 
-fn top_page_index(scroll: &UniformListScrollHandle, count: usize) -> usize {
+fn visible_page_index(scroll: &UniformListScrollHandle, count: usize) -> usize {
     if count == 0 {
         return 0;
     }
@@ -35,7 +35,9 @@ fn top_page_index(scroll: &UniformListScrollHandle, count: usize) -> usize {
     if row_height <= 0. || !row_height.is_finite() {
         return 0;
     }
-    ((-f32::from(state.base_handle.offset().y) / row_height)
+    // Use the visible page's midpoint, not a fractional sliver of the preceding page.
+    let inset = f32::from(size.item.height).min(row_height).max(0.) / 2.;
+    ((((-f32::from(state.base_handle.offset().y)).max(0.) + inset) / row_height)
         .max(0.)
         .floor() as usize)
         .min(count - 1)
@@ -290,7 +292,7 @@ impl PdfView {
 
     fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         let count = self.info.as_ref().map_or(0, |info| info.pages.len());
-        let page = top_page_index(&self.scroll, count);
+        let page = visible_page_index(&self.scroll, count);
         self.zoom = zoom.clamp(0.5, 3.);
         self.jump(page, cx);
     }
@@ -398,7 +400,7 @@ impl PdfView {
                 this.raster_tasks.remove(&key);
                 if this.images.len() >= 8 {
                     let count = this.info.as_ref().map_or(0, |info| info.pages.len());
-                    let current = top_page_index(&this.scroll, count);
+                    let current = visible_page_index(&this.scroll, count);
                     if let Some(farthest) = this
                         .images
                         .keys()
@@ -547,7 +549,7 @@ impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language;
         let count = self.info.as_ref().map(|info| info.pages.len()).unwrap_or(0);
-        let current = top_page_index(&self.scroll, count);
+        let current = visible_page_index(&self.scroll, count);
         if self.displayed_page != current {
             self.displayed_page = current;
             self.page_input.update(cx, |input, cx| {
@@ -763,7 +765,7 @@ impl Render for PdfView {
                                     view.update(cx, |this, cx| {
                                         let page =
                                             this.info.as_ref().map_or(this.initial_page, |info| {
-                                                top_page_index(&this.scroll, info.pages.len())
+                                                visible_page_index(&this.scroll, info.pages.len())
                                             });
                                         this.width = width;
                                         this.jump(page, cx);
@@ -842,10 +844,10 @@ mod tests {
 
     #[test]
     fn pdf_page_index_uses_uniform_content_offset_after_layout() {
-        use super::top_page_index;
+        use super::visible_page_index;
         use gpui_kit::{point, px, ScrollStrategy, UniformListScrollHandle};
         let scroll = UniformListScrollHandle::new();
-        assert_eq!(top_page_index(&scroll, 0), 0);
+        assert_eq!(visible_page_index(&scroll, 0), 0);
         scroll.0.borrow_mut().last_item_size = Some(Default::default());
         scroll
             .0
@@ -860,28 +862,48 @@ mod tests {
             .borrow()
             .base_handle
             .set_offset(point(px(0.), px(-530.)));
-        assert_eq!(top_page_index(&scroll, 5), 1);
+        assert_eq!(visible_page_index(&scroll, 5), 1);
         scroll.scroll_to_item_strict(3, ScrollStrategy::Top);
-        assert_eq!(top_page_index(&scroll, 5), 3);
+        assert_eq!(visible_page_index(&scroll, 5), 3);
         scroll.0.borrow_mut().deferred_scroll_to_item = None;
         scroll
             .0
             .borrow()
             .base_handle
             .set_offset(point(px(0.), px(-1500.)));
-        assert_eq!(top_page_index(&scroll, 5), 3);
+        assert_eq!(visible_page_index(&scroll, 5), 3);
         scroll
             .0
             .borrow()
             .base_handle
             .set_offset(point(px(0.), px(-9999.)));
-        assert_eq!(top_page_index(&scroll, 5), 4);
+        assert_eq!(visible_page_index(&scroll, 5), 4);
         scroll
             .0
             .borrow()
             .base_handle
             .set_offset(point(px(0.), px(12.)));
-        assert_eq!(top_page_index(&scroll, 5), 0);
+        assert_eq!(visible_page_index(&scroll, 5), 0);
+    }
+
+    #[test]
+    fn pdf_page_index_preserves_fractional_and_bottom_clamped_targets() {
+        use super::visible_page_index;
+        use gpui_kit::{point, px, UniformListScrollHandle};
+
+        let scroll = UniformListScrollHandle::new();
+        for row_height in [(1324_f32 - 24.) * (792_f32 / 612.) + 32., 890.] {
+            {
+                let mut state = scroll.0.borrow_mut();
+                let size = state.last_item_size.get_or_insert_with(Default::default);
+                size.contents.height = px(row_height * 5.);
+                size.item.height = px(940.);
+                // A strict jump is clamped when the last page is shorter than the viewport.
+                let offset = (row_height * 4.).min(row_height * 5. - 940.);
+                state.base_handle.set_offset(point(px(0.), px(-offset)));
+            }
+            assert_eq!(visible_page_index(&scroll, 5), 4);
+        }
     }
 
     #[test]
