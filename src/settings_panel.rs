@@ -1,6 +1,7 @@
 //! Settings sheet — segmented controls and switches, applied live.
 
 use crate::app::Workspace;
+use crate::hotkeys::{self, CommandSpec, HotkeyNotice};
 use crate::settings::{
     Appearance, Language, Period, PropertiesVisibility, Settings, ViewMode, EDITOR_FONTS,
 };
@@ -8,6 +9,8 @@ use crate::theme;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -22,6 +25,10 @@ pub struct SettingsView {
     terminal_size_input: Entity<InputState>,
     terminal_shell_input: Entity<InputState>,
     workspace: WeakEntity<Workspace>,
+    hotkey_search: Entity<InputState>,
+    capture_focus: FocusHandle,
+    recording: Option<String>,
+    hotkey_notice: Option<HotkeyNotice>,
     font_select: Entity<SelectState<SearchableVec<String>>>,
     font_size_select: Entity<SelectState<SearchableVec<String>>>,
     ui_size_select: Entity<SelectState<SearchableVec<String>>>,
@@ -52,6 +59,14 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = settings.clone();
+        let hotkey_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(
+                settings
+                    .language
+                    .text("Search shortcuts…", "Søk etter snarveier…"),
+            )
+        });
+        let capture_focus = cx.focus_handle();
         let terminal_font_input = cx.new(|cx| {
             let mut input = InputState::new(window, cx);
             input.set_value(settings.terminal_font.clone(), window, cx);
@@ -177,6 +192,11 @@ impl SettingsView {
             .collect();
 
         let mut subs = Vec::new();
+        subs.push(cx.subscribe_in(
+            &hotkey_search,
+            window,
+            |_this, _state, _event: &InputEvent, _window, cx| cx.notify(),
+        ));
         for (period, dir_input, format_input) in &periodic_inputs {
             let period = *period;
             subs.push(cx.subscribe_in(
@@ -399,6 +419,10 @@ impl SettingsView {
             terminal_size_input,
             terminal_shell_input,
             workspace,
+            hotkey_search,
+            capture_focus,
+            recording: None,
+            hotkey_notice: None,
             dark_theme_select,
             light_theme_select,
             theme_write_failed: false,
@@ -464,6 +488,279 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn apply_hotkey_result(&mut self, result: Result<(), HotkeyNotice>, cx: &mut Context<Self>) {
+        self.hotkey_notice = result.err();
+        self.sync_hotkey_warning(cx);
+        cx.notify();
+    }
+
+    fn sync_hotkey_warning(&self, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.sync_hotkey_warning(cx));
+        }
+    }
+
+    fn start_hotkey_recording(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording = Some(id);
+        self.hotkey_notice = None;
+        self.capture_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn capture_hotkey(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.recording.clone() else {
+            return;
+        };
+        window.prevent_default();
+        cx.stop_propagation();
+        if event.is_held {
+            return;
+        }
+        let key = event.keystroke.key.to_lowercase();
+        if matches!(
+            key.as_str(),
+            "shift"
+                | "left_shift"
+                | "right_shift"
+                | "control"
+                | "ctrl"
+                | "left_control"
+                | "right_control"
+                | "left_ctrl"
+                | "right_ctrl"
+                | "alt"
+                | "left_alt"
+                | "right_alt"
+                | "option"
+                | "left_option"
+                | "right_option"
+                | "cmd"
+                | "command"
+                | "left_command"
+                | "right_command"
+                | "super"
+                | "platform"
+                | "function"
+                | "fn"
+        ) {
+            return;
+        }
+        if matches!(key.as_str(), "escape" | "esc") {
+            self.recording = None;
+            self.hotkey_notice = None;
+            cx.notify();
+            return;
+        }
+        let shortcut = event.keystroke.unparse();
+        let result = hotkeys::set_binding(&mut *cx, &id, Some(shortcut));
+        self.recording = None;
+        self.apply_hotkey_result(result, cx);
+    }
+
+    fn shortcut_label(shortcut: Option<&str>, unbound: &str) -> gpui_kit::Div {
+        let Some(shortcut) = shortcut else {
+            return h_flex().child(div().text_xs().child(unbound.to_string()));
+        };
+        let keys = shortcut
+            .split_whitespace()
+            .filter_map(|stroke| Keystroke::parse(stroke).ok())
+            .map(Kbd::new)
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            h_flex().child(div().text_xs().child(shortcut.to_string()))
+        } else {
+            h_flex().items_center().gap_1().children(keys)
+        }
+    }
+
+    fn hotkeys_section(
+        &mut self,
+        language: Language,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let query = self.hotkey_search.read(cx).value().to_lowercase();
+        let commands = hotkeys::commands()
+            .into_iter()
+            .filter(|command| {
+                query.is_empty()
+                    || command.id.contains(&query)
+                    || command.english.to_lowercase().contains(&query)
+                    || command.norwegian.to_lowercase().contains(&query)
+            })
+            .collect::<Vec<_>>();
+        let has_commands = !commands.is_empty();
+        let unbound = language.text("Unbound", "Ikke tilordnet");
+        let mut rows = v_flex().max_h(px(320.)).overflow_y_scrollbar().gap_1();
+        for spec in commands {
+            rows = rows.child(self.hotkey_row(spec, language, unbound, cx));
+        }
+        if !has_commands {
+            rows = rows.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(language.text("No matching shortcuts", "Ingen snarveier samsvarer")),
+            );
+        }
+
+        let mut section = v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.text("HOTKEYS", "HURTIGTASTER")),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .child(
+                                Button::new("hotkeys-reset-all")
+                                    .label(language.text("Reset all", "Tilbakestill alle"))
+                                    .small()
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let result = hotkeys::reset_all(&mut *cx);
+                                        this.apply_hotkey_result(result, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("hotkeys-reload")
+                                    .label(language.text("Reload", "Last på nytt"))
+                                    .small()
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        hotkeys::reload(&mut *cx);
+                                        this.hotkey_notice = None;
+                                        this.sync_hotkey_warning(cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .child(Input::new(&self.hotkey_search).w_full())
+            .child(rows);
+        if let Some(notice) = self.hotkey_notice.clone().or_else(|| hotkeys::warning(cx)) {
+            section = section.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(notice.message(language)),
+            );
+        }
+        div()
+            .id("hotkeys-capture-root")
+            .track_focus(&self.capture_focus)
+            .capture_key_down(
+                cx.listener(|this, event, window, cx| this.capture_hotkey(event, window, cx)),
+            )
+            .child(section)
+    }
+
+    fn hotkey_row(
+        &mut self,
+        spec: CommandSpec,
+        language: Language,
+        unbound: &'static str,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        let id = spec.id.to_string();
+        let current = hotkeys::shortcut(cx, spec.id);
+        let current_label = Self::shortcut_label(current.as_deref(), unbound);
+        let default_label = Self::shortcut_label(spec.default, unbound);
+        let recording = self.recording.as_deref() == Some(spec.id);
+        let record_text = if recording {
+            language.text("Press a shortcut…", "Trykk en snarvei…")
+        } else {
+            language.text("Record", "Spill inn")
+        };
+        let record_id = id.clone();
+        let unbind_id = id.clone();
+        let reset_id = id;
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .text_sm()
+                    .child(spec.label(language)),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.text("Current", "Nåværende")),
+                    )
+                    .child(current_label)
+                    .child(
+                        div()
+                            .ml_2()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.text("Default", "Standard")),
+                    )
+                    .child(default_label),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .gap_1()
+                    .child(
+                        Button::new(format!("hotkey-record-{record_id}"))
+                            .label(record_text)
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_hotkey_recording(record_id.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("hotkey-unbind-{unbind_id}"))
+                            .label(language.text("Unbind", "Fjern"))
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let result = hotkeys::set_binding(&mut *cx, &unbind_id, None);
+                                this.apply_hotkey_result(result, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("hotkey-reset-{reset_id}"))
+                            .label(language.text("Reset", "Tilbakestill"))
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let result = hotkeys::reset_command(&mut *cx, &reset_id);
+                                this.apply_hotkey_result(result, cx);
+                            })),
+                    ),
+            )
+    }
+
     /// Patch the workspace settings and flush to disk + live apply.
     fn update_setting(
         &mut self,
@@ -474,11 +771,20 @@ impl SettingsView {
         let Some(ws) = self.workspace.upgrade() else {
             return;
         };
-        ws.update(cx, |ws, cx| {
-            let mut settings = ws.settings().clone();
-            patch(&mut settings);
-            ws.apply_settings(settings, window, cx);
-        });
+        let old_language = ws.read(cx).settings().language;
+        let mut settings = ws.read(cx).settings().clone();
+        patch(&mut settings);
+        let new_language = settings.language;
+        ws.update(cx, |ws, cx| ws.apply_settings(settings, window, cx));
+        if old_language != new_language {
+            self.hotkey_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    new_language.text("Search shortcuts…", "Søk etter snarveier…"),
+                    window,
+                    cx,
+                );
+            });
+        }
     }
 
     fn row(cx: &App, label: &'static str, control: impl IntoElement) -> gpui_kit::Div {
@@ -497,7 +803,7 @@ impl SettingsView {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self
             .workspace
             .upgrade()
@@ -514,6 +820,7 @@ impl Render for SettingsView {
             ViewMode::Split => 1,
             ViewMode::Preview => 2,
         };
+        let hotkeys = self.hotkeys_section(settings.language, window, cx);
 
         v_flex()
             .id("settings-scroll")
@@ -521,6 +828,7 @@ impl Render for SettingsView {
             .overflow_y_scroll()
             .p_4()
             .gap_5()
+            .child(hotkeys)
             .child(
                 v_flex()
                     .gap_2()

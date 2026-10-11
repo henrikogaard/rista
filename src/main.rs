@@ -18,6 +18,7 @@ mod folder;
 mod graph;
 mod graph_layout;
 mod history;
+mod hotkeys;
 mod http;
 mod math;
 mod mermaid;
@@ -111,7 +112,7 @@ fn main() {
         theme::apply(&settings, cx);
         apply_ui_settings(&settings, cx);
 
-        cx.bind_keys(keymap());
+        hotkeys::initialize(cx, internal_keymap());
         cx.set_menus(menus(settings.language));
         #[cfg(target_os = "macos")]
         cx.on_action(|_: &About, _cx| {
@@ -162,59 +163,8 @@ fn apply_ui_settings(settings: &settings::Settings, cx: &mut App) {
     });
 }
 
-fn keymap() -> Vec<KeyBinding> {
+pub(crate) fn internal_keymap() -> Vec<KeyBinding> {
     vec![
-        // Files & folders
-        KeyBinding::new("cmd-n", NewFile, None),
-        KeyBinding::new("cmd-shift-n", NewFolder, None),
-        KeyBinding::new("cmd-o", OpenFile, None),
-        KeyBinding::new("cmd-shift-o", OpenFolder, None),
-        KeyBinding::new("cmd-shift-d", OpenDailyNote, None),
-        KeyBinding::new("cmd-s", SaveFile, None),
-        KeyBinding::new("cmd-shift-s", SaveFileAs, None),
-        KeyBinding::new("cmd-w", CloseTab, None),
-        KeyBinding::new("cmd-shift-t", ReopenTab, None),
-        // Editing
-        KeyBinding::new("alt-up", MoveLineUp, None),
-        KeyBinding::new("alt-down", MoveLineDown, None),
-        KeyBinding::new("cmd-enter", ToggleCheckbox, None),
-        KeyBinding::new("cmd-i", ToggleItalic, None),
-        KeyBinding::new("cmd-d", DuplicateBlock, None),
-        KeyBinding::new("cmd-shift-k", DeleteLine, None),
-        KeyBinding::new("cmd-/", ToggleComment, None),
-        // Navigation
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
-        KeyBinding::new("down", SearchNextResult, Some("ProjectSearch")),
-        KeyBinding::new("up", SearchPreviousResult, Some("ProjectSearch")),
-        KeyBinding::new("cmd-[", NavigateBack, None),
-        KeyBinding::new("cmd-]", NavigateForward, None),
-        KeyBinding::new("alt-enter", FollowLink, None),
-        KeyBinding::new("cmd-b", ToggleSidebar, None),
-        KeyBinding::new("cmd-shift-enter", ToggleZen, None),
-        // View modes — 1/2/3 with cmd.
-        KeyBinding::new("cmd-1", ViewSource, None),
-        KeyBinding::new("cmd-2", ViewSplit, None),
-        KeyBinding::new("cmd-3", ViewPreview, None),
-        KeyBinding::new("cmd-e", ToggleEditPreview, None),
-        KeyBinding::new("cmd-=", ZoomIn, None),
-        KeyBinding::new("cmd-minus", ZoomOut, None),
-        KeyBinding::new("cmd-0", ZoomReset, None),
-        KeyBinding::new("cmd-g", OpenGraph, None),
-        // Esc only closes the graph when its pane is focused — the
-        // RistaGraph key context keeps dialogs/inputs unaffected.
-        KeyBinding::new("escape", CloseGraph, Some("RistaGraph")),
-        // App
-        KeyBinding::new("cmd-k", OpenCommandPalette, None),
-        KeyBinding::new("cmd-j", ToggleTerminal, None),
-        // the reference editor muscle memory — same palette as ⌘K.
-        KeyBinding::new("cmd-p", QuickOpen, None),
-        // ⌘F reaches the editor when focused; the workspace handler
-        // filters .base rows or refocuses the editor otherwise.
-        KeyBinding::new("cmd-f", input::Search, None),
-        KeyBinding::new("cmd-shift-f", OpenProjectSearch, None),
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-q", Quit, None),
         // Auto-pairs — "RistaEditor" scopes them to the document
         // editor so search/dialog inputs still type the plain characters.
         KeyBinding::new("(", PairInsert { pair: "()" }, Some("RistaEditor")),
