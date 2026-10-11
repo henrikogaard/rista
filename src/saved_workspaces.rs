@@ -459,6 +459,13 @@ impl Workspace {
             }
             self.graph_dock = None;
         }
+        self.starred_open = session.panes.starred;
+        self.tags_open = session.panes.tags;
+        self.tasks_open = session.panes.tasks;
+        self.outline_open = session.panes.outline;
+        self.backlinks_open = session.panes.backlinks;
+        self.outgoing_open = session.panes.outgoing;
+        self.cal_open = session.panes.calendar;
         self.folder = None;
         self.graph = None;
         self.peek = None;
