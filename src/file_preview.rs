@@ -22,7 +22,7 @@ pub fn is_document(path: &Path) -> bool {
 }
 
 pub fn visible(path: &Path, show_other_files: bool) -> bool {
-    show_other_files || is_document(path)
+    show_other_files || is_document(path) || extension(path) == "pdf"
 }
 
 pub fn load(path: &Path) -> io::Result<Preview> {
@@ -63,10 +63,16 @@ mod tests {
 
     #[test]
     fn visibility_preserves_documents_and_gates_attachments() {
-        for name in ["note.md", "note.MARKDOWN", "data.base"] {
+        for name in [
+            "note.md",
+            "note.MARKDOWN",
+            "data.base",
+            "report.pdf",
+            "REPORT.PDF",
+        ] {
             assert!(visible(Path::new(name), false));
         }
-        for name in ["photo.PNG", "report.pdf", "data.csv", "LICENSE"] {
+        for name in ["photo.PNG", "data.csv", "LICENSE"] {
             assert!(!visible(Path::new(name), false));
             assert!(visible(Path::new(name), true));
         }

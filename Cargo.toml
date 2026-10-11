@@ -18,6 +18,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 regex = "1"
 unicode-segmentation = "1.13.3"
+unicode-normalization = "0.1.25"
 directories = "6"
 chrono = "0.4"
 smol = "2"
@@ -69,8 +70,10 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSData",
     "NSDictionary",
+    "NSGeometry",
     "NSObject",
     "NSString",
+    "objc2-core-foundation",
 ] }
 block2 = "0.6.2"
 

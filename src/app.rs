@@ -2036,6 +2036,10 @@ impl Workspace {
             graph.update(cx, |g, cx| g.focus_filter(window, cx));
             return;
         }
+        if let Some(pdf) = self.active_doc().and_then(|doc| doc.read(cx).pdf.clone()) {
+            pdf.update(cx, |pdf, cx| pdf.focus_search(window, cx));
+            return;
+        }
         if self.settings.graph_dock_open {
             if let Some(graph) = self.graph_dock.clone() {
                 graph.update(cx, |g, cx| g.focus_filter(window, cx));
@@ -3196,12 +3200,19 @@ impl Workspace {
         if ix >= self.docs.len() {
             return;
         }
+        let closing_active = self.active == Some(ix);
         let closed_focus = self.docs[ix]
             .entity
             .read(cx)
             .editor
             .read(cx)
             .focus_handle(cx);
+        let closed_pdf_focus = self.docs[ix]
+            .entity
+            .read(cx)
+            .pdf
+            .as_ref()
+            .map(|pdf| pdf.read(cx).focus_handle(cx));
         let path = self.docs[ix].entity.read(cx).path.clone();
         let token = self.doc_tokens.get(ix).copied();
         self.docs.remove(ix);
@@ -3229,11 +3240,15 @@ impl Workspace {
         window.defer(cx, move |window, cx| {
             view.update(cx, |this, cx| {
                 let focused = window.focused(cx);
-                if focused
-                    .as_ref()
-                    .is_none_or(|focused| focused == &closed_focus)
+                if !window.has_active_dialog(cx)
+                    && (focused.is_none()
+                        || closed_focus.contains_focused(window, cx)
+                        || closed_pdf_focus
+                            .as_ref()
+                            .is_some_and(|focus| focus.contains_focused(window, cx))
+                        || (closing_active && focused.as_ref() == Some(&this.focus_handle)))
                 {
-                    this.refocus(window, cx);
+                    this.focus_active_pane_after_mount(window, cx);
                 }
             });
         });
@@ -6903,6 +6918,37 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(target) = crate::pdf::PdfTarget::parse(target) {
+            let vault = self.vault.read(cx);
+            let doc_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+            let path = target
+                .resolve(
+                    doc_path.as_deref(),
+                    vault.root.as_deref(),
+                    &vault.explorer_path_snapshot(),
+                )
+                .and_then(|path| path.canonicalize().ok());
+            if let Some(path) = path {
+                self.open_document_impl(path.clone(), new_tab, false, window, cx);
+                if let Some(pdf) = self
+                    .active_doc()
+                    .filter(|doc| doc.read(cx).path == path)
+                    .and_then(|doc| doc.read(cx).pdf.clone())
+                {
+                    pdf.update(cx, |pdf, cx| pdf.jump(target.page, cx));
+                }
+            } else {
+                self.note_status(
+                    format!(
+                        "{}: {}",
+                        self.tr("PDF not found", "Fant ikke PDF-filen"),
+                        target.file
+                    ),
+                    cx,
+                );
+            }
+            return;
+        }
         let (note, anchor) = match target.split_once('#') {
             Some((n, a)) => {
                 let a = a.trim();
@@ -8797,6 +8843,7 @@ impl Workspace {
             workspace: view.downgrade(),
             views: embeds,
             query_views: query_embeds,
+            pdf_views: doc.read(cx).pdf_embeds.clone(),
             doc_path: Some(doc_path),
             depth: 0,
         };
@@ -9538,6 +9585,9 @@ impl Workspace {
         mode: ViewMode,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(pdf) = doc.read(cx).pdf.clone() {
+            return div().size_full().child(pdf).into_any_element();
+        }
         // Image files render the picture itself, not a
         // text editor over binary bytes.
         if doc.read(cx).is_image {
@@ -11333,7 +11383,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
 
 /// Open `path` in the OS default application — the "Open in
 /// default app" file context item.
-fn open_in_default_app(path: &std::path::Path) {
+pub(crate) fn open_in_default_app(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open").arg(path).spawn();
