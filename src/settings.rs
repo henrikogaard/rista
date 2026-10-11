@@ -149,6 +149,9 @@ pub struct Settings {
     pub open_tabs: Vec<String>,
     /// Active tab's path (one of `open_tabs`) when the app closed.
     pub active_tab: Option<String>,
+    /// The pane tree restored after the flat tab compatibility fields.
+    #[serde(default)]
+    pub editor_session: Option<crate::editor_layout::Snapshot>,
     /// Which `.base` view (index into `views:`) each opened `.base`
     /// file was last left on — note path → view index.
     pub base_views: std::collections::HashMap<String, usize>,
@@ -365,6 +368,7 @@ impl Default for Settings {
             panes: SidebarPanes::default(),
             open_tabs: Vec::new(),
             active_tab: None,
+            editor_session: None,
             base_views: std::collections::HashMap::new(),
             base_sorts: std::collections::HashMap::new(),
             pinned_tabs: Vec::new(),

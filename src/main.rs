@@ -11,6 +11,7 @@ mod bases;
 mod bookmarks;
 mod decorations;
 mod document;
+mod editor_layout;
 mod emoji;
 mod explorer;
 mod extensions;

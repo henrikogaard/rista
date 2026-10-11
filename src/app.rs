@@ -5,6 +5,7 @@ use crate::actions::*;
 use crate::bases;
 use crate::bookmarks::{BookmarkKind, DropTarget};
 use crate::document::{Document, DocumentEvent, ImageResolver};
+use crate::editor_layout::{Axis, EditorLayout, GroupId, Node, PaneMode, TabToken};
 use crate::preview;
 use crate::properties;
 use crate::search;
@@ -30,6 +31,7 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
@@ -92,7 +94,7 @@ fn update_observed_snapshot(
     changed
 }
 
-fn canvas_panels(id: &'static str, axis: Axis) -> ResizablePanelGroup {
+fn canvas_panels(id: impl Into<ElementId>, axis: Axis) -> ResizablePanelGroup {
     let panels = match axis {
         Axis::Horizontal => h_resizable(id),
         Axis::Vertical => gpui_kit::component::resizable::v_resizable(id),
@@ -124,6 +126,9 @@ pub struct Workspace {
     vault: Entity<Vault>,
     search_service: SearchService,
     docs: Vec<OpenDoc>,
+    doc_tokens: Vec<TabToken>,
+    layout: EditorLayout,
+    restoring_session: bool,
     active: Option<usize>,
     folder: Option<folder_dashboard::FolderPage>,
     folder_search: Entity<InputState>,
@@ -158,10 +163,10 @@ pub struct Workspace {
     recent: Vec<PathBuf>,
     /// Paths of tabs closed this session, latest last — ⌘⇧T pops it.
     closed_tabs: Vec<PathBuf>,
-    /// Tab index the right-click menu should act on — set by each tab's
+    /// Tab token the right-click menu should act on — set by each tab's
     /// Right mouse-down handler (the strip-level context menu reads it
     /// when it builds its items on the next frame).
-    tab_menu_ix: Option<usize>,
+    tab_menu_token: Option<TabToken>,
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
@@ -215,6 +220,7 @@ struct OpenDoc {
     /// Present when the file is a `.base` — a live view over the vault.
     base: Option<Entity<bases::BaseView>>,
     _sub: Subscription,
+    _focus_sub: Subscription,
 }
 
 fn preview_tab_is_replaceable(preview: bool, dirty: bool, conflict: bool, pinned: bool) -> bool {
@@ -310,6 +316,10 @@ pub(crate) enum PaletteCmd {
     CloseFolder,
     Save,
     SaveAs,
+    SplitRight,
+    SplitDown,
+    NextPane,
+    PrevPane,
     SourceMode,
     SplitMode,
     PreviewMode,
@@ -402,6 +412,10 @@ impl PaletteCmd {
         Self::NewFolder,
         Self::Save,
         Self::SaveAs,
+        Self::SplitRight,
+        Self::SplitDown,
+        Self::NextPane,
+        Self::PrevPane,
         Self::SourceMode,
         Self::SplitMode,
         Self::PreviewMode,
@@ -494,6 +508,10 @@ impl PaletteCmd {
             NewFolder => "new_folder",
             Save => "save",
             SaveAs => "save_as",
+            SplitRight => "split_pane_right",
+            SplitDown => "split_pane_down",
+            NextPane => "next_pane",
+            PrevPane => "previous_pane",
             SourceMode => "view_source",
             SplitMode => "view_split",
             PreviewMode => "view_preview",
@@ -591,6 +609,10 @@ impl PaletteCmd {
             NewFolder => "Ny mappe",
             Save => "Lagre",
             SaveAs => "Lagre som",
+            SplitRight => "Del til høyre",
+            SplitDown => "Del ned",
+            NextPane => "Neste redigeringsfelt",
+            PrevPane => "Forrige redigeringsfelt",
             SourceMode => "Kildemodus",
             SplitMode => "Delt visning",
             PreviewMode => "Forhåndsvisning",
@@ -740,6 +762,26 @@ impl PaletteCmd {
             ),
             Save => (assets::IconName::Check, "Save", &["write", "disk"]),
             SaveAs => (assets::IconName::FileText, "Save as…", &["export", "copy"]),
+            SplitRight => (
+                assets::IconName::SquareSplitHorizontal,
+                "Split editor right",
+                &["pane", "split", "right"],
+            ),
+            SplitDown => (
+                assets::IconName::SquareSplitVertical,
+                "Split editor down",
+                &["pane", "split", "down"],
+            ),
+            NextPane => (
+                assets::IconName::ChevronRight,
+                "Focus next editor pane",
+                &["pane", "focus", "next"],
+            ),
+            PrevPane => (
+                assets::IconName::ChevronLeft,
+                "Focus previous editor pane",
+                &["pane", "focus", "previous"],
+            ),
             SourceMode => (
                 assets::IconName::SquarePen,
                 "View: source",
@@ -1162,6 +1204,9 @@ impl Workspace {
             vault,
             search_service: SearchService::new(),
             docs: Vec::new(),
+            doc_tokens: Vec::new(),
+            layout: EditorLayout::empty(),
+            restoring_session: false,
             active: None,
             folder: None,
             folder_search,
@@ -1184,7 +1229,7 @@ impl Workspace {
             status_epoch: 0,
             recent: Vec::new(),
             closed_tabs: Vec::new(),
-            tab_menu_ix: None,
+            tab_menu_token: None,
             focus_mode: settings.focus_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
@@ -1232,10 +1277,33 @@ impl Workspace {
             vault.starred = this.settings.starred.iter().cloned().collect();
         });
 
+        let restore_saved_session = initial_paths.is_empty();
         let restored_tabs = this.settings.open_tabs.clone();
-        let restored_active = this.settings.active_tab.clone();
-        let restored_folder = this.settings.active_folder.clone();
-        if initial_paths.is_empty() {
+        let legacy_active = this
+            .settings
+            .active_tab
+            .clone()
+            .map(PathBuf::from)
+            .map(|path| path.canonicalize().unwrap_or(path));
+        let legacy_mode = match this.settings.view_mode {
+            ViewMode::Source => PaneMode::Source,
+            ViewMode::Split => PaneMode::Split,
+            ViewMode::Preview => PaneMode::Preview,
+        };
+        let mut restored_session = EditorLayout::snapshot_for_startup(
+            this.settings.editor_session.clone(),
+            !restore_saved_session,
+        );
+        let restored_folder = restore_saved_session
+            .then(|| this.settings.active_folder.clone())
+            .flatten();
+        this.restoring_session = true;
+        let mut missing_saved_path = restore_saved_session
+            && (restored_tabs.iter().any(|path| !Path::new(path).exists())
+                || restored_session
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.paths.values().any(|path| !path.exists())));
+        if restore_saved_session {
             if let Some(root) = this
                 .settings
                 .last_vault
@@ -1244,16 +1312,38 @@ impl Workspace {
             {
                 this.open_vault_at(root, window, cx);
             }
-            for path in restored_tabs {
-                this.open_path(PathBuf::from(path), window, cx);
-            }
-            if let Some(active) = restored_active {
-                if let Some(ix) = this
-                    .docs
-                    .iter()
-                    .position(|d| d.entity.read(cx).path.display().to_string() == active)
-                {
-                    this.active = Some(ix);
+            if let Some(snapshot) = restored_session.as_mut() {
+                for path in snapshot.paths.values_mut() {
+                    match path.canonicalize() {
+                        Ok(canonical) if canonical.is_file() => *path = canonical,
+                        _ => {
+                            missing_saved_path = true;
+                            path.clear();
+                        }
+                    }
+                }
+                snapshot
+                    .paths
+                    .retain(|_, path| !path.as_os_str().is_empty());
+                let paths = snapshot.paths.values().cloned().collect::<Vec<_>>();
+                for path in paths {
+                    this.open_document_new_tab(path, window, cx);
+                }
+            } else {
+                for path in restored_tabs {
+                    let path = PathBuf::from(path);
+                    if !path.exists() {
+                        missing_saved_path = true;
+                        continue;
+                    }
+                    this.open_path(path, window, cx);
+                }
+                if let Some(active) = legacy_active.as_ref() {
+                    if let Some(ix) = this.docs.iter().position(|d| {
+                        d.entity.read(cx).path.canonicalize().ok().as_ref() == Some(active)
+                    }) {
+                        this.active = Some(ix);
+                    }
                 }
             }
             if let Some(folder) = restored_folder.filter(|p| p.is_dir()) {
@@ -1264,7 +1354,29 @@ impl Workspace {
                 this.open_path(path, window, cx);
             }
         }
+        this.restore_editor_session(
+            restored_session,
+            if restore_saved_session {
+                legacy_active.as_deref()
+            } else {
+                None
+            },
+            legacy_mode,
+            cx,
+        );
+        this.restoring_session = false;
+        this.persist_tabs(cx);
         this.sync_graph_active(cx);
+        this.focus_active_pane_after_mount(window, cx);
+        if missing_saved_path {
+            this.note_status(
+                this.tr(
+                    "A saved editor tab could not be restored because its file is missing.",
+                    "En lagret redigeringsfane kunne ikke gjenopprettes fordi filen mangler.",
+                ),
+                cx,
+            );
+        }
 
         let workspace = cx.entity();
         window.on_window_should_close(cx, move |_, cx| {
@@ -1717,6 +1829,18 @@ impl Workspace {
         cx.notify();
     }
 
+    fn focus_active_pane_after_mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        self.pending_editor_focus = self.active_doc().and_then(|doc| {
+            (self.graph.is_none()
+                && self.folder.is_none()
+                && self.settings.view_mode != ViewMode::Preview
+                && !doc.read(cx).is_read_only())
+            .then(|| (doc.clone(), None))
+        });
+        cx.notify();
+    }
+
     fn on_vault_event(&mut self, event: &VaultEvent, cx: &mut Context<Self>) {
         if matches!(event, VaultEvent::TreeExpansion) {
             let vault = self.vault.read(cx);
@@ -2099,6 +2223,9 @@ impl Workspace {
                 if !preview {
                     self.docs[ix].preview = false;
                 }
+                if let Some(token) = self.doc_tokens.get(ix).copied() {
+                    self.layout.activate(token);
+                }
                 self.active = Some(ix);
                 self.folder = None;
                 self.graph = None;
@@ -2166,10 +2293,20 @@ impl Workspace {
                 }
                 DocumentEvent::Selection => cx.notify(),
                 DocumentEvent::SourceScrolled => {
-                    if this.settings.preview_follows_source
-                        && this.settings.view_mode == ViewMode::Split
-                        && this.active_doc() == Some(changed_doc)
-                    {
+                    let follows_in_group = this
+                        .docs
+                        .iter()
+                        .position(|doc| doc.entity == *changed_doc)
+                        .and_then(|ix| this.doc_tokens.get(ix))
+                        .and_then(|token| this.layout.group_for(*token))
+                        .and_then(|group| {
+                            this.layout
+                                .group_specs()
+                                .into_iter()
+                                .find(|(id, _, _, _)| *id == group)
+                        })
+                        .is_some_and(|(_, _, _, mode)| mode == PaneMode::Split);
+                    if this.settings.preview_follows_source && follows_in_group {
                         let doc = changed_doc.clone();
                         // Read visible rows after the editor has laid out its new viewport.
                         window.on_next_frame(move |window, _| {
@@ -2178,6 +2315,36 @@ impl Workspace {
                             });
                         });
                     }
+                }
+            },
+        );
+        let editor_focus = doc.read(cx).editor.read(cx).focus_handle(cx);
+        let focused_document_id = doc.entity_id();
+        let focus_sub = cx.on_focus_in(
+            &editor_focus,
+            window,
+            move |this: &mut Workspace, _window, cx| {
+                if this.restoring_session {
+                    return;
+                }
+                let Some(index) = this
+                    .docs
+                    .iter()
+                    .position(|open| open.entity.entity_id() == focused_document_id)
+                else {
+                    return;
+                };
+                let Some(token) = this.doc_tokens.get(index).copied() else {
+                    return;
+                };
+                let Some(group) = this.layout.group_for(token) else {
+                    return;
+                };
+                if this.layout.select(group, token) {
+                    this.active = Some(index);
+                    this.sync_active_facade();
+                    this.persist_tabs(cx);
+                    cx.notify();
                 }
             },
         );
@@ -2214,16 +2381,26 @@ impl Workspace {
             })
         });
         doc.update(cx, |doc, cx| doc.set_focus_mode(self.focus_mode, cx));
+        let preview_group = self.layout.focused();
         let replacement = preview
             .then(|| {
-                self.docs.iter().position(|tab| {
-                    let doc = tab.entity.read(cx);
-                    preview_tab_is_replaceable(
-                        tab.preview,
-                        doc.dirty,
-                        doc.conflict,
-                        self.is_pinned(&doc.path),
-                    )
+                self.docs.iter().enumerate().find_map(|(ix, tab)| {
+                    (self
+                        .doc_tokens
+                        .get(ix)
+                        .and_then(|token| self.layout.group_for(*token))
+                        == Some(preview_group))
+                    .then(|| {
+                        let doc = tab.entity.read(cx);
+                        preview_tab_is_replaceable(
+                            tab.preview,
+                            doc.dirty,
+                            doc.conflict,
+                            self.is_pinned(&doc.path),
+                        )
+                        .then_some(ix)
+                    })
+                    .flatten()
                 })
             })
             .flatten();
@@ -2232,14 +2409,21 @@ impl Workspace {
             preview,
             base,
             _sub: sub,
+            _focus_sub: focus_sub,
         };
-        let ix = if let Some(ix) = replacement {
+        let (ix, token) = if let Some(ix) = replacement {
+            let token = self.doc_tokens[ix];
+            self.layout.replace_path(token, path.clone());
             self.docs[ix] = opened;
-            ix
+            (ix, token)
         } else {
             self.docs.push(opened);
-            self.docs.len() - 1
+            let token = self.layout.new_token(path.clone());
+            self.layout.add_tab(self.layout.focused(), token);
+            self.doc_tokens.push(token);
+            (self.docs.len() - 1, token)
         };
+        self.layout.activate(token);
         self.active = Some(ix);
         self.folder = None;
         self.graph = None;
@@ -2481,6 +2665,8 @@ impl Workspace {
 
     fn close_all_docs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.docs.clear();
+        self.doc_tokens.clear();
+        self.layout = EditorLayout::empty();
         self.folder = None;
         self.active = None;
         self.persist_tabs(cx);
@@ -2498,18 +2684,92 @@ impl Workspace {
     /// restore-on-launch list. Also keeps an open graph's active-note
     /// halo in step — this runs after every tab mutation.
     fn persist_tabs(&mut self, cx: &mut Context<Self>) {
+        self.sync_active_facade();
         self.settings.active_folder = self.folder.as_ref().map(|p| p.path.clone());
         self.sync_graph_active(cx);
+        for (doc, token) in self.docs.iter().zip(self.doc_tokens.iter().copied()) {
+            self.layout
+                .replace_path(token, doc.entity.read(cx).path.clone());
+        }
         self.settings.open_tabs = self
-            .docs
-            .iter()
-            .map(|d| d.entity.read(cx).path.display().to_string())
+            .layout
+            .group_specs()
+            .into_iter()
+            .flat_map(|(_, tokens, _, _)| tokens)
+            .filter_map(|token| {
+                self.doc_tokens
+                    .iter()
+                    .position(|candidate| *candidate == token)
+                    .and_then(|ix| self.docs.get(ix))
+                    .map(|doc| doc.entity.read(cx).path.display().to_string())
+            })
             .collect();
         self.settings.active_tab = self
             .active
             .and_then(|i| self.docs.get(i))
             .map(|d| d.entity.read(cx).path.display().to_string());
+        self.settings.editor_session = Some(self.layout.snapshot());
+        if self.restoring_session {
+            return;
+        }
         self.settings.save();
+    }
+
+    fn sync_active_facade(&mut self) {
+        let focused = self.layout.focused();
+        let selected = self.layout.selected(focused);
+        self.active = selected.and_then(|token| {
+            self.doc_tokens
+                .iter()
+                .position(|candidate| *candidate == token)
+        });
+        if let Some((_, _, _, mode)) = self
+            .layout
+            .group_specs()
+            .into_iter()
+            .find(|(group, _, _, _)| *group == focused)
+        {
+            self.settings.view_mode = match mode {
+                PaneMode::Source => ViewMode::Source,
+                PaneMode::Split => ViewMode::Split,
+                PaneMode::Preview => ViewMode::Preview,
+            };
+        }
+    }
+
+    fn restore_editor_session(
+        &mut self,
+        snapshot: Option<crate::editor_layout::Snapshot>,
+        legacy_active: Option<&Path>,
+        legacy_mode: PaneMode,
+        cx: &mut Context<Self>,
+    ) {
+        let document_paths = self
+            .docs
+            .iter()
+            .map(|doc| doc.entity.read(cx).path.clone())
+            .collect::<Vec<_>>();
+        if let Some(snapshot) = snapshot {
+            let (layout, bindings) = EditorLayout::restore_for_documents(snapshot, &document_paths);
+            let docs = std::mem::take(&mut self.docs);
+            self.docs.clear();
+            self.doc_tokens.clear();
+            for (doc, token) in docs.into_iter().zip(bindings) {
+                if let Some(token) = token {
+                    self.docs.push(doc);
+                    self.doc_tokens.push(token);
+                }
+            }
+            self.layout = layout;
+            self.sync_active_facade();
+            return;
+        }
+        let (layout, tokens, active) =
+            EditorLayout::migrate_legacy(&document_paths, legacy_active, legacy_mode);
+        self.layout = layout;
+        self.doc_tokens = tokens;
+        self.active = active;
+        self.sync_active_facade();
     }
 
     /// Palette "Pin tab" / "Unpin tab" — pinned tabs keep their tab
@@ -2543,26 +2803,78 @@ impl Workspace {
         cx.notify();
     }
 
+    fn doc_index_for_token(&self, token: TabToken) -> Option<usize> {
+        self.doc_tokens
+            .iter()
+            .position(|candidate| *candidate == token)
+    }
+
+    fn close_tab_token(&mut self, token: TabToken, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.doc_index_for_token(token) {
+            self.close_tab_at(index, window, cx);
+        }
+    }
+
+    fn toggle_pin_token(&mut self, token: TabToken, cx: &mut Context<Self>) {
+        if let Some(index) = self.doc_index_for_token(token) {
+            self.toggle_pin_at(index, cx);
+        }
+    }
+
     /// Close every tab except `keep` — pinned tabs survive (they refuse
     /// inside `close_tab_at`).
     fn close_others_except(&mut self, keep: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let n = self
-            .docs
-            .iter()
-            .enumerate()
-            .filter(|(i, d)| *i != keep && !self.is_pinned(&d.entity.read(cx).path))
-            .count();
-        for ix in (0..self.docs.len()).rev() {
-            if ix != keep {
-                self.close_tab_at(ix, window, cx);
-            }
+        let Some(token) = self.doc_tokens.get(keep).copied() else {
+            return;
+        };
+        self.close_others_except_token(token, window, cx);
+    }
+
+    fn close_others_except_token(
+        &mut self,
+        keep: TabToken,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group) = self.layout.group_for(keep) else {
+            return;
+        };
+        let candidates = self
+            .layout
+            .group_tokens(group)
+            .into_iter()
+            .filter(|token| *token != keep)
+            .filter(|token| {
+                self.doc_index_for_token(*token)
+                    .and_then(|index| self.docs.get(index))
+                    .is_some_and(|doc| !self.is_pinned(&doc.entity.read(cx).path))
+            })
+            .collect::<Vec<_>>();
+        let n = candidates.len();
+        for token in candidates.into_iter().rev() {
+            self.close_tab_token(token, window, cx);
         }
         self.note_status(format!("Closed {n} other tabs"), cx);
     }
 
     fn close_tabs_right_of(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        for t in (ix + 1..self.docs.len()).rev() {
-            self.close_tab_at(t, window, cx);
+        let Some(token) = self.doc_tokens.get(ix).copied() else {
+            return;
+        };
+        self.close_tabs_right_of_token(token, window, cx);
+    }
+
+    fn close_tabs_right_of_token(
+        &mut self,
+        token: TabToken,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layout.group_for(token).is_none() {
+            return;
+        }
+        for target in self.layout.tokens_to_right(token).into_iter().rev() {
+            self.close_tab_token(target, window, cx);
         }
     }
 
@@ -2604,6 +2916,20 @@ impl Workspace {
     fn close_tab_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.docs.len() {
             return;
+        }
+        let focused_before = self.layout.focused();
+        if let Some(token) = self.doc_tokens.get(ix).copied() {
+            if let Some(group) = self.layout.group_for(token) {
+                self.layout.focus(group);
+                if self.layout.selected(group) == Some(token) {
+                    self.active = Some(ix);
+                } else if let Some(selected) = self.layout.selected(group) {
+                    self.active = self.doc_tokens.iter().position(|item| *item == selected);
+                }
+            }
+        }
+        if self.layout.focused() != focused_before {
+            self.persist_tabs(cx);
         }
         if self.is_pinned(&self.docs[ix].entity.read(cx).path) {
             self.note_status("Tab is pinned", cx);
@@ -2651,27 +2977,35 @@ impl Workspace {
         self.close_tab_now(ix, window, cx);
     }
 
-    /// Drag a tab onto another tab to reorder the strip. `self.active`
-    /// tracks by path so the active doc keeps its highlight wherever it
-    /// lands; nav history is path-based and unaffected.
-    fn move_tab(&mut self, from: usize, to: usize, _window: &mut Window, cx: &mut Context<Self>) {
-        if from >= self.docs.len() || to >= self.docs.len() || from == to {
+    fn move_tab_to_group(
+        &mut self,
+        token: TabToken,
+        destination: GroupId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source_group = self.layout.group_for(token);
+        let source_position = self
+            .layout
+            .group_tokens(destination)
+            .iter()
+            .position(|candidate| *candidate == token);
+        let insertion = if source_group == Some(destination)
+            && source_position.is_some_and(|position| position < index)
+        {
+            index.saturating_sub(1)
+        } else {
+            index
+        };
+        if !self.layout.move_tab(token, destination, insertion) {
             return;
         }
-        let active_path = self
-            .active
-            .and_then(|i| self.docs.get(i))
-            .map(|d| d.entity.read(cx).path.clone());
-        let entry = self.docs.remove(from);
-        self.docs.insert(to, entry);
-        if let Some(path) = active_path {
-            self.active = self
-                .docs
-                .iter()
-                .position(|d| d.entity.read(cx).path == path);
-        }
+        self.active = self.doc_index_for_token(token);
+        self.folder = None;
+        self.graph = None;
         self.persist_tabs(cx);
-        cx.notify();
+        self.focus_active_pane_after_mount(window, cx);
     }
 
     /// ⌘⇧T / palette — reopen the most recently closed tab.
@@ -2692,7 +3026,12 @@ impl Workspace {
             .read(cx)
             .focus_handle(cx);
         let path = self.docs[ix].entity.read(cx).path.clone();
+        let token = self.doc_tokens.get(ix).copied();
         self.docs.remove(ix);
+        self.doc_tokens.remove(ix);
+        if let Some(token) = token {
+            self.layout.close(token);
+        }
         self.closed_tabs.push(path);
         if let Some(active) = self.active {
             if active >= self.docs.len() {
@@ -2703,6 +3042,8 @@ impl Workspace {
         }
         if self.docs.is_empty() {
             self.active = None;
+        } else if let Some(selected) = self.layout.selected(self.layout.focused()) {
+            self.active = self.doc_tokens.iter().position(|token| *token == selected);
         }
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
@@ -3652,15 +3993,23 @@ impl Workspace {
     }
 
     fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        if self.docs.is_empty() {
+        let group = self.layout.focused();
+        let tabs = self.layout.group_tokens(group);
+        if tabs.is_empty() {
             return;
         }
         self.folder = None;
         self.graph = None;
-        self.active = Some(match self.active {
-            Some(i) => (i + 1) % self.docs.len(),
-            None => 0,
-        });
+        let current = self.layout.selected(group);
+        let index = current
+            .and_then(|token| tabs.iter().position(|candidate| *candidate == token))
+            .map(|index| (index + 1) % tabs.len())
+            .unwrap_or(0);
+        self.layout.select(group, tabs[index]);
+        self.active = self
+            .doc_tokens
+            .iter()
+            .position(|token| *token == tabs[index]);
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
         self.refocus(window, cx);
@@ -3668,19 +4017,88 @@ impl Workspace {
     }
 
     fn on_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
-        if self.docs.is_empty() {
+        let group = self.layout.focused();
+        let tabs = self.layout.group_tokens(group);
+        if tabs.is_empty() {
             return;
         }
         self.folder = None;
         self.graph = None;
-        self.active = Some(match self.active {
-            Some(0) | None => self.docs.len() - 1,
-            Some(i) => i - 1,
-        });
+        let current = self.layout.selected(group);
+        let index = current
+            .and_then(|token| tabs.iter().position(|candidate| *candidate == token))
+            .map(|index| index.checked_sub(1).unwrap_or(tabs.len() - 1))
+            .unwrap_or(tabs.len() - 1);
+        self.layout.select(group, tabs[index]);
+        self.active = self
+            .doc_tokens
+            .iter()
+            .position(|token| *token == tabs[index]);
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
         self.refocus(window, cx);
         cx.notify();
+    }
+
+    fn split_pane(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(token) = self.active.and_then(|ix| self.doc_tokens.get(ix).copied()) else {
+            return;
+        };
+        let group = self.layout.focused();
+        if self.layout.split(group, token, axis).is_some() {
+            self.folder = None;
+            self.graph = None;
+            self.persist_tabs(cx);
+            self.focus_active_pane_after_mount(window, cx);
+        }
+    }
+
+    fn on_split_pane_right(
+        &mut self,
+        _: &SplitPaneRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split_pane(Axis::Horizontal, window, cx);
+    }
+
+    fn on_split_pane_down(
+        &mut self,
+        _: &SplitPaneDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split_pane(Axis::Vertical, window, cx);
+    }
+
+    fn cycle_pane(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = self.layout.groups_in_order();
+        if groups.len() < 2 {
+            return;
+        }
+        let current = groups
+            .iter()
+            .position(|group| *group == self.layout.focused())
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(groups.len() as isize) as usize;
+        let group = groups[next];
+        self.layout.focus(group);
+        self.folder = None;
+        self.graph = None;
+        self.active = self
+            .layout
+            .selected(group)
+            .and_then(|token| self.doc_tokens.iter().position(|item| *item == token));
+        self.persist_tabs(cx);
+        self.focus_active_pane_after_mount(window, cx);
+    }
+
+    fn on_next_pane(&mut self, _: &NextPane, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_pane(1, window, cx);
+    }
+
+    fn on_prev_pane(&mut self, _: &PrevPane, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_pane(-1, window, cx);
     }
 
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _w: &mut Window, cx: &mut Context<Self>) {
@@ -3836,9 +4254,33 @@ impl Workspace {
     }
 
     fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings.view_mode = mode;
-        self.settings.save();
-        if mode == ViewMode::Preview {
+        let pane_mode = match mode {
+            ViewMode::Source => PaneMode::Source,
+            ViewMode::Split => PaneMode::Split,
+            ViewMode::Preview => PaneMode::Preview,
+        };
+        self.set_pane_view_mode(self.layout.focused(), pane_mode, window, cx);
+    }
+
+    fn set_pane_view_mode(
+        &mut self,
+        group: GroupId,
+        mode: PaneMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.layout.focus(group);
+        if let Some(token) = self.layout.selected(group) {
+            self.active = self.doc_tokens.iter().position(|item| *item == token);
+        }
+        self.layout.set_mode(group, mode);
+        self.settings.view_mode = match mode {
+            PaneMode::Source => ViewMode::Source,
+            PaneMode::Split => ViewMode::Split,
+            PaneMode::Preview => ViewMode::Preview,
+        };
+        self.persist_tabs(cx);
+        if mode == PaneMode::Preview && group == self.layout.focused() {
             // The editor unmounts and its focus handle goes stale — reclaim
             // focus for the workspace or ⌘ shortcuts stop dispatching.
             self.focus_handle.focus(window, cx);
@@ -4158,6 +4600,10 @@ impl Workspace {
             }
             PaletteCmd::Save => self.on_save(&SaveFile, window, cx),
             PaletteCmd::SaveAs => self.on_save_as(&SaveFileAs, window, cx),
+            PaletteCmd::SplitRight => self.on_split_pane_right(&SplitPaneRight, window, cx),
+            PaletteCmd::SplitDown => self.on_split_pane_down(&SplitPaneDown, window, cx),
+            PaletteCmd::NextPane => self.on_next_pane(&NextPane, window, cx),
+            PaletteCmd::PrevPane => self.on_prev_pane(&PrevPane, window, cx),
             PaletteCmd::SourceMode => self.set_view_mode(ViewMode::Source, window, cx),
             PaletteCmd::SplitMode => self.set_view_mode(ViewMode::Split, window, cx),
             PaletteCmd::PreviewMode => self.set_view_mode(ViewMode::Preview, window, cx),
@@ -4727,6 +5173,7 @@ impl Workspace {
                 cx,
             );
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
+            self.persist_tabs(cx);
         }
         let _ = window;
     }
@@ -8041,303 +8488,8 @@ impl Workspace {
             )
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Count same-name tabs first: when a title is duplicated, append
-        // the parent folder so two `notes.md` tabs stay distinguishable.
-        let mut title_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for doc in &self.docs {
-            let doc = doc.entity.read(cx);
-            let title = if doc.is_read_only()
-                || doc.path.extension().and_then(|e| e.to_str()) == Some("base")
-            {
-                doc.file_name()
-            } else {
-                doc.title()
-            };
-            *title_counts.entry(title).or_default() += 1;
-        }
-        let tabs: Vec<Tab> = self
-            .docs
-            .iter()
-            .enumerate()
-            .map(|(ix, doc)| {
-                let (title, dirty, icon) = {
-                    let doc = doc.entity.read(cx);
-                    // .base tabs keep their extension so `tasks` and
-                    // `tasks.base` don't look like the same document.
-                    let mut title = if doc.is_read_only()
-                        || doc.path.extension().and_then(|e| e.to_str()) == Some("base")
-                    {
-                        doc.file_name()
-                    } else {
-                        doc.title()
-                    };
-                    if title_counts.get(&title).copied().unwrap_or(0) > 1 {
-                        if let Some(dir) = doc
-                            .path
-                            .parent()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().to_string())
-                        {
-                            title = format!("{title} · {dir}");
-                        }
-                    }
-                    let ext = doc
-                        .path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.to_lowercase());
-                    let icon = match ext.as_deref() {
-                        Some("base") => assets::IconName::Database,
-                        Some(e) if IMAGE_EXTS.contains(&e) => assets::IconName::FileImage,
-                        _ => assets::IconName::FileText,
-                    };
-                    (title, doc.dirty, icon)
-                };
-                let view = cx.entity();
-                let label = if dirty {
-                    format!("{} •", title.clone())
-                } else {
-                    title.clone()
-                };
-                let tab = Self::content_tab(label, icon).when(doc.preview, |tab| tab.italic());
-                let pinned = {
-                    let doc = doc.entity.read(cx);
-                    let s = doc.path.display().to_string();
-                    self.settings.pinned_tabs.contains(&s)
-                };
-                let tab = if pinned {
-                    // Pinned tabs swap the × for a pin glyph — no way to
-                    // close them without unpinning first.
-                    tab.suffix(
-                        Icon::new(assets::IconName::Pin)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                } else {
-                    tab.suffix(
-                        Button::new(("close-tab", ix))
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::Close)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_tab_at(ix, window, cx);
-                            })),
-                    )
-                };
-                tab.on_mouse_up(gpui::MouseButton::Left, {
-                    let view = view.clone();
-                    move |event, _, cx| {
-                        if event.click_count == 2 {
-                            view.update(cx, |this, cx| {
-                                if let Some(tab) = this.docs.get_mut(ix) {
-                                    tab.preview = false;
-                                }
-                                this.persist_tabs(cx);
-                                cx.notify();
-                            });
-                        }
-                    }
-                })
-                .on_drag(DraggedTab(ix), {
-                    let label = title.clone();
-                    move |_, _, _, cx| {
-                        cx.new(|_| TreeDragPreview {
-                            label: label.clone().into(),
-                        })
-                    }
-                })
-                .drag_over::<DraggedTab>(|style, _, _, cx| {
-                    style.bg(cx.theme().accent.opacity(0.15))
-                })
-                .on_drop::<DraggedTab>({
-                    let view = view.clone();
-                    move |src, window, cx| {
-                        view.update(cx, |this, cx| {
-                            this.move_tab(src.0, ix, window, cx);
-                        });
-                    }
-                })
-                // Middle-click closes the tab (browser/the reference editor parity).
-                .on_mouse_down(gpui::MouseButton::Middle, {
-                    let view = view.clone();
-                    move |_ev, window, cx| {
-                        view.update(cx, |this, cx| {
-                            this.close_tab_at(ix, window, cx);
-                        });
-                    }
-                })
-                // Right-click records which tab the strip-level context
-                // menu should act on (the menu builder runs next frame).
-                .on_mouse_down(gpui::MouseButton::Right, {
-                    let view = view.clone();
-                    move |_ev, _window, cx| {
-                        view.update(cx, |this, _cx| {
-                            this.tab_menu_ix = Some(ix);
-                        });
-                    }
-                })
-            })
-            .collect();
-
-        let can_back = self.nav_pos > 0;
-        let can_fwd = self.nav_pos + 1 < self.nav_stack.len();
-        let view = cx.entity();
-        h_flex()
-            .id("tab-strip")
-            .w_full()
-            .h_11()
-            .flex_shrink_0()
-            .gap_2()
-            .items_center()
-            // Drop a file from the tree onto the strip to open it as a tab.
-            .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
-            .on_drop::<PathBuf>({
-                let view = view.clone();
-                move |src, window, cx| {
-                    let src = src.clone();
-                    view.update(cx, |this, cx| {
-                        this.open_document_new_tab(src, window, cx);
-                    });
-                }
-            })
-            .child(
-                h_flex()
-                    .pl_3()
-                    .child(
-                        Button::new("nav-back")
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::ChevronLeft)
-                            .disabled(!can_back)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.nav_back(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("nav-fwd")
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::ChevronRight)
-                            .disabled(!can_fwd)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.nav_forward(window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        TabBar::new("doc-tabs")
-                            .segmented()
-                            .small()
-                            .bg(cx.theme().transparent)
-                            .selected_index(self.active.unwrap_or(usize::MAX))
-                            .children(tabs)
-                            .on_click(cx.listener(|this, &ix, window, cx| {
-                                // The × suffix button closes a tab but its
-                                // click still lands here — skip reselecting
-                                // an index that no longer exists, which
-                                // would blank the editor until another tab
-                                // is clicked.
-                                if ix < this.docs.len() {
-                                    this.folder = None;
-                                    this.graph = None;
-                                    this.active = Some(ix);
-                                    let path = this.docs[ix].entity.read(cx).path.clone();
-                                    this.record_nav(&path);
-                                    this.persist_tabs(cx);
-                                    this.reveal_active_file(cx);
-                                    this.refocus(window, cx);
-                                }
-                            })),
-                    )
-                    // Right-click anywhere on the strip opens the tab menu
-                    //. Each tab's Right mouse-down sets
-                    // `tab_menu_ix` first — the menu builder runs deferred.
-                    .context_menu({
-                        let view = view.clone();
-                        move |menu, _window, cx| {
-                            let ws = view.read(cx);
-                            let Some((ix, pinned, path)) =
-                                ws.tab_menu_ix.or(ws.active).and_then(|ix| {
-                                    ws.docs.get(ix).map(|d| {
-                                        let p = d.entity.read(cx).path.clone();
-                                        (ix, ws.is_pinned(&p), p)
-                                    })
-                                })
-                            else {
-                                return menu;
-                            };
-                            menu.item(
-                                PopupMenuItem::new(if pinned { "Unpin tab" } else { "Pin tab" })
-                                    .icon(assets::IconName::Pin)
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, _w, cx| {
-                                            view.update(cx, |this, cx| this.toggle_pin_at(ix, cx));
-                                        }
-                                    }),
-                            )
-                            .item(
-                                PopupMenuItem::new("Reveal in tree")
-                                    .icon(assets::IconName::Crosshair)
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, _w, cx| {
-                                            view.update(cx, |this, cx| this.reveal_file(&path, cx));
-                                        }
-                                    }),
-                            )
-                            .separator()
-                            .item(
-                                PopupMenuItem::new("Close tab")
-                                    .icon(assets::IconName::X)
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, w, cx| {
-                                            view.update(cx, |this, cx| {
-                                                this.close_tab_at(ix, w, cx)
-                                            });
-                                        }
-                                    }),
-                            )
-                            .item(PopupMenuItem::new("Close other tabs").on_click({
-                                let view = view.clone();
-                                move |_, w, cx| {
-                                    view.update(cx, |this, cx| this.close_others_except(ix, w, cx));
-                                }
-                            }))
-                            .item(
-                                PopupMenuItem::new("Close tabs to the right").on_click({
-                                    let view = view.clone();
-                                    move |_, w, cx| {
-                                        view.update(cx, |this, cx| {
-                                            this.close_tabs_right_of(ix, w, cx)
-                                        });
-                                    }
-                                }),
-                            )
-                        }
-                    }),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    // Same right inset as the titlebar cluster above.
-                    .pr_3()
-                    // Image tabs have no source/preview modes; an open
-                    // graph replaces the content area entirely.
-                    .when(
-                        self.active.is_some()
-                            && !self.active_doc_is_image(cx)
-                            && self.graph.is_none(),
-                        |this| this.child(self.render_view_mode_tabs(cx)),
-                    ),
-            )
+    fn render_tab_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_group_tab_bar(self.layout.focused(), cx)
     }
 
     /// Is the active doc an image file (rendered as a picture, not a
@@ -8346,33 +8498,6 @@ impl Workspace {
         self.active_doc()
             .map(|d| d.read(cx).is_read_only())
             .unwrap_or(false)
-    }
-
-    /// The Source/Split/Preview switcher, kept out of the window titlebar so
-    /// the top bar stays quiet. Lives at the right end of the tab strip.
-    fn render_view_mode_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mode = self.settings.view_mode;
-        TabBar::new("view-mode")
-            .segmented()
-            .small()
-            .selected_index(match mode {
-                ViewMode::Source => 0,
-                ViewMode::Split => 1,
-                ViewMode::Preview => 2,
-            })
-            .children([
-                Tab::new().label("Source"),
-                Tab::new().label("Split"),
-                Tab::new().label("Preview"),
-            ])
-            .on_click(cx.listener(|this, &ix, window, cx| {
-                match ix {
-                    0 => this.set_view_mode(ViewMode::Source, window, cx),
-                    1 => this.set_view_mode(ViewMode::Split, window, cx),
-                    _ => this.set_view_mode(ViewMode::Preview, window, cx),
-                }
-                cx.notify();
-            }))
     }
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
@@ -8498,62 +8623,696 @@ impl Workspace {
             })
     }
 
-    fn render_editor_area(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_editor_panes(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some(page) = &self.folder {
-            return self.render_folder_page(page, cx);
+            let page = self.render_folder_page(page, cx);
+            return v_flex()
+                .size_full()
+                .when(!self.zen, |this| this.child(self.render_tab_bar(cx)))
+                .child(div().flex_1().min_h_0().child(page))
+                .into_any_element();
         }
-        let Some(doc) = self.active_doc().cloned() else {
-            return self.render_empty_editor(cx).into_any_element();
-        };
+        let root = self.layout.root().clone();
+        self.render_layout_node(&root, cx)
+    }
 
+    fn render_layout_node(&self, node: &Node, cx: &mut Context<Self>) -> AnyElement {
+        match node {
+            Node::Group(group) => self.render_editor_group(group.id, cx),
+            Node::Split {
+                id,
+                axis,
+                sizes,
+                first,
+                second,
+            } => {
+                let split_id = *id;
+                let first = self.render_layout_node(first, cx);
+                let second = self.render_layout_node(second, cx);
+                let view = cx.entity();
+                canvas_panels(("editor-split", id.value()), *axis)
+                    .child(
+                        resizable_panel()
+                            .when_some(sizes.map(|sizes| px(sizes[0])), |panel, size| {
+                                panel.size(size)
+                            })
+                            .child(div().size_full().min_w_0().min_h_0().child(first)),
+                    )
+                    .child(
+                        resizable_panel()
+                            .when_some(sizes.map(|sizes| px(sizes[1])), |panel, size| {
+                                panel.size(size)
+                            })
+                            .child(div().size_full().min_w_0().min_h_0().child(second)),
+                    )
+                    .on_resize(move |state, _, cx| {
+                        let sizes = state.read(cx).sizes().clone();
+                        if sizes.len() == 2 {
+                            let measured = [sizes[0] / px(1.), sizes[1] / px(1.)];
+                            view.update(cx, |this, cx| {
+                                if this.layout.set_split_sizes(split_id, measured) {
+                                    this.persist_tabs(cx);
+                                }
+                            });
+                        }
+                    })
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_group_tab_bar(&self, group: GroupId, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = self.layout.group_tokens(group);
+        let selected = self.layout.selected(group);
+        let mode = self
+            .layout
+            .group_specs()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == group)
+            .map(|(_, _, _, mode)| mode)
+            .unwrap_or_default();
+        let tabs = tokens
+            .iter()
+            .filter_map(|token| {
+                self.doc_index_for_token(*token)
+                    .map(|index| (*token, index))
+            })
+            .collect::<Vec<_>>();
+        let mut title_counts = HashMap::new();
+        for (_, ix) in &tabs {
+            let doc = self.docs[*ix].entity.read(cx);
+            let title = if doc.is_read_only()
+                || doc.path.extension().and_then(|ext| ext.to_str()) == Some("base")
+            {
+                doc.file_name()
+            } else {
+                doc.title()
+            };
+            *title_counts.entry(title).or_insert(0usize) += 1;
+        }
+        let selected_index = tabs
+            .iter()
+            .position(|(token, _)| Some(*token) == selected)
+            .unwrap_or(0);
+        let group_tokens = tabs.iter().map(|(token, _)| *token).collect::<Vec<_>>();
+        let group_mode_control = if selected
+            .and_then(|token| self.doc_tokens.iter().position(|item| *item == token))
+            .and_then(|ix| self.docs.get(ix))
+            .is_some_and(|doc| doc.entity.read(cx).is_read_only())
+        {
+            div().into_any_element()
+        } else {
+            self.render_pane_view_mode_tabs(group, mode, cx)
+                .into_any_element()
+        };
+        let tab_bar = TabBar::new(("pane-tabs", group.value()))
+            .small()
+            .bg(cx.theme().transparent)
+            .selected_index(selected_index)
+            .children(tabs.into_iter().enumerate().map(|(index, (token, ix))| {
+                let (mut title, dirty, icon) = {
+                    let doc = self.docs[ix].entity.read(cx);
+                    let title = if doc.is_read_only()
+                        || doc.path.extension().and_then(|ext| ext.to_str()) == Some("base")
+                    {
+                        doc.file_name()
+                    } else {
+                        doc.title()
+                    };
+                    let icon = match doc
+                        .path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                    {
+                        Some("base") => assets::IconName::Database,
+                        Some(ext) if IMAGE_EXTS.contains(&ext) => assets::IconName::FileImage,
+                        _ => assets::IconName::FileText,
+                    };
+                    (title, doc.dirty, icon)
+                };
+                if title_counts.get(&title).copied().unwrap_or(0) > 1 {
+                    if let Some(parent) = self.docs[ix]
+                        .entity
+                        .read(cx)
+                        .path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .map(|name| name.to_string_lossy().to_string())
+                    {
+                        title = format!("{title} · {parent}");
+                    }
+                }
+                let label = if dirty {
+                    format!("{title} •")
+                } else {
+                    title.clone()
+                };
+                let preview = self.docs[ix].preview;
+                let pinned = self.docs[ix].entity.read(cx).path.display().to_string();
+                let pinned = self.settings.pinned_tabs.contains(&pinned);
+                let view = cx.entity();
+                let tab = Self::content_tab(label.clone(), icon)
+                    .when(preview, |tab| tab.italic())
+                    .selected(Some(token) == selected)
+                    .suffix(if pinned {
+                        Icon::new(assets::IconName::Pin)
+                            .size_3p5()
+                            .text_color(cx.theme().muted_foreground)
+                            .into_any_element()
+                    } else {
+                        Button::new(("pane-close-tab", token.value()))
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Close)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_tab_token(token, window, cx);
+                            }))
+                            .into_any_element()
+                    })
+                    .on_drag(DraggedTab(token), {
+                        let label = title.clone();
+                        move |_, _, _, cx| {
+                            cx.new(|_| TreeDragPreview {
+                                label: label.clone().into(),
+                            })
+                        }
+                    })
+                    .drag_over::<DraggedTab>(|style, _, _, cx| {
+                        style.bg(cx.theme().muted.opacity(0.24))
+                    })
+                    .on_drop::<DraggedTab>({
+                        let view = view.clone();
+                        move |source, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.move_tab_to_group(source.0, group, index, window, cx);
+                            });
+                        }
+                    })
+                    .on_mouse_up(gpui::MouseButton::Left, {
+                        let view = view.clone();
+                        move |event, _, cx| {
+                            if event.click_count == 2 {
+                                view.update(cx, |this, cx| {
+                                    if let Some(doc) = this
+                                        .doc_index_for_token(token)
+                                        .and_then(|index| this.docs.get_mut(index))
+                                    {
+                                        doc.preview = false;
+                                    }
+                                    this.persist_tabs(cx);
+                                });
+                            }
+                        }
+                    })
+                    .on_mouse_down(gpui::MouseButton::Middle, {
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.close_tab_token(token, window, cx));
+                        }
+                    })
+                    .on_mouse_down(gpui::MouseButton::Right, {
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.tab_menu_token = Some(token);
+                                this.activate_pane(group, token, window, cx);
+                            });
+                        }
+                    });
+                tab
+            }))
+            .suffix(group_mode_control)
+            .on_click(cx.listener(move |this, &index, window, cx| {
+                if let Some(token) = group_tokens.get(index).copied() {
+                    this.activate_pane(group, token, window, cx);
+                }
+            }));
+        let can_back = self.nav_pos > 0;
+        let can_forward = self.nav_pos + 1 < self.nav_stack.len();
+        let view = cx.entity();
+        h_flex()
+            .id(("pane-tab-strip", group.value()))
+            .w_full()
+            .h_11()
+            .flex_shrink_0()
+            .gap_2()
+            .items_center()
+            .child(
+                h_flex()
+                    .pl_3()
+                    .child(
+                        Button::new(("pane-nav-back", group.value()))
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::ChevronLeft)
+                            .disabled(!can_back)
+                            .on_click(cx.listener(|this, _, window, cx| this.nav_back(window, cx))),
+                    )
+                    .child(
+                        Button::new(("pane-nav-forward", group.value()))
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::ChevronRight)
+                            .disabled(!can_forward)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.nav_forward(window, cx);
+                            })),
+                    ),
+            )
+            .child(div().flex_1().min_w_0().child(tab_bar))
+            .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
+            .on_drop::<PathBuf>({
+                let view = view.clone();
+                move |path, window, cx| {
+                    let path = path.clone();
+                    view.update(cx, |this, cx| {
+                        this.layout.focus(group);
+                        this.open_document_new_tab(path, window, cx);
+                    });
+                }
+            })
+            .context_menu({
+                let view = view.clone();
+                move |menu, _window, cx| {
+                    let workspace = view.read(cx);
+                    let token = workspace
+                        .tab_menu_token
+                        .filter(|token| workspace.layout.group_for(*token) == Some(group))
+                        .or_else(|| workspace.layout.selected(group));
+                    let Some((token, pinned, _path)) = token.and_then(|token| {
+                        workspace
+                            .doc_index_for_token(token)
+                            .and_then(|index| workspace.docs.get(index))
+                            .map(|doc| {
+                                let path = doc.entity.read(cx).path.clone();
+                                (token, workspace.is_pinned(&path), path)
+                            })
+                    }) else {
+                        return menu;
+                    };
+                    let pin_label = workspace.tr(
+                        if pinned { "Unpin tab" } else { "Pin tab" },
+                        if pinned { "Løsne fane" } else { "Fest fane" },
+                    );
+                    let reveal_label = workspace.tr("Reveal in tree", "Vis i filtrær");
+                    let split_right = workspace.tr("Split right", "Del til høyre");
+                    let split_down = workspace.tr("Split down", "Del ned");
+                    let next_pane = workspace.tr("Next pane", "Neste redigeringsfelt");
+                    let previous_pane = workspace.tr("Previous pane", "Forrige redigeringsfelt");
+                    let close_label = workspace.tr("Close tab", "Lukk fane");
+                    let close_others = workspace.tr("Close other tabs", "Lukk andre faner");
+                    let close_right =
+                        workspace.tr("Close tabs to the right", "Lukk faner til høyre");
+                    menu.item(
+                        PopupMenuItem::new(pin_label)
+                            .icon(assets::IconName::Pin)
+                            .on_click({
+                                let view = view.clone();
+                                move |_, _, cx| {
+                                    view.update(cx, |this, cx| this.toggle_pin_token(token, cx))
+                                }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(reveal_label)
+                            .icon(assets::IconName::Crosshair)
+                            .on_click({
+                                let view = view.clone();
+                                move |_, _, cx| {
+                                    view.update(cx, |this, cx| {
+                                        if let Some(path) = this
+                                            .doc_index_for_token(token)
+                                            .and_then(|index| this.docs.get(index))
+                                            .map(|doc| doc.entity.read(cx).path.clone())
+                                        {
+                                            this.reveal_file(&path, cx);
+                                        }
+                                    })
+                                }
+                            }),
+                    )
+                    .separator()
+                    .item(PopupMenuItem::new(split_right).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.split_tab_into_group(
+                                    token,
+                                    group,
+                                    Axis::Horizontal,
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        }
+                    }))
+                    .item(PopupMenuItem::new(split_down).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.split_tab_into_group(
+                                    token,
+                                    group,
+                                    Axis::Vertical,
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        }
+                    }))
+                    .item(PopupMenuItem::new(next_pane).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.cycle_pane(1, window, cx))
+                        }
+                    }))
+                    .item(PopupMenuItem::new(previous_pane).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.cycle_pane(-1, window, cx))
+                        }
+                    }))
+                    .separator()
+                    .item(
+                        PopupMenuItem::new(close_label)
+                            .icon(assets::IconName::X)
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.close_tab_token(token, window, cx)
+                                    })
+                                }
+                            }),
+                    )
+                    .item(PopupMenuItem::new(close_others).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.close_others_except_token(token, window, cx)
+                            })
+                        }
+                    }))
+                    .item(PopupMenuItem::new(close_right).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.close_tabs_right_of_token(token, window, cx)
+                            })
+                        }
+                    }))
+                }
+            })
+            .into_any_element()
+    }
+
+    fn render_editor_group(&self, group: GroupId, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.layout.selected(group);
+        let mode = self
+            .layout
+            .group_specs()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == group)
+            .map(|(_, _, _, mode)| mode)
+            .unwrap_or_default();
+        let content = selected
+            .and_then(|token| self.doc_tokens.iter().position(|item| *item == token))
+            .and_then(|ix| self.docs.get(ix))
+            .map(|doc| {
+                self.render_document_pane(
+                    &doc.entity,
+                    match mode {
+                        PaneMode::Source => ViewMode::Source,
+                        PaneMode::Split => ViewMode::Split,
+                        PaneMode::Preview => ViewMode::Preview,
+                    },
+                    cx,
+                )
+            })
+            .unwrap_or_else(|| self.render_empty_editor(cx).into_any_element());
+        let view = cx.entity();
+        let group_view = cx.entity();
+        v_flex()
+            .id(("editor-group", group.value()))
+            .overflow_hidden()
+            .capture_any_mouse_down({
+                let group_view = group_view.clone();
+                move |_, _, cx| {
+                    group_view.update(cx, |this, cx| this.focus_pane(group, cx));
+                }
+            })
+            .on_drop::<DraggedTab>({
+                let view = view.clone();
+                move |source, window, cx| {
+                    view.update(cx, |this, cx| {
+                        let end = this.layout.group_tokens(group).len();
+                        this.move_tab_to_group(source.0, group, end, window, cx);
+                    });
+                }
+            })
+            .on_drop::<PathBuf>({
+                let view = view.clone();
+                move |path, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.layout.focus(group);
+                        this.open_document_new_tab(path.clone(), window, cx);
+                    });
+                }
+            })
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .when(!self.zen, |this| {
+                this.child(self.render_group_tab_bar(group, cx))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(content)
+                    .on_drop::<DraggedTab>({
+                        let view = view.clone();
+                        move |source, window, cx| {
+                            view.update(cx, |this, cx| {
+                                let end = this.layout.group_tokens(group).len();
+                                this.move_tab_to_group(source.0, group, end, window, cx);
+                            });
+                        }
+                    })
+                    .relative()
+                    .child(self.render_split_drop_target(group, Axis::Horizontal, true, cx))
+                    .child(self.render_split_drop_target(group, Axis::Horizontal, false, cx))
+                    .child(self.render_split_drop_target(group, Axis::Vertical, true, cx))
+                    .child(self.render_split_drop_target(group, Axis::Vertical, false, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_split_drop_target(
+        &self,
+        group: GroupId,
+        axis: Axis,
+        before: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity();
+        let target = div()
+            .absolute()
+            .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(cx.theme().muted.opacity(0.22)))
+            .on_drop::<DraggedTab>(move |source, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.split_tab_into_group(source.0, group, axis, before, window, cx);
+                });
+            });
+        match (axis, before) {
+            (Axis::Horizontal, true) => target.left_0().top_0().bottom_0().w(px(12.)),
+            (Axis::Horizontal, false) => target.right_0().top_0().bottom_0().w(px(12.)),
+            (Axis::Vertical, true) => target.top_0().left_0().right_0().h(px(12.)),
+            (Axis::Vertical, false) => target.bottom_0().left_0().right_0().h(px(12.)),
+        }
+    }
+
+    fn render_pane_view_mode_tabs(
+        &self,
+        group: GroupId,
+        mode: PaneMode,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        TabBar::new(("pane-mode", group.value()))
+            .segmented()
+            .small()
+            .flex_shrink_0()
+            .selected_index(match mode {
+                PaneMode::Source => 0,
+                PaneMode::Split => 1,
+                PaneMode::Preview => 2,
+            })
+            .children(
+                [
+                    (assets::IconName::SquarePen, self.tr("Source", "Kilde")),
+                    (
+                        assets::IconName::SquareSplitHorizontal,
+                        self.tr("Split", "Delt"),
+                    ),
+                    (assets::IconName::Eye, self.tr("Preview", "Forhåndsvisning")),
+                ]
+                .map(|(icon, label)| {
+                    Tab::new()
+                        .icon(icon)
+                        .aria_label(label)
+                        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                }),
+            )
+            .on_click(cx.listener(move |this, &index, window, cx| {
+                let mode = match index {
+                    0 => PaneMode::Source,
+                    1 => PaneMode::Split,
+                    _ => PaneMode::Preview,
+                };
+                this.set_pane_view_mode(group, mode, window, cx);
+            }))
+    }
+
+    fn focus_pane(&mut self, group: GroupId, cx: &mut Context<Self>) {
+        let next_active = self
+            .layout
+            .selected(group)
+            .and_then(|token| self.doc_tokens.iter().position(|item| *item == token));
+        let next_mode = self
+            .layout
+            .group_specs()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == group)
+            .map(|(_, _, _, mode)| match mode {
+                PaneMode::Source => ViewMode::Source,
+                PaneMode::Split => ViewMode::Split,
+                PaneMode::Preview => ViewMode::Preview,
+            });
+        if self.layout.focused() == group
+            && self.active == next_active
+            && next_mode.is_none_or(|mode| self.settings.view_mode == mode)
+        {
+            return;
+        }
+        self.layout.focus(group);
+        self.active = next_active;
+        if let Some(mode) = next_mode {
+            self.settings.view_mode = mode;
+        }
+        self.persist_tabs(cx);
+        cx.notify();
+    }
+
+    fn split_tab_into_group(
+        &mut self,
+        token: TabToken,
+        group: GroupId,
+        axis: Axis,
+        before: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layout.group_for(token) != Some(group) {
+            let index = self.layout.group_tokens(group).len();
+            if !self.layout.move_tab(token, group, index) {
+                return;
+            }
+        }
+        if self.layout.split_at(group, token, axis, before).is_some() {
+            self.active = self.doc_index_for_token(token);
+            self.folder = None;
+            self.graph = None;
+            self.persist_tabs(cx);
+            self.focus_active_pane_after_mount(window, cx);
+        }
+    }
+
+    fn activate_pane(
+        &mut self,
+        group: GroupId,
+        token: TabToken,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.layout.select(group, token) {
+            return;
+        }
+        self.active = self.doc_tokens.iter().position(|item| *item == token);
+        self.folder = None;
+        self.graph = None;
+        self.persist_tabs(cx);
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    fn render_document_pane(
+        &self,
+        doc: &Entity<Document>,
+        mode: ViewMode,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Image files render the picture itself, not a
         // text editor over binary bytes.
         if doc.read(cx).is_image {
-            return self.render_image_view(&doc, cx).into_any_element();
+            return self.render_image_view(doc, cx).into_any_element();
         }
         if doc.read(cx).file_preview.is_some() {
-            return self.render_file_preview(&doc, cx);
+            return self.render_file_preview(doc, cx);
         }
 
         // `.base` files render their live view in Preview/Split; Source
         // stays the raw YAML so the spec stays editable.
         let base = self
-            .active
-            .and_then(|i| self.docs.get(i))
+            .docs
+            .iter()
+            .find(|open| open.entity == *doc)
             .and_then(|d| d.base.clone());
-        let content = match self.settings.view_mode {
-            ViewMode::Source => self.editor_container(&doc, cx).into_any_element(),
+        let content = match mode {
+            ViewMode::Source => self.editor_container(doc, cx).into_any_element(),
             ViewMode::Preview if base.is_some() => {
                 div().size_full().child(base.unwrap()).into_any_element()
             }
             ViewMode::Preview => div()
                 .size_full()
-                .child(self.render_preview(&doc, cx))
+                .child(self.render_preview(doc, cx))
                 .into_any_element(),
             ViewMode::Split => div()
                 .size_full()
                 .child(
-                    canvas_panels("split", Axis::Horizontal)
-                        .child(
-                            resizable_panel()
-                                .size_range(px(280.)..px(4000.))
-                                .child(self.editor_container(&doc, cx)),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(280.)..px(4000.))
+                    canvas_panels(
+                        ("document-split", doc.entity_id().as_non_zero_u64().get()),
+                        Axis::Horizontal,
+                    )
+                    .child(
+                        resizable_panel().size_range(px(80.)..Pixels::MAX).child(
+                            div()
+                                .size_full()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(self.editor_container(doc, cx)),
+                        ),
+                    )
+                    .child(
+                        resizable_panel().size_range(px(80.)..Pixels::MAX).child(
+                            div()
+                                .size_full()
+                                .min_w_0()
+                                .overflow_hidden()
                                 .child(match base {
-                                    Some(base) => div().size_full().child(base).into_any_element(),
-                                    None => div()
-                                        .size_full()
-                                        .child(self.render_preview(&doc, cx))
-                                        .into_any_element(),
+                                    Some(base) => base.into_any_element(),
+                                    None => self.render_preview(doc, cx).into_any_element(),
                                 }),
                         ),
+                    ),
                 )
                 .into_any_element(),
         };
-        let content = match self.render_breadcrumb(&doc, cx) {
+        let content = match self.render_breadcrumb(doc, cx) {
             Some(crumb) => v_flex()
                 .size_full()
                 .child(crumb)
@@ -9714,6 +10473,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_reopen_tab))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))
+            .on_action(cx.listener(Self::on_split_pane_right))
+            .on_action(cx.listener(Self::on_split_pane_down))
+            .on_action(cx.listener(Self::on_next_pane))
+            .on_action(cx.listener(Self::on_prev_pane))
             .on_action(cx.listener(Self::on_navigate_back))
             .on_action(cx.listener(Self::on_navigate_forward))
             .on_action(cx.listener(Self::on_follow_link))
@@ -9809,21 +10572,32 @@ impl Render for Workspace {
                                                         .bg(cx.theme().group_box)
                                                         .rounded(cx.theme().radius_lg)
                                                         .overflow_hidden()
-                                                        .when(!self.zen, |this| {
-                                                            this.child(self.render_tab_bar(cx))
-                                                        })
                                                         .child(div().flex_1().min_h_0().child({
                                                             if let Some(graph) = self.graph.clone()
                                                             {
-                                                                graph
+                                                                let graph = graph
                                                                     .cached(
                                                                         StyleRefinement::default()
                                                                             .size_full(),
                                                                     )
                                                                     .into_any_element()
+                                                                ;
+                                                                if self.zen {
+                                                                    graph
+                                                                } else {
+                                                                    v_flex()
+                                                                        .size_full()
+                                                                        .child(self.render_tab_bar(cx))
+                                                                        .child(
+                                                                            div()
+                                                                                .flex_1()
+                                                                                .min_h_0()
+                                                                                .child(graph),
+                                                                        )
+                                                                        .into_any_element()
+                                                                }
                                                             } else {
-                                                                let content =
-                                                                    self.render_editor_area(cx);
+                                                                let content = self.render_editor_panes(cx);
                                                                 if self.zen {
                                                                     h_flex()
                                                                         .size_full()
@@ -10349,7 +11123,7 @@ struct TreeDragPreview {
 }
 
 /// Drag payload for reordering document tabs — carries the source index.
-struct DraggedTab(usize);
+struct DraggedTab(TabToken);
 
 /// Drag payload for reordering nested bookmarks.
 #[derive(Clone)]

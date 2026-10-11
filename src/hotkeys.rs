@@ -210,6 +210,38 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         PrevTab
     ),
     action_command!(
+        "split_pane_right",
+        "Split pane right",
+        "Del felt til høyre",
+        None,
+        None,
+        SplitPaneRight
+    ),
+    action_command!(
+        "split_pane_down",
+        "Split pane down",
+        "Del felt ned",
+        None,
+        None,
+        SplitPaneDown
+    ),
+    action_command!(
+        "next_pane",
+        "Next pane",
+        "Neste redigeringsfelt",
+        Some("cmd-alt-right"),
+        None,
+        NextPane
+    ),
+    action_command!(
+        "previous_pane",
+        "Previous pane",
+        "Forrige redigeringsfelt",
+        Some("cmd-alt-left"),
+        None,
+        PrevPane
+    ),
+    action_command!(
         "search_next_result",
         "Next search result",
         "Neste søkeresultat",
