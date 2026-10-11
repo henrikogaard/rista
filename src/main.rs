@@ -4,6 +4,7 @@
 
 #[cfg(target_os = "macos")]
 mod about;
+
 mod actions;
 mod agent;
 mod app;
@@ -41,53 +42,21 @@ mod terminal_session;
 mod theme;
 mod updater;
 mod vault;
+mod windows;
 
 use crate::actions::*;
 use gpui_kit::component::input;
-use gpui_kit::component::{Theme, TitleBar};
+use gpui_kit::component::Theme;
 use gpui_kit::*;
 
-#[derive(Clone)]
-struct WorkspaceWindow {
-    window: AnyWindowHandle,
-    workspace: WeakEntity<app::Workspace>,
+struct MenuLanguageSubscription {
+    _subscription: Subscription,
 }
 
-impl Global for WorkspaceWindow {}
+impl Global for MenuLanguageSubscription {}
 
 fn open_paths(paths: Vec<std::path::PathBuf>, cx: &mut App) {
-    if let Some(current) = cx.try_global::<WorkspaceWindow>().cloned() {
-        if matches!(
-            current.window.update(cx, |_, window, cx| {
-                current.workspace.update(cx, |workspace, cx| {
-                    for path in &paths {
-                        workspace.open_path(path.clone(), window, cx);
-                    }
-                    window.activate_window();
-                })
-            }),
-            Ok(Ok(()))
-        ) {
-            return;
-        }
-    }
-    let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-    let (window, workspace) = gpui_kit::open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(720.), px(480.))),
-            kind: WindowKind::Normal,
-            ..TitleBar::window_options()
-        },
-        cx,
-        move |window, cx| cx.new(|cx| app::Workspace::new(window, cx, paths)),
-    )
-    .expect("Failed to open window");
-    cx.set_global(WorkspaceWindow {
-        window,
-        workspace: workspace.downgrade(),
-    });
-    cx.activate(true);
+    windows::open_paths(paths, cx);
 }
 
 fn main() {
@@ -112,6 +81,15 @@ fn main() {
         theme::install_themes(cx);
 
         let settings = settings::Settings::load();
+        windows::install(settings.clone(), cx);
+        windows::observe_window_closed(cx);
+        let menu_language_subscription = cx.observe_global::<windows::SharedPreferences>(|cx| {
+            let language = cx.global::<windows::SharedPreferences>().settings.language;
+            cx.set_menus(menus(language));
+        });
+        cx.set_global(MenuLanguageSubscription {
+            _subscription: menu_language_subscription,
+        });
         theme::apply(&settings, cx);
         apply_ui_settings(&settings, cx);
 
@@ -121,14 +99,18 @@ fn main() {
         cx.on_action(|_: &About, _cx| {
             about::show();
         });
-        cx.on_action(|_: &Quit, cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            } else if let Some(current) = cx.try_global::<WorkspaceWindow>().cloned() {
-                let _ = current
-                    .workspace
-                    .update(cx, |workspace, cx| workspace.quit(cx));
-            }
+        // Global actions still hold the dispatching window. Release that borrow
+        // before visiting every workspace through its window handle.
+        cx.on_action(|_: &Quit, cx| cx.defer(windows::quit));
+        cx.on_action(|_: &NewWindow, cx| {
+            cx.defer(|cx| windows::open_new_window(Vec::new(), cx));
+        });
+        cx.on_action(|_: &OpenInNewWindow, cx| {
+            cx.defer(windows::open_active_document_in_new_window);
+        });
+        cx.on_action(|action: &OpenPathInNewWindow, cx| {
+            let path = std::path::PathBuf::from(&action.path);
+            cx.defer(move |cx| windows::open_new_window(vec![path], cx));
         });
         cx.activate(true);
         updater::start();
@@ -222,6 +204,23 @@ fn menus(language: settings::Language) -> Vec<Menu> {
     vec![
         Menu::new("Rísta").items(app_items),
         Menu::new("File").items([
+            MenuItem::Action {
+                name: language.text("New Window", "Nytt vindu").into(),
+                action: Box::new(NewWindow),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: language
+                    .text("Open in New Window", "Åpne i nytt vindu")
+                    .into(),
+                action: Box::new(OpenInNewWindow),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::separator(),
             MenuItem::Action {
                 name: "New File".into(),
                 action: Box::new(NewFile),

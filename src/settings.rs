@@ -5,6 +5,74 @@ use gpui_kit::{App, WindowAppearance};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+}
+
+impl Default for WindowGeometry {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 800.0,
+            maximized: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowSession {
+    pub id: u64,
+    pub geometry: Option<WindowGeometry>,
+    pub sidebar_width: Option<f32>,
+    pub last_vault: Option<PathBuf>,
+    pub active_folder: Option<PathBuf>,
+    pub open_tabs: Vec<String>,
+    pub active_tab: Option<String>,
+    pub editor_session: Option<crate::editor_layout::Snapshot>,
+    pub view_mode: ViewMode,
+    pub pinned_tabs: Vec<String>,
+    pub sidebar_collapsed: bool,
+    pub inspector_open: bool,
+    pub graph_dock_open: bool,
+    pub agent_open: bool,
+    pub panes: SidebarPanes,
+    pub expanded_folders: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl WindowSession {
+    pub fn from_settings(id: u64, settings: &Settings) -> Self {
+        Self {
+            id,
+            geometry: None,
+            sidebar_width: settings
+                .sidebar_width
+                .filter(|width| valid_sidebar_width(*width)),
+            last_vault: settings.last_vault.clone(),
+            active_folder: settings.active_folder.clone(),
+            open_tabs: settings.open_tabs.clone(),
+            active_tab: settings.active_tab.clone(),
+            editor_session: settings.editor_session.clone(),
+            view_mode: settings.view_mode,
+            pinned_tabs: settings.pinned_tabs.clone(),
+            sidebar_collapsed: settings.sidebar_collapsed,
+            inspector_open: settings.inspector_open,
+            graph_dock_open: settings.graph_dock_open,
+            agent_open: settings.agent_open,
+            panes: settings.panes.clone(),
+            expanded_folders: settings.expanded_folders.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -91,6 +159,7 @@ pub struct Settings {
     pub tab_size: usize,
     pub view_mode: ViewMode,
     pub sidebar_collapsed: bool,
+    pub sidebar_width: Option<f32>,
     /// the reference-editor style: reveal markup around the cursor (live preview).
     /// Kept off — the raw buffer stays honest.
     pub focus_mode: bool,
@@ -166,6 +235,12 @@ pub struct Settings {
     pub readable_width: bool,
     /// File-tree ordering — the explorer offers name/modified.
     pub tree_sort: TreeSort,
+    /// Persisted independent workspaces. Empty means the legacy flat fields
+    /// should be migrated into one window by the window manager.
+    #[serde(default)]
+    pub window_sessions: Vec<WindowSession>,
+    #[serde(default)]
+    pub active_window_id: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -346,6 +421,7 @@ impl Default for Settings {
             tab_size: 4,
             view_mode: ViewMode::Source,
             sidebar_collapsed: false,
+            sidebar_width: None,
             focus_mode: false,
             last_vault: None,
             attachments_dir: "attachments".to_string(),
@@ -374,8 +450,14 @@ impl Default for Settings {
             pinned_tabs: Vec::new(),
             readable_width: false,
             tree_sort: TreeSort::default(),
+            window_sessions: Vec::new(),
+            active_window_id: None,
         }
     }
+}
+
+pub(crate) fn valid_sidebar_width(width: f32) -> bool {
+    width.is_finite() && (200.0..=420.0).contains(&width)
 }
 
 pub fn config_dir() -> PathBuf {
@@ -504,6 +586,16 @@ mod tests {
                 .unwrap();
         assert_eq!(graphite.dark_theme, "Graphite Night");
         assert_eq!(graphite.light_theme, "Graphite Day");
+    }
+
+    #[test]
+    fn sidebar_width_is_limited_to_supported_range() {
+        assert!(valid_sidebar_width(200.));
+        assert!(valid_sidebar_width(320.));
+        assert!(valid_sidebar_width(420.));
+        assert!(!valid_sidebar_width(199.));
+        assert!(!valid_sidebar_width(421.));
+        assert!(!valid_sidebar_width(f32::NAN));
     }
 }
 

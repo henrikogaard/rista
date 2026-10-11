@@ -4405,7 +4405,7 @@ impl BaseView {
             let path = doc.read(cx).path.to_string_lossy().to_string();
             if let (Some(ws), Some(vn)) = (self.workspace.upgrade(), self.spec_view_name(cx)) {
                 let saved = desc.map(|d| (header, d));
-                ws.update(cx, |ws, _cx| ws.remember_base_sort(path, vn, saved));
+                ws.update(cx, |ws, cx| ws.remember_base_sort(path, vn, saved, cx));
             }
         }
         cx.notify();
@@ -4785,8 +4785,8 @@ impl Render for BaseView {
                                     if let SpecSrc::Doc(doc) = &view.spec_src {
                                         let key = doc.read(cx).path.to_string_lossy().to_string();
                                         if let Some(ws) = view.workspace.upgrade() {
-                                            ws.update(cx, |ws, _cx| {
-                                                ws.remember_base_view(key, ix);
+                                            ws.update(cx, |ws, cx| {
+                                                ws.remember_base_view(key, ix, cx);
                                             });
                                         }
                                     }
@@ -4838,8 +4838,8 @@ impl Render for BaseView {
                                     }) {
                                         view.view_ix = new_sel;
                                         if let Some(ws) = view.workspace.upgrade() {
-                                            ws.update(cx, |ws, _cx| {
-                                                ws.remember_base_view(key, new_sel);
+                                            ws.update(cx, |ws, cx| {
+                                                ws.remember_base_view(key, new_sel, cx);
                                             });
                                         }
                                         view.doc_epoch += 1;
@@ -4990,10 +4990,11 @@ impl Render for BaseView {
                                                             if let Some(ws) =
                                                                 view.workspace.upgrade()
                                                             {
-                                                                ws.update(cx, |ws, _cx| {
+                                                                ws.update(cx, |ws, cx| {
                                                                     ws.remember_base_view(
                                                                         key,
                                                                         ix + 1,
+                                                                        cx,
                                                                     );
                                                                 });
                                                             }
@@ -5951,8 +5952,10 @@ impl Render for BaseView {
                                                         view.view_ix = new_ix;
                                                         view.sort = None;
                                                         if let Some(ws) = view.workspace.upgrade() {
-                                                            ws.update(cx, |ws, _cx| {
-                                                                ws.remember_base_view(key, new_ix);
+                                                            ws.update(cx, |ws, cx| {
+                                                                ws.remember_base_view(
+                                                                    key, new_ix, cx,
+                                                                );
                                                             });
                                                         }
                                                     }

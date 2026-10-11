@@ -1337,7 +1337,7 @@ impl Render for AgentPanel {
                                     if let Some(workspace) = workspace.upgrade() {
                                         workspace.update(cx, |workspace, cx| {
                                             workspace.settings.agent_open = false;
-                                            workspace.settings.save();
+                                            workspace.persist_settings(cx);
                                             cx.notify();
                                         });
                                     }

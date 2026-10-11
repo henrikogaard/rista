@@ -209,7 +209,7 @@ impl Workspace {
                             }) = this.settings.bookmarks.find_mut(id)
                             {
                                 *collapsed = !*collapsed;
-                                this.settings.save();
+                                this.persist_settings(cx);
                                 cx.notify();
                             }
                         });
@@ -346,7 +346,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.starred_open = !this.starred_open;
                                 this.settings.panes.starred = this.starred_open;
-                                this.settings.save();
+                                this.persist_settings(cx);
                                 cx.notify();
                             })),
                     )
