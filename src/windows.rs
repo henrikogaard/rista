@@ -380,7 +380,7 @@ fn execute_cli_write_with_settings(
             for record in &records {
                 let appended = record.window.update(cx, |_, window, cx| {
                     record.workspace.update(cx, |workspace, cx| {
-                        workspace.cli_append_open_document(&destination, text, window, cx)
+                        workspace.cli_append_open_document(&root, &destination, text, window, cx)
                     })
                 });
                 match appended {

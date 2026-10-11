@@ -2151,6 +2151,7 @@ impl Workspace {
 
     pub(crate) fn cli_append_open_document(
         &mut self,
+        vault_root: &Path,
         destination: &Path,
         text: &str,
         window: &mut Window,
@@ -2177,7 +2178,7 @@ impl Workspace {
             }
             let mut replacement = current;
             replacement.push_str(text);
-            document.cli_snapshot_before_write(replacement.as_bytes())?;
+            document.cli_snapshot_before_write(vault_root, replacement.as_bytes())?;
             document
                 .editor
                 .update(cx, |editor, cx| editor.replace_all(replacement, window, cx));

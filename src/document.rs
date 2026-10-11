@@ -893,6 +893,7 @@ impl Document {
 
     pub(crate) fn cli_snapshot_before_write(
         &self,
+        vault_root: &Path,
         replacement: &[u8],
     ) -> Result<(), crate::cli::CliError> {
         let baseline = self.disk_bytes.as_deref().ok_or_else(|| {
@@ -907,15 +908,13 @@ impl Document {
                 "Notatet ble endret på disk under tilføying; ingen endringer ble skrevet",
             ));
         }
-        if let Some(root) = &self.vault_root {
-            history::snapshot_before_write_checked(root, &self.path, baseline, replacement)
-                .map_err(|error| {
-                    crate::cli::CliError::new(
-                        format!("Could not save the pre-append history snapshot: {error}"),
-                        format!("Kunne ikke lagre historikkbildet før tilføying: {error}"),
-                    )
-                })?;
-        }
+        history::snapshot_before_write_checked(vault_root, &self.path, baseline, replacement)
+            .map_err(|error| {
+                crate::cli::CliError::new(
+                    format!("Could not save the pre-append history snapshot: {error}"),
+                    format!("Kunne ikke lagre historikkbildet før tilføying: {error}"),
+                )
+            })?;
         Ok(())
     }
 

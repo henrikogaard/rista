@@ -185,28 +185,57 @@ fn apple_script_quote(value: &str) -> String {
     quoted
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn authorization_shell_command(destination: &Path, target: &Path) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+
+    if !destination.is_absolute()
+        || !target.is_absolute()
+        || destination.file_name().is_none()
+        || destination
+            .components()
+            .chain(target.components())
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "install paths must be absolute and normalized",
+        ));
+    }
+
+    let parent = destination.parent().unwrap_or_else(|| Path::new("/"));
+    let mut ancestors = parent
+        .ancestors()
+        .filter(|ancestor| *ancestor != Path::new("/"))
+        .collect::<Vec<_>>();
+    ancestors.reverse();
+
+    let mut commands = Vec::new();
+    for ancestor in ancestors {
+        let ancestor = shell_quote(&ancestor.to_string_lossy());
+        commands.push(format!("if [ -L {ancestor} ]; then exit 1; fi"));
+        commands.push(format!(
+            "if [ -e {ancestor} ]; then if [ ! -d {ancestor} ]; then exit 1; fi; else /bin/mkdir -m 755 {ancestor} || exit 1; fi"
+        ));
+        commands.push(format!("if [ -L {ancestor} ]; then exit 1; fi"));
+        commands.push(format!("if [ ! -d {ancestor} ]; then exit 1; fi"));
+    }
+
+    let destination = shell_quote(&destination.to_string_lossy());
+    let target = shell_quote(&target.to_string_lossy());
+    commands.push(format!("if [ -L {destination} ]; then exit 1; fi"));
+    commands.push(format!("if [ -e {destination} ]; then exit 1; fi"));
+    commands.push(format!("/bin/ln -h -s {target} {destination} || exit 1"));
+    commands.push(format!(
+        "actual=$(/usr/bin/readlink {destination}) || exit 1"
+    ));
+    commands.push(format!("[ \"$actual\" = {target} ] || exit 1"));
+    Ok(commands.join("; "))
+}
+
 #[cfg(target_os = "macos")]
 fn install_with_authorization(destination: &Path, target: &Path) -> Result<(), InstallError> {
-    let parent = destination.parent().unwrap_or_else(|| Path::new("/"));
-    let shell = format!(
-        "if [ -L /usr/local ] || [ -e /usr/local ] && [ ! -d /usr/local ]; then exit 1; fi; \
-         if [ -L {} ] || [ -e {} ] && [ ! -d {} ]; then exit 1; fi; \
-         if [ ! -e {} ]; then /bin/mkdir -m 755 {}; fi; \
-         if [ -L {} ] || [ -e {} ]; then exit 1; fi; \
-         /bin/ln -h -s {} {} || exit 1; \
-         [ \"$(/usr/bin/readlink {})\" = {} ]",
-        shell_quote(&parent.to_string_lossy()),
-        shell_quote(&parent.to_string_lossy()),
-        shell_quote(&parent.to_string_lossy()),
-        shell_quote(&parent.to_string_lossy()),
-        shell_quote(&parent.to_string_lossy()),
-        shell_quote(&destination.to_string_lossy()),
-        shell_quote(&destination.to_string_lossy()),
-        shell_quote(&target.to_string_lossy()),
-        shell_quote(&destination.to_string_lossy()),
-        shell_quote(&destination.to_string_lossy()),
-        shell_quote(&target.to_string_lossy())
-    );
+    let shell = authorization_shell_command(destination, target).map_err(io_error)?;
     let script = format!(
         "do shell script {} with administrator privileges",
         apple_script_quote(&shell)
@@ -294,6 +323,84 @@ mod tests {
         let error = validate_install_parent(&destination).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert!(!destination.parent().unwrap().exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn run_authorization_shell(destination: &Path, target: &Path) -> std::process::ExitStatus {
+        let shell = authorization_shell_command(destination, target).unwrap();
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(shell)
+            .status()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorization_shell_creates_missing_ancestors_one_at_a_time() {
+        let root = temp_dir();
+        let target = root.join("Rísta's.app/Contents/MacOS/rista");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "").unwrap();
+        let destination = root.join("usr/local/bin/rista");
+
+        assert!(run_authorization_shell(&destination, &target).success());
+        verify_installed_symlink(&destination, &target).unwrap();
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorization_shell_refuses_existing_destination_types() {
+        use std::os::unix::fs::symlink;
+
+        for destination_type in ["directory", "file", "symlink"] {
+            let root = temp_dir();
+            let target = root.join("packaged/rista");
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, "").unwrap();
+            let destination = root.join("usr/local/bin/rista");
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            match destination_type {
+                "directory" => std::fs::create_dir(&destination).unwrap(),
+                "file" => std::fs::write(&destination, "keep").unwrap(),
+                "symlink" => symlink(&target, &destination).unwrap(),
+                _ => unreachable!(),
+            }
+
+            assert!(!run_authorization_shell(&destination, &target).success());
+            match destination_type {
+                "directory" => assert!(std::fs::read_dir(&destination).unwrap().next().is_none()),
+                "file" => assert_eq!(std::fs::read(&destination).unwrap(), b"keep"),
+                "symlink" => assert_eq!(std::fs::read_link(&destination).unwrap(), target),
+                _ => unreachable!(),
+            }
+
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorization_shell_refuses_symlinked_parent_directories() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir();
+        let target = root.join("packaged/rista");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "").unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let usr = root.join("usr");
+        std::fs::create_dir(&usr).unwrap();
+        symlink(&outside, usr.join("local")).unwrap();
+        let destination = root.join("usr/local/bin/rista");
+
+        assert!(!run_authorization_shell(&destination, &target).success());
+        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+
         std::fs::remove_dir_all(root).unwrap();
     }
 }
