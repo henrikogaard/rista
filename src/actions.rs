@@ -29,6 +29,10 @@ actions!(
         // Navigation
         NextTab,
         PrevTab,
+        SplitPaneRight,
+        SplitPaneDown,
+        NextPane,
+        PrevPane,
         SearchNextResult,
         SearchPreviousResult,
         NavigateBack,
