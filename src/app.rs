@@ -4300,7 +4300,9 @@ impl Workspace {
                         if committed {
                             let deferred_view = view.clone();
                             window.defer(cx, move |window, cx| {
-                                deferred_view.update(cx, |this, cx| this.refocus(window, cx));
+                                deferred_view.update(cx, |this, cx| {
+                                    this.focus_active_pane_after_mount(window, cx)
+                                });
                             });
                         }
                         committed
@@ -4385,7 +4387,9 @@ impl Workspace {
                         if committed {
                             let deferred_view = view.clone();
                             window.defer(cx, move |window, cx| {
-                                deferred_view.update(cx, |this, cx| this.refocus(window, cx));
+                                deferred_view.update(cx, |this, cx| {
+                                    this.focus_active_pane_after_mount(window, cx)
+                                });
                             });
                         }
                         committed
@@ -4564,8 +4568,9 @@ impl Workspace {
                                         });
                                         let deferred_view = view.clone();
                                         window.defer(cx, move |window, cx| {
-                                            deferred_view
-                                                .update(cx, |this, cx| this.refocus(window, cx));
+                                            deferred_view.update(cx, |this, cx| {
+                                                this.focus_active_pane_after_mount(window, cx)
+                                            });
                                         });
                                         true
                                     })
