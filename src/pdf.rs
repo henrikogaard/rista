@@ -761,8 +761,12 @@ impl Render for PdfView {
                                 let view = view.clone();
                                 window.defer(cx, move |_, cx| {
                                     view.update(cx, |this, cx| {
+                                        let page =
+                                            this.info.as_ref().map_or(this.initial_page, |info| {
+                                                top_page_index(&this.scroll, info.pages.len())
+                                            });
                                         this.width = width;
-                                        cx.notify();
+                                        this.jump(page, cx);
                                     })
                                 });
                             }
