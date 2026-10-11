@@ -69,8 +69,10 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSData",
     "NSDictionary",
+    "NSGeometry",
     "NSObject",
     "NSString",
+    "objc2-core-foundation",
 ] }
 block2 = "0.6.2"
 

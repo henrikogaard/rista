@@ -26,6 +26,8 @@ mod http;
 mod math;
 mod mermaid;
 mod note_icons;
+mod pdf;
+mod pdf_backend;
 mod preview;
 mod properties;
 mod query_embed;
@@ -78,6 +80,7 @@ fn main() {
     app.on_reopen(|cx| open_paths(Vec::new(), cx));
     app.run(move |cx| {
         gpui_kit::init(cx);
+        pdf::init(cx);
         theme::install_themes(cx);
 
         let settings = settings::Settings::load();

@@ -38,6 +38,7 @@ pub struct PreviewCtx {
     pub workspace: WeakEntity<crate::app::Workspace>,
     pub views: EmbedViews,
     pub query_views: QueryEmbedViews,
+    pub pdf_views: PdfEmbedViews,
     /// The note being rendered — bound as `this` in ```` ```base ````
     /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
@@ -51,6 +52,8 @@ pub type EmbedViews = std::sync::Arc<
 pub type QueryEmbedViews = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::query_embed::QueryView>>>,
 >;
+pub type PdfEmbedViews =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::pdf::PdfView>>>>;
 
 /// Markdown extensions Rísta renders with. `doc_anchored` is true only
 /// when the text being parsed is the document itself — nested fragment
@@ -81,6 +84,7 @@ pub fn extensions(
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
             .plugin(QueryEmbedPlugin { ctx: ctx.clone() })
+            .plugin(PdfEmbedPlugin { ctx: ctx.clone() })
             .plugin(ColumnBlockPlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
@@ -363,6 +367,36 @@ mod navigation_tests {
     use std::path::Path;
 
     #[test]
+    fn pdf_embeds_keep_unicode_paths_and_page_options_outside_code() {
+        let source = "![[attachments/Årsrapport 2026.pdf#page=3&height=400]]\n\n`![[ignored.pdf]]`\n\n```text\n![[ignored.pdf]]\n```\n";
+        let (rendered, _) = preprocess_mapped(
+            source,
+            Path::new("/vault/Note.md"),
+            Some(Path::new("/vault")),
+            &|_| None,
+            &super::MarkColors::default(),
+        );
+        let raw = rendered
+            .split("![](<")
+            .nth(1)
+            .unwrap()
+            .split(">)")
+            .next()
+            .unwrap();
+        let url = url::Url::parse(raw).unwrap();
+        assert_eq!(url.scheme(), "rista-pdf");
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "target")
+                .unwrap()
+                .1,
+            "attachments/Årsrapport 2026.pdf#page=3&height=400"
+        );
+        assert_eq!(rendered.matches("rista-pdf:").count(), 1);
+        assert!(rendered.contains("`![[ignored.pdf]]`"));
+    }
+
+    #[test]
     fn source_blocks_map_to_rendered_text_not_markdown_offsets() {
         let source = "# Øgård\n\n**Bold** and [a link](note.md).\n\n## Øgård\n";
         let rendered = "Øgård\nBold and a link.\nØgård\n";
@@ -639,6 +673,11 @@ fn render_embed(
         Some((t, s)) => (t.trim(), s.trim()),
         None => (inner, ""),
     };
+    if crate::pdf::PdfTarget::parse(target).is_some() {
+        let mut url = url::Url::parse("rista-pdf:embed").expect("static PDF scheme");
+        url.query_pairs_mut().append_pair("target", target);
+        return format!("![](<{url}>)");
+    }
     // `.md`/`.base`, or no extension at all — the reference editor wiki targets
     // are extensionless note names. The `#anchor`/`#View` suffix is
     // stripped first so `![[db.base#Board]]` still reads as a note.
@@ -2274,6 +2313,95 @@ impl MarkdownPlugin for BaseEmbedPlugin {
             .rounded(cx.theme().radius)
             .overflow_hidden()
             .child(view)
+    }
+}
+
+struct PdfEmbedPlugin {
+    ctx: PreviewCtx,
+}
+
+impl MarkdownPlugin for PdfEmbedPlugin {
+    fn name(&self) -> &str {
+        "pdf-embed"
+    }
+
+    fn parse(&self, node: &mdast::Node, _: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Image(image) = node else {
+            return None;
+        };
+        let url = url::Url::parse(&image.url).ok()?;
+        if url.scheme() != "rista-pdf" {
+            return None;
+        }
+        let (_, target) = url.query_pairs().find(|(name, _)| name == "target")?;
+        Some(MarkdownNode::new(
+            "pdf-embed",
+            crate::pdf::PdfTarget::parse(&target)?,
+        ))
+    }
+
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use std::hash::{Hash, Hasher};
+        let target = node
+            .data::<crate::pdf::PdfTarget>()
+            .expect("PDF embed target");
+        let vault = self.ctx.vault.read(cx);
+        let path = target.resolve(
+            self.ctx.doc_path.as_deref(),
+            vault.root.as_deref(),
+            &vault.explorer_path_snapshot(),
+        );
+        let Some(path) = path else {
+            return div()
+                .my_2()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "{}: {}",
+                    self.ctx
+                        .language
+                        .text("PDF not found", "Fant ikke PDF-filen"),
+                    target.file
+                ))
+                .into_any_element();
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut hasher);
+        target.hash(&mut hasher);
+        self.ctx.doc_path.hash(&mut hasher);
+        let key = hasher.finish();
+        let mut views = self.ctx.pdf_views.lock().expect("PDF embed views");
+        let view = if let Some(view) = views.get(&key) {
+            view.clone()
+        } else {
+            if views.len() >= 16 {
+                return div()
+                    .my_2()
+                    .text_sm()
+                    .child(self.ctx.language.text(
+                        "Too many PDF embeds in one note. Open the PDF in a tab.",
+                        "For mange PDF-innbygginger i ett notat. Åpne PDF-filen i en fane.",
+                    ))
+                    .into_any_element();
+            }
+            let view = cx.new(|cx| {
+                crate::pdf::PdfView::new(path, target.page, self.ctx.language, window, cx)
+            });
+            views.insert(key, view.clone());
+            view
+        };
+        view.update(cx, |view, cx| {
+            view.set_language(self.ctx.language, window, cx)
+        });
+        div()
+            .w_full()
+            .h(px(target.height as f32))
+            .my_2()
+            .overflow_hidden()
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(view)
+            .into_any_element()
     }
 }
 

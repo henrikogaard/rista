@@ -50,12 +50,14 @@ pub struct Document {
     /// the picture itself instead of the source/preview panes.
     pub is_image: bool,
     pub file_preview: Option<crate::file_preview::Preview>,
+    pub pdf: Option<Entity<crate::pdf::PdfView>>,
     pub editor: Entity<EditorState>,
     /// Collapsible-callout fold state, keyed by callout source offset.
     pub callout_folds: preview::CalloutFolds,
     /// ```` ```base ```` embeds in this note's preview — spec-hash → live view.
     pub base_embeds: preview::EmbedViews,
     pub query_embeds: preview::QueryEmbedViews,
+    pub pdf_embeds: preview::PdfEmbedViews,
     pub preview: Entity<TextViewState>,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
@@ -218,6 +220,9 @@ impl Document {
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
         let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
         let spell_checker = spellcheck::create_checker(cx);
+        let pdf = (crate::file_preview::extension(&path) == "pdf").then(|| {
+            cx.new(|cx| crate::pdf::PdfView::new(path.clone(), 0, settings.language, window, cx))
+        });
 
         let mut this = Self {
             preview_blocks: preview::navigation_blocks(&preview_text),
@@ -226,12 +231,14 @@ impl Document {
             preview_line_offsets,
             is_image,
             file_preview,
+            pdf,
             path,
             completion_title,
             editor,
             callout_folds: preview::CalloutFolds::default(),
             base_embeds: preview::EmbedViews::default(),
             query_embeds: preview::QueryEmbedViews::default(),
+            pdf_embeds: preview::PdfEmbedViews::default(),
             preview,
             dirty: false,
             conflict: false,
@@ -383,6 +390,9 @@ impl Document {
     }
 
     fn sync_preview(&mut self, cx: &mut Context<Self>) {
+        if let Ok(mut views) = self.pdf_embeds.lock() {
+            views.clear();
+        }
         if let Ok(mut views) = self.query_embeds.lock() {
             for view in views.values() {
                 view.update(cx, |view, _cx| view.cancel());
@@ -1583,6 +1593,17 @@ impl Document {
 
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pdf) = &self.pdf {
+            pdf.update(cx, |pdf, cx| {
+                pdf.set_path(self.path.clone(), cx);
+                pdf.check_external(cx);
+            });
+        }
+        if let Ok(views) = self.pdf_embeds.lock() {
+            for pdf in views.values() {
+                pdf.update(cx, |pdf, cx| pdf.check_external(cx));
+            }
+        }
         if self.file_preview.is_some() {
             let mtime = std::fs::metadata(&self.path)
                 .and_then(|m| m.modified())
@@ -2968,6 +2989,11 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(pdf) = &self.pdf {
+            pdf.update(cx, |pdf, cx| {
+                pdf.set_language(settings.language, window, cx)
+            });
+        }
         let spell_changed = self.spell_enabled != settings.spellcheck_enabled
             || self.spell_languages != settings.spellcheck_languages;
         self.spell_enabled = settings.spellcheck_enabled;

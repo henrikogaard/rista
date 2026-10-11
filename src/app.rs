@@ -2036,6 +2036,10 @@ impl Workspace {
             graph.update(cx, |g, cx| g.focus_filter(window, cx));
             return;
         }
+        if let Some(pdf) = self.active_doc().and_then(|doc| doc.read(cx).pdf.clone()) {
+            pdf.update(cx, |pdf, cx| pdf.focus_search(window, cx));
+            return;
+        }
         if self.settings.graph_dock_open {
             if let Some(graph) = self.graph_dock.clone() {
                 graph.update(cx, |g, cx| g.focus_filter(window, cx));
@@ -6903,6 +6907,37 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(target) = crate::pdf::PdfTarget::parse(target) {
+            let vault = self.vault.read(cx);
+            let doc_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+            let path = target
+                .resolve(
+                    doc_path.as_deref(),
+                    vault.root.as_deref(),
+                    &vault.explorer_path_snapshot(),
+                )
+                .and_then(|path| path.canonicalize().ok());
+            if let Some(path) = path {
+                self.open_document_impl(path.clone(), new_tab, false, window, cx);
+                if let Some(pdf) = self
+                    .active_doc()
+                    .filter(|doc| doc.read(cx).path == path)
+                    .and_then(|doc| doc.read(cx).pdf.clone())
+                {
+                    pdf.update(cx, |pdf, cx| pdf.jump(target.page, cx));
+                }
+            } else {
+                self.note_status(
+                    format!(
+                        "{}: {}",
+                        self.tr("PDF not found", "Fant ikke PDF-filen"),
+                        target.file
+                    ),
+                    cx,
+                );
+            }
+            return;
+        }
         let (note, anchor) = match target.split_once('#') {
             Some((n, a)) => {
                 let a = a.trim();
@@ -8797,6 +8832,7 @@ impl Workspace {
             workspace: view.downgrade(),
             views: embeds,
             query_views: query_embeds,
+            pdf_views: doc.read(cx).pdf_embeds.clone(),
             doc_path: Some(doc_path),
             depth: 0,
         };
@@ -9538,6 +9574,9 @@ impl Workspace {
         mode: ViewMode,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(pdf) = doc.read(cx).pdf.clone() {
+            return div().size_full().child(pdf).into_any_element();
+        }
         // Image files render the picture itself, not a
         // text editor over binary bytes.
         if doc.read(cx).is_image {
@@ -11333,7 +11372,7 @@ fn reveal_in_file_manager(path: &std::path::Path) {
 
 /// Open `path` in the OS default application — the "Open in
 /// default app" file context item.
-fn open_in_default_app(path: &std::path::Path) {
+pub(crate) fn open_in_default_app(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open").arg(path).spawn();
