@@ -628,7 +628,7 @@ impl Workspace {
                         .selected(self.settings.folder_file_list == files)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.settings.folder_file_list = files;
-                            this.settings.save();
+                            this.persist_settings(cx);
                             cx.notify();
                         }))
                 }),
@@ -707,7 +707,7 @@ impl Workspace {
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.settings.tree_sort = sort;
-                                this.settings.save();
+                                this.persist_settings(cx);
                                 this.vault.update(cx, |vault, cx| {
                                     vault.tree_sort = sort;
                                     vault.refresh(cx);
@@ -1369,7 +1369,7 @@ impl Workspace {
                             .tooltip(self.tr("Hide inspector", "Skjul inspektør"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.settings.inspector_open = false;
-                                this.settings.save();
+                                this.persist_settings(cx);
                                 cx.notify();
                             })),
                     ),

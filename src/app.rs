@@ -123,6 +123,7 @@ fn canvas_panels(id: impl Into<ElementId>, axis: Axis) -> ResizablePanelGroup {
 }
 
 pub struct Workspace {
+    window_id: u64,
     vault: Entity<Vault>,
     search_service: SearchService,
     docs: Vec<OpenDoc>,
@@ -139,6 +140,7 @@ pub struct Workspace {
     next_terminal_id: usize,
     terminal_visible: bool,
     settings: Settings,
+    settings_baseline: Settings,
     zen: bool,
     palette_state: Entity<CommandState>,
     palette_sections: Vec<Vec<PaletteEntry>>,
@@ -300,6 +302,8 @@ enum PaletteEntry {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PaletteCmd {
+    NewWindow,
+    OpenInNewWindow,
     NewFile,
     NewFolder,
     OpenFile,
@@ -395,6 +399,8 @@ pub(crate) enum PaletteCmd {
 
 impl PaletteCmd {
     pub(crate) const ALL: &'static [Self] = &[
+        Self::NewWindow,
+        Self::OpenInNewWindow,
         Self::NewFile,
         Self::NewUniqueNote,
         Self::NewFromTemplate,
@@ -491,6 +497,8 @@ impl PaletteCmd {
     pub(crate) fn id(self) -> &'static str {
         use PaletteCmd::*;
         match self {
+            NewWindow => "new_window",
+            OpenInNewWindow => "open_in_new_window",
             NewFile => "new_file",
             NewUniqueNote => "new_unique_note",
             NewFromTemplate => "new_from_template",
@@ -592,6 +600,8 @@ impl PaletteCmd {
     pub(crate) fn label_norwegian(self) -> &'static str {
         use PaletteCmd::*;
         match self {
+            NewWindow => "Nytt vindu",
+            OpenInNewWindow => "Åpne i nytt vindu",
             NewFile => "Ny fil",
             NewUniqueNote => "Nytt unikt notat",
             NewFromTemplate => "Nytt notat fra mal",
@@ -689,6 +699,16 @@ impl PaletteCmd {
     pub(crate) fn spec(&self) -> (assets::IconName, &'static str, &'static [&'static str]) {
         use PaletteCmd::*;
         match self {
+            NewWindow => (
+                assets::IconName::AppWindow,
+                "New window",
+                &["window", "workspace"],
+            ),
+            OpenInNewWindow => (
+                assets::IconName::AppWindow,
+                "Open in New Window",
+                &["open", "document", "window"],
+            ),
             NewFile => (assets::IconName::FilePlus, "New file", &["create", "note"]),
             NewBase => (
                 assets::IconName::Database,
@@ -1132,7 +1152,14 @@ impl PaletteCmd {
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, initial_paths: Vec<PathBuf>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        window_id: u64,
+        settings: Settings,
+        initial_paths: Vec<PathBuf>,
+        restore_session: bool,
+    ) -> Self {
         let workspace = cx.entity().downgrade();
         let appearance_sub = window.observe_window_appearance(move |_, cx| {
             let _ = workspace.update(cx, |this, cx| {
@@ -1144,13 +1171,35 @@ impl Workspace {
                 }
             });
         });
+        let shared_settings_sub = cx.observe_global_in::<crate::windows::SharedPreferences>(
+            window,
+            |this, window, cx| {
+                let shared = cx
+                    .global::<crate::windows::SharedPreferences>()
+                    .settings
+                    .clone();
+                let (settings, changed) = crate::windows::merge_shared_settings(
+                    &this.settings_baseline,
+                    &shared,
+                    &this.settings,
+                );
+                if changed {
+                    this.settings_baseline = shared;
+                    let settings = crate::windows::with_local_settings(settings, &this.settings);
+                    this.apply_settings_inner(settings, window, cx, false);
+                }
+            },
+        );
+        let window_id_for_activation = window_id;
+        let activation_sub = cx.observe_window_activation(window, move |_, window, cx| {
+            crate::windows::activate_window(window_id_for_activation, window, cx);
+        });
         let vault = cx.new(Vault::new);
         let palette_state = cx.new(|cx| CommandState::new(window, cx));
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let cell_input = cx.new(|cx| InputState::new(window, cx).placeholder("Value"));
         let tag_input = cx.new(|cx| InputState::new(window, cx).placeholder("new-name"));
         let prop_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Property name"));
-        let settings = Settings::load();
         let folder_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(
                 settings
@@ -1201,6 +1250,7 @@ impl Workspace {
         });
 
         let mut this = Self {
+            window_id,
             vault,
             search_service: SearchService::new(),
             docs: Vec::new(),
@@ -1265,8 +1315,16 @@ impl Workspace {
             pending_editor_focus: None,
             hotkey_warning: crate::hotkeys::warning(cx),
             focus_handle,
+            settings_baseline: settings.clone(),
             settings,
-            _subscriptions: vec![vault_sub, appearance_sub, folder_search_sub, explorer_sub],
+            _subscriptions: vec![
+                vault_sub,
+                appearance_sub,
+                folder_search_sub,
+                explorer_sub,
+                shared_settings_sub,
+                activation_sub,
+            ],
         };
 
         this.settings
@@ -1277,7 +1335,7 @@ impl Workspace {
             vault.starred = this.settings.starred.iter().cloned().collect();
         });
 
-        let restore_saved_session = initial_paths.is_empty();
+        let restore_saved_session = restore_session;
         let restored_tabs = this.settings.open_tabs.clone();
         let legacy_active = this
             .settings
@@ -1350,6 +1408,14 @@ impl Workspace {
                 this.open_folder_page(folder, window, cx);
             }
         } else {
+            if let Some(root) = this
+                .settings
+                .last_vault
+                .clone()
+                .filter(|root| root.is_dir())
+            {
+                this.open_vault_at(root, window, cx);
+            }
             for path in initial_paths {
                 this.open_path(path, window, cx);
             }
@@ -1379,14 +1445,34 @@ impl Workspace {
         }
 
         let workspace = cx.entity();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
+            if cx.global::<crate::windows::WindowManager>().quitting {
+                return true;
+            }
             workspace.update(cx, |this, cx| match this.save_all(cx) {
                 Ok(()) => {
+                    this.persist_tabs(cx);
+                    let bounds = window.window_bounds().get_bounds();
+                    crate::windows::save_geometry(
+                        this.window_id,
+                        crate::settings::WindowGeometry {
+                            x: bounds.origin.x.as_f32(),
+                            y: bounds.origin.y.as_f32(),
+                            width: bounds.size.width.as_f32(),
+                            height: bounds.size.height.as_f32(),
+                            maximized: window.is_maximized(),
+                        },
+                        cx,
+                    );
                     this.stop_agent_process(cx);
                     true
                 }
-                Err(err) => {
-                    this.note_status(format!("Could not save before closing: {err}"), cx);
+                Err(_) => {
+                    let message = this.tr(
+                        "Could not save before closing. Your changes are still open.",
+                        "Kunne ikke lagre før lukking. Endringene dine er fortsatt åpne.",
+                    );
+                    this.note_status(message, cx);
                     false
                 }
             })
@@ -1435,13 +1521,21 @@ impl Workspace {
             vault.tree_sort = self.settings.tree_sort;
             vault.show_other_files = self.settings.show_other_files;
             vault.templates_dir = self.settings.templates_dir.clone();
-            vault.open(root.clone(), cx);
+            vault.open(
+                root.clone(),
+                self.settings
+                    .expanded_folders
+                    .get(&root.to_string_lossy().to_string())
+                    .cloned()
+                    .unwrap_or_default(),
+                cx,
+            );
         });
         self.terminals.clear();
         self.active_terminal = None;
         self.terminal_visible = false;
         self.settings.last_vault = Some(root.clone());
-        self.settings.save();
+        self.persist_settings(cx);
         self.status_note = None;
         self.open_folder_page(root, window, cx);
         cx.notify();
@@ -1466,7 +1560,7 @@ impl Workspace {
         self.active_terminal = None;
         self.terminal_visible = false;
         self.settings.last_vault = None;
-        self.settings.save();
+        self.persist_settings(cx);
         cx.notify();
         true
     }
@@ -1573,7 +1667,7 @@ impl Workspace {
                             window.on_next_frame(move |window, cx| {
                                 view.update(cx, |this, cx| {
                                     this.settings.agent_open = true;
-                                    this.settings.save();
+                                    this.persist_settings(cx);
                                     this.agent_panel.update(cx, |panel, cx| {
                                         panel.add_context(path, cx);
                                         panel.focus_composer(window, cx);
@@ -1722,6 +1816,19 @@ impl Workspace {
             },
         )
         .item(
+            PopupMenuItem::new(language.text("Open in New Window", "Åpne i nytt vindu"))
+                .icon(assets::IconName::AppWindow)
+                .on_click({
+                    let path = path.clone();
+                    move |_, window, cx| {
+                        let path = path.to_string_lossy().into_owned();
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_action(OpenPathInNewWindow { path }.boxed_clone(), cx);
+                        });
+                    }
+                }),
+        )
+        .item(
             PopupMenuItem::new("Copy path")
                 .icon(assets::IconName::Link)
                 .on_click({
@@ -1781,7 +1888,7 @@ impl Workspace {
 
     /// Show a status-bar note that fades after ~4s. A bumped epoch keeps
     /// an older timer from clearing a newer message.
-    fn note_status(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+    pub(crate) fn note_status(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.status_epoch += 1;
         let epoch = self.status_epoch;
         self.status_note = Some(msg.into());
@@ -1796,6 +1903,10 @@ impl Workspace {
         })
         .detach();
         cx.notify();
+    }
+
+    pub(crate) fn focus_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
     }
 
     /// Put keyboard focus back where it belongs after a dialog or sheet
@@ -1848,7 +1959,7 @@ impl Workspace {
                 self.settings
                     .expanded_folders
                     .insert(root.to_string_lossy().to_string(), vault.expanded_folders());
-                self.settings.save();
+                self.persist_settings(cx);
             }
             return;
         }
@@ -1916,6 +2027,10 @@ impl Workspace {
         self.active
             .and_then(|i| self.docs.get(i))
             .map(|d| &d.entity)
+    }
+
+    pub(crate) fn active_document_path(&self, cx: &App) -> Option<PathBuf> {
+        self.active_doc().map(|doc| doc.read(cx).path.clone())
     }
 
     /// `(`/`[`/`{`/quotes/etc. — insert the pair, wrap the selection, or
@@ -2205,8 +2320,18 @@ impl Workspace {
         self.peek = None;
         let path = match path.canonicalize() {
             Ok(path) => path,
-            Err(err) => {
-                self.note_status(format!("Could not open {}: {err}", path.display()), cx);
+            Err(_) => {
+                self.note_status(
+                    format!(
+                        "{}: {}",
+                        self.tr(
+                            "Could not open this file or folder",
+                            "Kunne ikke åpne denne filen eller mappen",
+                        ),
+                        path.display()
+                    ),
+                    cx,
+                );
                 return;
             }
         };
@@ -2245,8 +2370,18 @@ impl Workspace {
         }
         let initial = match Document::load_initial(&path) {
             Ok(initial) => initial,
-            Err(err) => {
-                self.note_status(format!("Could not open {}: {err}", path.display()), cx);
+            Err(_) => {
+                self.note_status(
+                    format!(
+                        "{}: {}",
+                        self.tr(
+                            "Could not open this file or folder",
+                            "Kunne ikke åpne denne filen eller mappen",
+                        ),
+                        path.display()
+                    ),
+                    cx,
+                );
                 return;
             }
         };
@@ -2579,7 +2714,7 @@ impl Workspace {
         } else {
             self.refocus(window, cx);
         }
-        self.settings.save();
+        self.persist_settings(cx);
         cx.notify();
     }
 
@@ -2590,7 +2725,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.settings.agent_open = !self.settings.agent_open;
-        self.settings.save();
+        self.persist_settings(cx);
         if self.settings.agent_open {
             self.agent_panel
                 .update(cx, |panel, cx| panel.focus_composer(window, cx));
@@ -2683,7 +2818,7 @@ impl Workspace {
     /// Snapshot open doc paths + the active one into settings — the
     /// restore-on-launch list. Also keeps an open graph's active-note
     /// halo in step — this runs after every tab mutation.
-    fn persist_tabs(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn persist_tabs(&mut self, cx: &mut Context<Self>) {
         self.sync_active_facade();
         self.settings.active_folder = self.folder.as_ref().map(|p| p.path.clone());
         self.sync_graph_active(cx);
@@ -2712,7 +2847,7 @@ impl Workspace {
         if self.restoring_session {
             return;
         }
-        self.settings.save();
+        self.persist_settings(cx);
     }
 
     fn sync_active_facade(&mut self) {
@@ -2799,7 +2934,7 @@ impl Workspace {
             self.settings.pinned_tabs.push(path);
             self.note_status("Tab pinned", cx);
         }
-        self.settings.save();
+        self.persist_settings(cx);
         cx.notify();
     }
 
@@ -3083,9 +3218,24 @@ impl Workspace {
         });
     }
 
-    fn save_all(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
+    pub(crate) fn save_all(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         for doc in &self.docs {
             doc.entity.update(cx, |doc, cx| doc.flush_and_save(cx))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn flush_path_for_new_window(
+        &mut self,
+        path: &Path,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> std::io::Result<()> {
+        for doc in &self.docs {
+            let document_path = doc.entity.read(cx).path.clone();
+            if document_path.canonicalize().unwrap_or(document_path) == path {
+                doc.entity.update(cx, |doc, cx| doc.flush_and_save(cx))?;
+            }
         }
         Ok(())
     }
@@ -3222,7 +3372,7 @@ impl Workspace {
             TreeSort::Type => TreeSort::Size,
             TreeSort::Size => TreeSort::Name,
         };
-        self.settings.save();
+        self.persist_settings(cx);
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
             vault.refresh(cx);
@@ -4103,7 +4253,7 @@ impl Workspace {
 
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _w: &mut Window, cx: &mut Context<Self>) {
         self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
-        self.settings.save();
+        self.persist_settings(cx);
         cx.notify();
     }
 
@@ -4119,7 +4269,7 @@ impl Workspace {
             doc.entity.update(cx, |doc, cx| doc.set_focus_mode(on, cx));
         }
         self.settings.focus_mode = on;
-        self.settings.save();
+        self.persist_settings(cx);
         self.note_status(
             if on {
                 "Focus mode on"
@@ -4221,7 +4371,7 @@ impl Workspace {
             vault.starred = starred;
             cx.emit(VaultEvent::Starred);
         });
-        self.settings.save();
+        self.persist_settings(cx);
         cx.notify();
     }
 
@@ -4321,7 +4471,7 @@ impl Workspace {
         };
         theme::apply(&self.settings, cx);
         self.retheme_previews(cx);
-        self.settings.save();
+        self.persist_settings(cx);
         cx.notify();
     }
 
@@ -4333,14 +4483,8 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn quit(&mut self, cx: &mut Context<Self>) {
-        match self.save_all(cx) {
-            Ok(()) => {
-                self.stop_agent_process(cx);
-                cx.quit();
-            }
-            Err(err) => self.note_status(format!("Could not save before quitting: {err}"), cx),
-        }
+    pub(crate) fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.defer_in(window, |_, _, cx| crate::windows::quit(cx));
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -4577,6 +4721,12 @@ impl Workspace {
 
     fn run_command(&mut self, cmd: PaletteCmd, window: &mut Window, cx: &mut Context<Self>) {
         match cmd {
+            PaletteCmd::NewWindow => window.dispatch_action(NewWindow.boxed_clone(), cx),
+            PaletteCmd::OpenInNewWindow => {
+                window.defer(cx, |window, cx| {
+                    window.dispatch_action(OpenInNewWindow.boxed_clone(), cx);
+                });
+            }
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
             PaletteCmd::NewBase => self.new_base(window, cx),
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
@@ -4836,7 +4986,7 @@ impl Workspace {
             PaletteCmd::ToggleReadable => {
                 self.settings.readable_width = !self.settings.readable_width;
                 let on = self.settings.readable_width;
-                self.settings.save();
+                self.persist_settings(cx);
                 self.note_status(
                     if on {
                         "Readable line length on"
@@ -4854,7 +5004,7 @@ impl Workspace {
                 cx,
             ),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
-            PaletteCmd::Quit => self.quit(cx),
+            PaletteCmd::Quit => self.quit(window, cx),
         }
     }
 
@@ -4886,6 +5036,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.apply_settings_inner(settings, window, cx, true);
+    }
+
+    fn apply_settings_inner(
+        &mut self,
+        settings: Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        publish: bool,
+    ) {
         if self.settings.properties_visibility != settings.properties_visibility {
             for doc in &self.docs {
                 doc.entity.update(cx, |doc, _| {
@@ -4894,8 +5054,20 @@ impl Workspace {
             }
         }
         let files_changed = self.settings.show_other_files != settings.show_other_files;
+        let tree_sort_changed = self.settings.tree_sort != settings.tree_sort;
+        let templates_dir_changed = self.settings.templates_dir != settings.templates_dir;
+        let focus_mode_changed = self.focus_mode != settings.focus_mode
+            || self.settings.focus_mode != settings.focus_mode;
         let language_changed = self.settings.language != settings.language;
+        let starred_changed = self.settings.starred != settings.starred;
+        self.focus_mode = settings.focus_mode;
         self.settings = settings.clone();
+        if starred_changed {
+            self.vault.update(cx, |vault, cx| {
+                vault.starred = settings.starred.iter().cloned().collect();
+                cx.emit(VaultEvent::Starred);
+            });
+        }
         if language_changed {
             self.folder_search.update(cx, |input, cx| {
                 input.set_placeholder(
@@ -4916,11 +5088,15 @@ impl Workspace {
                 );
             });
         }
-        if files_changed {
+        if files_changed || tree_sort_changed || templates_dir_changed {
             self.vault.update(cx, |vault, cx| {
+                vault.tree_sort = settings.tree_sort;
                 vault.show_other_files = settings.show_other_files;
+                vault.templates_dir = settings.templates_dir.clone();
                 vault.refresh(cx);
             });
+        }
+        if files_changed {
             if let Some(page) = &self.folder {
                 self.folder =
                     Some(self.load_folder_page(page.path.clone(), page.scroll.clone(), cx));
@@ -4934,8 +5110,12 @@ impl Workspace {
         }
         crate::apply_ui_settings(&settings, cx);
         for doc in &self.docs {
-            doc.entity
-                .update(cx, |doc, cx| doc.apply_settings(&settings, window, cx));
+            doc.entity.update(cx, |doc, cx| {
+                doc.apply_settings(&settings, window, cx);
+                if focus_mode_changed {
+                    doc.set_focus_mode(settings.focus_mode, cx);
+                }
+            });
         }
         // The agent panel is a cached view that reads settings such as the
         // language, so it must be redrawn alongside the workspace.
@@ -4944,8 +5124,24 @@ impl Workspace {
         for graph in self.graph.iter().chain(&self.graph_dock) {
             graph.update(cx, |_, cx| cx.notify());
         }
-        settings.save();
+        self.settings = settings;
+        if publish {
+            self.persist_settings(cx);
+        } else {
+            let settings = self.settings.clone();
+            self.settings_view.update(cx, |view, cx| {
+                view.sync_external_settings(&settings, window, cx)
+            });
+        }
         cx.notify();
+    }
+
+    pub(crate) fn persist_settings(&mut self, cx: &mut Context<Self>) {
+        if cx.global::<crate::windows::WindowManager>().restoring {
+            return;
+        }
+        crate::windows::publish(self.window_id, &self.settings_baseline, &self.settings, cx);
+        self.settings_baseline = self.settings.clone();
     }
 
     pub fn settings(&self) -> &Settings {
@@ -5142,7 +5338,7 @@ impl Workspace {
                 }
             }
             if touched {
-                self.settings.save();
+                self.persist_settings(cx);
             }
             for p in &mut self.recent {
                 if *p == path {
@@ -6220,7 +6416,7 @@ impl Workspace {
                         self.note_status(format!("New notes in {label} start empty"), cx);
                     }
                 }
-                self.settings.save();
+                self.persist_settings(cx);
             }
             _ => {}
         }
@@ -6958,21 +7154,27 @@ impl Workspace {
 
     /// Called by BaseView when its view tab changes — remembered per
     /// file so a `.base` reopens on the view it was left on.
-    pub fn remember_base_view(&mut self, path: String, view_ix: usize) {
+    pub fn remember_base_view(&mut self, path: String, view_ix: usize, cx: &mut Context<Self>) {
         self.settings.base_views.insert(path, view_ix);
-        self.settings.save();
+        self.persist_settings(cx);
     }
 
     /// Interactive header sort per `.base` view — saved under
     /// `{path}::{view_name}` so a column name survives view reorders.
-    pub fn remember_base_sort(&mut self, path: String, view: String, col: Option<(String, bool)>) {
+    pub fn remember_base_sort(
+        &mut self,
+        path: String,
+        view: String,
+        col: Option<(String, bool)>,
+        cx: &mut Context<Self>,
+    ) {
         let key = format!("{path}::{view}");
         if let Some(col) = col {
             self.settings.base_sorts.insert(key, col);
         } else {
             self.settings.base_sorts.remove(&key);
         }
-        self.settings.save();
+        self.persist_settings(cx);
     }
 
     pub fn vault_entity(&self) -> &Entity<Vault> {
@@ -7078,7 +7280,7 @@ impl Workspace {
                             .icon(assets::IconName::TableProperties)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.settings.inspector_open = !this.settings.inspector_open;
-                                this.settings.save();
+                                this.persist_settings(cx);
                                 cx.notify();
                             })),
                     )
@@ -7162,7 +7364,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.outline_open = !this.outline_open;
                         this.settings.panes.outline = this.outline_open;
-                        this.settings.save();
+                        this.persist_settings(cx);
                         cx.notify();
                     })),
             )
@@ -7254,7 +7456,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.backlinks_open = !this.backlinks_open;
                         this.settings.panes.backlinks = this.backlinks_open;
-                        this.settings.save();
+                        this.persist_settings(cx);
                         cx.notify();
                     })),
             )
@@ -7507,7 +7709,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.outgoing_open = !this.outgoing_open;
                         this.settings.panes.outgoing = this.outgoing_open;
-                        this.settings.save();
+                        this.persist_settings(cx);
                         cx.notify();
                     })),
             )
@@ -7779,7 +7981,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.cal_open = !this.cal_open;
                         this.settings.panes.calendar = this.cal_open;
-                        this.settings.save();
+                        this.persist_settings(cx);
                         cx.notify();
                     })),
             )
@@ -7849,7 +8051,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tasks_open = !this.tasks_open;
                         this.settings.panes.tasks = this.tasks_open;
-                        this.settings.save();
+                        this.persist_settings(cx);
                         cx.notify();
                     })),
             )
@@ -7993,7 +8195,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tags_open = !this.tags_open;
                         this.settings.panes.tags = this.tags_open;
-                        this.settings.save();
+                        this.persist_settings(cx);
                         cx.notify();
                     })),
             )
@@ -8917,6 +9119,8 @@ impl Workspace {
                         if pinned { "Løsne fane" } else { "Fest fane" },
                     );
                     let reveal_label = workspace.tr("Reveal in tree", "Vis i filtrær");
+                    let open_in_new_window =
+                        workspace.tr("Open in New Window", "Åpne i nytt vindu");
                     let split_right = workspace.tr("Split right", "Del til høyre");
                     let split_down = workspace.tr("Split down", "Del ned");
                     let next_pane = workspace.tr("Next pane", "Neste redigeringsfelt");
@@ -8950,6 +9154,22 @@ impl Workspace {
                                             this.reveal_file(&path, cx);
                                         }
                                     })
+                                }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(open_in_new_window)
+                            .icon(assets::IconName::AppWindow)
+                            .on_click({
+                                let path = _path.clone();
+                                move |_, window, cx| {
+                                    let path = path.to_string_lossy().into_owned();
+                                    window.defer(cx, move |window, cx| {
+                                        window.dispatch_action(
+                                            OpenPathInNewWindow { path }.boxed_clone(),
+                                            cx,
+                                        );
+                                    });
                                 }
                             }),
                     )
@@ -10288,7 +10508,7 @@ impl Workspace {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.settings.preview_follows_source =
                                             !this.settings.preview_follows_source;
-                                        this.settings.save();
+                                        this.persist_settings(cx);
                                         cx.notify();
                                     })),
                             )
@@ -10312,7 +10532,7 @@ impl Workspace {
                                         this.settings.inspector_open = true;
                                         this.outgoing_open = true;
                                         this.settings.panes.outgoing = true;
-                                        this.settings.save();
+                                        this.persist_settings(cx);
                                         cx.notify();
                                     })),
                             )
@@ -10543,11 +10763,19 @@ impl Render for Workspace {
                             .child(self.render_empty_editor(cx))
                             .into_any_element()
                     } else {
+                        let workspace_view = cx.entity();
                         canvas_panels("workspace", Axis::Horizontal)
                             .when(sidebar_visible, |this| {
                                 this.child(
                                     resizable_panel()
-                                        .size(px(260.))
+                                        .size(px(
+                                            self.settings
+                                                .sidebar_width
+                                                .filter(|width| {
+                                                    crate::settings::valid_sidebar_width(*width)
+                                                })
+                                                .unwrap_or(260.),
+                                        ))
                                         .size_range(px(200.)..px(420.))
                                         .child(
                                             div().size_full().p_1().child(
@@ -10709,6 +10937,32 @@ impl Render for Workspace {
                                 )
                             },
                             )
+                            .on_resize(move |state, _, cx| {
+                                let width = state
+                                    .read(cx)
+                                    .sizes()
+                                    .first()
+                                    .copied()
+                                    .map(f32::from);
+                                if let Some(width) = width {
+                                    let manager = cx.global::<crate::windows::WindowManager>();
+                                    if manager.restoring || manager.quitting {
+                                        return;
+                                    }
+                                    workspace_view.update(cx, |workspace, cx| {
+                                        let visible = workspace.vault.read(cx).is_open()
+                                            && !workspace.settings.sidebar_collapsed
+                                            && !workspace.zen;
+                                        if visible
+                                            && crate::settings::valid_sidebar_width(width)
+                                            && workspace.settings.sidebar_width != Some(width)
+                                        {
+                                            workspace.settings.sidebar_width = Some(width);
+                                            workspace.persist_settings(cx);
+                                        }
+                                    });
+                                }
+                            })
                             .into_any_element()
                     }),
             )

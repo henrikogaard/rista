@@ -7,6 +7,8 @@ actions!(
     [
         // File
         NewFile,
+        NewWindow,
+        OpenInNewWindow,
         NewFolder,
         OpenFile,
         OpenFolder,
@@ -71,6 +73,12 @@ actions!(
 #[action(namespace = rista, no_json)]
 pub struct RunPaletteCommand {
     pub id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = rista, no_json)]
+pub struct OpenPathInNewWindow {
+    pub path: String,
 }
 
 /// Auto-pair actions — `pair` is the two-character pair string

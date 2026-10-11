@@ -48,6 +48,7 @@ pub struct SettingsView {
     unique_format_input: Entity<InputState>,
     /// Folder and format inputs for the weekly … yearly notes.
     periodic_inputs: Vec<(Period, Entity<InputState>, Entity<InputState>)>,
+    settings_cache: Settings,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -456,7 +457,180 @@ impl SettingsView {
             unique_dir_input,
             unique_format_input,
             periodic_inputs,
+            settings_cache: settings.clone(),
             _subscriptions: subs,
+        }
+    }
+
+    pub(crate) fn sync_external_settings(
+        &mut self,
+        settings: &Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = &self.settings_cache;
+        for (input, old, new) in [
+            (
+                &self.terminal_font_input,
+                previous.terminal_font.as_str(),
+                settings.terminal_font.as_str(),
+            ),
+            (
+                &self.terminal_shell_input,
+                previous.terminal_shell.as_str(),
+                settings.terminal_shell.as_str(),
+            ),
+            (
+                &self.attachments_input,
+                previous.attachments_dir.as_str(),
+                settings.attachments_dir.as_str(),
+            ),
+            (
+                &self.templates_input,
+                previous.templates_dir.as_str(),
+                settings.templates_dir.as_str(),
+            ),
+            (
+                &self.daily_dir_input,
+                previous.daily_dir.as_str(),
+                settings.daily_dir.as_str(),
+            ),
+            (
+                &self.daily_format_input,
+                previous.daily_format.as_str(),
+                settings.daily_format.as_str(),
+            ),
+            (
+                &self.unique_dir_input,
+                previous.unique_note_dir.as_str(),
+                settings.unique_note_dir.as_str(),
+            ),
+            (
+                &self.unique_format_input,
+                previous.unique_note_format.as_str(),
+                settings.unique_note_format.as_str(),
+            ),
+        ] {
+            if old != new && input.read(cx).value().as_ref() == old {
+                input.update(cx, |input, cx| input.set_value(new.to_string(), window, cx));
+            }
+        }
+        let old_terminal_size = previous.terminal_font_size.to_string();
+        let new_terminal_size = settings.terminal_font_size.to_string();
+        if old_terminal_size != new_terminal_size
+            && self.terminal_size_input.read(cx).value().as_ref() == old_terminal_size.as_str()
+        {
+            self.terminal_size_input.update(cx, |input, cx| {
+                input.set_value(new_terminal_size, window, cx)
+            });
+        }
+        for (period, directory, format) in &self.periodic_inputs {
+            let (old_directory, old_format) = previous.period(*period);
+            let (new_directory, new_format) = settings.period(*period);
+            for (input, old, new) in [
+                (directory, old_directory, new_directory),
+                (format, old_format, new_format),
+            ] {
+                if old != new && input.read(cx).value().as_ref() == old {
+                    input.update(cx, |input, cx| input.set_value(new.to_string(), window, cx));
+                }
+            }
+        }
+        if previous.language != settings.language {
+            self.hotkey_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    settings
+                        .language
+                        .text("Search shortcuts…", "Søk etter snarveier…"),
+                    window,
+                    cx,
+                );
+            });
+            self.spell_language_search.update(cx, |input, cx| {
+                input.set_placeholder(
+                    settings
+                        .language
+                        .text("Search installed languages…", "Søk i installerte språk…"),
+                    window,
+                    cx,
+                );
+            });
+        }
+        for (select, old, new) in [
+            (
+                &self.dark_theme_select,
+                &previous.dark_theme,
+                &settings.dark_theme,
+            ),
+            (
+                &self.light_theme_select,
+                &previous.light_theme,
+                &settings.light_theme,
+            ),
+            (
+                &self.font_select,
+                &previous.editor_font_family,
+                &settings.editor_font_family,
+            ),
+        ] {
+            if old != new
+                && select.read(cx).selected_value().map(String::as_str) == Some(old.as_str())
+            {
+                select.update(cx, |select, cx| {
+                    select.set_selected_value(new, window, cx);
+                });
+            }
+        }
+        Self::sync_numeric_select(
+            &self.font_size_select,
+            previous.editor_font_size.to_string(),
+            settings.editor_font_size.to_string(),
+            FONT_SIZES,
+            window,
+            cx,
+        );
+        Self::sync_numeric_select(
+            &self.ui_size_select,
+            previous.ui_font_size.to_string(),
+            settings.ui_font_size.to_string(),
+            UI_SIZES,
+            window,
+            cx,
+        );
+        Self::sync_numeric_select(
+            &self.tab_size_select,
+            previous.tab_size.to_string(),
+            settings.tab_size.to_string(),
+            TAB_SIZES,
+            window,
+            cx,
+        );
+        self.settings_cache = settings.clone();
+        cx.notify();
+    }
+
+    fn sync_numeric_select(
+        select: &Entity<SelectState<SearchableVec<String>>>,
+        previous: String,
+        current: String,
+        values: &[&str],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if previous == current
+            || select
+                .read(cx)
+                .selected_value()
+                .map(ToString::to_string)
+                .as_deref()
+                != Some(previous.as_str())
+        {
+            return;
+        }
+        if let Some(index) = values.iter().position(|value| *value == current) {
+            select.update(cx, |select, cx| {
+                select.set_selected_index(Some(IndexPath::new(index)), window, cx);
+            });
         }
     }
 
@@ -504,6 +678,7 @@ impl SettingsView {
             });
         }
         ws.update(cx, |ws, cx| ws.apply_settings(settings, window, cx));
+        self.settings_cache = ws.read(cx).settings().clone();
         cx.notify();
     }
 
@@ -795,6 +970,7 @@ impl SettingsView {
         patch(&mut settings);
         let new_language = settings.language;
         ws.update(cx, |ws, cx| ws.apply_settings(settings, window, cx));
+        self.settings_cache = ws.read(cx).settings().clone();
         if old_language != new_language {
             self.hotkey_search.update(cx, |input, cx| {
                 input.set_placeholder(

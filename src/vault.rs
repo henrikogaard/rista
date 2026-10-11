@@ -122,15 +122,9 @@ impl Vault {
         self.root.is_some()
     }
 
-    pub fn open(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+    pub fn open(&mut self, root: PathBuf, restored_expanded: Vec<String>, cx: &mut Context<Self>) {
         self.stop_watching();
-        self.expanded = crate::settings::Settings::load()
-            .expanded_folders
-            .get(&root.to_string_lossy().to_string())
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        self.expanded = restored_expanded.into_iter().collect();
         self.explorer_query.clear();
         self.explorer_filter = Default::default();
         self.root = Some(root);

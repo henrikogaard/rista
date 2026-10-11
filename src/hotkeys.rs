@@ -49,6 +49,22 @@ macro_rules! action_command {
 
 const ACTION_COMMANDS: &[CommandSpec] = &[
     action_command!(
+        "new_window",
+        "New window",
+        "Nytt vindu",
+        None,
+        None,
+        NewWindow
+    ),
+    action_command!(
+        "open_in_new_window",
+        "Open in New Window",
+        "Åpne i nytt vindu",
+        None,
+        None,
+        OpenInNewWindow
+    ),
+    action_command!(
         "new_file",
         "New file",
         "Ny fil",
@@ -846,12 +862,16 @@ fn replace_bindings(cx: &mut App, bindings: Vec<KeyBinding>) {
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
     // Native menu key equivalents are snapshots, not live keymap references.
-    if let Some(workspace) = cx
-        .try_global::<crate::WorkspaceWindow>()
-        .and_then(|current| current.workspace.upgrade())
+    if let Some(record) = cx
+        .try_global::<crate::windows::WindowManager>()
+        .and_then(crate::windows::WindowManager::active)
     {
-        let language = workspace.read(cx).settings().language;
-        cx.set_menus(crate::menus(language));
+        if let Ok(language) = record
+            .workspace
+            .update(cx, |workspace, _cx| workspace.settings().language)
+        {
+            cx.set_menus(crate::menus(language));
+        }
     }
 }
 
