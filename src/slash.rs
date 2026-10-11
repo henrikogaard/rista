@@ -149,16 +149,16 @@ impl CompletionProvider for VaultCompletions {
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
         if let Some(resp) = wiki_items(text, offset, self.vault.as_ref(), cx) {
-            return Task::ready(Ok(resp));
+            return Task::ready(Ok(safe_completion_labels(resp)));
         }
         if let Some(resp) = tag_items(text, offset, self.vault.as_ref(), cx) {
-            return Task::ready(Ok(resp));
+            return Task::ready(Ok(safe_completion_labels(resp)));
         }
         if let Some(resp) = highlight_color_items(text, offset) {
-            return Task::ready(Ok(resp));
+            return Task::ready(Ok(safe_completion_labels(resp)));
         }
         if let Some(resp) = emoji_items(text, offset) {
-            return Task::ready(Ok(resp));
+            return Task::ready(Ok(safe_completion_labels(resp)));
         }
         let templates = || {
             let Some(vault) = self.vault.as_ref() else {
@@ -180,8 +180,25 @@ impl CompletionProvider for VaultCompletions {
                 })
                 .collect()
         };
-        Task::ready(Ok(slash_items(text, offset, templates)))
+        Task::ready(Ok(safe_completion_labels(slash_items(
+            text, offset, templates,
+        ))))
     }
+}
+
+fn safe_completion_labels(mut response: CompletionResponse) -> CompletionResponse {
+    let items = match &mut response {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => &mut list.items,
+    };
+    for item in items {
+        // gpui-component 0.7.1 uses filter_text.len() as a label byte range.
+        // Our providers already filter; omit unsafe Unicode prefix decoration.
+        if !item.label.is_ascii() {
+            item.filter_text = Some(String::new());
+        }
+    }
+    response
 }
 
 /// `[[query` / `![[query` completions against the live vault index.
@@ -685,7 +702,7 @@ fn slash_items(
 
 #[cfg(test)]
 mod tests {
-    use super::highlight_color_items;
+    use super::{highlight_color_items, safe_completion_labels};
     use gpui_kit::component::input::Rope;
     use lsp_types::CompletionResponse;
 
@@ -704,5 +721,36 @@ mod tests {
         assert!(labels("==done== r").is_empty());
         assert!(labels("`==` r").is_empty());
         assert!(labels("==").is_empty());
+    }
+
+    #[test]
+    fn completion_label_decoration_never_splits_unicode() {
+        for query in ["==r", "==o", "==y", "==g", "==b", "==p"] {
+            let response = highlight_color_items(&Rope::from(query), query.len()).unwrap();
+            let CompletionResponse::Array(items) = safe_completion_labels(response) else {
+                panic!("expected completion items");
+            };
+            for item in items {
+                let end = item.filter_text.as_ref().unwrap().len();
+                assert!(item.label.is_char_boundary(end));
+                assert!(item.text_edit.is_some());
+            }
+        }
+        let response = CompletionResponse::Array(
+            ["🔴 :red:", "Øgård", "日本語", "ASCII"]
+                .into_iter()
+                .map(|label| lsp_types::CompletionItem {
+                    label: label.into(),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        let CompletionResponse::Array(items) = safe_completion_labels(response) else {
+            unreachable!();
+        };
+        assert!(items[..3]
+            .iter()
+            .all(|item| item.filter_text.as_deref() == Some("")));
+        assert!(items[3].filter_text.is_none());
     }
 }

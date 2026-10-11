@@ -16,6 +16,7 @@ mod extensions;
 mod file_preview;
 mod folder;
 mod graph;
+mod graph_layout;
 mod history;
 mod http;
 mod math;

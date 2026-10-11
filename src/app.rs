@@ -1345,6 +1345,14 @@ impl Workspace {
     /// Put keyboard focus back where it belongs after a dialog or sheet
     /// closes: the active editor when a note is open, else the workspace.
     fn refocus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(graph) = &self.graph {
+            graph.read(cx).focus_handle(cx).focus(window, cx);
+            return;
+        }
+        if self.folder.is_some() {
+            self.focus_handle.focus(window, cx);
+            return;
+        }
         // In Preview (and on image docs) no editor is mounted — its
         // focus handle is dead weight and ⌘ bindings go nowhere, so
         // the workspace itself takes focus.
@@ -1366,7 +1374,7 @@ impl Workspace {
     }
 
     fn on_vault_event(&mut self, event: &VaultEvent, cx: &mut Context<Self>) {
-        if matches!(event, VaultEvent::TreeExpansionChanged) {
+        if matches!(event, VaultEvent::TreeExpansion) {
             let vault = self.vault.read(cx);
             if let Some(root) = &vault.root {
                 self.settings
@@ -1684,6 +1692,7 @@ impl Workspace {
                 self.recent.truncate(12);
                 self.persist_tabs(cx);
                 self.reveal_active_file(cx);
+                self.refocus(window, cx);
                 cx.notify();
                 return;
             }
@@ -1823,16 +1832,32 @@ impl Workspace {
         if is_standalone {
             self.start_standalone_fs_check(cx);
         }
+        // Keep actions dispatchable until the new editor has mounted.
+        self.focus_handle.focus(window, cx);
         cx.notify();
 
         // Focus the editor once the frame settles. Preview mode and
         // image docs mount no editor — the workspace takes focus so
         // ⌘ bindings keep working (same dead-handle fix as refocus).
-        let focus_editor =
-            !doc.read(cx).is_read_only() && self.settings.view_mode != ViewMode::Preview;
         let view = cx.entity();
         let doc = doc.clone();
-        window.defer(cx, move |window, cx| {
+        window.on_next_frame(move |window, cx| {
+            if window.has_active_dialog(cx) {
+                return;
+            }
+            let (is_active, graph_open, folder_open, preview_mode) = {
+                let workspace = view.read(cx);
+                (
+                    workspace.active_doc() == Some(&doc),
+                    workspace.graph.is_some(),
+                    workspace.folder.is_some(),
+                    workspace.settings.view_mode == ViewMode::Preview,
+                )
+            };
+            if !is_active || graph_open || folder_open {
+                return;
+            }
+            let focus_editor = !doc.read(cx).is_read_only() && !preview_mode;
             if focus_editor {
                 doc.update(cx, |doc, cx| {
                     doc.editor.update(cx, |editor, cx| editor.focus(window, cx));
@@ -1931,9 +1956,21 @@ impl Workspace {
         let language = self.settings.language;
         let graph = cx.new(|cx| crate::graph::GraphView::new(weak, vault, language, window, cx));
         graph.update(cx, |g, _cx| g.active = active);
-        graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
+        self.focus_graph_after_mount(window, cx);
         cx.notify();
+    }
+
+    fn focus_graph_after_mount(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(graph) = self.graph.clone() else {
+            return;
+        };
+        self.focus_handle.focus(window, cx);
+        cx.on_next_frame(window, move |this, window, cx| {
+            if !window.has_active_dialog(cx) && this.graph.as_ref() == Some(&graph) {
+                graph.read(cx).focus_handle(cx).focus(window, cx);
+            }
+        });
     }
 
     fn ensure_graph_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2022,8 +2059,8 @@ impl Workspace {
         let language = self.settings.language;
         let graph = cx
             .new(|cx| crate::graph::GraphView::new_local(weak, vault, &path, language, window, cx));
-        graph.read(cx).focus_handle(cx).focus(window, cx);
         self.graph = Some(graph);
+        self.focus_graph_after_mount(window, cx);
         cx.notify();
     }
 
@@ -2185,19 +2222,28 @@ impl Workspace {
             self.note_status("Tab is pinned", cx);
             return;
         }
-        let dirty = self.docs[ix].entity.read(cx).dirty;
+        let save_result = self.docs[ix]
+            .entity
+            .update(cx, |doc, cx| doc.flush_and_save(cx));
         let title = self.docs[ix].entity.read(cx).title();
-        if dirty {
+        if save_result.is_err() {
             let target = self.docs[ix].entity.clone();
             let view = cx.entity();
+            let heading = format!(
+                "{} “{}”?",
+                self.tr("Discard unsaved changes to", "Forkast ulagrede endringer i"),
+                title
+            );
+            let description = self.tr("Saving failed or the file changed on disk. Cancel to keep your edits.", "Lagring mislyktes eller filen ble endret på disken. Avbryt for å beholde endringene dine.");
+            let discard = self.tr("Close without saving", "Lukk uten å lagre");
             window.open_alert_dialog(cx, move |dialog, _window, _cx| {
                 let target = target.clone();
                 let view = view.clone();
                 dialog
-                    .title(format!("Close “{}” without saving?", title))
-                    .description("The note has unsaved changes.")
+                    .title(heading.clone())
+                    .description(description)
                     .show_cancel(true)
-                    .ok_text("Close without saving")
+                    .ok_text(discard)
                     .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                     .on_ok(move |_, window, cx| {
                         let target_id = target.entity_id();
@@ -2731,6 +2777,16 @@ impl Workspace {
 
     fn on_save(&mut self, _: &SaveFile, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
+            if doc.read(cx).is_read_only() {
+                self.note_status(
+                    self.tr(
+                        "This document is read-only and cannot be saved as text",
+                        "Dette dokumentet er skrivebeskyttet og kan ikke lagres som tekst",
+                    ),
+                    cx,
+                );
+                return;
+            }
             if let Err(err) = doc.update(cx, |doc, cx| doc.save(cx)) {
                 self.note_status(format!("Could not save: {err}"), cx);
             }
@@ -2741,6 +2797,16 @@ impl Workspace {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };
+        if doc.read(cx).is_read_only() {
+            self.note_status(
+                self.tr(
+                    "This document is read-only and cannot be saved as text",
+                    "Dette dokumentet er skrivebeskyttet og kan ikke lagres som tekst",
+                ),
+                cx,
+            );
+            return;
+        }
         let dir = doc
             .read(cx)
             .path
@@ -3136,7 +3202,7 @@ impl Workspace {
     /// caret, adding the `^id` marker first when the block has none.
     fn copy_block_ref(&mut self, embed: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.active_doc().cloned() else {
-            self.note_status("No note open", cx);
+            self.note_status(self.tr("No note open", "Ingen notater er åpne"), cx);
             return;
         };
         let Some(stem) = doc
@@ -3151,10 +3217,13 @@ impl Workspace {
             Some(id) => {
                 let link = format!("{}[[{stem}#^{id}]]", if embed { "!" } else { "" });
                 cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                self.note_status(format!("Copied {link}"), cx);
+                self.note_status(format!("{} {link}", self.tr("Copied", "Kopiert")), cx);
             }
             None => self.note_status(
-                "Put the caret in a paragraph, list item, quote, table, or code block",
+                self.tr(
+                    "Put the caret in a paragraph, list item, quote, table, or code block",
+                    "Plasser markøren i et avsnitt, listeelement, sitat, tabell eller kodeblokk",
+                ),
                 cx,
             ),
         }
@@ -3195,7 +3264,7 @@ impl Workspace {
         }
     }
 
-    fn on_next_tab(&mut self, _: &NextTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.docs.is_empty() {
             return;
         }
@@ -3207,10 +3276,11 @@ impl Workspace {
         });
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
+        self.refocus(window, cx);
         cx.notify();
     }
 
-    fn on_prev_tab(&mut self, _: &PrevTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.docs.is_empty() {
             return;
         }
@@ -3222,6 +3292,7 @@ impl Workspace {
         });
         self.persist_tabs(cx);
         self.reveal_active_file(cx);
+        self.refocus(window, cx);
         cx.notify();
     }
 
@@ -3275,7 +3346,7 @@ impl Workspace {
             } else {
                 vault.starred.remove(&key);
             }
-            cx.emit(VaultEvent::StarredChanged);
+            cx.emit(VaultEvent::Starred);
         });
         self.settings.save();
         cx.notify();
@@ -3522,6 +3593,12 @@ impl Workspace {
                         }
                         PaletteCmd::ToggleAgentPanel => {
                             self.tr("Toggle agent panel", "Vis/skjul agentpanel")
+                        }
+                        PaletteCmd::CopyLinkBlock => {
+                            self.tr("Copy link to block", "Kopier lenke til blokk")
+                        }
+                        PaletteCmd::CopyEmbedBlock => {
+                            self.tr("Copy embed to block", "Kopier innbygging av blokk")
                         }
                         _ => label,
                     })
@@ -5450,9 +5527,14 @@ impl Workspace {
                         .child(div().w_full().child(Input::new(&input).appearance(true)))
                         .on_ok(move |_, window, cx| {
                             let answer = input.read(cx).value().to_string();
+                            window.close_dialog(cx);
                             next(answer, window, cx);
-                            true
+                            false
                         })
+                });
+                let input = self.cell_input.clone();
+                window.on_next_frame(move |window, cx| {
+                    input.update(cx, |input, cx| input.focus(window, cx));
                 });
             }
             crate::templater::Prompt::Choice {
@@ -5511,22 +5593,31 @@ impl Workspace {
         let input = self.cell_input.clone();
         input.update(cx, |input, cx| input.set_value("Untitled", window, cx));
         let view = cx.entity();
+        let title = self.tr("Name the new note", "Gi det nye notatet et navn");
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
-                .title("Name the new note")
+                .title(title)
                 .w(px(400.))
                 .child(div().w_full().child(Input::new(&input).appearance(true)))
                 .on_ok({
                     let view = view.clone();
                     let template = template.clone();
                     move |_, window, cx| {
-                        view.update(cx, |this, cx| {
-                            let name = this.cell_input.read(cx).value().to_string();
-                            this.create_note_from_template(&template, &name, window, cx);
+                        let name = view.read(cx).cell_input.read(cx).value().to_string();
+                        window.close_dialog(cx);
+                        let (view, template) = (view.clone(), template.clone());
+                        window.defer(cx, move |window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.create_note_from_template(&template, &name, window, cx);
+                            });
                         });
-                        true
+                        false
                     }
                 })
+        });
+        let input = self.cell_input.clone();
+        window.on_next_frame(move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx));
         });
     }
 
@@ -8429,10 +8520,11 @@ impl Workspace {
                 // the palette already exposes (the edit context menu).
                 // `appearance(false)` — the editor's bordered box would
                 // draw a second frame inside the pane card.
+                let language = self.settings.language;
                 let editor = Editor::new(&doc.read(cx).editor)
                     .h_full()
                     .appearance(false)
-                    .context_menu(|menu, _window, _cx| {
+                    .context_menu(move |menu, _window, _cx| {
                         menu.menu("Cut", Box::new(input::Cut))
                             .menu("Copy", Box::new(input::Copy))
                             .menu("Paste", Box::new(input::Paste))
@@ -8464,8 +8556,14 @@ impl Workspace {
                             .menu("Delete line", Box::new(DeleteLine))
                             .separator()
                             .menu("Open link under cursor", Box::new(FollowLink))
-                            .menu("Copy link to block", Box::new(CopyBlockLink))
-                            .menu("Copy embed to block", Box::new(CopyBlockEmbed))
+                            .menu(
+                                language.text("Copy link to block", "Kopier lenke til blokk"),
+                                Box::new(CopyBlockLink),
+                            )
+                            .menu(
+                                language.text("Copy embed to block", "Kopier innbygging av blokk"),
+                                Box::new(CopyBlockEmbed),
+                            )
                     });
                 // `cssclasses:` per-note override — `wide` lifts the
                 // readable-width cap for this note, `narrow`/`readable`
