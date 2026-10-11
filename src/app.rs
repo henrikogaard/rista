@@ -1986,22 +1986,22 @@ impl Workspace {
             );
         }
         let close = self.tr("Close", "Lukk");
-        let visible = visible;
+        let scroll_handle = ScrollHandle::new();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title(title.clone())
                 .w(px(560.))
                 .child(
                     v_flex()
+                        .id("cli-results")
                         .max_h(px(420.))
                         .gap_1()
-                        .overflow_y_scrollbar()
-                        .children(
-                            visible
-                                .iter()
-                                .cloned()
-                                .map(|line| div().text_sm().child(line).into_any_element()),
-                        ),
+                        .track_scroll(&scroll_handle)
+                        .overflow_y_scroll()
+                        .vertical_scrollbar(&scroll_handle)
+                        .children(visible.iter().cloned().map(|line| {
+                            div().flex_none().text_sm().child(line).into_any_element()
+                        })),
                 )
                 .footer(
                     DialogFooter::new()
