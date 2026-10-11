@@ -1282,23 +1282,11 @@ impl Render for SettingsView {
                         "Tab size",
                         Select::new(&self.tab_size_select).w(px(90.)),
                     ))
-                    .child(Self::row(
-                        cx,
-                        settings.language.text("Spell checking", "Stavekontroll"),
-                        Switch::new("spellcheck-enabled")
-                            .disabled(!spellcheck::is_supported())
-                            .checked(settings.spellcheck_enabled)
-                            .on_click(cx.listener(|this, checked, window, cx| {
-                                let checked = *checked;
-                                this.update_setting(cx, |s| s.spellcheck_enabled = checked, window);
-                            })),
-                    ))
-                    .child(Self::row(
-                        cx,
-                        settings
-                            .language
-                            .text("After extracting a heading", "Etter uttrekk av overskrift"),
-                        TabBar::new("extract-behavior")
+                    .child(
+                        v_flex().w_full().gap_1()
+                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text("After extracting text", "Etter uttrekk av tekst")))
+                        .child(TabBar::new("extract-behavior")
                             .segmented()
                             .selected_index(match settings.extract_behavior {
                                 crate::note_composer::ExtractBehavior::Link => 0,
@@ -1322,6 +1310,17 @@ impl Render for SettingsView {
                                     },
                                     window,
                                 );
+                            })),
+                    ))
+                    .child(Self::row(
+                        cx,
+                        settings.language.text("Spell checking", "Stavekontroll"),
+                        Switch::new("spellcheck-enabled")
+                            .disabled(!spellcheck::is_supported())
+                            .checked(settings.spellcheck_enabled)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                let checked = *checked;
+                                this.update_setting(cx, |s| s.spellcheck_enabled = checked, window);
                             })),
                     ))
                     .child(
