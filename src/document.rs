@@ -18,6 +18,57 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 type SpellRequestKey = (u64, String, Vec<std::ops::Range<usize>>);
+pub(crate) type ComposerFileChange = crate::note_composer::ComposerTransactionChange;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerHistoryDirection {
+    Undo,
+    Redo,
+}
+
+struct ComposerHistoryEntry {
+    before: Vec<u8>,
+    after: Vec<u8>,
+    changes: Vec<ComposerFileChange>,
+}
+
+struct PendingComposerHistory {
+    token: u64,
+    direction: ComposerHistoryDirection,
+    expected: Vec<u8>,
+}
+
+fn composer_files_match(root: &Path, changes: &[ComposerFileChange], reverse: bool) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    changes.iter().all(|(path, before, after)| {
+        let expected = if reverse { after } else { before };
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return expected.is_none()
+                    && path
+                        .parent()
+                        .and_then(|parent| parent.canonicalize().ok())
+                        .is_some_and(|parent| parent.starts_with(&root));
+            }
+            Err(_) => return false,
+        };
+        if metadata.file_type().is_symlink()
+            || metadata.len() > crate::note_composer::MAX_NOTE_BYTES as u64
+        {
+            return false;
+        }
+        let Ok(canonical) = path.canonicalize() else {
+            return false;
+        };
+        if !canonical.starts_with(&root) {
+            return false;
+        }
+        std::fs::read(canonical).ok().as_ref() == expected.as_ref()
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct SpellMenuContext {
@@ -34,6 +85,13 @@ pub enum DocumentEvent {
     Changed,
     /// Saved to disk.
     Saved,
+    /// A companion-file undo/redo could not be applied without overwriting
+    /// changes made outside the composer.
+    ComposerHistoryConflict,
+    ComposerHistoryApplied {
+        direction: ComposerHistoryDirection,
+        changes: Vec<ComposerFileChange>,
+    },
     /// Caret moved — the status bar's Ln/Col display tracks it.
     Selection,
     SourceScrolled,
@@ -92,6 +150,10 @@ pub struct Document {
     spell_request_key: Option<SpellRequestKey>,
     spell_request_pending: bool,
     spell_menu_context: Option<SpellMenuContext>,
+    composer_undo: Vec<ComposerHistoryEntry>,
+    composer_redo: Vec<ComposerHistoryEntry>,
+    composer_history_token: u64,
+    pending_composer_history: Option<PendingComposerHistory>,
     /// Focus mode: only the block under the caret stays lit —
     /// decorations recompute on cursor moves while this is on.
     pub focus_mode: bool,
@@ -265,6 +327,10 @@ impl Document {
             spell_request_key: None,
             spell_request_pending: false,
             spell_menu_context: None,
+            composer_undo: Vec::new(),
+            composer_redo: Vec::new(),
+            composer_history_token: 0,
+            pending_composer_history: None,
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
@@ -386,7 +452,157 @@ impl Document {
                 }
             });
         }));
+        self.complete_composer_history_action(cx);
         cx.notify();
+    }
+
+    pub(crate) fn record_composer_edit(
+        &mut self,
+        before: Vec<u8>,
+        after: Vec<u8>,
+        changes: Vec<ComposerFileChange>,
+    ) {
+        self.pending_composer_history = None;
+        self.composer_redo.clear();
+        self.composer_undo.push(ComposerHistoryEntry {
+            before,
+            after,
+            changes,
+        });
+        if self.composer_undo.len() > 64 {
+            self.composer_undo.remove(0);
+        }
+    }
+
+    pub(crate) fn composer_history_changes_for_action(
+        &self,
+        direction: ComposerHistoryDirection,
+        cx: &App,
+    ) -> Vec<ComposerFileChange> {
+        let current = self.editor.read(cx).value().to_string().into_bytes();
+        match direction {
+            ComposerHistoryDirection::Undo => self
+                .composer_undo
+                .last()
+                .filter(|entry| entry.after == current),
+            ComposerHistoryDirection::Redo => self
+                .composer_redo
+                .last()
+                .filter(|entry| entry.before == current),
+        }
+        .map(|entry| entry.changes.clone())
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn prepare_composer_history_action(
+        &mut self,
+        direction: ComposerHistoryDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let current = self.editor.read(cx).value().to_string().into_bytes();
+        let candidate = match direction {
+            ComposerHistoryDirection::Undo => self
+                .composer_undo
+                .last()
+                .filter(|entry| entry.after == current),
+            ComposerHistoryDirection::Redo => self
+                .composer_redo
+                .last()
+                .filter(|entry| entry.before == current),
+        };
+        let Some(entry) = candidate else {
+            self.pending_composer_history = None;
+            return true;
+        };
+        let Some(root) = self.vault_root.as_deref() else {
+            self.pending_composer_history = None;
+            return true;
+        };
+        let reverse = matches!(direction, ComposerHistoryDirection::Undo);
+        if !composer_files_match(root, &entry.changes, reverse) {
+            self.pending_composer_history = None;
+            return false;
+        }
+        let expected = match direction {
+            ComposerHistoryDirection::Undo => entry.before.clone(),
+            ComposerHistoryDirection::Redo => entry.after.clone(),
+        };
+        self.composer_history_token = self.composer_history_token.wrapping_add(1);
+        let token = self.composer_history_token;
+        self.pending_composer_history = Some(PendingComposerHistory {
+            token,
+            direction,
+            expected,
+        });
+        let weak = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = weak.update(cx, |doc, _| {
+                if doc
+                    .pending_composer_history
+                    .as_ref()
+                    .is_some_and(|pending| pending.token == token)
+                {
+                    doc.pending_composer_history = None;
+                }
+            });
+        });
+        true
+    }
+
+    fn complete_composer_history_action(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_composer_history.take() else {
+            return;
+        };
+        let current = self.editor.read(cx).value().to_string().into_bytes();
+        if current != pending.expected {
+            return;
+        }
+        let root = self.vault_root.as_deref();
+        let Some(root) = root else {
+            return;
+        };
+        let (entry, reverse) = match pending.direction {
+            ComposerHistoryDirection::Undo => (self.composer_undo.last(), true),
+            ComposerHistoryDirection::Redo => (self.composer_redo.last(), false),
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        let history_changes = entry.changes.clone();
+        let changes = entry
+            .changes
+            .iter()
+            .map(|(path, before, after)| {
+                if reverse {
+                    (path.clone(), after.clone(), before.clone())
+                } else {
+                    (path.clone(), before.clone(), after.clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        if crate::note_composer::merge_transaction_changes(root, &changes).is_err() {
+            self.conflict = true;
+            cx.emit(DocumentEvent::ComposerHistoryConflict);
+            return;
+        }
+        match pending.direction {
+            ComposerHistoryDirection::Undo => {
+                if let Some(entry) = self.composer_undo.pop() {
+                    self.composer_redo.push(entry);
+                }
+            }
+            ComposerHistoryDirection::Redo => {
+                if let Some(entry) = self.composer_redo.pop() {
+                    self.composer_undo.push(entry);
+                }
+            }
+        }
+        self.mark_composer_written(current, cx);
+        cx.emit(DocumentEvent::ComposerHistoryApplied {
+            direction: pending.direction,
+            changes: history_changes,
+        });
     }
 
     fn sync_preview(&mut self, cx: &mut Context<Self>) {
@@ -2542,6 +2758,36 @@ impl Document {
             return None;
         }
         Some((text[sel.clone()].to_string(), sel))
+    }
+
+    pub(crate) fn composer_source(&self, cx: &App) -> String {
+        self.editor.read(cx).value().to_string()
+    }
+
+    pub(crate) fn composer_heading(
+        &self,
+        cx: &App,
+    ) -> Result<Option<(std::ops::Range<usize>, String)>, crate::note_composer::ComposeError> {
+        let editor = self.editor.read(cx);
+        crate::note_composer::heading_section(&editor.value(), editor.cursor())
+    }
+
+    /// Update the disk baseline after a guarded composer transaction. The
+    /// editor replacement itself is deliberately performed by the caller so
+    /// native undo history remains intact.
+    pub(crate) fn mark_composer_written(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        self.disk_bytes = Some(bytes);
+        self.mtime = std::fs::metadata(&self.path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        self.dirty = false;
+        self.conflict = false;
+        self.revision += 1;
+        self.reschedule_spellcheck_for_revision(false, cx);
+        self.save_task.take();
+        self.sync_preview(cx);
+        cx.emit(DocumentEvent::Saved);
+        cx.notify();
     }
 
     /// Replace a byte range with new text, leaving the caret at its end.
