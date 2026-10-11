@@ -99,13 +99,18 @@ fn main() {
         cx.on_action(|_: &About, _cx| {
             about::show();
         });
-        cx.on_action(|_: &Quit, cx| {
-            windows::quit(cx);
+        // Global actions still hold the dispatching window. Release that borrow
+        // before visiting every workspace through its window handle.
+        cx.on_action(|_: &Quit, cx| cx.defer(windows::quit));
+        cx.on_action(|_: &NewWindow, cx| {
+            cx.defer(|cx| windows::open_new_window(Vec::new(), cx));
         });
-        cx.on_action(|_: &NewWindow, cx| windows::open_new_window(Vec::new(), cx));
-        cx.on_action(|_: &OpenInNewWindow, cx| windows::open_active_document_in_new_window(cx));
+        cx.on_action(|_: &OpenInNewWindow, cx| {
+            cx.defer(windows::open_active_document_in_new_window);
+        });
         cx.on_action(|action: &OpenPathInNewWindow, cx| {
-            windows::open_new_window(vec![std::path::PathBuf::from(&action.path)], cx)
+            let path = std::path::PathBuf::from(&action.path);
+            cx.defer(move |cx| windows::open_new_window(vec![path], cx));
         });
         cx.activate(true);
         updater::start();

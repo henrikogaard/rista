@@ -4483,10 +4483,6 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.defer_in(window, |_, _, cx| crate::windows::quit(cx));
-    }
-
     #[cfg(not(target_os = "macos"))]
     fn on_about(&mut self, _: &About, _w: &mut Window, cx: &mut Context<Self>) {
         self.note_status("Rísta — a quiet place for words.", cx);
@@ -4723,9 +4719,7 @@ impl Workspace {
         match cmd {
             PaletteCmd::NewWindow => window.dispatch_action(NewWindow.boxed_clone(), cx),
             PaletteCmd::OpenInNewWindow => {
-                window.defer(cx, |window, cx| {
-                    window.dispatch_action(OpenInNewWindow.boxed_clone(), cx);
-                });
+                window.dispatch_action(OpenInNewWindow.boxed_clone(), cx)
             }
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
             PaletteCmd::NewBase => self.new_base(window, cx),
@@ -5004,7 +4998,7 @@ impl Workspace {
                 cx,
             ),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
-            PaletteCmd::Quit => self.quit(window, cx),
+            PaletteCmd::Quit => window.dispatch_action(Quit.boxed_clone(), cx),
         }
     }
 
