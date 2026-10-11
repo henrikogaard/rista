@@ -10731,6 +10731,10 @@ impl Render for Workspace {
         let vault_open = self.vault.read(cx).is_open();
         let has_workspace = vault_open || !self.docs.is_empty();
         let sidebar_visible = vault_open && !self.settings.sidebar_collapsed && !self.zen;
+        let dock_visible = !self.zen
+            && (self.settings.graph_dock_open
+                || self.settings.agent_open
+                || self.settings.inspector_open);
         let background = cx.theme().background;
 
         let root = v_flex()
@@ -10833,10 +10837,14 @@ impl Render for Workspace {
                             ("agent", self.settings.agent_open),
                             ("inspector", self.settings.inspector_open),
                         ].into_iter().filter_map(|(name, visible)| visible.then_some(name)).collect::<Vec<_>>();
-                        canvas_panels(("workspace", epoch), Axis::Horizontal)
+                        let panel_group_id = SharedString::from(format!(
+                            "workspace-{sidebar_visible}-{dock_visible}-{epoch}"
+                        ));
+                        canvas_panels(panel_group_id, Axis::Horizontal)
                             .when(sidebar_visible, |this| {
                                 this.child(
                                     resizable_panel()
+                                        .flex_none()
                                         .size(px(
                                             self.settings
                                                 .sidebar_width
@@ -10931,18 +10939,16 @@ impl Render for Workspace {
                                 ),
                             )
                             .when(
-                                !self.zen
-                                    && (self.settings.graph_dock_open
-                                        || self.settings.agent_open
-                                        || self.settings.inspector_open),
+                                dock_visible,
                                 |columns| {
                                 columns.child(
                                     resizable_panel()
+                                        .flex_none()
                                         .size(px(self.settings.dock_width.filter(|width| crate::settings::valid_dock_width(*width)).unwrap_or(310.)))
                                         .size_range(px(220.)..px(520.))
                                         .child(
                                             div().size_full().child(
-                                                canvas_panels("right-dock", Axis::Vertical)
+                                                canvas_panels(SharedString::from(format!("right-dock-{}", dock_names.join("-"))), Axis::Vertical)
                                                     .when(self.settings.graph_dock_open, |panes| {
                                                         panes.child(
                                                             resizable_panel()
