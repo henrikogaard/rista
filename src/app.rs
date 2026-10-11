@@ -7883,7 +7883,13 @@ impl Workspace {
                                                             .truncate()
                                                             .when(is_folder, |label| {
                                                                 let path = path.clone();
+                                                                let drag_label = item.label.clone();
                                                                 label.cursor_pointer()
+                                                                    .on_drag(path.clone(), move |_, _, _, cx| {
+                                                                        cx.new(|_| TreeDragPreview {
+                                                                            label: drag_label.clone(),
+                                                                        })
+                                                                    })
                                                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                                                     .on_click(cx.listener(move |this, _, window, cx| {
                                                                         cx.stop_propagation();
