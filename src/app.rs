@@ -4748,6 +4748,26 @@ impl Workspace {
             );
             return;
         }
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let target_open = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.docs.iter().any(|open| {
+                        let path = &open.entity.read(cx).path;
+                        path.canonicalize().unwrap_or_else(|_| path.clone()) == target_path
+                    })
+                })
+            });
+            if !matches!(target_open, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "The target is open in another window; close it there before merging.",
+                        "Målet er åpent i et annet vindu; lukk det der før sammenslåing.",
+                    ),
+                    cx,
+                );
+                return;
+            }
+        }
         self.open_document(target_path.clone(), window, cx);
         let Some(target_doc) = self
             .docs
@@ -5178,6 +5198,16 @@ impl Workspace {
                 self.tr(
                     "A duplicate source tab has conflicting or unsaved content.",
                     "En duplisert kildefane har motstridende eller ulagret innhold.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        if source_views.len() > 1 {
+            self.note_status(
+                self.tr(
+                    "The source is open in duplicate tabs; close duplicates before extracting.",
+                    "Kilden er åpen i dupliserte faner; lukk duplikatene før uttrekk.",
                 ),
                 cx,
             );

@@ -208,6 +208,7 @@ pub struct Document {
     composer_history_token: u64,
     pending_composer_history: Option<PendingComposerHistory>,
     composer_rollback_action: Option<ComposerHistoryDirection>,
+    native_history_action: Option<u64>,
     /// Focus mode: only the block under the caret stays lit —
     /// decorations recompute on cursor moves while this is on.
     pub focus_mode: bool,
@@ -386,6 +387,7 @@ impl Document {
             composer_history_token: 0,
             pending_composer_history: None,
             composer_rollback_action: None,
+            native_history_action: None,
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
@@ -471,6 +473,7 @@ impl Document {
         if self.reloading || self.is_read_only() {
             return;
         }
+        let native_history_action = self.native_history_action.take().is_some();
         if self.composer_rollback_action.take().is_some() {
             let current = self.editor.read(cx).value().to_string().into_bytes();
             self.dirty = self.disk_bytes.as_ref() != Some(&current);
@@ -492,6 +495,9 @@ impl Document {
                 .is_some_and(|bytes| bytes.as_slice() == self.editor.read(cx).value().as_bytes())
         {
             return;
+        }
+        if !native_history_action {
+            self.composer_redo.clear();
         }
         self.dirty = true;
         self.revision += 1;
@@ -582,34 +588,46 @@ impl Document {
                 composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
             }),
         };
-        let Some(entry) = candidate else {
-            self.pending_composer_history = None;
-            return true;
-        };
-        let Some(root) = self.vault_root.as_deref() else {
-            self.pending_composer_history = None;
-            return true;
-        };
-        let reverse = matches!(direction, ComposerHistoryDirection::Undo);
-        if !composer_files_match(root, &entry.changes, reverse) {
-            self.pending_composer_history = None;
-            return false;
+        let candidate = candidate.map(|entry| {
+            let expected = match direction {
+                ComposerHistoryDirection::Undo => entry.before.clone(),
+                ComposerHistoryDirection::Redo => entry.after.clone(),
+            };
+            (expected, entry.changes.clone())
+        });
+        self.pending_composer_history = None;
+        if let Some((_, changes)) = &candidate {
+            if self.conflict || self.flush_and_save(cx).is_err() {
+                return false;
+            }
+            let Some(root) = self.vault_root.as_deref() else {
+                return false;
+            };
+            if !composer_files_match(
+                root,
+                changes,
+                matches!(direction, ComposerHistoryDirection::Undo),
+            ) {
+                return false;
+            }
         }
-        let expected = match direction {
-            ComposerHistoryDirection::Undo => entry.before.clone(),
-            ComposerHistoryDirection::Redo => entry.after.clone(),
-        };
         self.composer_history_token = self.composer_history_token.wrapping_add(1);
         let token = self.composer_history_token;
-        self.save_task.take();
-        self.pending_composer_history = Some(PendingComposerHistory {
-            token,
-            direction,
-            expected,
-        });
+        self.native_history_action = Some(token);
+        if let Some((expected, _)) = candidate {
+            self.save_task.take();
+            self.pending_composer_history = Some(PendingComposerHistory {
+                token,
+                direction,
+                expected,
+            });
+        }
         let weak = cx.weak_entity();
         window.on_next_frame(move |_, cx| {
             let _ = weak.update(cx, |doc, _| {
+                if doc.native_history_action == Some(token) {
+                    doc.native_history_action = None;
+                }
                 if doc
                     .pending_composer_history
                     .as_ref()
@@ -651,7 +669,8 @@ impl Document {
         };
         let current = self.editor.read(cx).value().to_string().into_bytes();
         if current != pending.expected {
-            self.rollback_composer_history_action(pending.direction, window, cx);
+            // Identical text can also occur at an unrelated native history
+            // boundary. Only the atomic composer replacement owns its files.
             return;
         }
         let root = self.vault_root.as_deref();
