@@ -10,7 +10,7 @@ use crate::{
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::path::PathBuf;
@@ -240,6 +240,11 @@ impl Render for ProjectSearch {
         });
         let match_case = self.match_case;
         let sort = self.sort;
+        let query = self.query_input.read(cx).value().trim().to_string();
+        let bookmark_root = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).vault_entity().read(cx).root.clone());
         let selected_index = self.selected_index;
         let explanation = self.explanation.clone();
         let explanation_open = self.explanation_open;
@@ -277,6 +282,33 @@ impl Render for ProjectSearch {
             .child(
                 h_flex()
                     .gap_1()
+                    .child(
+                        Button::new("bookmark-search")
+                            .ghost()
+                            .xsmall()
+                            .label(if norwegian {
+                                "Bokmerk søket"
+                            } else {
+                                "Bookmark search"
+                            })
+                            .disabled(query.is_empty() || bookmark_root.is_none())
+                            .on_click({
+                                let workspace = self.workspace.clone();
+                                let query = query.clone();
+                                move |_, _, cx| {
+                                    if let Some(workspace) = workspace.upgrade() {
+                                        workspace.update(cx, |workspace, cx| {
+                                            workspace.bookmark_search(
+                                                query.clone(),
+                                                match_case,
+                                                sort,
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }
+                            }),
+                    )
                     .child(
                         Button::new("search-match-case")
                             .ghost()
@@ -477,17 +509,37 @@ pub fn open_project_search_for(
 ) {
     let query = query.map(str::to_owned);
     window.defer(cx, move |window, cx| {
-        show_project_search(workspace, query, window, cx);
+        show_project_search(workspace, query, None, window, cx);
+    });
+}
+
+pub fn open_project_search_saved(
+    workspace: Entity<Workspace>,
+    query: String,
+    match_case: bool,
+    sort: SearchSort,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.defer(cx, move |window, cx| {
+        show_project_search(workspace, Some(query), Some((match_case, sort)), window, cx);
     });
 }
 
 fn show_project_search(
     workspace: Entity<Workspace>,
     query: Option<String>,
+    options: Option<(bool, SearchSort)>,
     window: &mut Window,
     cx: &mut App,
 ) {
     let search = cx.new(|cx| ProjectSearch::new(workspace.downgrade(), window, cx));
+    if let Some((match_case, sort)) = options {
+        search.update(cx, |search, _cx| {
+            search.match_case = match_case;
+            search.sort = sort;
+        });
+    }
     let input = search.read(cx).query_input.clone();
     let seeded = search.clone();
     let norwegian = workspace.read(cx).language() == crate::settings::Language::Norwegian;

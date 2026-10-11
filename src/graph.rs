@@ -126,6 +126,12 @@ fn bfs_dist(center: usize, adjacent: &[Vec<usize>]) -> Vec<usize> {
 }
 
 impl GraphView {
+    pub(crate) fn local_center_path(&self) -> Option<PathBuf> {
+        self.local
+            .and_then(|ix| self.nodes.get(ix))
+            .and_then(|node| node.path.clone())
+    }
+
     /// Build the node/edge graph from the vault's link index. Also
     /// returns the path → node-index map for the callers that need it
     /// (local-graph center, rebuild position carry-over).

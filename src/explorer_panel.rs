@@ -130,6 +130,8 @@ impl Workspace {
             repoint(&mut path);
             *value = path.to_string_lossy().to_string();
         }
+        self.settings.bookmarks.repoint(source, destination);
+        self.persist_bookmarks(cx);
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
         if let Some(page) = &self.folder {
             let mut path = page.path.clone();

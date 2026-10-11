@@ -4361,7 +4361,7 @@ impl BaseView {
     }
 
     /// Name of the spec's view at `view_ix`, when the source parses.
-    fn spec_view_name(&self, cx: &App) -> Option<String> {
+    pub(crate) fn spec_view_name(&self, cx: &App) -> Option<String> {
         let yaml = match &self.spec_src {
             SpecSrc::Doc(doc) => doc.read(cx).editor.read(cx).value().to_string(),
             SpecSrc::Inline(spec) => spec.clone(),
@@ -4370,6 +4370,17 @@ impl BaseView {
             .views
             .get(self.view_ix)
             .map(|v| v.name.clone())
+    }
+
+    pub(crate) fn has_view_named(&self, name: &str, cx: &App) -> bool {
+        let yaml = match &self.spec_src {
+            SpecSrc::Doc(doc) => doc.read(cx).editor.read(cx).value().to_string(),
+            SpecSrc::Inline(spec) => spec.clone(),
+        };
+        parse_spec(&yaml)
+            .views
+            .iter()
+            .any(|view| view.name.eq_ignore_ascii_case(name))
     }
 
     /// ⌘F on a rendered `.base` view focuses its row filter box

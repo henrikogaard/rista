@@ -8,6 +8,7 @@ mod actions;
 mod agent;
 mod app;
 mod bases;
+mod bookmarks;
 mod decorations;
 mod document;
 mod emoji;
