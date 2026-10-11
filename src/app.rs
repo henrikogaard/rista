@@ -4298,6 +4298,7 @@ impl Workspace {
                             )
                         });
                         if committed {
+                            window.close_dialog(cx);
                             let deferred_view = view.clone();
                             window.defer(cx, move |window, cx| {
                                 deferred_view.update(cx, |this, cx| {
@@ -4305,7 +4306,7 @@ impl Workspace {
                                 });
                             });
                         }
-                        committed
+                        false
                     }
                 })
         });
@@ -4385,6 +4386,7 @@ impl Workspace {
                             )
                         });
                         if committed {
+                            window.close_dialog(cx);
                             let deferred_view = view.clone();
                             window.defer(cx, move |window, cx| {
                                 deferred_view.update(cx, |this, cx| {
@@ -4392,7 +4394,7 @@ impl Workspace {
                                 });
                             });
                         }
-                        committed
+                        false
                     }
                 })
         });
@@ -4544,6 +4546,7 @@ impl Workspace {
                         let deferred_view = view.clone();
                         let deferred_source = dialog_source.clone();
                         let deferred_target = target.clone();
+                        window.close_dialog(cx);
                         window.defer(cx, move |window, cx| {
                             deferred_view.update(cx, |this, cx| this.refocus(window, cx));
                             window.open_alert_dialog(cx, move |dialog, _window, _cx| {
@@ -4557,6 +4560,9 @@ impl Workspace {
                                     .cancel_text(language.text("Cancel", "Avbryt"))
                                     .ok_text(language.text("Merge", "Slå sammen"))
                                     .on_ok(move |_, window, cx| {
+                                        // Animated dismissal would later restore focus to
+                                        // the source editor that this merge closes.
+                                        window.close_dialog(cx);
                                         view.update(cx, |this, cx| {
                                             this.commit_merge(
                                                 dialog_source.clone(),
@@ -4572,11 +4578,11 @@ impl Workspace {
                                                 this.focus_active_pane_after_mount(window, cx)
                                             });
                                         });
-                                        true
+                                        false
                                     })
                             });
                         });
-                        true
+                        false
                     }
                 })
         });
