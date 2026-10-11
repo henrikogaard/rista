@@ -2,8 +2,8 @@ use block2::RcBlock;
 use objc2::{
     msg_send,
     rc::{autoreleasepool, Retained},
-    runtime::{AnyClass, AnyObject},
-    sel,
+    runtime::{AnyClass, AnyObject, Bool, ClassBuilder, NSObject, Sel},
+    sel, ClassType,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::{
@@ -15,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -110,10 +111,11 @@ impl Drop for TempPdf {
 
 pub struct ExportJob {
     web_view: Retained<AnyObject>,
-    temporary: TempPdf,
+    temporary: Rc<TempPdf>,
     options: super::Options,
     started: Instant,
-    active: Option<ActiveExport>,
+    active: Option<Rc<ActiveExport>>,
+    completion: Option<Completion>,
     finished: bool,
     _main_thread_only: PhantomData<Rc<()>>,
 }
@@ -127,8 +129,8 @@ impl ExportJob {
             return Err(super::ExportError::Invalid);
         }
 
-        let active = ActiveExport::acquire()?;
-        let temporary = TempPdf::create()?;
+        let active = Rc::new(ActiveExport::acquire()?);
+        let temporary = Rc::new(TempPdf::create()?);
         let started = Instant::now();
         let web_view = autoreleasepool(|_| create_web_view(&html, options))?;
 
@@ -138,6 +140,7 @@ impl ExportJob {
             options,
             started,
             active: Some(active),
+            completion: None,
             finished: false,
             _main_thread_only: PhantomData,
         })
@@ -149,6 +152,16 @@ impl ExportJob {
         }
         if !on_main_thread() {
             return Some(self.finish(Err(super::ExportError::Render)));
+        }
+        if let Some(completion) = &self.completion {
+            if self.started.elapsed() >= LOAD_TIMEOUT {
+                return Some(self.finish(Err(super::ExportError::Render)));
+            }
+            return completion.get().map(|result| {
+                let result =
+                    result.and_then(|()| autoreleasepool(|_| read_pdf(&self.temporary.path)));
+                self.finish(result)
+            });
         }
         if self.started.elapsed() >= LOAD_TIMEOUT {
             unsafe {
@@ -163,8 +176,13 @@ impl ExportJob {
             return None;
         }
 
-        let result = autoreleasepool(|_| self.print_to_temporary_pdf());
-        Some(self.finish(result))
+        match autoreleasepool(|_| self.start_printing()) {
+            Ok(completion) => {
+                self.completion = Some(completion);
+                None
+            }
+            Err(error) => Some(self.finish(Err(error))),
+        }
     }
 
     fn finish(
@@ -176,7 +194,7 @@ impl ExportJob {
         result
     }
 
-    fn print_to_temporary_pdf(&self) -> Result<Vec<u8>, super::ExportError> {
+    fn start_printing(&self) -> Result<Completion, super::ExportError> {
         let print_info = print_info(&self.temporary.path, self.options)?;
         let operation: Option<Retained<AnyObject>> = unsafe {
             msg_send![
@@ -193,16 +211,97 @@ impl ExportJob {
             let _: () = msg_send![&*operation, setCanSpawnSeparateThread: true];
         }
         let watchdog = PrintWatchdog::start(&operation, &self.temporary.path, self.started)?;
-        let succeeded: bool = unsafe { msg_send![&*operation, runOperation] };
-        if let Some(error) = watchdog.error.get() {
-            return Err(error);
+        let host = print_host()?;
+        let class = completion_class().ok_or(super::ExportError::Render)?;
+        let delegate: Option<Retained<AnyObject>> = unsafe { msg_send![class, new] };
+        let delegate = delegate.ok_or(super::ExportError::Render)?;
+        let completion = Rc::new(Cell::new(None));
+        let context = Box::new(PrintContext {
+            _web_view: self.web_view.clone(),
+            _temporary: self.temporary.clone(),
+            _active: self.active.clone().ok_or(super::ExportError::Render)?,
+            _operation: operation.clone(),
+            _host: host.clone(),
+            _delegate: delegate.clone(),
+            watchdog,
+            completion: completion.clone(),
+        });
+        // The callback owns these resources even if the workspace drops its export future.
+        let context = Box::into_raw(context).cast::<c_void>();
+        unsafe {
+            let _: () = msg_send![&*operation,
+                runOperationModalForWindow: &*host,
+                delegate: &*delegate,
+                didRunSelector: sel!(printOperationDidRun:success:contextInfo:),
+                contextInfo: context
+            ];
         }
-        if !succeeded || self.started.elapsed() >= LOAD_TIMEOUT {
-            return Err(super::ExportError::Render);
-        }
-
-        read_pdf(&self.temporary.path)
+        Ok(completion)
     }
+}
+
+type Completion = Rc<Cell<Option<Result<(), super::ExportError>>>>;
+
+struct PrintContext {
+    _web_view: Retained<AnyObject>,
+    _temporary: Rc<TempPdf>,
+    _active: Rc<ActiveExport>,
+    _operation: Retained<AnyObject>,
+    _host: Retained<AnyObject>,
+    _delegate: Retained<AnyObject>,
+    watchdog: PrintWatchdog,
+    completion: Completion,
+}
+
+fn completion_class() -> Option<&'static AnyClass> {
+    static CLASS: OnceLock<Option<&'static AnyClass>> = OnceLock::new();
+    *CLASS.get_or_init(|| {
+        let mut builder = ClassBuilder::new(c"RistaPdfPrintCompletion", NSObject::class())?;
+        unsafe {
+            builder.add_method(
+                sel!(printOperationDidRun:success:contextInfo:),
+                print_finished as extern "C" fn(_, _, _, _, _),
+            );
+        }
+        Some(builder.register())
+    })
+}
+
+extern "C" fn print_finished(
+    _this: &AnyObject,
+    _selector: Sel,
+    _operation: *mut AnyObject,
+    success: Bool,
+    context: *mut c_void,
+) {
+    if context.is_null() {
+        return;
+    }
+    let context = unsafe { Box::from_raw(context.cast::<PrintContext>()) };
+    let result = match context.watchdog.error.get() {
+        Some(error) => Err(error),
+        None if success.as_bool() => Ok(()),
+        None => Err(super::ExportError::Render),
+    };
+    context.completion.set(Some(result));
+}
+
+fn print_host() -> Result<Retained<AnyObject>, super::ExportError> {
+    let class = AnyClass::get(c"NSWindow").ok_or(super::ExportError::Render)?;
+    let allocated: *mut AnyObject = unsafe { msg_send![class, alloc] };
+    if allocated.is_null() {
+        return Err(super::ExportError::Render);
+    }
+    let initialized: *mut AnyObject = unsafe {
+        msg_send![allocated,
+            initWithContentRect: NSRect::new(NSPoint::new(0., 0.), NSSize::new(1., 1.)),
+            styleMask: 0_usize, backing: 2_usize, defer: false]
+    };
+    let window = unsafe { Retained::from_raw(initialized) }.ok_or(super::ExportError::Render)?;
+    unsafe {
+        let _: () = msg_send![&*window, setReleasedWhenClosed: false];
+    }
+    Ok(window)
 }
 
 struct PrintWatchdog {
