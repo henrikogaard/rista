@@ -31,6 +31,7 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
@@ -9057,6 +9058,7 @@ impl Workspace {
         let group_view = cx.entity();
         v_flex()
             .id(("editor-group", group.value()))
+            .overflow_hidden()
             .capture_any_mouse_down({
                 let group_view = group_view.clone();
                 move |_, _, cx| {
@@ -9144,16 +9146,28 @@ impl Workspace {
         TabBar::new(("pane-mode", group.value()))
             .segmented()
             .small()
+            .flex_shrink_0()
             .selected_index(match mode {
                 PaneMode::Source => 0,
                 PaneMode::Split => 1,
                 PaneMode::Preview => 2,
             })
-            .children([
-                Tab::new().label(self.tr("Source", "Kilde")),
-                Tab::new().label(self.tr("Split", "Delt")),
-                Tab::new().label(self.tr("Preview", "Forhåndsvisning")),
-            ])
+            .children(
+                [
+                    (assets::IconName::SquarePen, self.tr("Source", "Kilde")),
+                    (
+                        assets::IconName::SquareSplitHorizontal,
+                        self.tr("Split", "Delt"),
+                    ),
+                    (assets::IconName::Eye, self.tr("Preview", "Forhåndsvisning")),
+                ]
+                .map(|(icon, label)| {
+                    Tab::new()
+                        .icon(icon)
+                        .aria_label(label)
+                        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                }),
+            )
             .on_click(cx.listener(move |this, &index, window, cx| {
                 let mode = match index {
                     0 => PaneMode::Source,
@@ -9275,20 +9289,25 @@ impl Workspace {
                         Axis::Horizontal,
                     )
                     .child(
-                        resizable_panel()
-                            .size_range(px(280.)..px(4000.))
-                            .child(self.editor_container(doc, cx)),
+                        resizable_panel().size_range(px(80.)..Pixels::MAX).child(
+                            div()
+                                .size_full()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(self.editor_container(doc, cx)),
+                        ),
                     )
                     .child(
-                        resizable_panel()
-                            .size_range(px(280.)..px(4000.))
-                            .child(match base {
-                                Some(base) => div().size_full().child(base).into_any_element(),
-                                None => div()
-                                    .size_full()
-                                    .child(self.render_preview(doc, cx))
-                                    .into_any_element(),
-                            }),
+                        resizable_panel().size_range(px(80.)..Pixels::MAX).child(
+                            div()
+                                .size_full()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(match base {
+                                    Some(base) => base.into_any_element(),
+                                    None => self.render_preview(doc, cx).into_any_element(),
+                                }),
+                        ),
                     ),
                 )
                 .into_any_element(),
