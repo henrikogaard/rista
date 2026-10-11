@@ -367,6 +367,25 @@ mod navigation_tests {
     use std::path::Path;
 
     #[test]
+    fn pdf_repeated_embeds_have_distinct_stable_occurrence_keys() {
+        let source =
+            "![](<rista-pdf:embed?target=Small.pdf>)\n\n![](<rista-pdf:embed?target=Small.pdf>)";
+        let ast = markdown::to_mdast(source, &markdown::ParseOptions::default()).unwrap();
+        let images = ast
+            .children()
+            .unwrap()
+            .iter()
+            .flat_map(|node| node.children().into_iter().flatten())
+            .collect::<Vec<_>>();
+        let first = super::PdfEmbed::parse(images[0], 0).unwrap();
+        let repeated = super::PdfEmbed::parse(images[1], 0).unwrap();
+        assert_eq!(first.target, repeated.target);
+        assert_ne!(first, repeated);
+        assert_eq!(first, super::PdfEmbed::parse(images[0], 0).unwrap());
+        assert_ne!(first, super::PdfEmbed::parse(images[0], 100).unwrap());
+    }
+
+    #[test]
     fn pdf_embeds_keep_unicode_paths_and_page_options_outside_code() {
         let source = "![[attachments/Årsrapport 2026.pdf#page=3&height=400]]\n\n`![[ignored.pdf]]`\n\n```text\n![[ignored.pdf]]\n```\n";
         let (rendered, _) = preprocess_mapped(
@@ -2316,6 +2335,29 @@ impl MarkdownPlugin for BaseEmbedPlugin {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct PdfEmbed {
+    target: crate::pdf::PdfTarget,
+    offset: usize,
+}
+
+impl PdfEmbed {
+    fn parse(node: &mdast::Node, offset: usize) -> Option<Self> {
+        let mdast::Node::Image(image) = node else {
+            return None;
+        };
+        let url = url::Url::parse(&image.url).ok()?;
+        if url.scheme() != "rista-pdf" {
+            return None;
+        }
+        let (_, target) = url.query_pairs().find(|(name, _)| name == "target")?;
+        Some(Self {
+            target: crate::pdf::PdfTarget::parse(&target)?,
+            offset: offset + node.position()?.start.offset,
+        })
+    }
+}
+
 struct PdfEmbedPlugin {
     ctx: PreviewCtx,
 }
@@ -2325,26 +2367,17 @@ impl MarkdownPlugin for PdfEmbedPlugin {
         "pdf-embed"
     }
 
-    fn parse(&self, node: &mdast::Node, _: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
-        let mdast::Node::Image(image) = node else {
-            return None;
-        };
-        let url = url::Url::parse(&image.url).ok()?;
-        if url.scheme() != "rista-pdf" {
-            return None;
-        }
-        let (_, target) = url.query_pairs().find(|(name, _)| name == "target")?;
+    fn parse(&self, node: &mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
         Some(MarkdownNode::new(
             "pdf-embed",
-            crate::pdf::PdfTarget::parse(&target)?,
+            PdfEmbed::parse(node, cx.offset())?,
         ))
     }
 
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         use std::hash::{Hash, Hasher};
-        let target = node
-            .data::<crate::pdf::PdfTarget>()
-            .expect("PDF embed target");
+        let embed = node.data::<PdfEmbed>().expect("PDF embed target");
+        let target = &embed.target;
         let vault = self.ctx.vault.read(cx);
         let path = target.resolve(
             self.ctx.doc_path.as_deref(),
@@ -2367,7 +2400,7 @@ impl MarkdownPlugin for PdfEmbedPlugin {
         };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         path.hash(&mut hasher);
-        target.hash(&mut hasher);
+        embed.hash(&mut hasher);
         self.ctx.doc_path.hash(&mut hasher);
         let key = hasher.finish();
         let mut views = self.ctx.pdf_views.lock().expect("PDF embed views");

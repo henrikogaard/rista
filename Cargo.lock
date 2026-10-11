@@ -6309,6 +6309,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smol",
+ "unicode-normalization",
  "unicode-segmentation",
  "ureq",
  "url",

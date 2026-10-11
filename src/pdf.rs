@@ -17,6 +17,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+use unicode_normalization::UnicodeNormalization;
 
 type RasterKey = (usize, u32);
 
@@ -98,12 +99,19 @@ impl PdfTarget {
         let name = Path::new(&self.file)
             .file_name()?
             .to_string_lossy()
+            .nfc()
+            .collect::<String>()
             .to_lowercase();
         files
             .iter()
             .find(|path| {
-                path.file_name()
-                    .is_some_and(|file| file.to_string_lossy().to_lowercase() == name)
+                path.file_name().is_some_and(|file| {
+                    file.to_string_lossy()
+                        .nfc()
+                        .collect::<String>()
+                        .to_lowercase()
+                        == name
+                })
             })
             .cloned()
     }
@@ -921,6 +929,16 @@ mod tests {
         assert_eq!(PdfTarget::parse("file.pdf#page=wrong").unwrap().page, 0);
         assert!(PdfTarget::parse("note.md#page=3").is_none());
         assert!(PdfTarget::parse("https://example.com/file.pdf").is_none());
+    }
+
+    #[test]
+    fn pdf_basename_resolution_matches_canonically_equivalent_unicode() {
+        let path = std::path::PathBuf::from("/vault/Assets/Bla\u{30a} rapport.pdf");
+        let target = PdfTarget::parse("BLÅ RAPPORT.PDF#page=2").unwrap();
+        assert_eq!(
+            target.resolve(None, None, std::slice::from_ref(&path)),
+            Some(path)
+        );
     }
 
     #[test]
