@@ -18,6 +18,8 @@ const LOCAL_FIELDS: &[&str] = &[
     "pinned_tabs",
     "sidebar_collapsed",
     "sidebar_width",
+    "dock_width",
+    "dock_heights",
     "inspector_open",
     "graph_dock_open",
     "agent_open",
@@ -814,6 +816,8 @@ pub(crate) fn with_local_settings(mut settings: Settings, local: &Settings) -> S
         settings.panes = local.panes.clone();
         settings.expanded_folders = local.expanded_folders.clone();
         settings.sidebar_width = local.sidebar_width;
+        settings.dock_width = local.dock_width;
+        settings.dock_heights = local.dock_heights.clone();
         settings
     })
 }
@@ -879,6 +883,10 @@ fn merge_object(baseline: &Value, updated: &Value, target: &mut Value, top_level
 }
 
 pub(crate) fn apply_session(settings: &mut Settings, session: &WindowSession) {
+    settings.dock_width = session
+        .dock_width
+        .filter(|width| crate::settings::valid_dock_width(*width));
+    settings.dock_heights = session.dock_heights.clone();
     settings.last_vault = session.last_vault.clone();
     settings.active_folder = session.active_folder.clone();
     settings.open_tabs = session.open_tabs.clone();

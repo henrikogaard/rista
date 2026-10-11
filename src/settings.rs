@@ -33,6 +33,8 @@ pub struct WindowSession {
     pub id: u64,
     pub geometry: Option<WindowGeometry>,
     pub sidebar_width: Option<f32>,
+    pub dock_width: Option<f32>,
+    pub dock_heights: std::collections::BTreeMap<String, f32>,
     pub last_vault: Option<PathBuf>,
     pub active_folder: Option<PathBuf>,
     pub open_tabs: Vec<String>,
@@ -56,6 +58,8 @@ impl WindowSession {
             sidebar_width: settings
                 .sidebar_width
                 .filter(|width| valid_sidebar_width(*width)),
+            dock_width: settings.dock_width.filter(|width| valid_dock_width(*width)),
+            dock_heights: settings.dock_heights.clone(),
             last_vault: settings.last_vault.clone(),
             active_folder: settings.active_folder.clone(),
             open_tabs: settings.open_tabs.clone(),
@@ -160,6 +164,10 @@ pub struct Settings {
     pub view_mode: ViewMode,
     pub sidebar_collapsed: bool,
     pub sidebar_width: Option<f32>,
+    #[serde(default)]
+    pub dock_width: Option<f32>,
+    #[serde(default)]
+    pub dock_heights: std::collections::BTreeMap<String, f32>,
     /// the reference-editor style: reveal markup around the cursor (live preview).
     /// Kept off — the raw buffer stays honest.
     pub focus_mode: bool,
@@ -241,6 +249,8 @@ pub struct Settings {
     pub window_sessions: Vec<WindowSession>,
     #[serde(default)]
     pub active_window_id: Option<u64>,
+    #[serde(default)]
+    pub workspace_layouts: std::collections::BTreeMap<String, WindowSession>,
 }
 
 fn default_true() -> bool {
@@ -422,6 +432,8 @@ impl Default for Settings {
             view_mode: ViewMode::Source,
             sidebar_collapsed: false,
             sidebar_width: None,
+            dock_width: None,
+            dock_heights: Default::default(),
             focus_mode: false,
             last_vault: None,
             attachments_dir: "attachments".to_string(),
@@ -452,12 +464,17 @@ impl Default for Settings {
             tree_sort: TreeSort::default(),
             window_sessions: Vec::new(),
             active_window_id: None,
+            workspace_layouts: Default::default(),
         }
     }
 }
 
 pub(crate) fn valid_sidebar_width(width: f32) -> bool {
     width.is_finite() && (200.0..=420.0).contains(&width)
+}
+
+pub(crate) fn valid_dock_width(width: f32) -> bool {
+    width.is_finite() && (220.0..=520.0).contains(&width)
 }
 
 pub fn config_dir() -> PathBuf {
