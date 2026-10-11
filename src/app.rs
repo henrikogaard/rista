@@ -4258,7 +4258,10 @@ impl Workspace {
         let source_before = doc.read(cx).composer_source(cx);
         let language = self.settings.language;
         let input = self.rename_input.clone();
-        input.update(cx, |input, cx| input.set_value("", window, cx));
+        input.update(cx, |input, cx| {
+            input.set_placeholder(language.text("Name", "Navn"), window, cx);
+            input.set_value("", window, cx);
+        });
         let view = cx.entity();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -4347,7 +4350,10 @@ impl Workspace {
     ) {
         let input = self.rename_input.clone();
         let language = self.settings.language;
-        input.update(cx, |input, cx| input.set_value("", window, cx));
+        input.update(cx, |input, cx| {
+            input.set_placeholder(language.text("Name", "Navn"), window, cx);
+            input.set_value("", window, cx);
+        });
         let view = cx.entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
@@ -4431,7 +4437,10 @@ impl Workspace {
             })
             .take(100)
             .collect::<Vec<_>>();
-        input.update(cx, |input, cx| input.set_value("", window, cx));
+        input.update(cx, |input, cx| {
+            input.set_placeholder(language.text("Name", "Navn"), window, cx);
+            input.set_value("", window, cx);
+        });
         let view = cx.entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let target_rows = targets
@@ -4899,16 +4908,16 @@ impl Workspace {
                 return;
             }
         };
-        let Ok(merged) = crate::note_composer::merge_text(&target_rewritten, &source_text, order)
-        else {
-            self.note_status(
-                self.tr(
-                    "The notes cannot be merged safely.",
-                    "Notatene kan ikke slås sammen trygt.",
-                ),
-                cx,
-            );
-            return;
+        let merged = match crate::note_composer::merge_text(&target_rewritten, &source_text, order)
+        {
+            Ok(merged) => merged,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return;
+            }
         };
         if merged == target_text {
             self.note_status(
