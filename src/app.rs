@@ -1906,7 +1906,9 @@ impl Workspace {
     }
 
     pub(crate) fn focus_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window, cx);
+        if !window.has_active_dialog(cx) {
+            self.refocus(window, cx);
+        }
     }
 
     /// Put keyboard focus back where it belongs after a dialog or sheet
@@ -3757,6 +3759,7 @@ impl Workspace {
     ) {
         let title = doc.read(cx).title();
         let view = cx.entity();
+        self.refocus(window, cx);
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let view = view.clone();
             let doc = doc.clone();
