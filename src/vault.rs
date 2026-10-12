@@ -1530,7 +1530,12 @@ mod link_diagnostics_tests {
             Some(&report)
         );
         assert_eq!(index.attachments.get("image.png"), Some(&image));
+        assert_eq!(index.attachments.get("attachments/image.png"), Some(&image));
         assert_eq!(index.images.get("image.png"), Some(&image));
+        let resolver = super::Vault::image_resolver_for(std::rc::Rc::new(std::cell::RefCell::new(
+            index.attachments.clone(),
+        )));
+        assert_eq!(resolver("attachments/image.png"), Some(image.clone()));
         assert!(!index.images.contains_key("qa-report.txt"));
         assert_eq!(index.notes, vec![note]);
         std::fs::remove_file(&report).unwrap();
@@ -1662,7 +1667,12 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
                         }
                     }
                     if let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str()) {
-                        files.attachments.insert(relative.to_lowercase(), path);
+                        files.attachments.insert(
+                            relative
+                                .replace(std::path::MAIN_SEPARATOR, "/")
+                                .to_lowercase(),
+                            path,
+                        );
                     }
                 }
             }
