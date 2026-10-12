@@ -101,26 +101,52 @@ pub fn prompts(text: &str) -> Vec<Prompt> {
     out
 }
 
+pub fn requires_interactive_context(text: &str) -> bool {
+    tags(text).into_iter().any(|tag| {
+        !tag.script
+            && parse_call(tag.code).is_some_and(|call| {
+                call.is_call
+                    && matches!(
+                        (call.module.as_str(), call.name.as_str()),
+                        ("system", "clipboard")
+                            | ("system", "prompt")
+                            | ("system", "suggester")
+                            | ("file", "selection")
+                    )
+            })
+    })
+}
+
+pub fn include_references(text: &str) -> Vec<String> {
+    tags(text)
+        .into_iter()
+        .filter(|tag| !tag.script)
+        .filter_map(|tag| parse_call(tag.code))
+        .filter(|call| call.is_call && call.module == "file" && call.name == "include")
+        .filter_map(|call| arg_str(&call.args, 0))
+        .collect()
+}
+
 /// Fill in a template — see the module docs for what's supported.
 pub fn expand(text: &str, ctx: &TemplateCtx) -> Expanded {
-    let mut overflow = false;
-    expand_depth(text, ctx, 0, usize::MAX, &mut overflow)
+    expand_bounded(text, ctx, usize::MAX).expect("unbounded template expansion")
 }
 
-pub fn expand_bounded(text: &str, ctx: &TemplateCtx, max_bytes: usize) -> Option<Expanded> {
-    let mut overflow = false;
-    let expanded = expand_depth(text, ctx, 0, max_bytes, &mut overflow);
-    (!overflow).then_some(expanded)
+pub fn expand_bounded(text: &str, ctx: &TemplateCtx, limit: usize) -> Result<Expanded, ()> {
+    expand_depth(text, ctx, 0, limit)
 }
 
-fn expand_depth(
-    text: &str,
-    ctx: &TemplateCtx,
-    depth: usize,
-    max_bytes: usize,
-    overflow: &mut bool,
-) -> Expanded {
-    let mut out = String::with_capacity(text.len().min(max_bytes));
+fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize, limit: usize) -> Result<Expanded, ()> {
+    let mut out = String::with_capacity(text.len().min(limit));
+    macro_rules! append {
+        ($value:expr) => {{
+            let value = $value;
+            if out.len().saturating_add(value.len()) > limit {
+                return Err(());
+            }
+            out.push_str(value);
+        }};
+    }
     let mut cursor = None;
     let mut unsupported = 0;
     let mut answers = ctx.answers.iter();
@@ -134,13 +160,11 @@ fn expand_depth(
             (None, Some(a)) => a,
             (None, None) => break,
         };
-        if !append_bounded(&mut out, &rest[..at], max_bytes, overflow) {
-            break;
-        }
+        append!(&rest[..at]);
         let here = &rest[at..];
         if let Some(after) = here.strip_prefix("{{") {
             let Some(close) = after.find("}}") else {
-                append_bounded(&mut out, here, max_bytes, overflow);
+                append!(here);
                 rest = "";
                 break;
             };
@@ -150,35 +174,20 @@ fn expand_depth(
                 None => (inner, None),
             };
             match (name.to_ascii_lowercase().as_str(), format) {
-                ("title", None) => {
-                    append_bounded(&mut out, ctx.title, max_bytes, overflow);
-                }
-                ("date", f) => {
-                    let value = fmt(ctx.now, f.unwrap_or("YYYY-MM-DD"));
-                    append_bounded(&mut out, &value, max_bytes, overflow);
-                }
-                ("time", f) => {
-                    let value = fmt(ctx.now, f.unwrap_or("HH:mm"));
-                    append_bounded(&mut out, &value, max_bytes, overflow);
-                }
+                ("title", None) => append!(ctx.title),
+                ("date", f) => append!(&fmt(ctx.now, f.unwrap_or("YYYY-MM-DD"))),
+                ("time", f) => append!(&fmt(ctx.now, f.unwrap_or("HH:mm"))),
                 ("cursor", None) => {
                     cursor.get_or_insert(out.len());
                 }
-                _ => {
-                    append_bounded(&mut out, &here[..close + 4], max_bytes, overflow);
-                }
+                _ => append!(&here[..close + 4]),
             }
             rest = &here[close + 4..];
-            if *overflow {
-                break;
-            }
             continue;
         }
         // `<% … %>`
         let Some(tag) = tags(here).into_iter().next().filter(|t| t.start == 0) else {
-            if !append_bounded(&mut out, "<%", max_bytes, overflow) {
-                break;
-            }
+            append!("<%");
             rest = &here[2..];
             continue;
         };
@@ -193,47 +202,32 @@ fn expand_depth(
         let value = if tag.script {
             None
         } else {
-            parse_call(tag.code)
-                .and_then(|call| eval(&call, ctx, &mut answers, depth, max_bytes, overflow))
+            parse_call(tag.code).and_then(|call| eval(&call, ctx, &mut answers, depth, limit))
         };
         match value {
             Some(Value::Cursor) => {
                 cursor.get_or_insert(out.len());
             }
-            Some(Value::Text(text)) => {
-                append_bounded(&mut out, &text, max_bytes, overflow);
-            }
+            Some(Value::Text(text)) => append!(&text),
+            Some(Value::Overflow) => return Err(()),
             None => {
                 unsupported += 1;
-                append_bounded(&mut out, &here[..tag.end], max_bytes, overflow);
+                append!(&here[..tag.end]);
             }
         }
         rest = &here[tag.end..];
-        if *overflow {
-            break;
-        }
         if tag.trim_after {
             rest = rest.trim_start_matches([' ', '\t']);
             rest = rest.strip_prefix('\n').unwrap_or(rest);
         }
     }
-    append_bounded(&mut out, rest, max_bytes, overflow);
-    Expanded {
+    append!(rest);
+    Ok(Expanded {
         text: out,
         cursor,
         unsupported,
-        overflowed: *overflow,
-    }
-}
-
-fn append_bounded(out: &mut String, value: &str, max_bytes: usize, overflow: &mut bool) -> bool {
-    if out.len().saturating_add(value.len()) > max_bytes {
-        *overflow = true;
-        false
-    } else {
-        out.push_str(value);
-        true
-    }
+        overflowed: false,
+    })
 }
 
 fn fmt(dt: NaiveDateTime, format: &str) -> String {
@@ -467,6 +461,7 @@ fn arg_list(args: &[Arg], ix: usize) -> Vec<String> {
 enum Value {
     Text(String),
     Cursor,
+    Overflow,
 }
 
 fn eval<'a>(
@@ -474,8 +469,7 @@ fn eval<'a>(
     ctx: &TemplateCtx,
     answers: &mut impl Iterator<Item = &'a String>,
     depth: usize,
-    max_bytes: usize,
-    overflow: &mut bool,
+    limit: usize,
 ) -> Option<Value> {
     // Arguments that are property reads (`tp.file.title`) resolve first.
     let args: Vec<Arg> = call
@@ -553,11 +547,10 @@ fn eval<'a>(
             let link = arg_str(&args, 0)?;
             let name = link.trim().trim_start_matches("[[").trim_end_matches("]]");
             let included = (ctx.include?)(name)?;
-            let expanded = expand_depth(&included, ctx, depth + 1, max_bytes, overflow);
-            if *overflow {
-                return None;
-            }
-            text(expanded.text)
+            Some(match expand_depth(&included, ctx, depth + 1, limit) {
+                Ok(expanded) => Value::Text(expanded.text),
+                Err(()) => Value::Overflow,
+            })
         }
         ("system", "clipboard", true) => text(ctx.clipboard.unwrap_or_default().to_string()),
         ("system", "prompt", true) => {
@@ -865,7 +858,17 @@ mod tests {
             ..TemplateCtx::new("Plan", now())
         };
 
-        assert!(expand_bounded("<% tp.file.include(\"[[Footer]]\") %>", &ctx, 64).is_none());
+        assert!(expand_bounded("<% tp.file.include(\"[[Footer]]\") %>", &ctx, 64).is_err());
+    }
+
+    #[test]
+    fn bounded_expansion_rejects_large_include_output() {
+        let include = |name: &str| (name == "Large").then(|| "0123456789".repeat(100));
+        let ctx = TemplateCtx {
+            include: Some(&include),
+            ..TemplateCtx::new("Plan", now())
+        };
+        assert!(expand_bounded("<% tp.file.include(\"[[Large]]\") %>", &ctx, 32).is_err());
     }
 
     #[test]
