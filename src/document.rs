@@ -3246,18 +3246,19 @@ fn normalize_vim_key(keystroke: &Keystroke) -> Option<VimKey> {
             _ => None,
         };
     }
-    let value = keystroke
-        .key_char
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&keystroke.key);
-    match value.to_ascii_lowercase().as_str() {
+    match keystroke.key.as_str() {
         "escape" => Some(VimKey::Escape),
         "enter" | "return" => Some(VimKey::Enter),
         "backspace" => Some(VimKey::Backspace),
         "delete" => Some(VimKey::Delete),
-        _ if value.is_empty() => None,
-        _ => Some(VimKey::Text(value.to_string())),
+        _ => {
+            let value = keystroke
+                .key_char
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&keystroke.key);
+            (!value.is_empty()).then(|| VimKey::Text(value.to_string()))
+        }
     }
 }
 
@@ -3838,6 +3839,30 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vim_named_keys_take_precedence_over_control_characters() {
+        use super::{normalize_vim_key, Keystroke, VimKey};
+        for (name, character, expected) in [
+            ("enter", "\r", VimKey::Enter),
+            ("enter", "\n", VimKey::Enter),
+            ("escape", "\u{1b}", VimKey::Escape),
+            ("backspace", "\u{7f}", VimKey::Backspace),
+            ("delete", "\u{f728}", VimKey::Delete),
+        ] {
+            let mut keystroke = Keystroke::parse(name).unwrap();
+            keystroke.key_char = Some(character.into());
+            assert_eq!(normalize_vim_key(&keystroke), Some(expected));
+        }
+        for (name, character) in [("shift-a", "A"), ("space", " "), ("a", "å")] {
+            let mut keystroke = Keystroke::parse(name).unwrap();
+            keystroke.key_char = Some(character.into());
+            assert_eq!(
+                normalize_vim_key(&keystroke),
+                Some(VimKey::Text(character.into()))
+            );
+        }
+    }
+
     use super::{
         block_anchor, block_candidates, block_link_targets, format_table_md, guarded_write,
         highlight_color_edit, linked_block_id_edit, new_block_id,
