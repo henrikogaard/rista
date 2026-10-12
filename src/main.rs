@@ -76,6 +76,7 @@ fn install_style_snippet_runtime(cx: &mut App) {
             let watcher =
                 notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
                     match event {
+                        Ok(event) if event.kind.is_access() => {}
                         Ok(event) => {
                             let replaced =
                                 event.paths.iter().any(|path| path == &observed_directory);

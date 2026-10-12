@@ -1243,6 +1243,7 @@ impl Workspace {
         let style_catalog_sub =
             cx.observe_global::<crate::style_snippets::StyleSnippetCatalog>(|this, cx| {
                 theme::apply(&this.settings, cx);
+                crate::apply_ui_settings(&this.settings, cx);
                 this.retheme_previews(cx);
                 this.settings_view.update(cx, |_, cx| cx.notify());
                 cx.notify();
