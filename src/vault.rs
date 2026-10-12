@@ -1120,6 +1120,7 @@ fn without_markdown_extension(path: &Path) -> PathBuf {
 }
 
 fn resolve_relative_note(root: &Path, from_dir: &Path, target: &str) -> Option<PathBuf> {
+    let target = target.split(['#', '|']).next()?.trim();
     let root = root.canonicalize().ok()?;
     let from_dir = from_dir.canonicalize().ok()?;
     if !from_dir.starts_with(&root) {
@@ -1390,6 +1391,15 @@ mod link_diagnostics_tests {
             super::resolve_relative_note(&root, &source_dir, "../../target/Å v1.2"),
             Some(target.canonicalize().unwrap())
         );
+        for reference in [
+            "../../target/Å v1.2#section",
+            "../../target/Å v1.2#^block|Label",
+        ] {
+            assert_eq!(
+                super::resolve_relative_note(&root, &source_dir, reference),
+                Some(target.canonicalize().unwrap())
+            );
+        }
         assert_eq!(
             super::retarget_link_path("../old/Å v1.2|alias#heading", "../../target/Å v1.2"),
             "../../target/Å v1.2|alias#heading"
