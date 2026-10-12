@@ -204,6 +204,12 @@ pub fn extensions(
             .plugin(TranscludePlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
+                block: true,
+            })
+            .plugin(TranscludePlugin {
+                ctx: ctx.clone(),
+                folds: folds.clone(),
+                block: false,
             })
             .plugin(TaskListPlugin {
                 ctx: Some(ctx.clone()),
@@ -457,7 +463,7 @@ pub fn preprocess_mapped(
 mod navigation_tests {
     use super::{
         headings, match_navigation_blocks, navigation_blocks, parse_tag_link, preprocess_mapped,
-        slice_section,
+        slice_section, Transclude,
     };
 
     #[test]
@@ -487,6 +493,36 @@ mod navigation_tests {
 
         assert_eq!(tag.label, "Important");
         assert_eq!(tag.tag, "work");
+    }
+
+    #[test]
+    fn standalone_transclusions_use_block_layout_without_consuming_neighbors() {
+        let ast = markdown::to_mdast(
+            "![Child](transclude:Child#heading)",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        let paragraph = &ast.children().unwrap()[0];
+        let embed = Transclude::parse(paragraph, true).unwrap();
+        assert_eq!(embed.target, "Child#heading");
+        assert!(embed.height.is_none());
+
+        let ast = markdown::to_mdast(
+            "Before ![Child](transclude:Child) after",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        let paragraph = &ast.children().unwrap()[0];
+        assert!(Transclude::parse(paragraph, true).is_none());
+        let inline = &paragraph.children().unwrap()[1];
+        assert_eq!(Transclude::parse(inline, false).unwrap().target, "Child");
+
+        let ast = markdown::to_mdast(
+            "![Picture](file:///picture.png)",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        assert!(Transclude::parse(&ast.children().unwrap()[0], true).is_none());
     }
 
     use std::path::Path;
@@ -3098,18 +3134,19 @@ struct Transclude {
     height: Option<f32>,
 }
 
-struct TranscludePlugin {
-    ctx: PreviewCtx,
-    folds: CalloutFolds,
-}
-
-impl MarkdownPlugin for TranscludePlugin {
-    // Inline: `![[note]]` parses to an image node inside a paragraph.
-    fn name(&self) -> &str {
-        "transclude"
-    }
-
-    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+impl Transclude {
+    fn parse(node: &mdast::Node, block: bool) -> Option<Self> {
+        let node = if block {
+            let mdast::Node::Paragraph(paragraph) = node else {
+                return None;
+            };
+            let [image] = paragraph.children.as_slice() else {
+                return None;
+            };
+            image
+        } else {
+            node
+        };
         let mdast::Node::Image(image) = node else {
             return None;
         };
@@ -3119,9 +3156,33 @@ impl MarkdownPlugin for TranscludePlugin {
             Some((t, h)) => (t.to_string(), h.parse::<f32>().ok()),
             None => (target.to_string(), None),
         };
+        Some(Self { target, height })
+    }
+}
+
+struct TranscludePlugin {
+    ctx: PreviewCtx,
+    folds: CalloutFolds,
+    block: bool,
+}
+
+impl MarkdownPlugin for TranscludePlugin {
+    fn is_block(&self) -> bool {
+        self.block
+    }
+
+    fn name(&self) -> &str {
+        if self.block {
+            "transclude-block"
+        } else {
+            "transclude"
+        }
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
         Some(MarkdownNode::new(
-            "transclude",
-            Transclude { target, height },
+            self.name(),
+            Transclude::parse(node, self.block)?,
         ))
     }
 
