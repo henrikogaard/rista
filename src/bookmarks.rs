@@ -331,7 +331,7 @@ impl Bookmarks {
         fn siblings(items: &[Bookmark], parent: Option<u64>) -> Vec<&Bookmark> {
             match parent {
                 None => items.iter().collect(),
-                Some(parent) => match items.iter().find(|item| item.id == parent) {
+                Some(parent) => match find(items, parent) {
                     Some(Bookmark {
                         kind: BookmarkKind::Group { items, .. },
                         ..
@@ -600,17 +600,42 @@ mod tests {
     #[test]
     fn imported_bookmarks_merge_idempotently() {
         let mut store = Bookmarks::default();
-        store.add(BookmarkKind::file("/vault/Notes/Å.md".into()), None, None);
         let imported = vec![Bookmark {
             id: 0,
-            title: None,
-            kind: BookmarkKind::file("/vault/Notes/Å.md".into()),
+            title: Some("Outer".into()),
+            kind: BookmarkKind::Group {
+                collapsed: false,
+                items: vec![Bookmark {
+                    id: 0,
+                    title: Some("Inner".into()),
+                    kind: BookmarkKind::Group {
+                        collapsed: false,
+                        items: vec![Bookmark {
+                            id: 0,
+                            title: Some("Deep".into()),
+                            kind: BookmarkKind::Group {
+                                collapsed: false,
+                                items: vec![Bookmark {
+                                    id: 0,
+                                    title: None,
+                                    kind: BookmarkKind::file("/vault/Notes/Å.md".into()),
+                                }],
+                            },
+                        }],
+                    },
+                }],
+            },
         }];
 
-        assert_eq!(store.merge_imported(imported.clone()), 0);
+        assert_eq!(store.merge_imported(imported.clone()), 4);
         assert_eq!(store.items.len(), 1);
         assert_eq!(store.merge_imported(imported), 0);
         assert_eq!(store.items.len(), 1);
+        let outer = match &store.items[0].kind {
+            BookmarkKind::Group { items, .. } => items,
+            _ => panic!("expected outer group"),
+        };
+        assert_eq!(outer.len(), 1);
     }
 
     #[test]

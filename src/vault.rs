@@ -52,6 +52,7 @@ pub struct Vault {
     /// Lowercase file stem → note — basename resolution. First note wins
     /// on duplicates, matching the old `.find()` scan order.
     by_stem: std::collections::HashMap<String, PathBuf>,
+    stem_counts: std::collections::HashMap<String, usize>,
     /// Per-note mtime → parsed `aliases:` values. Lets a refresh reuse
     /// frontmatter without re-reading every file's body.
     alias_cache: std::collections::HashMap<PathBuf, (std::time::SystemTime, Vec<String>)>,
@@ -157,6 +158,7 @@ impl Vault {
             aliases: std::collections::HashMap::new(),
             by_rel: std::collections::HashMap::new(),
             by_stem: std::collections::HashMap::new(),
+            stem_counts: std::collections::HashMap::new(),
             alias_cache: std::collections::HashMap::new(),
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
@@ -205,6 +207,7 @@ impl Vault {
         self.attachments.clear();
         self.by_rel.clear();
         self.by_stem.clear();
+        self.stem_counts.clear();
         self.aliases.clear();
         self.tree
             .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
@@ -253,6 +256,7 @@ impl Vault {
         // files that actually changed instead of the whole vault.
         self.by_rel.clear();
         self.by_stem.clear();
+        self.stem_counts.clear();
         self.aliases.clear();
         let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
         self.alias_cache.retain(|p, _| note_set.contains(p));
@@ -263,9 +267,9 @@ impl Vault {
                     .insert(rel.trim_end_matches(".md").to_lowercase(), note.clone());
             }
             if let Some(stem) = note.file_stem().and_then(|s| s.to_str()) {
-                self.by_stem
-                    .entry(stem.to_lowercase())
-                    .or_insert_with(|| note.clone());
+                let stem = stem.to_lowercase();
+                *self.stem_counts.entry(stem.clone()).or_default() += 1;
+                self.by_stem.entry(stem).or_insert_with(|| note.clone());
             }
             // `aliases:` only live in markdown frontmatter — `.base`
             // files and templates get indexed above but skip the read.
@@ -440,22 +444,18 @@ impl Vault {
 
     pub fn link_target_for(&self, target: &Path, source: &Path) -> Option<String> {
         let root = self.root.as_deref()?;
-        let target_rel = target.strip_prefix(root).ok()?.with_extension("");
+        let target_rel = without_markdown_extension(target.strip_prefix(root).ok()?);
         let target_text = target_rel.to_string_lossy().replace('\\', "/");
         match self.link_format {
             LinkFormat::Absolute => Some(target_text),
-            LinkFormat::Relative => relative_link_path(root, source, target),
+            LinkFormat::Relative => relative_link_path_for(root, source, target),
             LinkFormat::Shortest => {
                 let stem = target.file_stem()?.to_string_lossy().to_string();
                 let count = self
-                    .notes
-                    .iter()
-                    .filter(|note| {
-                        note.file_stem().is_some_and(|candidate| {
-                            candidate.to_string_lossy().eq_ignore_ascii_case(&stem)
-                        })
-                    })
-                    .count();
+                    .stem_counts
+                    .get(&stem.to_lowercase())
+                    .copied()
+                    .unwrap_or(0);
                 Some(if count <= 1 { stem } else { target_text })
             }
         }
@@ -780,6 +780,26 @@ pub fn retarget_link_full(inner: &str, new_rel: &str) -> String {
     format!("{target}{rest}")
 }
 
+pub fn retarget_link_path(inner: &str, new_path: &str) -> String {
+    let (pre, rest) = match inner.find(['#', '|']) {
+        Some(i) => inner.split_at(i),
+        None => (inner, ""),
+    };
+    if pre.trim().is_empty() {
+        return inner.to_string();
+    }
+    format!("{new_path}{rest}")
+}
+
+pub fn is_relative_link_path(inner: &str) -> bool {
+    let trimmed = inner.trim();
+    let path = trimmed
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    path.starts_with("./") || path.starts_with("../")
+}
+
 /// The new inner text for a `[label](target)` link whose target was
 /// renamed — swaps the last path segment, keeps `#anchor`/`?query`
 /// suffixes, and preserves the original style: plain, `<>`-wrapped, or
@@ -848,6 +868,31 @@ pub fn retarget_md_link_full(inner: &str, new_rel: &str) -> String {
     }
 }
 
+pub fn retarget_md_link_path(inner: &str, new_path: &str) -> String {
+    let trimmed = inner.trim();
+    let wrapped = trimmed.starts_with('<');
+    let body = trimmed
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    let rest = match body.find(['#', '?']) {
+        Some(i) => &body[i..],
+        None => "",
+    };
+    let escaped = body.contains('%');
+    let path = if escaped {
+        new_path.replace(' ', "%20")
+    } else {
+        new_path.to_string()
+    };
+    let body = format!("{path}{rest}");
+    if wrapped || (!escaped && new_path.contains(' ')) {
+        format!("<{body}>")
+    } else {
+        body
+    }
+}
+
 fn normalize_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -862,12 +907,32 @@ fn normalize_path(p: &Path) -> PathBuf {
     out
 }
 
-fn relative_link_path(root: &Path, source: &Path, target: &Path) -> Option<String> {
+pub fn relative_link_path_for(root: &Path, source: &Path, target: &Path) -> Option<String> {
     let root = root.canonicalize().ok()?;
     let source = source.parent()?.canonicalize().ok()?;
-    let target = target.canonicalize().ok()?;
-    let source = source.strip_prefix(&root).ok()?;
-    let target = target.strip_prefix(&root).ok()?.with_extension("");
+    let target = canonicalize_with_missing_tail(&normalize_path(target))?;
+    target
+        .starts_with(&root)
+        .then(|| relative_link_path_from_dirs(&root, &source, &target))?
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        missing.push(existing.file_name()?.to_os_string());
+        existing = existing.parent()?;
+    }
+    let mut resolved = existing.canonicalize().ok()?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Some(normalize_path(&resolved))
+}
+
+fn relative_link_path_from_dirs(root: &Path, source: &Path, target: &Path) -> Option<String> {
+    let source = source.strip_prefix(root).ok()?;
+    let target = without_markdown_extension(target.strip_prefix(root).ok()?);
     let source: Vec<_> = source
         .components()
         .filter_map(|component| component.as_os_str().to_str())
@@ -891,6 +956,19 @@ fn relative_link_path(root: &Path, source: &Path, target: &Path) -> Option<Strin
     })
 }
 
+fn without_markdown_extension(path: &Path) -> PathBuf {
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        let value = path.to_string_lossy();
+        PathBuf::from(value.strip_suffix(".md").unwrap_or(&value))
+    } else {
+        path.to_path_buf()
+    }
+}
+
 fn resolve_relative_note(root: &Path, from_dir: &Path, target: &str) -> Option<PathBuf> {
     let root = root.canonicalize().ok()?;
     let from_dir = from_dir.canonicalize().ok()?;
@@ -898,8 +976,12 @@ fn resolve_relative_note(root: &Path, from_dir: &Path, target: &str) -> Option<P
         return None;
     }
     let mut candidate = from_dir.join(target);
-    if candidate.extension().is_none() {
-        candidate.set_extension("md");
+    if !candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".md"))
+    {
+        candidate = PathBuf::from(format!("{}.md", candidate.to_string_lossy()));
     }
     let candidate = candidate.canonicalize().ok()?;
     (candidate.starts_with(&root)
@@ -1144,17 +1226,31 @@ mod link_diagnostics_tests {
         std::fs::create_dir_all(&source_dir).unwrap();
         std::fs::create_dir_all(&target_dir).unwrap();
         let source = source_dir.join("source.md");
-        let target = target_dir.join("A space.md");
+        let target = target_dir.join("Å v1.2.md");
         std::fs::write(&source, "").unwrap();
         std::fs::write(&target, "").unwrap();
 
         assert_eq!(
-            super::relative_link_path(&root, &source, &target).as_deref(),
-            Some("../../target/A space")
+            super::relative_link_path_for(&root, &source, &target).as_deref(),
+            Some("../../target/Å v1.2")
         );
         assert_eq!(
-            super::resolve_relative_note(&root, &source_dir, "../../target/A space"),
+            super::resolve_relative_note(&root, &source_dir, "../../target/Å v1.2"),
             Some(target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            super::retarget_link_path("../old/Å v1.2|alias#heading", "../../target/Å v1.2"),
+            "../../target/Å v1.2|alias#heading"
+        );
+        assert!(super::is_relative_link_path(
+            "<../target/Å v1.2.md#heading>"
+        ));
+        assert!(!super::is_relative_link_path("target/Å v1.2.md"));
+        assert!(!super::is_relative_link_path("/target/Å v1.2.md"));
+        assert_eq!(
+            super::relative_link_path_for(&root, &source, &root.join("target/new.v1.2.md"),)
+                .as_deref(),
+            Some("../../target/new.v1.2")
         );
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -670,7 +670,7 @@ pub(crate) fn publish(
     let (settings, shared_settings, changed) = {
         let manager = cx.global::<WindowManager>();
         let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
-        let mut merged = merged;
+        let mut merged = with_local_settings(merged, current);
         let mut session = WindowSession::from_settings(id, current);
         session.geometry = manager.session(id).and_then(|session| session.geometry);
         update_session(&mut merged, session);
@@ -704,7 +704,7 @@ pub(crate) fn publish_checked(
     let (settings, shared_settings, changed) = {
         let manager = cx.global::<WindowManager>();
         let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
-        let mut merged = merged;
+        let mut merged = with_local_settings(merged, current);
         let mut session = WindowSession::from_settings(id, current);
         session.geometry = manager.session(id).and_then(|session| session.geometry);
         update_session(&mut merged, session);

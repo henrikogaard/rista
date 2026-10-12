@@ -64,6 +64,7 @@ pub(crate) enum ImportProblem {
     InvalidRegex,
     UnsupportedHotkey,
     UnsupportedCommand,
+    Precedence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +108,7 @@ pub(crate) struct ImportPlan {
     pub bookmarks: Vec<Bookmark>,
     pub bookmarks_skipped: usize,
     pub hotkeys: BTreeMap<String, Option<String>>,
+    pub hotkey_baseline: BTreeMap<String, Option<String>>,
     pub unsupported_plugins: Vec<String>,
 }
 
@@ -144,20 +146,57 @@ impl ImportPlan {
         let safe = |relative: &str| {
             relative.is_empty() || checked_vault_path(&self.root, relative).is_some()
         };
-        safe(&self.proposed.templates_dir)
-            && self
-                .proposed
-                .period_templates
-                .values()
-                .all(|path| path.is_empty() || safe(path))
-            && self
-                .proposed
-                .folder_templates
-                .values()
-                .all(|path| path.is_empty() || safe(path))
-            && (self.proposed.attachments_dir == "."
-                || self.proposed.attachments_dir.starts_with("./")
-                || safe(&self.proposed.attachments_dir))
+        self.changed_fields.iter().all(|field| match field {
+            ImportedField::TemplatesDir
+            | ImportedField::DailyDir
+            | ImportedField::PeriodDir(_)
+            | ImportedField::PeriodTemplate(_)
+            | ImportedField::FolderTemplate(_) => {
+                let value = match field {
+                    ImportedField::TemplatesDir => &self.proposed.templates_dir,
+                    ImportedField::DailyDir => &self.proposed.daily_dir,
+                    ImportedField::PeriodDir(period) => period_dir(&self.proposed, period),
+                    ImportedField::PeriodTemplate(period) => self
+                        .proposed
+                        .period_templates
+                        .get(period)
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    ImportedField::FolderTemplate(folder) => {
+                        if !safe(folder) {
+                            return false;
+                        }
+                        self.proposed
+                            .folder_templates
+                            .get(folder)
+                            .map(String::as_str)
+                            .unwrap_or_default()
+                    }
+                    _ => unreachable!(),
+                };
+                safe(value)
+            }
+            ImportedField::DailyFormat | ImportedField::PeriodFormat(_) => {
+                let period = match field {
+                    ImportedField::DailyFormat => "daily",
+                    ImportedField::PeriodFormat(period) => period,
+                    _ => unreachable!(),
+                };
+                let format = period_format(&self.proposed, period);
+                valid_period_format(&self.root, format)
+            }
+            ImportedField::AttachmentsDir => {
+                let value = &self.proposed.attachments_dir;
+                if value == "." {
+                    true
+                } else if let Some(relative) = value.strip_prefix("./") {
+                    validate_relative(relative, true).is_ok()
+                } else {
+                    safe(value)
+                }
+            }
+            ImportedField::LinkFormat | ImportedField::IgnoreFilters => true,
+        })
     }
 }
 
@@ -186,6 +225,7 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
         bookmarks: Vec::new(),
         bookmarks_skipped: 0,
         hotkeys: BTreeMap::new(),
+        hotkey_baseline: BTreeMap::new(),
         unsupported_plugins: Vec::new(),
     };
     let mut total = 0u64;
@@ -245,6 +285,34 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
         }
     }
 
+    for (relative, is_array) in [
+        (".obsidian/daily-notes.json", false),
+        (".obsidian/templates.json", false),
+        (".obsidian/plugins/templater-obsidian/data.json", false),
+        (".obsidian/plugins/periodic-notes/data.json", false),
+        (".obsidian/app.json", false),
+        (".obsidian/bookmarks.json", false),
+        (".obsidian/hotkeys.json", false),
+        (".obsidian/community-plugins.json", true),
+    ] {
+        if let Some(source) = values.get(relative) {
+            let valid = if is_array {
+                source.value.is_array()
+            } else {
+                source.value.is_object()
+            };
+            if !valid {
+                warn(
+                    &mut plan,
+                    relative,
+                    category_for_source(relative),
+                    ImportProblem::InvalidFieldType,
+                    None,
+                );
+            }
+        }
+    }
+
     let daily_source = values
         .get(".obsidian/daily-notes.json")
         .map(|source| &source.value);
@@ -289,20 +357,38 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
     let mut templater_folder = None;
     if let Some(source) = values.get(".obsidian/plugins/templater-obsidian/data.json") {
         let source_name = ".obsidian/plugins/templater-obsidian/data.json";
-        let folder_templates_enabled = match source.value.get("enable_folder_templates") {
-            None => true,
-            Some(Value::Bool(enabled)) => *enabled,
-            Some(_) => {
-                warn(
-                    &mut plan,
-                    source_name,
-                    ImportCategory::Templates,
-                    ImportProblem::InvalidFieldType,
-                    Some("enable_folder_templates".to_string()),
-                );
-                false
-            }
-        };
+        let folder_templates_enabled =
+            if let Some(mode) = source.value.get("trigger_on_file_creation_mode") {
+                match mode.as_str() {
+                    Some("none") => false,
+                    Some("folder" | "regex") => true,
+                    _ => {
+                        warn(
+                            &mut plan,
+                            source_name,
+                            ImportCategory::Templates,
+                            ImportProblem::InvalidFieldType,
+                            Some("trigger_on_file_creation_mode".to_string()),
+                        );
+                        false
+                    }
+                }
+            } else {
+                match source.value.get("enable_folder_templates") {
+                    None => true,
+                    Some(Value::Bool(enabled)) => *enabled,
+                    Some(_) => {
+                        warn(
+                            &mut plan,
+                            source_name,
+                            ImportCategory::Templates,
+                            ImportProblem::InvalidFieldType,
+                            Some("enable_folder_templates".to_string()),
+                        );
+                        false
+                    }
+                }
+            };
         if let Some(folder) = source
             .value
             .get("templates_folder")
@@ -325,8 +411,8 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
                         &mut plan,
                         source_name,
                         ImportCategory::Templates,
-                        ImportProblem::UnsupportedValue,
-                        Some("templates.json folder ignored".to_string()),
+                        ImportProblem::Precedence,
+                        None,
                     );
                 }
                 set_string(
@@ -355,7 +441,7 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
                 "enable_system_commands",
                 "enable_user_scripts",
                 "user_scripts",
-                "user_script_folder",
+                "user_scripts_folder",
                 "script_files",
             ] {
                 let unsupported = source.value.get(key).is_some_and(|value| match value {
@@ -452,16 +538,13 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
             let normalized = if value == "." {
                 Some(".".to_string())
             } else if let Some(note_relative) = value.strip_prefix("./") {
-                validate_relative(note_relative, true)
-                    .ok()
-                    .filter(|path| validate_existing_path(&root, path))
-                    .map(|path| {
-                        if path.is_empty() {
-                            "./".to_string()
-                        } else {
-                            format!("./{path}")
-                        }
-                    })
+                validate_relative(note_relative, true).ok().map(|path| {
+                    if path.is_empty() {
+                        "./".to_string()
+                    } else {
+                        format!("./{path}")
+                    }
+                })
             } else {
                 validate_relative(value, true)
                     .ok()
@@ -538,8 +621,10 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
                     );
                 } else {
                     let mut accepted = Vec::new();
+                    let mut invalid = false;
                     for filter in filters {
                         let Some(filter) = filter.as_str() else {
+                            invalid = true;
                             warn(
                                 &mut plan,
                                 ".obsidian/app.json",
@@ -551,22 +636,29 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
                         };
                         match validate_filter(filter) {
                             Ok(filter) => accepted.push(filter),
-                            Err(problem) => warn(
-                                &mut plan,
-                                ".obsidian/app.json",
-                                ImportCategory::IgnoreFilters,
-                                problem,
-                                Some(filter.to_string()),
-                            ),
+                            Err(problem) => {
+                                invalid = true;
+                                warn(
+                                    &mut plan,
+                                    ".obsidian/app.json",
+                                    ImportCategory::IgnoreFilters,
+                                    problem,
+                                    Some(filter.to_string()),
+                                );
+                            }
                         }
                     }
-                    if plan.proposed.user_ignore_filters != accepted {
+                    if !invalid && plan.proposed.user_ignore_filters != accepted {
                         plan.proposed.user_ignore_filters = accepted.clone();
                         plan.changed_fields.insert(ImportedField::IgnoreFilters);
                         plan.preview.push(PreviewChange {
                             category: ImportCategory::IgnoreFilters,
                             field: "userIgnoreFilters".to_string(),
-                            value: accepted.join(", "),
+                            value: if accepted.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                accepted.join(", ")
+                            },
                         });
                     }
                 }
@@ -593,7 +685,7 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
                         plan.preview.push(PreviewChange {
                             category: ImportCategory::Bookmarks,
                             field: "bookmarks".to_string(),
-                            value: format!("{} item(s)", plan.bookmarks.len()),
+                            value: plan.bookmarks.len().to_string(),
                         });
                     }
                 }
@@ -850,6 +942,23 @@ fn validate_existing_path(root: &Path, relative: &str) -> bool {
     true
 }
 
+fn valid_period_format(root: &Path, format: &str) -> bool {
+    if format.is_empty() || format.len() > MAX_FILTER_BYTES {
+        return false;
+    }
+    let sample = crate::bases::format_moment(
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+        format,
+    );
+    validate_relative(&sample, false)
+        .ok()
+        .and_then(|relative| checked_vault_path(root, &relative))
+        .is_some()
+}
+
 fn validate_markdown_template(root: &Path, relative: &str) -> Result<(), ImportProblem> {
     let relative = validate_relative(relative, false)?;
     if !Path::new(&relative)
@@ -874,6 +983,37 @@ fn validate_markdown_template(root: &Path, relative: &str) -> Result<(), ImportP
         return Err(ImportProblem::TemplateNotFound);
     }
     Ok(())
+}
+
+fn resolve_template_reference(
+    root: &Path,
+    relative: &str,
+    fallback_dir: &str,
+) -> Result<String, ImportProblem> {
+    let candidate = if Path::new(relative).extension().is_none() {
+        format!("{relative}.md")
+    } else {
+        relative.to_string()
+    };
+    if Path::new(&candidate)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("md"))
+    {
+        return Err(ImportProblem::UnsupportedValue);
+    }
+    match validate_markdown_template(root, &candidate) {
+        Ok(()) => return Ok(candidate),
+        Err(ImportProblem::TemplateNotFound) => {}
+        Err(problem) => return Err(problem),
+    }
+    if !candidate.contains('/') && !fallback_dir.is_empty() {
+        let fallback = format!("{fallback_dir}/{candidate}");
+        validate_markdown_template(root, &fallback)?;
+        return Ok(fallback);
+    }
+    validate_markdown_template(root, &candidate)?;
+    unreachable!()
 }
 
 pub(crate) fn checked_vault_path(root: &Path, relative: &str) -> Option<PathBuf> {
@@ -1063,10 +1203,18 @@ fn import_period_template(
         } else {
             template
         };
-        let combined = if templates_dir.is_empty() {
-            template
-        } else {
-            format!("{templates_dir}/{template}")
+        let combined = match resolve_template_reference(root, &template, templates_dir) {
+            Ok(path) => path,
+            Err(problem) => {
+                warn(
+                    plan,
+                    source,
+                    category,
+                    problem,
+                    Some("template".to_string()),
+                );
+                return;
+            }
         };
         if let Err(problem) = validate_markdown_template(root, &combined) {
             warn(
@@ -1109,7 +1257,7 @@ fn import_folder_templates(
     let Some(folder_templates) = value.get("folder_templates") else {
         return;
     };
-    let Some(folder_templates) = folder_templates.as_object() else {
+    let Some(folder_templates) = folder_templates.as_array() else {
         warn(
             plan,
             source,
@@ -1129,15 +1277,37 @@ fn import_folder_templates(
         );
         return;
     }
-    for (folder, template) in folder_templates {
-        let (Ok(folder), Some(template)) = (validate_relative(folder, true), template.as_str())
-        else {
+    for entry in folder_templates {
+        let Some(entry) = entry.as_object() else {
             warn(
                 plan,
                 source,
                 ImportCategory::Templates,
                 ImportProblem::UnsafeConfiguredPath,
-                Some(folder.to_string()),
+                Some("folder_templates".to_string()),
+            );
+            continue;
+        };
+        let (Some(folder), Some(template)) = (
+            entry.get("folder").and_then(Value::as_str),
+            entry.get("template").and_then(Value::as_str),
+        ) else {
+            warn(
+                plan,
+                source,
+                ImportCategory::Templates,
+                ImportProblem::UnsafeConfiguredPath,
+                Some("folder_templates".to_string()),
+            );
+            continue;
+        };
+        let Ok(folder) = validate_relative(folder, true) else {
+            warn(
+                plan,
+                source,
+                ImportCategory::Templates,
+                ImportProblem::UnsupportedValue,
+                Some("folder".to_string()),
             );
             continue;
         };
@@ -1153,28 +1323,18 @@ fn import_folder_templates(
             );
             continue;
         };
-        let template = if Path::new(&template).extension().is_none() {
-            format!("{template}.md")
-        } else if Path::new(&template)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-        {
-            template
-        } else {
-            warn(
-                plan,
-                source,
-                ImportCategory::Templates,
-                ImportProblem::UnsupportedValue,
-                Some(folder),
-            );
-            continue;
-        };
-        let template = if template_root.is_empty() {
-            template
-        } else {
-            format!("{template_root}/{template}")
+        let template = match resolve_template_reference(root, &template, template_root) {
+            Ok(template) => template,
+            Err(problem) => {
+                warn(
+                    plan,
+                    source,
+                    ImportCategory::Templates,
+                    problem,
+                    Some(folder),
+                );
+                continue;
+            }
         };
         if !validate_existing_path(root, &folder) {
             warn(
@@ -1301,7 +1461,7 @@ fn import_hotkeys(plan: &mut ImportPlan, value: &Value) {
         plan.preview.push(PreviewChange {
             category: ImportCategory::Hotkeys,
             field: "shortcuts".to_string(),
-            value: format!("{} command(s)", plan.hotkeys.len()),
+            value: plan.hotkeys.len().to_string(),
         });
     }
 }
@@ -1310,31 +1470,29 @@ fn map_hotkey_command(source: &str) -> Option<&'static str> {
     let native = match source {
         "app:open-daily-note" => "open_daily_note",
         "editor:save-file" => "save",
-        "app:open-quick-switcher" => "open_file",
+        "app:open-quick-switcher" => "quick_open",
         "global-search:open" => "open_project_search",
         "file-explorer:new-file" => "new_file",
         "editor:toggle-bold" => "toggle_bold",
         "editor:toggle-italic" => "toggle_italic",
-        "editor:toggle-preview" => "view_preview",
         "editor:toggle-source" => "view_source",
         "editor:toggle-split" => "view_split",
         "app:open-settings" => "open_settings",
-        "app:close" => "close_folder",
+        "app:close" => "close_tab",
         _ => return None,
     };
     crate::hotkeys::command(native).map(|_| match native {
         "open_daily_note" => "open_daily_note",
         "save" => "save",
-        "open_file" => "open_file",
+        "quick_open" => "quick_open",
         "open_project_search" => "open_project_search",
         "new_file" => "new_file",
         "toggle_bold" => "toggle_bold",
         "toggle_italic" => "toggle_italic",
-        "view_preview" => "view_preview",
         "view_source" => "view_source",
         "view_split" => "view_split",
         "open_settings" => "open_settings",
-        "close_folder" => "close_folder",
+        "close_tab" => "close_tab",
         _ => unreachable!(),
     })
 }
@@ -1543,7 +1701,7 @@ mod tests {
         write(
             &root,
             ".obsidian/plugins/templater-obsidian/data.json",
-            br#"{"templates_folder":"Templater","enable_folder_templates":true,"folder_templates":{"Notes":"daily"}}"#,
+            br#"{"templates_folder":"Templater","enable_folder_templates":true,"folder_templates":[{"folder":"Notes","template":"daily"}]}"#,
         );
         write(&root, "Templates/daily.md", b"Regular template");
         write(&root, "Templater/daily.md", b"Templater template");
@@ -1569,6 +1727,10 @@ mod tests {
                 .map(String::as_str),
             Some("Templater/daily.md")
         );
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.problem == ImportProblem::Precedence));
 
         write(&root, ".obsidian/community-plugins.json", b"[]");
         let plan = plan_import(&root, &Settings::default()).unwrap();
@@ -1581,6 +1743,64 @@ mod tests {
             Some("Templates/daily.md")
         );
         assert!(!plan.proposed.folder_templates.contains_key("Notes"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabled_folder_templates_and_invalid_filter_arrays_preserve_existing_settings() {
+        let root = fixture();
+        write(
+            &root,
+            ".obsidian/plugins/templater-obsidian/data.json",
+            br#"{"templates_folder":"Templates","trigger_on_file_creation_mode":"none","enable_folder_templates":true,"folder_templates":[{"folder":"Notes","template":"daily"}]}"#,
+        );
+        write(
+            &root,
+            ".obsidian/community-plugins.json",
+            br#"["templater-obsidian"]"#,
+        );
+        write(
+            &root,
+            ".obsidian/app.json",
+            br#"{"userIgnoreFilters":["valid",4]}"#,
+        );
+        write(&root, ".obsidian/daily-notes.json", br#"[]"#);
+        let mut settings = Settings::default();
+        settings.user_ignore_filters = vec!["existing".to_string()];
+        let plan = plan_import(&root, &settings).unwrap();
+        assert!(plan.proposed.folder_templates.is_empty());
+        assert_eq!(plan.proposed.user_ignore_filters, ["existing"]);
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.source == ".obsidian/daily-notes.json"
+                && warning.problem == ImportProblem::InvalidFieldType
+        }));
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.category == ImportCategory::IgnoreFilters
+                && warning.problem == ImportProblem::InvalidFieldType
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn target_validation_checks_only_imported_fields_and_safe_expanded_formats() {
+        let root = fixture();
+        write(
+            &root,
+            ".obsidian/daily-notes.json",
+            br#"{"folder":"Daily","format":"YYYY/MM/DD"}"#,
+        );
+        let mut settings = Settings::default();
+        settings.templates_dir = "../preexisting-invalid".to_string();
+        let plan = plan_import(&root, &settings).unwrap();
+        assert!(plan.validate_targets());
+
+        write(
+            &root,
+            ".obsidian/daily-notes.json",
+            br#"{"folder":"Daily","format":"../outside"}"#,
+        );
+        let plan = plan_import(&root, &settings).unwrap();
+        assert!(!plan.validate_targets());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1749,7 +1969,7 @@ mod tests {
         write(
             &root,
             ".obsidian/hotkeys.json",
-            br#"{"editor:save-file":[{"modifiers":["Mod","Shift"],"key":"S"}],"app:open-daily-note":[],"unknown:run":[{"modifiers":[],"key":"X"}]}"#,
+            br#"{"editor:save-file":[{"modifiers":["Mod","Shift"],"key":"S"}],"app:open-daily-note":[],"app:open-quick-switcher":[{"modifiers":["Mod"],"key":"O"}],"app:close":[{"modifiers":["Mod"],"key":"W"}],"editor:toggle-preview":[{"modifiers":["Mod"],"key":"E"}],"unknown:run":[{"modifiers":[],"key":"X"}]}"#,
         );
         let plan = plan_import(&root, &Settings::default()).unwrap();
         assert_eq!(
@@ -1757,9 +1977,21 @@ mod tests {
             Some(&Some("cmd-shift-s".to_string()))
         );
         assert_eq!(plan.hotkeys.get("open_daily_note"), Some(&None));
+        assert_eq!(
+            plan.hotkeys.get("quick_open"),
+            Some(&Some("cmd-o".to_string()))
+        );
+        assert_eq!(
+            plan.hotkeys.get("close_tab"),
+            Some(&Some("cmd-w".to_string()))
+        );
         assert!(plan.warnings.iter().any(|warning| {
             warning.problem == ImportProblem::UnsupportedCommand
                 && warning.detail.as_deref() == Some("unknown:run")
+        }));
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.problem == ImportProblem::UnsupportedCommand
+                && warning.detail.as_deref() == Some("editor:toggle-preview")
         }));
         fs::remove_dir_all(root).unwrap();
     }

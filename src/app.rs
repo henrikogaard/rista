@@ -3529,7 +3529,12 @@ impl Workspace {
         let root = self.vault.read(cx).root.clone()?;
         let (dir, format) = self.settings.period(period);
         let name = crate::bases::format_moment(date.and_hms_opt(0, 0, 0)?, format);
-        Some(root.join(dir).join(format!("{name}.md")))
+        let relative = if dir.is_empty() {
+            format!("{name}.md")
+        } else {
+            format!("{dir}/{name}.md")
+        };
+        crate::vault_settings_import::checked_vault_path(&root, &relative)
     }
 
     /// The period and a date of the note at `path`, when it is a
@@ -3591,50 +3596,59 @@ impl Workspace {
         template: &str,
         date: chrono::NaiveDateTime,
         cx: &App,
-    ) -> String {
-        let title = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        self.vault
-            .read(cx)
-            .root
-            .as_ref()
-            .and_then(|root| {
-                let selected = self.settings.period_templates.get("daily");
-                let template_path = match selected {
-                    Some(selected) if selected.is_empty() => None,
-                    Some(selected) => {
-                        crate::vault_settings_import::checked_vault_path(root, selected)
-                    }
-                    None => {
-                        let folder = self.settings.templates_dir.trim_matches('/');
-                        let relative = if folder.is_empty() {
-                            template.to_string()
-                        } else {
-                            format!("{folder}/{template}")
-                        };
-                        crate::vault_settings_import::checked_vault_path(root, &relative)
-                    }
-                }?;
-                std::fs::read_to_string(template_path).ok()
-            })
-            .map(|template| {
-                let job = TemplateJob {
-                    template,
-                    path: path.to_path_buf(),
-                    now: date,
-                    frontmatter: None,
-                    selection: String::new(),
-                };
-                let expanded = self.expand_template_for(&job, &[], cx);
-                if expanded.overflowed {
-                    format!("# {}\n\n", title)
-                } else {
-                    expanded.text
+    ) -> Result<String, ()> {
+        let heading = || {
+            Ok(format!(
+                "# {}\n\n",
+                path.file_stem().unwrap_or_default().to_string_lossy()
+            ))
+        };
+        let Some(template_path) = self.vault.read(cx).root.as_ref().and_then(|root| {
+            let selected = self.settings.period_templates.get("daily");
+            let template_path = match selected {
+                Some(selected) if selected.is_empty() => None,
+                Some(selected) => crate::vault_settings_import::checked_vault_path(root, selected),
+                None => {
+                    let folder = self.settings.templates_dir.trim_matches('/');
+                    let relative = if folder.is_empty() {
+                        template.to_string()
+                    } else {
+                        format!("{folder}/{template}")
+                    };
+                    crate::vault_settings_import::checked_vault_path(root, &relative)
                 }
-            })
-            .unwrap_or_else(|| format!("# {}\n\n", title))
+            };
+            template_path
+        }) else {
+            return heading();
+        };
+        let Ok(mut file) = std::fs::File::open(template_path) else {
+            return heading();
+        };
+        let mut bytes = Vec::new();
+        if std::io::Read::take(&mut file, crate::templater::MAX_EXPANSION_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() > crate::templater::MAX_EXPANSION_BYTES
+        {
+            return Err(());
+        }
+        let Ok(template) = String::from_utf8(bytes) else {
+            return heading();
+        };
+        let job = TemplateJob {
+            template,
+            path: path.to_path_buf(),
+            now: date,
+            frontmatter: None,
+            selection: String::new(),
+        };
+        let expanded = self.expand_template_for(&job, &[], cx);
+        if expanded.overflowed {
+            Err(())
+        } else {
+            Ok(expanded.text)
+        }
     }
 
     pub(crate) fn open_daily_at(
@@ -3731,18 +3745,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !path.exists()
-            && (path
+        if !path.exists() {
+            let seed = match self.template_seed(
+                path,
+                "daily.md",
+                chrono::Local::now().naive_local(),
+                cx,
+            ) {
+                Ok(seed) => seed,
+                Err(()) => {
+                    self.note_status(
+                        self.tr(
+                            "Template output exceeded the size limit; the note was not created.",
+                            "Malutdata overskred størrelsesgrensen; notatet ble ikke opprettet.",
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+            };
+            if path
                 .parent()
                 .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(
-                    path,
-                    self.template_seed(path, "daily.md", chrono::Local::now().naive_local(), cx),
-                )
-                .is_err())
-        {
-            self.note_status("Could not create daily note", cx);
-            return;
+                || std::fs::write(path, seed).is_err()
+            {
+                self.note_status("Could not create daily note", cx);
+                return;
+            }
         }
         let line = format!("- {text}");
         if let Some(doc) = self
@@ -5241,21 +5270,39 @@ impl Workspace {
             );
             return;
         };
-        let plan = match crate::vault_settings_import::plan_import(&root, &self.settings) {
+        let mut plan = match crate::vault_settings_import::plan_import(&root, &self.settings) {
             Ok(plan) => plan,
             Err(error) => {
+                let (message, detail) =
+                    if let Some(detail) = error.strip_prefix("Could not resolve vault: ") {
+                        (
+                            self.tr("Could not resolve the vault.", "Hvelvet kunne ikke finnes."),
+                            Some(detail),
+                        )
+                    } else {
+                        (
+                            self.tr(
+                                "The selected vault is not a folder.",
+                                "Det valgte hvelvet er ikke en mappe.",
+                            ),
+                            None,
+                        )
+                    };
                 self.show_vault_import_report(
                     self.tr(
                         "Vault settings could not be inspected.",
                         "Hvelvinnstillingene kunne ikke undersøkes.",
                     ),
-                    vec![error],
+                    std::iter::once(message.to_string())
+                        .chain(detail.map(str::to_string))
+                        .collect(),
                     window,
                     cx,
                 );
                 return;
             }
         };
+        plan.hotkey_baseline = crate::hotkeys::imported_bindings_snapshot(cx, &plan.hotkeys);
         if first_offer && !plan.has_sources() {
             return;
         }
@@ -5286,11 +5333,21 @@ impl Workspace {
             );
         } else {
             for change in &plan.preview {
+                let value = match (change.category, change.value.as_str()) {
+                    (crate::vault_settings_import::ImportCategory::Bookmarks, count) => {
+                        format!("{} {}", count, language.text("items", "elementer"))
+                    }
+                    (crate::vault_settings_import::ImportCategory::Hotkeys, count) => {
+                        format!("{} {}", count, language.text("commands", "kommandoer"))
+                    }
+                    (_, "(none)") => language.text("(none)", "(ingen)").to_string(),
+                    (_, value) => value.to_string(),
+                };
                 rows.push(format!(
                     "{} — {}: {}",
                     Self::import_category_label(change.category, language),
-                    change.field,
-                    change.value
+                    Self::import_field_label(&change.field, language),
+                    value
                 ));
             }
         }
@@ -5385,7 +5442,6 @@ impl Workspace {
                                     move |window, cx| {
                                         view.update(cx, |this, cx| {
                                             this.apply_vault_import_plan(&plan, &root, window, cx);
-                                            this.refocus(window, cx);
                                         });
                                     }
                                 });
@@ -5425,6 +5481,42 @@ impl Workspace {
             Hotkeys => language.text("Shortcuts", "Snarveier"),
             CommunityPlugins => language.text("Plugins", "Programtillegg"),
         }
+    }
+
+    fn import_field_label(field: &str, language: Language) -> String {
+        if let Some(folder) = field.strip_prefix("folder template ") {
+            return format!("{} {folder}", language.text("Folder template", "Mappemal"));
+        }
+        match field {
+            "folder" | "templates folder" => language.text("Folder", "Mappe"),
+            "daily template" => language.text("Daily template", "Daglig mal"),
+            "weekly template" => language.text("Weekly template", "Ukentlig mal"),
+            "monthly template" => language.text("Monthly template", "Månedlig mal"),
+            "quarterly template" => language.text("Quarterly template", "Kvartalsmal"),
+            "yearly template" => language.text("Yearly template", "Årlig mal"),
+            "format" => language.text("Format", "Format"),
+            "daily directory" => language.text("Daily folder", "Daglig mappe"),
+            "weekly directory" => language.text("Weekly folder", "Ukentlig mappe"),
+            "monthly directory" => language.text("Monthly folder", "Månedlig mappe"),
+            "quarterly directory" => language.text("Quarterly folder", "Kvartalsmappe"),
+            "yearly directory" => language.text("Yearly folder", "Årlig mappe"),
+            "daily format" => language.text("Daily format", "Daglig format"),
+            "weekly format" => language.text("Weekly format", "Ukentlig format"),
+            "monthly format" => language.text("Monthly format", "Månedlig format"),
+            "quarterly format" => language.text("Quarterly format", "Kvartalsformat"),
+            "yearly format" => language.text("Yearly format", "Årlig format"),
+            "attachments directory" => language.text("Attachments folder", "Vedleggsmappe"),
+            "link format" => language.text("Link format", "Lenkeformat"),
+            "ignore filters" => language.text("Ignore filters", "Ignoreringsfiltre"),
+            "shortcuts" => language.text("Shortcuts", "Snarveier"),
+            "newLinkFormat" => language.text("Link format", "Lenkeformat"),
+            "userIgnoreFilters" => language.text("Ignore filters", "Ignoreringsfiltre"),
+            "enabled community plugins" => {
+                language.text("Enabled plugins", "Aktiverte programtillegg")
+            }
+            _ => language.text("Setting", "Innstilling"),
+        }
+        .to_string()
     }
 
     fn import_warning_label(
@@ -5471,6 +5563,10 @@ impl Workspace {
                 "contains an unsupported command",
                 "inneholder en handling som ikke støttes",
             ),
+            Precedence => language.text(
+                "the active template folder takes precedence, so this folder was ignored",
+                "den aktive malmappen har prioritet, så denne mappen ble ignorert",
+            ),
         };
         let mut label = format!(
             "{}: {} ({})",
@@ -5511,11 +5607,23 @@ impl Workspace {
             );
             return;
         }
+        if crate::hotkeys::imported_bindings_snapshot(cx, &plan.hotkeys) != plan.hotkey_baseline {
+            self.show_vault_import_report(
+                language.text(
+                    "Shortcuts changed after preview. Nothing was imported; review a new preview.",
+                    "Snarveier ble endret etter forhåndsvisningen. Ingenting ble importert; gå gjennom en ny forhåndsvisning.",
+                ),
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
         let latest = cx
             .global::<crate::windows::WindowManager>()
             .settings
             .clone();
-        let mut proposed = latest.clone();
+        let mut proposed = crate::windows::with_local_settings(latest.clone(), &self.settings);
         if plan.apply_settings(&mut proposed).is_err() {
             self.show_vault_import_report(
                 language.text(
@@ -5661,7 +5769,7 @@ impl Workspace {
             .global::<crate::windows::WindowManager>()
             .settings
             .clone();
-        let mut proposed = latest.clone();
+        let mut proposed = crate::windows::with_local_settings(latest.clone(), &self.settings);
         proposed.vault_settings_import_dismissed.push(key);
         match crate::windows::publish_checked(self.window_id, &latest, &proposed, cx) {
             Ok(saved) => {
@@ -5691,18 +5799,38 @@ impl Workspace {
         let language = self.settings.language;
         let ok = language.text("OK", "OK");
         let title = title.into();
+        let scroll = ScrollHandle::new();
+        let view = cx.entity();
         window.open_alert_dialog(cx, move |dialog, _, _| {
-            let body = v_flex().gap_2().children(
-                lines
-                    .iter()
-                    .cloned()
-                    .map(|line| div().flex_none().child(line)),
-            );
+            let body = div()
+                .id("vault-settings-import-report")
+                .h(px(300.))
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .child(
+                    v_flex().w_full().gap_2().children(
+                        lines
+                            .iter()
+                            .cloned()
+                            .map(|line| div().flex_none().child(line)),
+                    ),
+                )
+                .vertical_scrollbar(&scroll);
             dialog
                 .title(title.clone())
                 .w(px(520.))
                 .ok_text(ok)
                 .child(body)
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let view = view.clone();
+                        window.defer(cx, move |window, cx| {
+                            view.update(cx, |this, cx| this.refocus(window, cx));
+                        });
+                    }
+                })
         });
     }
 
@@ -5955,7 +6083,33 @@ impl Workspace {
                         (
                             range.clone(),
                             if moved {
-                                crate::vault::retarget_link_full(&text[range], &wiki_rel)
+                                if crate::vault::is_relative_link_path(&text[range.clone()]) {
+                                    vault
+                                        .root
+                                        .as_deref()
+                                        .and_then(|root| {
+                                            crate::vault::relative_link_path_for(
+                                                root, note, &new_path,
+                                            )
+                                        })
+                                        .map(|relative| {
+                                            crate::vault::retarget_link_path(
+                                                &text[range.clone()],
+                                                &relative,
+                                            )
+                                        })
+                                        .unwrap_or_else(|| {
+                                            crate::vault::retarget_link_full(
+                                                &text[range.clone()],
+                                                &wiki_rel,
+                                            )
+                                        })
+                                } else {
+                                    crate::vault::retarget_link_full(
+                                        &text[range.clone()],
+                                        &wiki_rel,
+                                    )
+                                }
                             } else {
                                 crate::vault::retarget_link(&text[range], &link_name)
                             },
@@ -5973,9 +6127,39 @@ impl Workspace {
                                 (
                                     range.clone(),
                                     if moved {
-                                        crate::vault::retarget_md_link_full(&text[range], &link_rel)
+                                        if crate::vault::is_relative_link_path(&text[range.clone()])
+                                        {
+                                            vault
+                                                .root
+                                                .as_deref()
+                                                .and_then(|root| {
+                                                    crate::vault::relative_link_path_for(
+                                                        root, note, &new_path,
+                                                    )
+                                                })
+                                                .map(|relative| {
+                                                    crate::vault::retarget_md_link_path(
+                                                        &text[range.clone()],
+                                                        &relative,
+                                                    )
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    crate::vault::retarget_md_link_full(
+                                                        &text[range.clone()],
+                                                        &link_rel,
+                                                    )
+                                                })
+                                        } else {
+                                            crate::vault::retarget_md_link_full(
+                                                &text[range.clone()],
+                                                &link_rel,
+                                            )
+                                        }
                                     } else {
-                                        crate::vault::retarget_md_link(&text[range], &file_name)
+                                        crate::vault::retarget_md_link(
+                                            &text[range.clone()],
+                                            &file_name,
+                                        )
                                     },
                                 )
                             }),
@@ -7130,7 +7314,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(text) = template.and_then(|t| std::fs::read_to_string(t).ok()) else {
+        let Some(template) = template else {
             let title = path
                 .file_stem()
                 .unwrap_or_default()
@@ -7145,6 +7329,45 @@ impl Workspace {
             self.write_new_note(path, heading, window, cx);
             return;
         };
+        let Ok(mut file) = std::fs::File::open(template) else {
+            let title = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            self.write_new_note(
+                path,
+                crate::templater::Expanded {
+                    text: format!("# {title}\n\n"),
+                    cursor: None,
+                    unsupported: 0,
+                    overflowed: false,
+                },
+                window,
+                cx,
+            );
+            return;
+        };
+        let mut bytes = Vec::new();
+        let bounded =
+            std::io::Read::take(&mut file, crate::templater::MAX_EXPANSION_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .is_ok()
+                && bytes.len() <= crate::templater::MAX_EXPANSION_BYTES;
+        let Ok(text) = String::from_utf8(bytes) else {
+            self.note_status("Could not read the template", cx);
+            return;
+        };
+        if !bounded {
+            self.note_status(
+                self.tr(
+                    "Template output exceeded the size limit; the note was not created.",
+                    "Malutdata overskred størrelsesgrensen; notatet ble ikke opprettet.",
+                ),
+                cx,
+            );
+            return;
+        }
         let job = TemplateJob {
             template: text,
             path: path.clone(),
@@ -7202,8 +7425,12 @@ impl Workspace {
         if expanded.unsupported > 0 {
             self.note_status(
                 format!(
-                    "{} template command(s) left as written — Rísta runs no scripts",
-                    expanded.unsupported
+                    "{} {}",
+                    expanded.unsupported,
+                    self.tr(
+                        "template command(s) were left as written; scripts are not run.",
+                        "malhandling(er) ble stående uendret; skript kjøres ikke.",
+                    )
                 ),
                 cx,
             );
@@ -7228,6 +7455,10 @@ impl Workspace {
                   window: &mut Window,
                   cx: &mut Context<Self>| {
                 let expanded = this.expand_template_for(&job, &answers, cx);
+                if expanded.overflowed {
+                    this.warn_unsupported(&expanded, cx);
+                    return;
+                }
                 then(this, expanded, window, cx);
             },
         ))));

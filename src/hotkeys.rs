@@ -972,6 +972,16 @@ pub(crate) fn apply_imported_bindings(
     commit_config(cx, config)
 }
 
+pub(crate) fn imported_bindings_snapshot(
+    cx: &App,
+    imported: &BTreeMap<String, Option<String>>,
+) -> BTreeMap<String, Option<String>> {
+    imported
+        .keys()
+        .map(|id| (id.clone(), shortcut(cx, id)))
+        .collect()
+}
+
 fn merge_imported_config(
     mut config: KeymapConfig,
     imported: &BTreeMap<String, Option<String>>,
