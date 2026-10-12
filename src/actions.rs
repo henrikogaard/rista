@@ -7,6 +7,7 @@ actions!(
     [
         // File
         NewFile,
+        NewCanvas,
         NewWindow,
         OpenInNewWindow,
         NewFolder,

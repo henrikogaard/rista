@@ -26,7 +26,7 @@ impl EventEmitter<VaultEvent> for Vault {}
 pub struct Vault {
     pub root: Option<PathBuf>,
     pub tree: Entity<TreeState>,
-    /// Flattened list of every `.md` and `.base` file in the vault,
+    /// Flattened list of every `.md`, `.base`, and `.canvas` file in the vault,
     /// sorted.
     pub notes: Vec<PathBuf>,
     /// Image files indexed by lowercase file name — the reference editor resolves
@@ -174,7 +174,10 @@ impl Vault {
         let tpl_root = root.join(&self.templates_dir);
         let content: Vec<PathBuf> = notes
             .iter()
-            .filter(|p| !p.starts_with(&tpl_root))
+            .filter(|p| {
+                !p.starts_with(&tpl_root)
+                    && p.extension().and_then(|extension| extension.to_str()) == Some("md")
+            })
             .cloned()
             .collect();
         self.tags = crate::properties::vault_tags(&content);
@@ -1017,7 +1020,7 @@ fn collect_files(root: &Path) -> FileIndex {
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase());
             match ext.as_deref() {
-                Some("md") | Some("base") => files.notes.push(path),
+                Some("md") | Some("base") | Some("canvas") => files.notes.push(path),
                 _ => {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         files

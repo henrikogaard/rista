@@ -314,6 +314,7 @@ pub(crate) enum PaletteCmd {
     NewWindow,
     OpenInNewWindow,
     NewFile,
+    NewCanvas,
     NewFolder,
     OpenFile,
     OpenFolder,
@@ -416,6 +417,7 @@ impl PaletteCmd {
         Self::NewWindow,
         Self::OpenInNewWindow,
         Self::NewFile,
+        Self::NewCanvas,
         Self::NewUniqueNote,
         Self::NewFromTemplate,
         Self::NewBase,
@@ -519,6 +521,7 @@ impl PaletteCmd {
             NewWindow => "new_window",
             OpenInNewWindow => "open_in_new_window",
             NewFile => "new_file",
+            NewCanvas => "new_canvas",
             NewUniqueNote => "new_unique_note",
             NewFromTemplate => "new_from_template",
             NewBase => "new_base",
@@ -627,6 +630,7 @@ impl PaletteCmd {
             NewWindow => "Nytt vindu",
             OpenInNewWindow => "Åpne i nytt vindu",
             NewFile => "Ny fil",
+            NewCanvas => "Nytt lerret",
             NewUniqueNote => "Nytt unikt notat",
             NewFromTemplate => "Nytt notat fra mal",
             NewBase => "Ny base",
@@ -755,6 +759,11 @@ impl PaletteCmd {
                 &["open", "document", "window"],
             ),
             NewFile => (assets::IconName::FilePlus, "New file", &["create", "note"]),
+            NewCanvas => (
+                assets::IconName::FilePlus,
+                "New Canvas",
+                &["create", "board", "canvas"],
+            ),
             NewBase => (
                 assets::IconName::Database,
                 "New base",
@@ -1734,9 +1743,23 @@ impl Workspace {
                     .icon(assets::IconName::FilePlus)
                     .on_click({
                         let view = view.clone();
+                        let dir = dir.clone();
                         move |_, window, cx| {
                             view.update(cx, |this, cx| {
                                 this.new_file_in(dir.clone(), window, cx);
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(language.text("New Canvas here", "Nytt Canvas her"))
+                    .icon(assets::IconName::FilePlus)
+                    .on_click({
+                        let view = view.clone();
+                        let dir = dir.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.new_canvas_in(dir.clone(), window, cx);
                             });
                         }
                     }),
@@ -1973,6 +1996,13 @@ impl Workspace {
             self.focus_handle.focus(window, cx);
             return;
         }
+        if let Some(doc) = self.active_doc() {
+            if let Some(canvas) = doc.read(cx).canvas_view.clone() {
+                canvas.read(cx).focus_handle(cx).focus(window, cx);
+                cx.notify();
+                return;
+            }
+        }
         // In Preview (and on image docs) no editor is mounted — its
         // focus handle is dead weight and ⌘ bindings go nowhere, so
         // the workspace itself takes focus.
@@ -1995,6 +2025,14 @@ impl Workspace {
 
     fn focus_active_pane_after_mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
+        if let Some(doc) = self.active_doc() {
+            if let Some(canvas) = doc.read(cx).canvas_view.clone() {
+                canvas.read(cx).focus_handle(cx).focus(window, cx);
+                self.pending_editor_focus = None;
+                cx.notify();
+                return;
+            }
+        }
         self.pending_editor_focus = self.active_doc().and_then(|doc| {
             (self.graph.is_none()
                 && self.folder.is_none()
@@ -2046,6 +2084,16 @@ impl Workspace {
         if let Some(graph) = self.graph.clone() {
             graph.update(cx, |g, cx| g.focus_filter(window, cx));
             return;
+        }
+        if let Some(doc) = self
+            .active_doc()
+            .filter(|doc| doc.read(cx).is_canvas)
+            .cloned()
+        {
+            if let Some(canvas) = doc.read(cx).canvas_view.clone() {
+                canvas.update(cx, |canvas, cx| canvas.begin_search(window, cx));
+                return;
+            }
         }
         if let Some(pdf) = self.active_doc().and_then(|doc| doc.read(cx).pdf.clone()) {
             pdf.update(cx, |pdf, cx| pdf.focus_search(window, cx));
@@ -2467,6 +2515,24 @@ impl Workspace {
         let is_standalone = vault_root.is_none();
         let doc = cx
             .new(|cx| Document::open(vault_root, &settings, resolver, vault, initial, window, cx));
+        if doc.read(cx).is_canvas {
+            let workspace = cx.entity().downgrade();
+            let document = doc.clone();
+            let language = settings.language;
+            let vault = self.vault.clone();
+            let properties_visibility = settings.properties_visibility;
+            let canvas_view = cx.new(|cx| {
+                crate::canvas_view::CanvasView::new(
+                    document,
+                    workspace,
+                    vault,
+                    language,
+                    properties_visibility,
+                    cx,
+                )
+            });
+            doc.update(cx, |doc, _| doc.canvas_view = Some(canvas_view));
+        }
         let sub = cx.subscribe_in(
             &doc,
             window,
@@ -2510,7 +2576,12 @@ impl Workspace {
                 }
             },
         );
-        let editor_focus = doc.read(cx).editor.read(cx).focus_handle(cx);
+        let editor_focus = doc
+            .read(cx)
+            .canvas_view
+            .clone()
+            .map(|view| view.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| doc.read(cx).editor.read(cx).focus_handle(cx));
         let focused_document_id = doc.entity_id();
         let focus_sub = cx.on_focus_in(
             &editor_focus,
@@ -2628,7 +2699,12 @@ impl Workspace {
         self.focus_handle.focus(window, cx);
         cx.notify();
 
-        self.pending_editor_focus = Some((doc, None));
+        if let Some(canvas) = doc.read(cx).canvas_view.clone() {
+            canvas.read(cx).focus_handle(cx).focus(window, cx);
+            self.pending_editor_focus = None;
+        } else {
+            self.pending_editor_focus = Some((doc, None));
+        }
     }
 
     /// Browser-style history: every activation truncates anything past
@@ -3318,6 +3394,65 @@ impl Workspace {
             return;
         };
         self.new_file_in(root, window, cx);
+    }
+
+    fn on_new_canvas(&mut self, _: &NewCanvas, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.on_open_folder(&OpenFolder, window, cx);
+            return;
+        };
+        self.new_canvas_in(root, window, cx);
+    }
+
+    pub(crate) fn new_canvas_in(
+        &mut self,
+        dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut index = 0;
+        loop {
+            let name = if index == 0 {
+                "Untitled.canvas".to_string()
+            } else {
+                format!("Untitled {index}.canvas")
+            };
+            let path = dir.join(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    if std::io::Write::write_all(&mut file, br#"{"nodes":[],"edges":[]}"#).is_err()
+                    {
+                        let _ = std::fs::remove_file(&path);
+                        self.note_status(
+                            self.settings
+                                .language
+                                .text("Could not create Canvas.", "Kunne ikke opprette Canvas."),
+                            cx,
+                        );
+                        return;
+                    }
+                    self.vault.update(cx, |vault, cx| vault.refresh(cx));
+                    self.open_document(path, window, cx);
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    index += 1;
+                }
+                Err(_) => {
+                    self.note_status(
+                        self.settings
+                            .language
+                            .text("Could not create Canvas.", "Kunne ikke opprette Canvas."),
+                        cx,
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     /// Create a uniquely-named empty note in `dir` and open it.
@@ -4807,6 +4942,7 @@ impl Workspace {
                 window.dispatch_action(OpenInNewWindow.boxed_clone(), cx)
             }
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
+            PaletteCmd::NewCanvas => self.on_new_canvas(&NewCanvas, window, cx),
             PaletteCmd::NewBase => self.new_base(window, cx),
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
             PaletteCmd::OpenFile => self.on_open_file(&OpenFile, window, cx),
@@ -7296,6 +7432,10 @@ impl Workspace {
         self.settings.language
     }
 
+    pub(crate) fn canvas_language(&self) -> crate::settings::Language {
+        self.settings.language
+    }
+
     pub(crate) fn search_service(&self) -> SearchService {
         self.search_service.clone()
     }
@@ -9597,6 +9737,77 @@ impl Workspace {
         mode: ViewMode,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if doc.read(cx).is_canvas {
+            let content = doc
+                .read(cx)
+                .canvas_view
+                .clone()
+                .map(|view| view.into_any_element())
+                .unwrap_or_else(|| {
+                    div()
+                        .size_full()
+                        .child(self.tr(
+                            "Canvas view is unavailable.",
+                            "Canvas-visningen er utilgjengelig.",
+                        ))
+                        .into_any_element()
+                });
+            if !doc.read(cx).conflict {
+                return content;
+            }
+            let reload_doc = doc.clone();
+            return v_flex()
+                .size_full()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_h(px(36.))
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .px_3()
+                        .bg(cx.theme().warning.opacity(0.12))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(cx.theme().warning)
+                                .child(self.tr(
+                                    "Changed on disk — saving paused",
+                                    "Filen er endret på disk — lagring er satt på pause",
+                                )),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    Button::new("canvas-conflict-save-copy")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(self.tr("Save copy…", "Lagre kopi…"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.on_save_as(&SaveFileAs, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("canvas-conflict-reload")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(self.tr("Reload from disk", "Last inn fra disk"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.confirm_reload_from_disk(
+                                                reload_doc.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        })),
+                                ),
+                        ),
+                )
+                .child(div().flex_1().min_h_0().child(content))
+                .into_any_element();
+        }
         if let Some(pdf) = doc.read(cx).pdf.clone() {
             return div().size_full().child(pdf).into_any_element();
         }
@@ -10806,6 +11017,7 @@ impl Render for Workspace {
             .key_context("Rista")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_new_file))
+            .on_action(cx.listener(Self::on_new_canvas))
             .on_action(cx.listener(Self::on_new_folder))
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_open_folder))

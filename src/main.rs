@@ -10,6 +10,9 @@ mod agent;
 mod app;
 mod bases;
 mod bookmarks;
+mod canvas;
+mod canvas_history;
+mod canvas_view;
 mod decorations;
 mod document;
 mod editor_layout;
@@ -228,6 +231,13 @@ fn menus(language: settings::Language) -> Vec<Menu> {
             MenuItem::Action {
                 name: "New File".into(),
                 action: Box::new(NewFile),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: language.text("New Canvas", "Nytt lerret").into(),
+                action: Box::new(NewCanvas),
                 os_action: None,
                 checked: false,
                 disabled: false,

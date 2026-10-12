@@ -148,7 +148,7 @@ impl SearchService {
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| {
-                    ["md", "markdown", "base"]
+                    ["md", "markdown", "base", "canvas"]
                         .iter()
                         .any(|known| extension.eq_ignore_ascii_case(known))
                 });
@@ -182,7 +182,9 @@ impl SearchService {
                     path: path.clone(),
                     relative_path,
                     count: evaluation.occurrences,
-                    first_line: evaluation.first_line,
+                    first_line: (crate::file_preview::extension(path) != "canvas")
+                        .then_some(evaluation.first_line)
+                        .flatten(),
                     modified: document.modified,
                     created: document.created,
                 });
@@ -279,6 +281,11 @@ impl SearchService {
             return SearchDocument::path_only(path, relative_path)
                 .with_times(modified, metadata.created().ok());
         };
+        let content = if crate::file_preview::extension(path) == "canvas" {
+            canvas_search_projection(&content)
+        } else {
+            content
+        };
         let properties = if requirements.parse_properties {
             Some(properties::properties(&content))
         } else {
@@ -356,6 +363,12 @@ impl SearchService {
             }
         }
     }
+}
+
+fn canvas_search_projection(raw: &str) -> String {
+    crate::canvas::CanvasDocument::parse(raw)
+        .map(|canvas| canvas.search_projection())
+        .unwrap_or_default()
 }
 
 fn is_cancelled(cancellation: &Option<(Arc<AtomicU64>, u64)>) -> bool {

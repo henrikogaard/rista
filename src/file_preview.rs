@@ -18,7 +18,10 @@ pub fn extension(path: &Path) -> String {
 }
 
 pub fn is_document(path: &Path) -> bool {
-    matches!(extension(path).as_str(), "md" | "markdown" | "base")
+    matches!(
+        extension(path).as_str(),
+        "md" | "markdown" | "base" | "canvas"
+    )
 }
 
 pub fn visible(path: &Path, show_other_files: bool) -> bool {
