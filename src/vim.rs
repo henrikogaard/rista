@@ -1286,11 +1286,7 @@ impl VimState {
     ) -> Outcome {
         let range = clamp_range(text, range);
         let range = if operator == Operator::Change && linewise {
-            let end = range
-                .end
-                .checked_sub(1)
-                .map(|offset| line_end(text, offset))
-                .unwrap_or(range.end);
+            let end = line_end(text, previous_boundary(text, range.end));
             range.start..end.max(range.start)
         } else {
             range
@@ -2685,6 +2681,9 @@ mod tests {
                         cursor: _,
                         selection: next_selection,
                     } => {
+                        assert!(next_selection.start <= next_selection.end);
+                        assert!(text.is_char_boundary(next_selection.start));
+                        assert!(text.is_char_boundary(next_selection.end));
                         *cursor = next_selection.end;
                         selection = next_selection;
                     }
@@ -3133,6 +3132,101 @@ mod tests {
         run(&mut engine, &mut text, &mut cursor, "gg");
         run(&mut engine, &mut text, &mut cursor, ".");
         assert!(text.is_char_boundary(cursor));
+    }
+
+    #[test]
+    fn unicode_line_changes_preserve_following_content() {
+        for command in ["cc", "Vc"] {
+            let mut engine =
+                VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+            let mut text = "nå🙂\nnext".to_string();
+            let mut cursor = 0;
+            run(&mut engine, &mut text, &mut cursor, command);
+            run(&mut engine, &mut text, &mut cursor, "new");
+            run(&mut engine, &mut text, &mut cursor, "Escape");
+            assert_eq!(text, "new\nnext");
+        }
+    }
+
+    #[test]
+    fn command_sequences_preserve_utf8_ranges() {
+        let corpus = [
+            "",
+            "å🙂",
+            "one\n\nβ🙂",
+            "(a[β]) end",
+            "\"\"",
+            "e\u{301} foo\nbar",
+        ];
+        let commands = [
+            "i",
+            "a",
+            "I",
+            "A",
+            "o",
+            "O",
+            "Escape",
+            "Enter",
+            "Backspace",
+            "h",
+            "j",
+            "k",
+            "l",
+            "w",
+            "b",
+            "e",
+            "gg",
+            "G",
+            "0",
+            "$",
+            "^",
+            "d",
+            "c",
+            "y",
+            "cc",
+            "ciw",
+            "diw",
+            "cw",
+            "v",
+            "V",
+            "f",
+            "t",
+            "%",
+            ".",
+            "1",
+            "2",
+            "p",
+            "P",
+            "x",
+            "X",
+            "\"",
+            "_",
+            "å",
+            "🙂",
+            "e\u{301}",
+        ];
+        let mut seed = 0x5eed_u64;
+        for sequence in 0..128 {
+            let mut engine =
+                VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+            let mut text = corpus[sequence % corpus.len()].to_string();
+            let mut cursor = 0;
+            for _ in 0..64 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                run(
+                    &mut engine,
+                    &mut text,
+                    &mut cursor,
+                    commands[seed as usize % commands.len()],
+                );
+                assert!(text.is_char_boundary(cursor));
+                if text.len() > 2048 {
+                    break;
+                }
+            }
+        }
     }
 
     #[test]
