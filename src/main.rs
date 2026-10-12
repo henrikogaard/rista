@@ -23,6 +23,7 @@ mod graph_layout;
 mod history;
 mod hotkeys;
 mod http;
+mod image_resize;
 mod math;
 mod mermaid;
 mod note_icons;

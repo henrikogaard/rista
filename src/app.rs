@@ -8856,6 +8856,7 @@ impl Workspace {
             views: embeds,
             query_views: query_embeds,
             pdf_views: doc.read(cx).pdf_embeds.clone(),
+            images: Some(doc.read(cx).image_preview.clone()),
             doc_path: Some(doc_path),
             depth: 0,
         };

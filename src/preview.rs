@@ -39,6 +39,7 @@ pub struct PreviewCtx {
     pub views: EmbedViews,
     pub query_views: QueryEmbedViews,
     pub pdf_views: PdfEmbedViews,
+    pub(crate) images: Option<crate::image_resize::ImagePreview>,
     /// The note being rendered — bound as `this` in ```` ```base ````
     /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
@@ -70,7 +71,9 @@ pub fn extensions(
             folds: folds.clone(),
             ctx: ctx.cloned(),
         })
-        .plugin(LocalImagePlugin)
+        .plugin(LocalImagePlugin {
+            ctx: doc_anchored.then(|| ctx.cloned()).flatten(),
+        })
         .plugin(NoteIconPlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin)
@@ -255,6 +258,18 @@ pub fn preprocess_mapped(
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
     marks: &MarkColors,
 ) -> (String, Vec<usize>) {
+    let (text, lines, _) =
+        preprocess_with_images(source, doc_path, vault_root, image_resolver, marks);
+    (text, lines)
+}
+
+pub(crate) fn preprocess_with_images(
+    source: &str,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
+    image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+    marks: &MarkColors,
+) -> (String, Vec<usize>, Vec<crate::image_resize::SourceImage>) {
     let doc_dir = doc_path
         .parent()
         .map(|p| p.to_path_buf())
@@ -267,8 +282,12 @@ pub fn preprocess_mapped(
     let mut in_comment = false;
     let mut in_columns = false;
     let mut line_offsets = Vec::new();
+    let mut images = Vec::new();
+    let mut source_offset = 0;
 
     for (index, line) in source.split_inclusive('\n').enumerate() {
+        let line_start = source_offset;
+        source_offset += line.len();
         line_offsets.push(out.len());
         let trimmed = line.trim_start();
         // YAML frontmatter is untouched — wikilinks in `banner:` etc. are data.
@@ -310,15 +329,20 @@ pub fn preprocess_mapped(
             } else if colon_fence(trimmed).is_some_and(|n| n == "column") {
                 out.push_str(":::colsep:::\n");
             } else {
-                out.push_str(&rewrite_line(
-                    line,
-                    doc_dir,
-                    doc_path,
-                    vault_root,
-                    image_resolver,
-                    marks,
-                    &mut in_comment,
-                ));
+                append_rewritten(
+                    &mut out,
+                    &mut images,
+                    line_start,
+                    rewrite_line(
+                        line,
+                        doc_dir,
+                        doc_path,
+                        vault_root,
+                        image_resolver,
+                        marks,
+                        &mut in_comment,
+                    ),
+                );
             }
             continue;
         }
@@ -337,13 +361,27 @@ pub fn preprocess_mapped(
             marks,
             &mut in_comment,
         );
-        out.push_str(&line);
+        append_rewritten(&mut out, &mut images, line_start, line);
     }
     if in_columns {
         out.push_str("```\n");
     }
     line_offsets.push(out.len());
-    (out, line_offsets)
+    (out, line_offsets, images)
+}
+
+fn append_rewritten(
+    out: &mut String,
+    images: &mut Vec<crate::image_resize::SourceImage>,
+    source_start: usize,
+    (text, spans): (String, Vec<crate::image_resize::SourceImage>),
+) {
+    images.extend(spans.into_iter().map(|mut span| {
+        span.source = span.source.start + source_start..span.source.end + source_start;
+        span.preview = span.preview.start + out.len()..span.preview.end + out.len();
+        span
+    }));
+    out.push_str(&text);
 }
 
 /// `::: name` fence marker — accepts `::: columns`, `:::columns` and
@@ -353,6 +391,45 @@ mod navigation_tests {
     use super::{
         headings, match_navigation_blocks, navigation_blocks, preprocess_mapped, slice_section,
     };
+
+    #[test]
+    fn image_resize_source_map_tracks_duplicate_images_after_rewrites() {
+        let source = "---\nbanner: '![[skip.png]]'\n---\n#tag ø ![[pic.png|60]] ![[pic.png|60]] ![alt|50](https://example.invalid/pic(1).png \"a ) title\")\n`![[code.png]]` \\![[escaped.png]] %% ![[hidden.png]] %%\n```\n![[fenced.png]]\n```\n";
+        let marks = super::MarkColors {
+            plain: String::new(),
+            colors: std::array::from_fn(|_| String::new()),
+        };
+        let (rendered, _, spans) = super::preprocess_with_images(
+            source,
+            std::path::Path::new("/vault/note.md"),
+            Some(std::path::Path::new("/vault")),
+            &|name| Some(std::path::Path::new("/vault").join(name)),
+            &marks,
+        );
+        assert_eq!(spans.len(), 3);
+        assert_eq!(&source[spans[0].source.clone()], "![[pic.png|60]]");
+        assert_eq!(&source[spans[1].source.clone()], "![[pic.png|60]]");
+        assert!(spans[0].source.end <= spans[1].source.start);
+        for span in &spans {
+            assert_eq!(&rendered[span.preview.clone()], span.rendered);
+        }
+        fn collect(node: &markdown::mdast::Node, spans: &mut Vec<std::ops::Range<usize>>) {
+            if let markdown::mdast::Node::Image(image) = node {
+                let p = image.position.as_ref().unwrap();
+                spans.push(p.start.offset..p.end.offset);
+            }
+            for child in node.children().into_iter().flatten() {
+                collect(child, spans);
+            }
+        }
+        let tree = markdown::to_mdast(&rendered, &markdown::ParseOptions::default()).unwrap();
+        let mut parsed = Vec::new();
+        collect(&tree, &mut parsed);
+        assert_eq!(
+            parsed,
+            spans.iter().map(|s| s.preview.clone()).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn block_embeds_resolve_inline_and_standalone_ids() {
@@ -529,8 +606,9 @@ fn rewrite_line(
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
     marks: &MarkColors,
     in_comment: &mut bool,
-) -> String {
+) -> (String, Vec<crate::image_resize::SourceImage>) {
     let mut out = String::with_capacity(line.len() + 32);
+    let mut images = Vec::new();
     let bytes = line.as_bytes();
     let mut i = 0;
     let mut in_code = false;
@@ -546,6 +624,15 @@ fn rewrite_line(
                 i += 2;
             } else {
                 i += ch.len_utf8();
+            }
+            continue;
+        }
+        if ch == '\\' {
+            out.push(ch);
+            i += 1;
+            if let Some(next) = line[i..].chars().next() {
+                out.push(next);
+                i += next.len_utf8();
             }
             continue;
         }
@@ -578,9 +665,30 @@ fn rewrite_line(
         if line[i..].starts_with("![[") {
             if let Some(end) = line[i..].find("]]") {
                 let inner = &line[i + 3..i + end];
-                out.push_str(&render_embed(inner, doc_dir, image_resolver));
+                let rendered = render_embed(inner, doc_dir, image_resolver);
+                images.push(crate::image_resize::SourceImage {
+                    source: i..i + end + 2,
+                    preview: out.len()..out.len() + rendered.len(),
+                    rendered: rendered.clone(),
+                });
+                out.push_str(&rendered);
                 i += end + 2;
                 continue;
+            }
+        } else if line[i..].starts_with("![") {
+            if let Some(syntax) = crate::image_resize::ImageSyntax::parse(&line[i..]) {
+                let token = &line[i..i + syntax.len];
+                if let Some(rendered) = render_markdown_image(token, doc_dir, doc_path, vault_root)
+                {
+                    images.push(crate::image_resize::SourceImage {
+                        source: i..i + syntax.len,
+                        preview: out.len()..out.len() + rendered.len(),
+                        rendered: rendered.clone(),
+                    });
+                    out.push_str(&rendered);
+                    i += syntax.len;
+                    continue;
+                }
             }
         } else if line[i..].starts_with("[[") {
             if let Some(end) = line[i..].find("]]") {
@@ -700,7 +808,36 @@ fn rewrite_line(
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    (out, images)
+}
+
+fn render_markdown_image(
+    token: &str,
+    doc_dir: &Path,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
+) -> Option<String> {
+    let tree = markdown::to_mdast(token, &markdown::ParseOptions::default()).ok()?;
+    let image = tree.children()?.first()?.children()?.first()?;
+    let mdast::Node::Image(image) = image else {
+        return None;
+    };
+    let position = image.position.as_ref()?;
+    if position.start.offset != 0 || position.end.offset != token.len() {
+        return None;
+    }
+    let dest = format!("<{}>)", image.url.replace('>', "%3E"));
+    let Some((url, _, _)) = rewrite_link_dest(&dest, true, doc_dir, doc_path, vault_root) else {
+        return Some(token.to_string());
+    };
+    let syntax = crate::image_resize::ImageSyntax::parse(token)?;
+    let alt = syntax.label(token)?;
+    let title = image
+        .title
+        .as_ref()
+        .map(|title| format!(" \"{}\"", title.replace('\\', "\\\\").replace('"', "\\\"")))
+        .unwrap_or_default();
+    Some(format!("![{alt}]({url}{title})"))
 }
 
 fn render_embed(
@@ -739,11 +876,16 @@ fn render_embed(
         return format!("![](<transclude:{target}{height}>)");
     }
     // `![[img|300]]` width, `![[img|300x200]]` w×h; anything else is a caption.
-    let size = parse_size_suffix(suffix);
-    let alt = if suffix.is_empty() || size.is_some() {
+    let (caption, size) = match suffix.rsplit_once('|') {
+        Some((caption, size)) if parse_size_suffix(size).is_some() => {
+            (caption, parse_size_suffix(size))
+        }
+        _ => (suffix, parse_size_suffix(suffix)),
+    };
+    let alt = if caption.is_empty() || parse_size_suffix(caption).is_some() {
         file_stem(target)
     } else {
-        suffix.to_string()
+        caption.to_string()
     };
     let resolved = image_resolver(target).or_else(|| {
         // Try a path relative to the document before giving up.
@@ -777,19 +919,7 @@ fn file_stem(path: &str) -> String {
 
 /// `300` → width only, `300x200` → width × height.
 fn parse_size_suffix(s: &str) -> Option<(f32, Option<f32>)> {
-    if s.is_empty() {
-        return None;
-    }
-    let (w, h) = match s.split_once('x') {
-        Some((w, h)) => (w.trim(), Some(h.trim())),
-        None => (s.trim(), None),
-    };
-    let w: f32 = w.parse().ok()?;
-    let h = match h {
-        Some(h) => Some(h.parse::<f32>().ok()?),
-        None => None,
-    };
-    (w > 0. && h.is_none_or(|h| h > 0.)).then_some((w, h))
+    crate::image_resize::parse_size(s)
 }
 
 /// Percent-encode just enough of a path for a well-formed `file://` URI.
@@ -967,7 +1097,9 @@ struct LocalImage {
     size: Option<(f32, Option<f32>)>,
 }
 
-pub struct LocalImagePlugin;
+pub struct LocalImagePlugin {
+    ctx: Option<PreviewCtx>,
+}
 
 struct NoteIconPlugin;
 
@@ -1010,7 +1142,11 @@ impl MarkdownPlugin for LocalImagePlugin {
         "local-image"
     }
 
-    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+    fn parse(
+        &self,
+        node: &mdast::Node,
+        context: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
         let mdast::Node::Image(image) = node else {
             return None;
         };
@@ -1018,17 +1154,27 @@ impl MarkdownPlugin for LocalImagePlugin {
             .title
             .as_deref()
             .and_then(|t| t.strip_prefix("rista:"))
-            .and_then(parse_size_suffix);
-        if size.is_none() && !image.url.starts_with("file://") {
+            .and_then(parse_size_suffix)
+            .or_else(|| {
+                let source = context.node_source(node)?;
+                crate::image_resize::ImageSyntax::parse(source)?.size(source)
+            });
+        if !image.url.starts_with("file://")
+            && !image.url.starts_with("https://")
+            && !image.url.starts_with("http://")
+        {
             return None;
         }
-        Some(MarkdownNode::new(
-            "local-image",
-            LocalImage {
-                url: image.url.clone(),
-                size,
-            },
-        ))
+        Some(
+            MarkdownNode::new(
+                "local-image",
+                LocalImage {
+                    url: image.url.clone(),
+                    size,
+                },
+            )
+            .markdown(context.node_source(node).unwrap_or_default().to_string()),
+        )
     }
 
     fn render_inline(
@@ -1039,6 +1185,14 @@ impl MarkdownPlugin for LocalImagePlugin {
         cx: &mut App,
     ) -> Option<InlineElement> {
         let image = node.data::<LocalImage>()?;
+        if let Some(context) = self.ctx.as_ref() {
+            if let Some(view) = context.images.as_ref().and_then(|images| {
+                let anchor = images.anchor(node.source_range()?, node.as_markdown())?;
+                images.view(anchor, image.url.clone(), image.size, context, cx)
+            }) {
+                return Some(InlineElement::new(view));
+            }
+        }
         let mut element = img(image_source(&image.url));
         match image.size {
             Some((width, Some(height))) => {
@@ -1060,7 +1214,7 @@ impl MarkdownPlugin for LocalImagePlugin {
     }
 }
 
-fn image_source(url: &str) -> ImageSource {
+pub(crate) fn image_source(url: &str) -> ImageSource {
     if let Some(path) = url.strip_prefix("file://") {
         return PathBuf::from(percent_decode(path)).into();
     }
