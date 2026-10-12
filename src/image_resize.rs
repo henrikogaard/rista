@@ -12,6 +12,7 @@ pub(crate) struct ImagePreview {
     revision: u64,
     spans: Arc<Vec<SourceImage>>,
     views: Arc<Mutex<HashMap<usize, Entity<ResizeImage>>>>,
+    max_width: Arc<Mutex<Option<Pixels>>>,
 }
 
 #[derive(Clone)]
@@ -50,7 +51,32 @@ impl ImagePreview {
             revision,
             spans: Arc::new(spans),
             views: Arc::default(),
+            max_width: Default::default(),
         }
+    }
+
+    pub(crate) fn refresh(&mut self, source: &str, revision: u64, spans: Vec<SourceImage>) {
+        self.source = Arc::from(source);
+        self.revision = revision;
+        self.spans = Arc::new(spans);
+        self.views = Arc::default();
+    }
+
+    pub(crate) fn constrain_width(&self, width: Pixels, cx: &mut App) -> bool {
+        let Ok(mut max_width) = self.max_width.lock() else {
+            return false;
+        };
+        if width <= px(0.) || *max_width == Some(width) {
+            return false;
+        }
+        *max_width = Some(width);
+        drop(max_width);
+        if let Ok(views) = self.views.lock() {
+            for view in views.values() {
+                view.update(cx, |_, cx| cx.notify());
+            }
+        }
+        true
     }
 
     pub(crate) fn anchor(&self, preview: Range<usize>, rendered: &str) -> Option<ResizeAnchor> {
@@ -93,6 +119,7 @@ impl ImagePreview {
                         bounds: std::rc::Rc::new(std::cell::Cell::new(Bounds::default())),
                         focus: cx.focus_handle(),
                         language: context.language,
+                        max_width: self.max_width.clone(),
                     })
                 })
                 .clone(),
@@ -117,6 +144,7 @@ pub(crate) struct ResizeImage {
     bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     focus: FocusHandle,
     language: crate::settings::Language,
+    max_width: Arc<Mutex<Option<Pixels>>>,
 }
 
 impl ResizeImage {
@@ -172,6 +200,7 @@ impl Render for ResizeImage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bounds = self.bounds.clone();
         let view = cx.weak_entity();
+        let max_width = self.max_width.lock().ok().and_then(|width| *width);
         let size = self
             .local_size
             .map(|(w, h)| (w as f32, Some(h as f32)))
@@ -187,6 +216,7 @@ impl Render for ResizeImage {
             .track_focus(&self.focus)
             .relative()
             .max_w_full()
+            .when_some(max_width, |image, width| image.max_w(width))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.finish(window, cx)),
@@ -204,6 +234,7 @@ impl Render for ResizeImage {
             .child(
                 img(crate::preview::image_source(&self.url))
                     .max_w_full()
+                    .when_some(max_width, |image, width| image.max_w(width))
                     .when_some(size, |image, (width, height)| {
                         image.w(px(width)).when_some(height, |image, height| {
                             image

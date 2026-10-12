@@ -16,6 +16,7 @@ use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
 use chrono::NaiveDate;
 use gpui_kit::assets;
+use gpui_kit::base::ElementExt;
 use gpui_kit::base::Placement;
 use gpui_kit::base::Selectable;
 use gpui_kit::base::StyledExt;
@@ -8830,6 +8831,7 @@ impl Workspace {
         let view = cx.entity();
         let undo_doc = doc.clone();
         let redo_doc = doc.clone();
+        let images = doc.read(cx).image_preview.clone();
         let (
             state,
             banner,
@@ -8862,7 +8864,7 @@ impl Workspace {
             views: embeds,
             query_views: query_embeds,
             pdf_views: doc.read(cx).pdf_embeds.clone(),
-            images: Some(doc.read(cx).image_preview.clone()),
+            images: Some(images.clone()),
             doc_path: Some(doc_path),
             depth: 0,
         };
@@ -8962,6 +8964,14 @@ impl Workspace {
                     self.vault.read(cx).root.clone().unwrap_or_default(),
                     view.clone(),
                 ))
+            })
+            .on_prepaint(move |_, _, cx| {
+                // Inline plugins are measured at max-content, so percentages
+                // cannot constrain an image to the actual text column.
+                let width = state.read(cx).bounds().size.width;
+                if images.constrain_width(width, cx) {
+                    state.update(cx, |state, cx| state.invalidate_inline_layout(cx));
+                }
             })
     }
 

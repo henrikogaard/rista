@@ -420,12 +420,7 @@ impl Document {
             &preview::MarkColors::from_theme(cx.theme()),
         );
         self.preview_line_offsets = offsets;
-        self.image_preview = crate::image_resize::ImagePreview::new(
-            cx.weak_entity(),
-            &raw,
-            self.revision,
-            image_spans,
-        );
+        self.image_preview.refresh(&raw, self.revision, image_spans);
         self.preview_blocks = preview::navigation_blocks(&text);
         self.mapped_preview = None;
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
