@@ -109,6 +109,10 @@ enum Recipe {
         object: Object,
         text: String,
     },
+    DeleteObject {
+        object: Object,
+        count: usize,
+    },
     ChangeLine {
         count: usize,
         text: String,
@@ -221,7 +225,8 @@ impl Outcome {
 pub struct VimState {
     mode: Mode,
     pending_operator: Option<(Operator, usize)>,
-    pending_text_object: Option<(Operator, bool)>,
+    pending_text_object: Option<(Operator, bool, usize)>,
+    pending_visual_text_object: Option<bool>,
     pending_change_motion: Option<MotionSpec>,
     pending_change_object: Option<Object>,
     pending_change_line: Option<usize>,
@@ -271,6 +276,7 @@ impl VimState {
             mode: Mode::Normal,
             pending_operator: None,
             pending_text_object: None,
+            pending_visual_text_object: None,
             pending_change_motion: None,
             pending_change_object: None,
             pending_change_line: None,
@@ -307,6 +313,7 @@ impl VimState {
         self.mode = Mode::Normal;
         self.pending_operator = None;
         self.pending_text_object = None;
+        self.pending_visual_text_object = None;
         self.pending_change_motion = None;
         self.pending_change_object = None;
         self.pending_change_line = None;
@@ -377,7 +384,7 @@ impl VimState {
         clipboard: Option<&str>,
     ) -> Outcome {
         self.reconcile(text, cursor, &selection);
-        let outcome = match self.mode {
+        let mut outcome = match self.mode {
             Mode::Insert => self.handle_insert(text, cursor, key),
             Mode::Command => self.handle_command(text, cursor, key),
             Mode::Search => self.handle_search(text, cursor, key),
@@ -385,8 +392,19 @@ impl VimState {
                 self.handle_normal(text, cursor, key, clipboard)
             }
         };
-        for effect in &outcome.effects {
+        let mut updated = text.to_string();
+        for effect in &mut outcome.effects {
             if let Effect::Replace(edit) = effect {
+                updated.replace_range(edit.range.clone(), &edit.replacement);
+                if self.mode != Mode::Insert {
+                    if !edit.replacement.is_empty()
+                        && edit.cursor == edit.range.start + edit.replacement.len()
+                    {
+                        edit.cursor = normal_cursor_in_line(&updated, edit.cursor);
+                    } else if edit.replacement.is_empty() {
+                        edit.cursor = normal_cursor_after_delete(&updated, edit.cursor);
+                    }
+                }
                 self.expected_selection = Some(edit.cursor..edit.cursor);
                 self.last_cursor = Some(edit.cursor);
             }
@@ -407,7 +425,6 @@ impl VimState {
         if let Some(expected) = &self.expected_selection {
             if expected != selection {
                 self.clear_pending();
-                self.last_change = None;
                 self.desired_column = None;
                 self.visual_anchor = None;
                 self.mode = Mode::Normal;
@@ -415,7 +432,6 @@ impl VimState {
             }
         } else if self.last_cursor.is_some_and(|last| last != cursor) {
             self.clear_pending();
-            self.last_change = None;
             self.desired_column = None;
             self.expected_selection = Some(selection.clone());
         }
@@ -476,7 +492,7 @@ impl VimState {
                 }
                 self.mode = Mode::Normal;
                 self.clear_pending();
-                let cursor = normal_cursor(text, cursor);
+                let cursor = normal_cursor_in_line(text, cursor);
                 self.set_move(&mut outcome, cursor, cursor..cursor);
                 outcome
             }
@@ -579,28 +595,62 @@ impl VimState {
         }
 
         if self.mode == Mode::Visual || self.mode == Mode::VisualLine {
-            if matches!(key, Key::Escape) {
+            if matches!(&key, Key::Text(value) if value == "v") && self.mode == Mode::Visual {
+                self.clear_pending();
                 self.mode = Mode::Normal;
                 self.visual_anchor = None;
                 return self.simple_move(self.active_cursor);
             }
-            if let Some(motion) = self.motion_for_key(&key) {
-                let count = self.take_count();
-                let next = self.motion_target(text, self.active_cursor, motion, count);
-                self.active_cursor = next;
-                let range = if self.mode == Mode::VisualLine {
-                    let anchor = self.visual_anchor.unwrap_or(next);
-                    let start = line_start(text, anchor.min(next));
-                    let end = line_after(text, anchor.max(next));
-                    start..end
-                } else {
-                    visual_range(text, self.visual_anchor.unwrap_or(next), next)
+            if matches!(key, Key::Escape) {
+                self.clear_pending();
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+                return self.simple_move(self.active_cursor);
+            }
+            if let Some(around) = self.pending_visual_text_object.take() {
+                let Some(value) = key_text(&key) else {
+                    return Outcome::handled();
                 };
+                let Some(object) = object_for_key(value, around) else {
+                    return Outcome::handled();
+                };
+                let Some(range) = text_object_range(text, self.active_cursor, object) else {
+                    return Outcome::handled();
+                };
+                self.visual_anchor = Some(range.start);
+                self.active_cursor = previous_boundary(text, range.end);
                 let mut result = Outcome::handled();
-                self.set_move(&mut result, next, range);
+                self.set_move(&mut result, self.active_cursor, range);
                 return result;
             }
+            if matches!(&key, Key::Text(value) if value == "i" || value == "a") {
+                self.pending_visual_text_object =
+                    Some(matches!(&key, Key::Text(value) if value == "a"));
+                return Outcome::handled();
+            }
+            if let Some(motion) = self.motion_for_key(&key) {
+                let count = self.take_count();
+                return self.apply_visual_motion(text, motion, count);
+            }
+            if matches!(&key, Key::Text(value) if value == "G" || value == "%") {
+                let explicit_count = !self.count.is_empty();
+                let count = self.take_count();
+                return self.apply_visual_motion(
+                    text,
+                    if matches!(&key, Key::Text(value) if value == "G") {
+                        if explicit_count {
+                            Motion::FileStart
+                        } else {
+                            Motion::FileEnd
+                        }
+                    } else {
+                        Motion::MatchPair
+                    },
+                    count,
+                );
+            }
             if let Some(operator) = self.operator_for_key(&key) {
+                self.take_count();
                 let anchor = self.visual_anchor.unwrap_or(self.active_cursor);
                 let linewise = self.mode == Mode::VisualLine;
                 let range = if self.mode == Mode::VisualLine {
@@ -643,6 +693,9 @@ impl VimState {
                         },
                     );
                 }
+                if self.mode == Mode::Visual || self.mode == Mode::VisualLine {
+                    return self.apply_visual_motion(text, Motion::FileStart, count);
+                }
                 return self.apply_motion(
                     text,
                     cursor,
@@ -680,7 +733,7 @@ impl VimState {
                     return self.apply_line_operator(text, cursor, operator, count);
                 }
                 if value == "i" || value == "a" {
-                    self.pending_text_object = Some((operator, value == "a"));
+                    self.pending_text_object = Some((operator, value == "a", operator_count));
                     self.pending_operator = None;
                     return Outcome::handled();
                 }
@@ -690,6 +743,7 @@ impl VimState {
                 }
                 if value == "G" || value == "%" {
                     self.pending_operator = None;
+                    let explicit_count = !self.count.is_empty();
                     let count = operator_count.saturating_mul(self.take_count());
                     return self.apply_operator_motion(
                         text,
@@ -697,7 +751,11 @@ impl VimState {
                         operator,
                         MotionSpec {
                             motion: if value == "G" {
-                                Motion::FileEnd
+                                if explicit_count {
+                                    Motion::FileStart
+                                } else {
+                                    Motion::FileEnd
+                                }
                             } else {
                                 Motion::MatchPair
                             },
@@ -742,24 +800,36 @@ impl VimState {
             }
             Key::CtrlR => {
                 let mut result = Outcome::handled();
-                result.effects.push(Effect::Redo);
+                let count = self.take_count().min(text.len().saturating_add(1));
+                result
+                    .effects
+                    .extend(std::iter::repeat_n(Effect::Redo, count));
                 result
             }
             Key::Backspace | Key::Enter | Key::Delete => Outcome::handled(),
             Key::Text(value) if value == "u" => {
                 let mut result = Outcome::handled();
-                result.effects.push(Effect::Undo);
+                let count = self.take_count().min(text.len().saturating_add(1));
+                result
+                    .effects
+                    .extend(std::iter::repeat_n(Effect::Undo, count));
                 result
             }
-            Key::Text(value) if value == "." => self.repeat(text, cursor),
+            Key::Text(value) if value == "." => {
+                let count = self.take_count();
+                self.repeat(text, cursor, count)
+            }
             Key::Text(value) if value == "v" => {
+                self.take_count();
                 self.mode = Mode::Visual;
                 self.visual_anchor = Some(cursor);
                 self.active_cursor = cursor;
-                self.expected_selection = Some(cursor..cursor);
-                Outcome::handled()
+                let mut result = Outcome::handled();
+                self.set_move(&mut result, cursor, visual_range(text, cursor, cursor));
+                result
             }
             Key::Text(value) if value == "V" => {
+                self.take_count();
                 self.mode = Mode::VisualLine;
                 self.visual_anchor = Some(cursor);
                 self.active_cursor = cursor;
@@ -768,22 +838,39 @@ impl VimState {
                 self.set_move(&mut result, cursor, range);
                 result
             }
-            Key::Text(value) if value == "i" => self.enter_insert(text, cursor, InsertKind::Before),
-            Key::Text(value) if value == "a" => self.enter_append(text, cursor),
-            Key::Text(value) if value == "I" => self.enter_insert(
-                text,
-                move_motion(text, cursor, Motion::LineFirstText, 1),
-                InsertKind::LineStart,
-            ),
+            Key::Text(value) if value == "i" => {
+                self.take_count();
+                self.enter_insert(text, cursor, InsertKind::Before)
+            }
+            Key::Text(value) if value == "a" => {
+                self.take_count();
+                self.enter_append(text, cursor)
+            }
+            Key::Text(value) if value == "I" => {
+                self.take_count();
+                self.enter_insert(
+                    text,
+                    move_motion(text, cursor, Motion::LineFirstText, 1),
+                    InsertKind::LineStart,
+                )
+            }
             Key::Text(value) if value == "A" => {
+                self.take_count();
                 self.enter_insert(text, line_end(text, cursor), InsertKind::LineEnd)
             }
-            Key::Text(value) if value == "o" => self.open_line(text, cursor, false),
-            Key::Text(value) if value == "O" => self.open_line(text, cursor, true),
+            Key::Text(value) if value == "o" => {
+                self.take_count();
+                self.open_line(text, cursor, false)
+            }
+            Key::Text(value) if value == "O" => {
+                self.take_count();
+                self.open_line(text, cursor, true)
+            }
             Key::Text(value) if value == "p" || value == "P" => {
                 self.paste(text, cursor, value == "P", clipboard)
             }
             Key::Text(value) if value == "D" => {
+                self.take_count();
                 let range = cursor..line_end(text, cursor);
                 if range.start == range.end {
                     Outcome::handled()
@@ -802,6 +889,7 @@ impl VimState {
                 }
             }
             Key::Text(value) if value == "C" => {
+                self.take_count();
                 let range = cursor..line_end(text, cursor);
                 self.pending_change_motion = Some(MotionSpec {
                     motion: Motion::LineEnd,
@@ -816,12 +904,17 @@ impl VimState {
                 Outcome::handled()
             }
             Key::Text(value) if value == "G" => {
+                let explicit_count = !self.count.is_empty();
                 let count = self.take_count();
                 self.apply_motion(
                     text,
                     cursor,
                     MotionSpec {
-                        motion: Motion::FileEnd,
+                        motion: if explicit_count {
+                            Motion::FileStart
+                        } else {
+                            Motion::FileEnd
+                        },
                         count,
                     },
                 )
@@ -834,33 +927,40 @@ impl VimState {
                 });
                 Outcome::handled()
             }
-            Key::Text(value) if value == "%" => self.apply_motion(
-                text,
-                cursor,
-                MotionSpec {
-                    motion: Motion::MatchPair,
-                    count: 1,
-                },
-            ),
+            Key::Text(value) if value == "%" => {
+                let count = self.take_count();
+                self.apply_motion(
+                    text,
+                    cursor,
+                    MotionSpec {
+                        motion: Motion::MatchPair,
+                        count,
+                    },
+                )
+            }
             Key::Text(value) if value == "/" => {
+                self.take_count();
                 self.mode = Mode::Search;
                 self.search_line.clear();
                 Outcome::handled()
             }
             Key::Text(value) if value == ":" => {
+                self.take_count();
                 self.mode = Mode::Command;
                 self.command_line.clear();
                 Outcome::handled()
             }
             Key::Text(value) if value == "n" || value == "N" => {
                 let Some(query) = self.last_search.clone() else {
+                    self.take_count();
                     return Outcome::with_status(StatusMessage::Error(
                         "No previous search",
                         "Ingen tidligere søking",
                     ));
                 };
                 let forward = (value == "n") == self.last_search_forward;
-                self.search_from(text, cursor, &query, forward)
+                let count = self.take_count().min(text.len().saturating_add(1));
+                self.search_repeated(text, cursor, &query, forward, count)
             }
             Key::Text(_) => {
                 if let Some(motion) = self.motion_for_key(&key) {
@@ -906,6 +1006,11 @@ impl VimState {
 
     fn handle_find(&mut self, text: &str, cursor: usize, key: Key) -> Outcome {
         let kind = self.pending_find.take().unwrap();
+        let cursor = if self.mode == Mode::Visual || self.mode == Mode::VisualLine {
+            self.active_cursor
+        } else {
+            cursor
+        };
         let Some(value) = key_text(&key) else {
             return Outcome::handled();
         };
@@ -913,14 +1018,6 @@ impl VimState {
             return Outcome::handled();
         };
         let count = self.take_count();
-        let Some(found) = find_forward_n(text, cursor, target, kind, count) else {
-            self.pending_operator = None;
-            self.register = '"';
-            return Outcome::with_status(StatusMessage::Error(
-                "Pattern not found",
-                "Fant ikke mønsteret",
-            ));
-        };
         if let Some((operator, operator_count)) = self.pending_operator.take() {
             let spec = MotionSpec {
                 motion: Motion::Find(kind, target),
@@ -928,11 +1025,30 @@ impl VimState {
             };
             return self.apply_operator_motion(text, cursor, operator, spec);
         }
-        self.move_outcome(found, found..found)
+        let Some(found) = find_forward_n(text, cursor, target, kind, count) else {
+            self.register = '"';
+            return Outcome::with_status(StatusMessage::Error(
+                "Pattern not found",
+                "Fant ikke mønsteret",
+            ));
+        };
+        if self.mode == Mode::Visual || self.mode == Mode::VisualLine {
+            self.active_cursor = found;
+            let mut result = Outcome::handled();
+            let range = if self.mode == Mode::VisualLine {
+                line_range(text, found)
+            } else {
+                visual_range(text, self.visual_anchor.unwrap_or(found), found)
+            };
+            self.set_move(&mut result, found, range);
+            result
+        } else {
+            self.move_outcome(found, found..found)
+        }
     }
 
     fn handle_text_object(&mut self, text: &str, key: Key) -> Outcome {
-        let (operator, around) = self.pending_text_object.take().unwrap();
+        let (operator, around, operator_count) = self.pending_text_object.take().unwrap();
         let Some(value) = key_text(&key) else {
             return Outcome::handled();
         };
@@ -941,7 +1057,10 @@ impl VimState {
             return Outcome::handled();
         };
         let cursor = self.active_cursor;
-        let Some(range) = text_object_range(text, cursor, object) else {
+        let count = operator_count
+            .saturating_mul(self.take_count())
+            .clamp(1, MAX_COUNT);
+        let Some(range) = text_object_range_count(text, cursor, object, count) else {
             self.register = '"';
             return Outcome::with_status(StatusMessage::Error(
                 "Text object not found",
@@ -951,27 +1070,63 @@ impl VimState {
         if operator == Operator::Change {
             self.pending_change_object = Some(object);
         }
-        self.apply_operator_range(text, cursor, operator, range, false, 1)
+        let outcome = self.apply_operator_range(text, cursor, operator, range, false, 1);
+        if operator == Operator::Delete {
+            self.last_change = Some(Recipe::DeleteObject { object, count });
+        }
+        outcome
     }
 
     fn apply_motion(&mut self, text: &str, cursor: usize, spec: MotionSpec) -> Outcome {
-        let next = self.motion_target(text, cursor, spec.motion, spec.count);
+        let Some(next) = self.motion_target(text, cursor, spec.motion, spec.count) else {
+            return Outcome::handled();
+        };
         self.move_outcome(next, next..next)
     }
 
-    fn motion_target(&mut self, text: &str, cursor: usize, motion: Motion, count: usize) -> usize {
+    fn apply_visual_motion(&mut self, text: &str, motion: Motion, count: usize) -> Outcome {
+        let Some(next) = self.motion_target(text, self.active_cursor, motion, count) else {
+            return Outcome::handled();
+        };
+        self.active_cursor = next;
+        let range = if self.mode == Mode::VisualLine {
+            let anchor = self.visual_anchor.unwrap_or(next);
+            line_start(text, anchor.min(next))..line_after(text, anchor.max(next))
+        } else {
+            visual_range(text, self.visual_anchor.unwrap_or(next), next)
+        };
+        let mut result = Outcome::handled();
+        self.set_move(&mut result, next, range);
+        result
+    }
+
+    fn motion_target(
+        &mut self,
+        text: &str,
+        cursor: usize,
+        motion: Motion,
+        count: usize,
+    ) -> Option<usize> {
         match motion {
+            Motion::Find(kind, target) => find_forward_n(text, cursor, target, kind, count),
+            Motion::MatchPair => matching_pair(text, cursor),
             Motion::Up | Motion::Down => {
                 let start = line_start(text, cursor);
                 let column = *self
                     .desired_column
                     .get_or_insert_with(|| text[start..cursor].graphemes(true).count());
-                move_vertical_to_column(text, cursor, count, motion == Motion::Down, column)
+                Some(move_vertical_to_column(
+                    text,
+                    cursor,
+                    count,
+                    motion == Motion::Down,
+                    column,
+                ))
             }
-            _ => {
+            _ => Some({
                 self.desired_column = None;
                 move_motion(text, cursor, motion, count)
-            }
+            }),
         }
     }
 
@@ -982,7 +1137,17 @@ impl VimState {
         operator: Operator,
         spec: MotionSpec,
     ) -> Outcome {
-        let next = self.motion_target(text, cursor, spec.motion, spec.count);
+        let spec = if operator == Operator::Change && spec.motion == Motion::WordForward {
+            MotionSpec {
+                motion: Motion::WordEnd,
+                count: spec.count,
+            }
+        } else {
+            spec
+        };
+        let Some(next) = self.motion_target(text, cursor, spec.motion, spec.count) else {
+            return Outcome::handled();
+        };
         let inclusive = matches!(
             spec.motion,
             Motion::WordEnd
@@ -994,14 +1159,23 @@ impl VimState {
         let (start, end) = if next >= cursor {
             (
                 cursor,
-                if inclusive {
+                if spec.motion == Motion::FileEnd && spec.count == 1 {
+                    text.len()
+                } else if inclusive {
                     next_boundary(text, next)
                 } else {
                     next
                 },
             )
         } else {
-            (next, cursor)
+            (
+                next,
+                if inclusive {
+                    next_boundary(text, cursor)
+                } else {
+                    cursor
+                },
+            )
         };
         if start == end {
             return Outcome::handled();
@@ -1027,24 +1201,22 @@ impl VimState {
         if operator == Operator::Change {
             self.pending_change_line = Some(count.max(1));
         }
-        let mut end = cursor;
-        let mut repetitions = count.max(1).min(line_count(text).max(1));
-        while repetitions > 0 {
-            let next = line_after(text, end);
-            if next == end {
-                break;
+        let range = if operator == Operator::Change {
+            change_line_range(text, cursor, count)
+        } else {
+            let mut end = cursor;
+            let mut repetitions = count.max(1).min(line_count(text).max(1));
+            while repetitions > 0 {
+                let next = line_after(text, end);
+                if next == end {
+                    break;
+                }
+                end = next;
+                repetitions -= 1;
             }
-            end = next;
-            repetitions -= 1;
-        }
-        let outcome = self.apply_operator_range(
-            text,
-            cursor,
-            operator,
-            line_start(text, cursor)..end,
-            true,
-            count,
-        );
+            line_start(text, cursor)..end
+        };
+        let outcome = self.apply_operator_range(text, cursor, operator, range, true, count);
         if operator == Operator::Delete {
             self.last_change = Some(Recipe::DeleteLine(count));
         }
@@ -1217,7 +1389,7 @@ impl VimState {
             ));
         };
         let count = self.take_count();
-        let mut repeated = repeat_text(&value.text, count, MAX_EDIT_BYTES);
+        let repeated = repeat_text(&value.text, count, MAX_EDIT_BYTES);
         let at = if value.linewise {
             if before {
                 line_start(text, cursor)
@@ -1229,13 +1401,19 @@ impl VimState {
         } else {
             next_boundary(text, cursor)
         };
-        if value.linewise && !before && at == text.len() && at > 0 && !text.ends_with('\n') {
-            repeated.insert(0, '\n');
-        }
+        let repeated = if value.linewise {
+            linewise_paste(text, at, repeated)
+        } else {
+            repeated
+        };
         let mut result = Outcome::handled();
         result.effects.push(Effect::Replace(Edit {
             range: at..at,
-            cursor: at + repeated.len(),
+            cursor: if value.linewise {
+                linewise_paste_cursor(at, &repeated)
+            } else {
+                at + repeated.len()
+            },
             replacement: repeated,
         }));
         self.last_change = Some(Recipe::Paste {
@@ -1246,10 +1424,45 @@ impl VimState {
         result
     }
 
-    fn repeat(&mut self, text: &str, cursor: usize) -> Outcome {
+    fn repeat(&mut self, text: &str, cursor: usize, count: usize) -> Outcome {
         let Some(recipe) = self.last_change.clone() else {
             return Outcome::handled();
         };
+        let mut simulated = text.to_string();
+        let mut active_cursor = cursor;
+        let mut edits = Vec::new();
+        for _ in 0..count.min(text.len().saturating_add(1)) {
+            let outcome = self.repeat_once(&simulated, active_cursor, recipe.clone());
+            let mut changed = false;
+            for effect in outcome.effects {
+                if let Effect::Replace(mut edit) = effect {
+                    simulated.replace_range(edit.range.clone(), &edit.replacement);
+                    active_cursor = if !edit.replacement.is_empty()
+                        && edit.cursor == edit.range.start + edit.replacement.len()
+                    {
+                        normal_cursor_in_line(&simulated, edit.cursor)
+                    } else if edit.replacement.is_empty() {
+                        normal_cursor_after_delete(&simulated, edit.cursor)
+                    } else {
+                        edit.cursor.min(simulated.len())
+                    };
+                    edit.cursor = active_cursor;
+                    edits.push(edit);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut result = Outcome::handled();
+        result
+            .effects
+            .extend(edits.into_iter().map(Effect::Replace));
+        result
+    }
+
+    fn repeat_once(&mut self, text: &str, cursor: usize, recipe: Recipe) -> Outcome {
         match recipe {
             Recipe::Insert { kind, text: value } => {
                 let at = insert_position(text, cursor, kind);
@@ -1273,10 +1486,17 @@ impl VimState {
                 } else {
                     format!("{value}\n")
                 };
+                let cursor = if value.is_empty() {
+                    at
+                } else if insertion_after_break {
+                    at + value.len()
+                } else {
+                    at + value.len() - 1
+                };
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
                     range: at..at,
-                    cursor: at + replacement.len(),
+                    cursor,
                     replacement,
                 }));
                 result
@@ -1285,7 +1505,9 @@ impl VimState {
                 motion,
                 text: value,
             } => {
-                let range = motion_range(text, cursor, motion);
+                let Some(range) = motion_range(text, cursor, motion) else {
+                    return Outcome::handled();
+                };
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
                     range: range.clone(),
@@ -1309,16 +1531,20 @@ impl VimState {
                 }));
                 result
             }
+            Recipe::DeleteObject { object, count } => {
+                let Some(range) = text_object_range_count(text, cursor, object, count) else {
+                    return Outcome::handled();
+                };
+                let mut result = Outcome::handled();
+                result.effects.push(Effect::Replace(Edit {
+                    cursor: range.start,
+                    range,
+                    replacement: String::new(),
+                }));
+                result
+            }
             Recipe::ChangeLine { count, text: value } => {
-                let mut end = cursor;
-                for _ in 0..count.min(line_count(text)) {
-                    let next = line_after(text, end);
-                    if next == end {
-                        break;
-                    }
-                    end = next;
-                }
-                let range = line_start(text, cursor)..end;
+                let range = change_line_range(text, cursor, count);
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
                     cursor: range.start + value.len(),
@@ -1328,7 +1554,9 @@ impl VimState {
                 result
             }
             Recipe::DeleteMotion(motion) => {
-                let range = motion_range(text, cursor, motion);
+                let Some(range) = motion_range(text, cursor, motion) else {
+                    return Outcome::handled();
+                };
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
                     cursor: range.start,
@@ -1372,7 +1600,6 @@ impl VimState {
                 before,
                 count,
             } => {
-                let mut pasted = repeat_text(&value.text, count, MAX_EDIT_BYTES);
                 let at = if value.linewise {
                     if before {
                         line_start(text, cursor)
@@ -1384,14 +1611,19 @@ impl VimState {
                 } else {
                     next_boundary(text, cursor)
                 };
-                if value.linewise && !before && at == text.len() && at > 0 && !text.ends_with('\n')
-                {
-                    pasted.insert(0, '\n');
-                }
+                let pasted = if value.linewise {
+                    linewise_paste(text, at, repeat_text(&value.text, count, MAX_EDIT_BYTES))
+                } else {
+                    repeat_text(&value.text, count, MAX_EDIT_BYTES)
+                };
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
                     range: at..at,
-                    cursor: at + pasted.len(),
+                    cursor: if value.linewise {
+                        linewise_paste_cursor(at, &pasted)
+                    } else {
+                        at + pasted.len()
+                    },
                     replacement: pasted,
                 }));
                 result
@@ -1428,7 +1660,61 @@ impl VimState {
                 "Fant ikke mønsteret",
             ));
         };
-        self.move_outcome(found.start(), found.start()..found.end())
+        self.move_outcome(found.start(), found.start()..found.start())
+    }
+
+    fn search_repeated(
+        &mut self,
+        text: &str,
+        cursor: usize,
+        query: &str,
+        forward: bool,
+        count: usize,
+    ) -> Outcome {
+        let Ok(regex) = RegexBuilder::new(query)
+            .size_limit(1_000_000)
+            .nest_limit(32)
+            .build()
+        else {
+            return Outcome::with_status(StatusMessage::Error(
+                "Invalid search pattern",
+                "Ugyldig søkemønster",
+            ));
+        };
+        let matches: Vec<_> = regex
+            .find_iter(text)
+            .map(|matched| matched.start())
+            .collect();
+        if matches.is_empty() {
+            return Outcome::with_status(StatusMessage::Error(
+                "Pattern not found",
+                "Fant ikke mønsteret",
+            ));
+        }
+        let count = count.max(1);
+        let first = if forward {
+            let next = matches.partition_point(|matched| *matched <= cursor);
+            if next == matches.len() {
+                0
+            } else {
+                next
+            }
+        } else {
+            let previous = matches.partition_point(|matched| *matched < cursor);
+            if previous == 0 {
+                matches.len() - 1
+            } else {
+                previous - 1
+            }
+        };
+        let steps = (count - 1) % matches.len();
+        let target = if forward {
+            (first + steps) % matches.len()
+        } else {
+            (first + matches.len() - steps) % matches.len()
+        };
+        let found = matches[target];
+        self.move_outcome(found, found..found)
     }
 
     fn register_value(&self, clipboard: Option<&str>) -> Option<RegisterValue> {
@@ -1561,6 +1847,17 @@ fn normal_cursor(text: &str, cursor: usize) -> usize {
     }
 }
 
+fn normal_cursor_in_line(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    let start = line_start(text, cursor);
+    let end = line_end(text, cursor);
+    if cursor <= start {
+        start
+    } else {
+        previous_boundary(text, cursor.min(end))
+    }
+}
+
 fn next_boundary(text: &str, offset: usize) -> usize {
     let offset = offset.min(text.len());
     text[offset..]
@@ -1615,6 +1912,47 @@ fn visual_range(text: &str, anchor: usize, cursor: usize) -> Range<usize> {
     start..next_boundary(text, end)
 }
 
+fn change_line_range(text: &str, cursor: usize, count: usize) -> Range<usize> {
+    let mut last = cursor;
+    for _ in 1..count.min(line_count(text)) {
+        let next = line_after(text, last);
+        if next == last {
+            break;
+        }
+        last = next;
+    }
+    line_start(text, cursor)..line_end(text, last)
+}
+
+fn normal_cursor_after_delete(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    let start = line_start(text, cursor);
+    let end = line_end(text, cursor);
+    if cursor > start && cursor >= end {
+        previous_boundary(text, end)
+    } else {
+        cursor
+    }
+}
+
+fn linewise_paste(text: &str, at: usize, mut value: String) -> String {
+    if !value.ends_with('\n') {
+        value.push('\n');
+    }
+    if at == text.len() && at > 0 && !text.ends_with('\n') {
+        value.insert(0, '\n');
+    }
+    value
+}
+
+fn linewise_paste_cursor(at: usize, value: &str) -> usize {
+    if value.ends_with('\n') {
+        at + previous_boundary(value, value.len() - 1)
+    } else {
+        at + value.len()
+    }
+}
+
 fn line_count(text: &str) -> usize {
     text.lines().count().max(1)
 }
@@ -1624,7 +1962,7 @@ fn word_class(grapheme: &str) -> u8 {
         0
     } else if grapheme
         .chars()
-        .all(|char| char.is_alphanumeric() || char == '_')
+        .any(|char| char.is_alphanumeric() || char == '_')
     {
         1
     } else {
@@ -1739,7 +2077,8 @@ fn move_motion(text: &str, cursor: usize, motion: Motion, count: usize) -> usize
             if count > 1 {
                 line_for_number(text, count)
             } else {
-                normal_cursor(text, text.len())
+                let offset = text.len().saturating_sub(1);
+                move_motion(text, offset, Motion::LineFirstText, 1)
             }
         }
         Motion::Find(kind, target) => {
@@ -1749,8 +2088,12 @@ fn move_motion(text: &str, cursor: usize, motion: Motion, count: usize) -> usize
     }
 }
 
-fn motion_range(text: &str, cursor: usize, spec: MotionSpec) -> Range<usize> {
-    let next = move_motion(text, cursor, spec.motion, spec.count);
+fn motion_range(text: &str, cursor: usize, spec: MotionSpec) -> Option<Range<usize>> {
+    let next = match spec.motion {
+        Motion::Find(kind, target) => find_forward_n(text, cursor, target, kind, spec.count)?,
+        Motion::MatchPair => matching_pair(text, cursor)?,
+        _ => move_motion(text, cursor, spec.motion, spec.count),
+    };
     let inclusive = matches!(
         spec.motion,
         Motion::WordEnd
@@ -1760,13 +2103,23 @@ fn motion_range(text: &str, cursor: usize, spec: MotionSpec) -> Range<usize> {
             | Motion::FileEnd
     );
     if next >= cursor {
-        cursor..if inclusive {
-            next_boundary(text, next)
-        } else {
-            next
-        }
+        Some(
+            cursor..if spec.motion == Motion::FileEnd && spec.count == 1 {
+                text.len()
+            } else if inclusive {
+                next_boundary(text, next)
+            } else {
+                next
+            },
+        )
     } else {
-        next..cursor
+        Some(
+            next..if inclusive {
+                next_boundary(text, cursor)
+            } else {
+                cursor
+            },
+        )
     }
 }
 
@@ -1792,9 +2145,9 @@ fn charwise_delete_range(text: &str, cursor: usize, backwards: bool, count: usiz
 }
 
 fn move_horizontal(text: &str, mut cursor: usize, count: usize, right: bool) -> usize {
+    let line_start = line_start(text, cursor);
+    let line_end = line_end(text, cursor);
     for _ in 0..count.min(text.len().saturating_add(1)) {
-        let line_start = line_start(text, cursor);
-        let line_end = line_end(text, cursor);
         let next = if right {
             if cursor >= line_end {
                 break;
@@ -1864,8 +2217,9 @@ fn find_forward_n(
 ) -> Option<usize> {
     let mut search_cursor = cursor;
     let mut found = None;
+    let end = line_end(text, cursor);
     for _ in 0..count.min(text.len().saturating_add(1)) {
-        let next = find_through_target(text, search_cursor, target)?;
+        let next = find_through_target(text, search_cursor, target, end)?;
         found = Some(if kind == FindKind::Till {
             previous_boundary(text, next)
         } else {
@@ -1876,9 +2230,9 @@ fn find_forward_n(
     found
 }
 
-fn find_through_target(text: &str, cursor: usize, target: char) -> Option<usize> {
+fn find_through_target(text: &str, cursor: usize, target: char, end: usize) -> Option<usize> {
     let mut offset = next_boundary(text, cursor);
-    while offset < text.len() {
+    while offset < end {
         if grapheme_at(text, offset).is_some_and(|grapheme| grapheme.starts_with(target)) {
             return Some(offset);
         }
@@ -1922,20 +2276,19 @@ fn matching_pair(text: &str, cursor: usize) -> Option<usize> {
         let mut depth = 0;
         let mut offset = cursor;
         loop {
-            let previous = previous_boundary(text, offset);
-            let value = grapheme_at(text, previous)?.chars().next()?;
+            let value = grapheme_at(text, offset)?.chars().next()?;
             if value == *close {
                 depth += 1;
             } else if value == *open {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(previous);
+                    return Some(offset);
                 }
             }
-            if previous == 0 {
+            if offset == 0 {
                 break;
             }
-            offset = previous;
+            offset = previous_boundary(text, offset);
         }
     }
     None
@@ -1961,6 +2314,31 @@ fn object_for_key(value: &str, around: bool) -> Option<Object> {
         'p' => Object::Paragraph,
         _ => return None,
     })
+}
+
+fn text_object_range_count(
+    text: &str,
+    cursor: usize,
+    object: Object,
+    count: usize,
+) -> Option<Range<usize>> {
+    let mut range = text_object_range(text, cursor, object)?;
+    let Object::Word { around } = object else {
+        return Some(range);
+    };
+    let mut at = range.end;
+    for _ in 1..count.min(text.len().saturating_add(1)) {
+        while at < text.len() && grapheme_at(text, at).is_some_and(|g| word_class(g) == 0) {
+            at = next_boundary(text, at);
+        }
+        if at >= text.len() {
+            break;
+        }
+        let next = text_object_range(text, at, Object::Word { around })?;
+        range.end = next.end;
+        at = next.end;
+    }
+    Some(range)
 }
 
 fn text_object_range(text: &str, cursor: usize, object: Object) -> Option<Range<usize>> {
@@ -2147,10 +2525,10 @@ mod tests {
             for effect in outcome.effects {
                 match effect {
                     Effect::Move {
-                        cursor: next,
+                        cursor: _,
                         selection: next_selection,
                     } => {
-                        *cursor = next;
+                        *cursor = next_selection.end;
                         selection = next_selection;
                     }
                     Effect::Replace(edit) => {
@@ -2173,6 +2551,12 @@ mod tests {
         run(&mut engine, &mut text, &mut cursor, "2");
         run(&mut engine, &mut text, &mut cursor, "w");
         assert_eq!(text, "beta gamma");
+
+        engine.reset(0);
+        text = "e\u{301}x y".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "dw");
+        assert_eq!(text, "y");
     }
 
     #[test]
@@ -2311,6 +2695,16 @@ mod tests {
         run(&mut engine, &mut text, &mut cursor, "i");
         run(&mut engine, &mut text, &mut cursor, "(");
         assert_eq!(text, "one (two");
+
+        text = "(one)".to_string();
+        cursor = 4;
+        engine.reset(cursor);
+        run(&mut engine, &mut text, &mut cursor, "%");
+        assert_eq!(cursor, 0);
+        engine.reset(4);
+        cursor = 4;
+        run(&mut engine, &mut text, &mut cursor, "d%");
+        assert_eq!(text, "");
     }
 
     #[test]
@@ -2346,5 +2740,220 @@ mod tests {
         run(&mut engine, &mut text, &mut cursor, "q");
         run(&mut engine, &mut text, &mut cursor, "Escape");
         assert_eq!(engine.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn change_line_preserves_following_line_and_cw_keeps_separator() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\ntwo".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "cc");
+        run(&mut engine, &mut text, &mut cursor, "new");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(text, "new\ntwo");
+
+        engine.reset(0);
+        text = "one two".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "cw");
+        run(&mut engine, &mut text, &mut cursor, "new");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(text, "new two");
+
+        engine.reset(0);
+        text = "one\ntwo\nthree".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "2cc");
+        run(&mut engine, &mut text, &mut cursor, "new");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(text, "new\nthree");
+    }
+
+    #[test]
+    fn failed_counted_find_and_pair_never_delete() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\nx".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "d%");
+        assert_eq!(text, "one\nx");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert_eq!(text, "one\nx");
+        run(&mut engine, &mut text, &mut cursor, "dfx");
+        assert_eq!(text, "one\nx");
+        text = "one x\nx".into();
+        cursor = 0;
+        engine.reset(cursor);
+        run(&mut engine, &mut text, &mut cursor, "2dfx");
+        assert_eq!(text, "one x\nx");
+    }
+
+    #[test]
+    fn visual_grapheme_text_object_and_special_motions_keep_anchor() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "(one)\n two".to_string();
+        let mut cursor = 4;
+        run(&mut engine, &mut text, &mut cursor, "v");
+        assert_eq!(engine.expected_selection, Some(4..5));
+        run(&mut engine, &mut text, &mut cursor, "v");
+        assert_eq!(engine.mode(), Mode::Normal);
+        assert_eq!(cursor, 4);
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "%");
+        assert_eq!(engine.mode(), Mode::Visual);
+        assert_eq!(engine.expected_selection, Some(0..5));
+        run(&mut engine, &mut text, &mut cursor, "d");
+        assert_eq!(text, "\n two");
+
+        engine.reset(0);
+        text = "one two".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "i");
+        run(&mut engine, &mut text, &mut cursor, "w");
+        assert_eq!(engine.mode(), Mode::Visual);
+        assert_eq!(engine.expected_selection, Some(0..3));
+        run(&mut engine, &mut text, &mut cursor, "d");
+        assert_eq!(text, " two");
+    }
+
+    #[test]
+    fn visual_find_and_file_motions_extend_the_existing_selection() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "abx\n  two".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "fx");
+        assert_eq!(engine.expected_selection, Some(0..3));
+        run(&mut engine, &mut text, &mut cursor, "gg");
+        assert_eq!(engine.expected_selection, Some(0..1));
+        run(&mut engine, &mut text, &mut cursor, "G");
+        assert_eq!(engine.expected_selection, Some(0..7));
+
+        engine.reset(0);
+        text = "ab x".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "tx");
+        assert_eq!(engine.expected_selection, Some(0..3));
+
+        engine.reset(3);
+        text = "abcx".into();
+        cursor = 3;
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "h");
+        run(&mut engine, &mut text, &mut cursor, "fx");
+        assert_eq!(engine.expected_selection, Some(3..4));
+    }
+
+    #[test]
+    fn counted_motion_objects_search_history_and_dot_are_bounded() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one two three four five".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "2d2w");
+        assert_eq!(text, "five");
+
+        engine.reset(0);
+        text = "one two three".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "d2iw");
+        assert_eq!(text, " three");
+
+        engine.reset(0);
+        text = "one two three four".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "dw");
+        run(&mut engine, &mut text, &mut cursor, "2.");
+        assert_eq!(text, "four");
+
+        engine.reset(0);
+        text = "alpha beta alpha gamma alpha delta alpha".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "/alpha");
+        run(&mut engine, &mut text, &mut cursor, "Enter");
+        run(&mut engine, &mut text, &mut cursor, "2n");
+        assert_eq!(cursor, 35);
+        run(&mut engine, &mut text, &mut cursor, "2N");
+        assert_eq!(cursor, 11);
+
+        let undo = engine.handle(&text, cursor, cursor..cursor, key("3"), None);
+        assert!(undo.handled);
+        let undo = engine.handle(&text, cursor, cursor..cursor, key("u"), None);
+        assert_eq!(
+            undo.effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Undo))
+                .count(),
+            3
+        );
+        let redo = engine.handle(&text, cursor, cursor..cursor, Key::CtrlR, None);
+        assert_eq!(
+            redo.effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Redo))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn linewise_paste_normalizes_unterminated_final_register_and_repeat() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\ntwo\nthree".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "G");
+        run(&mut engine, &mut text, &mut cursor, "yy");
+        run(&mut engine, &mut text, &mut cursor, "gg");
+        run(&mut engine, &mut text, &mut cursor, "P");
+        assert_eq!(text, "three\none\ntwo\nthree");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert_eq!(text, "three\nthree\none\ntwo\nthree");
+    }
+
+    #[test]
+    fn insert_escape_does_not_cross_line_start() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\ntwo".to_string();
+        let mut cursor = 4;
+        run(&mut engine, &mut text, &mut cursor, "i");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(cursor, 4);
+        run(&mut engine, &mut text, &mut cursor, "i");
+        run(&mut engine, &mut text, &mut cursor, "new");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(text, "one\nnewtwo");
+        assert!(cursor >= 4 && cursor < text.len());
+    }
+
+    #[test]
+    fn explicit_one_g_differs_from_bare_g() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\ntwo".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "G");
+        assert_eq!(&text[cursor..], "two");
+        run(&mut engine, &mut text, &mut cursor, "1G");
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn delete_object_and_navigation_keep_relative_dot_recipe() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one two three".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "diw");
+        run(&mut engine, &mut text, &mut cursor, "w");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert_eq!(text, "  three");
+
+        engine.reset(0);
+        text = "one two three".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "ciw");
+        run(&mut engine, &mut text, &mut cursor, "new");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        run(&mut engine, &mut text, &mut cursor, "w");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert_eq!(text, "new new three");
     }
 }

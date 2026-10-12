@@ -368,11 +368,15 @@ impl Document {
             vim_subscription,
             cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    let current = this.editor.read(cx).value().to_string();
-                    let is_vim_edit = this
-                        .vim_internal_text
-                        .take()
-                        .is_some_and(|expected| expected == current);
+                    let is_vim_edit = if this.vim_enabled {
+                        let current = this.editor.read(cx).value().to_string();
+                        this.vim_internal_text
+                            .take()
+                            .is_some_and(|expected| expected == current)
+                    } else {
+                        this.vim_internal_text = None;
+                        false
+                    };
                     let is_insert_keystroke =
                         std::mem::take(&mut this.vim_insert_keystroke_pending);
                     if !is_vim_edit && !is_insert_keystroke {
@@ -434,6 +438,7 @@ impl Document {
         let cursor = self.editor.read(cx).cursor();
         let selection = self.editor.read(cx).selected_range();
         let outcome = self.vim.handle(&text, cursor, selection, key, clipboard);
+        let mut expected = text;
         for effect in &outcome.effects {
             match effect {
                 VimEffect::Move { selection, .. } => {
@@ -442,9 +447,8 @@ impl Document {
                     });
                 }
                 VimEffect::Replace(edit) => {
-                    let mut expected = text.clone();
                     expected.replace_range(edit.range.clone(), &edit.replacement);
-                    self.vim_internal_text = Some(expected);
+                    self.vim_internal_text = Some(expected.clone());
                     self.editor.update(cx, |editor, cx| {
                         editor.set_selected_range(edit.range.clone(), cx);
                         editor.replace(edit.replacement.clone(), window, cx);
