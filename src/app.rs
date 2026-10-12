@@ -5629,14 +5629,7 @@ impl Workspace {
             }
         }
         if std::fs::rename(&path, &new_path).is_ok() {
-            // Keep open tabs honest.
-            for doc in &self.docs {
-                doc.entity.update(cx, |doc, _cx| {
-                    if doc.path == path {
-                        doc.set_path(new_path.clone());
-                    }
-                });
-            }
+            self.repoint_moved_entry(&path, &new_path, cx);
             let canvas_complete = self.apply_canvas_move_rewrites(canvas_rewrites, window, cx);
             let mut updated = 0;
             for (note, edits) in rewrites {
@@ -5651,26 +5644,6 @@ impl Workspace {
                         text.replace_range(range, &rep);
                     }
                     let _ = std::fs::write(target, text);
-                }
-            }
-            self.settings.bookmarks.repoint(&path, &new_path);
-            self.persist_bookmarks(cx);
-            // Recent and pinned entries point at the old path too.
-            let old_s = path.to_string_lossy().to_string();
-            let new_s = new_path.to_string_lossy().to_string();
-            let mut touched = false;
-            for s in self.settings.pinned_tabs.iter_mut() {
-                if *s == old_s {
-                    *s = new_s.clone();
-                    touched = true;
-                }
-            }
-            if touched {
-                self.persist_settings(cx);
-            }
-            for p in &mut self.recent {
-                if *p == path {
-                    *p = new_path.clone();
                 }
             }
             // A move can leave the source folder(s) empty — remove them,
@@ -10070,7 +10043,10 @@ impl Workspace {
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().warning)
-                    .child("Changed on disk — saving paused"),
+                    .child(self.tr(
+                        "Changed on disk — saving paused",
+                        "Filen er endret på disk — lagring er satt på pause",
+                    )),
             )
             .child(
                 h_flex()
@@ -10080,7 +10056,7 @@ impl Workspace {
                         Button::new("conflict-save-copy")
                             .ghost()
                             .xsmall()
-                            .label("Save copy…")
+                            .label(self.tr("Save copy…", "Lagre kopi…"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_save_as(&SaveFileAs, window, cx);
                             })),
@@ -10089,7 +10065,7 @@ impl Workspace {
                         Button::new("conflict-reload")
                             .ghost()
                             .xsmall()
-                            .label("Reload from disk")
+                            .label(self.tr("Reload from disk", "Last inn fra disk"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_reload_from_disk(reload_doc.clone(), window, cx);
                             })),

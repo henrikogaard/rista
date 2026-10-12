@@ -262,7 +262,15 @@ impl Workspace {
             crate::explorer::repoint_path(path, source, destination);
         };
         for doc in &self.docs {
-            doc.entity.update(cx, |doc, _| repoint(&mut doc.path));
+            doc.entity.update(cx, |doc, cx| {
+                let mut path = doc.path.clone();
+                repoint(&mut path);
+                if path != doc.path {
+                    doc.set_path(path);
+                    doc.resync_preview(cx);
+                    cx.notify();
+                }
+            });
         }
         for path in self
             .recent
