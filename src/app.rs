@@ -6875,12 +6875,7 @@ impl Workspace {
             PaneMode::Preview => ViewMode::Preview,
         };
         self.persist_tabs(cx);
-        if mode == PaneMode::Preview && group == self.layout.focused() {
-            // The editor unmounts and its focus handle goes stale — reclaim
-            // focus for the workspace or ⌘ shortcuts stop dispatching.
-            self.focus_handle.focus(window, cx);
-        }
-        cx.notify();
+        self.focus_active_pane_after_mount(window, cx);
     }
 
     fn on_view_source(&mut self, _: &ViewSource, w: &mut Window, cx: &mut Context<Self>) {
@@ -14117,7 +14112,8 @@ impl Workspace {
             )
     }
 
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact = window.viewport_size().width < px(960.);
         let doc = self.active_doc();
         let (rel_path, words, dirty, conflict, cursor, selected) = doc
             .map(|doc| {
@@ -14283,7 +14279,11 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(assets::IconName::Waypoints)
-                            .label(self.tr("Local graph", "Lokal graf"))
+                            .when(!compact, |button| {
+                                button.label(self.tr("Local graph", "Lokal graf"))
+                            })
+                            .accessibility_label(self.tr("Local graph", "Lokal graf"))
+                            .tooltip(self.tr("Local graph", "Lokal graf"))
                             .selected(self.settings.graph_dock_open)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_toggle_local_graph_panel(&ToggleLocalGraphPanel, window, cx)
@@ -14294,7 +14294,9 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(assets::IconName::MessageSquareQuote)
-                            .label(self.tr("Agent", "Agent"))
+                            .when(!compact, |button| button.label(self.tr("Agent", "Agent")))
+                            .accessibility_label(self.tr("Agent", "Agent"))
+                            .tooltip(self.tr("Agent", "Agent"))
                             .selected(self.settings.agent_open)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_toggle_agent_panel(&ToggleAgentPanel, window, cx)
@@ -14305,7 +14307,9 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(assets::IconName::Blocks)
-                            .label(self.tr("Tools", "Verktøy"))
+                            .when(!compact, |button| button.label(self.tr("Tools", "Verktøy")))
+                            .accessibility_label(self.tr("Tools", "Verktøy"))
+                            .tooltip(self.tr("Tools", "Verktøy"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_open_tools(&OpenTools, window, cx)
                             })),
@@ -14315,7 +14319,11 @@ impl Workspace {
                             .ghost()
                             .xsmall()
                             .icon(assets::IconName::Terminal)
-                            .label(self.tr("Terminal", "Terminal"))
+                            .when(!compact, |button| {
+                                button.label(self.tr("Terminal", "Terminal"))
+                            })
+                            .accessibility_label(self.tr("Terminal", "Terminal"))
+                            .tooltip(self.tr("Terminal", "Terminal"))
                             .selected(self.terminal_visible)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_toggle_terminal(&ToggleTerminal, window, cx)
@@ -14797,7 +14805,7 @@ impl Render for Workspace {
                     }),
             )
             .when(!self.zen && has_workspace, |this| {
-                this.child(self.render_status_bar(cx))
+                this.child(self.render_status_bar(window, cx))
             })
             .when_some(self.peek.clone(), |this, (kind, pos)| {
                 this.child(self.render_peek_card(&kind, pos, window, cx))
