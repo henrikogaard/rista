@@ -361,7 +361,17 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
             if let Some(mode) = source.value.get("trigger_on_file_creation_mode") {
                 match mode.as_str() {
                     Some("none") => false,
-                    Some("folder" | "regex") => true,
+                    Some("folder") => true,
+                    Some("regex") => {
+                        warn(
+                            &mut plan,
+                            source_name,
+                            ImportCategory::Templates,
+                            ImportProblem::UnsupportedValue,
+                            Some("trigger_on_file_creation_mode".to_string()),
+                        );
+                        false
+                    }
                     _ => {
                         warn(
                             &mut plan,
@@ -375,7 +385,7 @@ pub(crate) fn plan_import(root: &Path, settings: &Settings) -> Result<ImportPlan
                 }
             } else {
                 match source.value.get("enable_folder_templates") {
-                    None => true,
+                    None => false,
                     Some(Value::Bool(enabled)) => *enabled,
                     Some(_) => {
                         warn(
@@ -1087,6 +1097,20 @@ fn import_string_field(
     source: &str,
 ) {
     if let Some(value) = string_field(plan, object, field, category, source) {
+        if matches!(
+            &target,
+            ImportedField::DailyFormat | ImportedField::PeriodFormat(_)
+        ) && !valid_period_format(&plan.root, &value)
+        {
+            warn(
+                plan,
+                source,
+                category,
+                ImportProblem::UnsafeConfiguredPath,
+                Some(field.to_string()),
+            );
+            return;
+        }
         set_imported_field(plan, target, value, category, field);
     }
 }
@@ -1119,10 +1143,17 @@ fn set_imported_field(
     };
     if *previous != value {
         *previous = value.clone();
+        let field_label = match &field {
+            ImportedField::DailyDir => "daily directory".to_string(),
+            ImportedField::DailyFormat => "daily format".to_string(),
+            ImportedField::PeriodDir(period) => format!("{period} directory"),
+            ImportedField::PeriodFormat(period) => format!("{period} format"),
+            _ => label.to_string(),
+        };
         plan.changed_fields.insert(field);
         plan.preview.push(PreviewChange {
             category,
-            field: label.to_string(),
+            field: field_label,
             value,
         });
     }
@@ -1800,7 +1831,89 @@ mod tests {
             br#"{"folder":"Daily","format":"../outside"}"#,
         );
         let plan = plan_import(&root, &settings).unwrap();
-        assert!(!plan.validate_targets());
+        assert!(plan.validate_targets());
+        assert_eq!(plan.proposed.daily_format, settings.daily_format);
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.problem == ImportProblem::UnsafeConfiguredPath
+                && warning.detail.as_deref() == Some("format")
+        }));
+
+        write(
+            &root,
+            ".obsidian/plugins/periodic-notes/data.json",
+            br#"{"weekly":{"folder":"Weeks","format":"../outside"}}"#,
+        );
+        let plan = plan_import(&root, &settings).unwrap();
+        assert!(plan.validate_targets());
+        assert_eq!(plan.proposed.weekly_dir, "Weeks");
+        assert_eq!(plan.proposed.weekly_format, settings.weekly_format);
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.category == ImportCategory::PeriodicNotes
+                && warning.problem == ImportProblem::UnsafeConfiguredPath
+                && warning.detail.as_deref() == Some("format")
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn regex_and_missing_trigger_modes_do_not_import_folder_templates() {
+        let root = fixture();
+        write(
+            &root,
+            ".obsidian/community-plugins.json",
+            br#"["templater-obsidian"]"#,
+        );
+        write(&root, "Templates/daily.md", b"Daily");
+        let mut settings = Settings::default();
+        settings.templates_dir = "Existing".to_string();
+        settings.folder_templates.insert(
+            "Existing folder".to_string(),
+            "Existing template.md".to_string(),
+        );
+
+        write(
+            &root,
+            ".obsidian/plugins/templater-obsidian/data.json",
+            br#"{"templates_folder":"Templates","trigger_on_file_creation_mode":"regex","enable_folder_templates":true,"folder_templates":[{"folder":"New folder","template":"daily"}]}"#,
+        );
+        let plan = plan_import(&root, &settings).unwrap();
+        assert_eq!(plan.proposed.folder_templates, settings.folder_templates);
+        assert!(plan.warnings.iter().any(|warning| {
+            warning.problem == ImportProblem::UnsupportedValue
+                && warning.detail.as_deref() == Some("trigger_on_file_creation_mode")
+        }));
+
+        write(
+            &root,
+            ".obsidian/plugins/templater-obsidian/data.json",
+            br#"{"templates_folder":"Templates","folder_templates":[{"folder":"New folder","template":"daily"}]}"#,
+        );
+        let plan = plan_import(&root, &settings).unwrap();
+        assert_eq!(plan.proposed.folder_templates, settings.folder_templates);
+        assert!(!plan
+            .changed_fields
+            .contains(&ImportedField::FolderTemplate("New folder".to_string())));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn periodic_preview_labels_include_the_period() {
+        let root = fixture();
+        write(
+            &root,
+            ".obsidian/plugins/periodic-notes/data.json",
+            br#"{"weekly":{"folder":"Weeks","format":"YYYY-[W]WW"},"monthly":{"folder":"Months","format":"MMMM-YYYY"}}"#,
+        );
+        let plan = plan_import(&root, &Settings::default()).unwrap();
+        let fields = plan
+            .preview
+            .iter()
+            .map(|change| change.field.as_str())
+            .collect::<Vec<_>>();
+        assert!(fields.contains(&"weekly directory"));
+        assert!(fields.contains(&"weekly format"));
+        assert!(fields.contains(&"monthly directory"));
+        assert!(fields.contains(&"monthly format"));
         fs::remove_dir_all(root).unwrap();
     }
 

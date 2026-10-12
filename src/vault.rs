@@ -738,6 +738,21 @@ impl Vault {
 /// note's text — produced by `link_spans_to` + `retarget_link`.
 pub type TextEdits = Vec<(std::ops::Range<usize>, String)>;
 
+pub(crate) fn non_overlapping_text_edits(mut edits: TextEdits) -> TextEdits {
+    edits.sort_by_key(|(range, _)| range.start);
+    let mut non_overlapping: TextEdits = Vec::with_capacity(edits.len());
+    for edit in edits {
+        if non_overlapping
+            .last()
+            .is_some_and(|(previous, _)| previous.end > edit.0.start)
+        {
+            continue;
+        }
+        non_overlapping.push(edit);
+    }
+    non_overlapping
+}
+
 /// The new inner text for a `[[...]]`/`![[...]]` whose target was renamed
 /// to `new_name` — swaps the last path segment only, keeping any
 /// `#anchor` and `|alias` suffix and the target's directory prefix.
@@ -908,12 +923,28 @@ fn normalize_path(p: &Path) -> PathBuf {
 }
 
 pub fn relative_link_path_for(root: &Path, source: &Path, target: &Path) -> Option<String> {
+    relative_path_for(root, source, target, true)
+}
+
+pub fn relative_markdown_link_path_for(
+    root: &Path,
+    source: &Path,
+    target: &Path,
+) -> Option<String> {
+    relative_path_for(root, source, target, false)
+}
+
+fn relative_path_for(
+    root: &Path,
+    source: &Path,
+    target: &Path,
+    strip_markdown_extension: bool,
+) -> Option<String> {
     let root = root.canonicalize().ok()?;
-    let source = source.parent()?.canonicalize().ok()?;
+    let source = canonicalize_with_missing_tail(&normalize_path(source.parent()?))?;
     let target = canonicalize_with_missing_tail(&normalize_path(target))?;
-    target
-        .starts_with(&root)
-        .then(|| relative_link_path_from_dirs(&root, &source, &target))?
+    (source.starts_with(&root) && target.starts_with(&root))
+        .then(|| relative_link_path_from_dirs(&root, &source, &target, strip_markdown_extension))?
 }
 
 fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
@@ -930,9 +961,19 @@ fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
     Some(normalize_path(&resolved))
 }
 
-fn relative_link_path_from_dirs(root: &Path, source: &Path, target: &Path) -> Option<String> {
+fn relative_link_path_from_dirs(
+    root: &Path,
+    source: &Path,
+    target: &Path,
+    strip_markdown_extension: bool,
+) -> Option<String> {
     let source = source.strip_prefix(root).ok()?;
-    let target = without_markdown_extension(target.strip_prefix(root).ok()?);
+    let target = target.strip_prefix(root).ok()?;
+    let target = if strip_markdown_extension {
+        without_markdown_extension(target)
+    } else {
+        target.to_path_buf()
+    };
     let source: Vec<_> = source
         .components()
         .filter_map(|component| component.as_os_str().to_str())
@@ -954,6 +995,104 @@ fn relative_link_path_from_dirs(root: &Path, source: &Path, target: &Path) -> Op
     } else {
         format!("./{path}")
     })
+}
+
+pub fn relative_link_edits_for_move(
+    root: &Path,
+    old_source: &Path,
+    new_source: &Path,
+    text: &str,
+) -> TextEdits {
+    let Some(old_source_canonical) = old_source.canonicalize().ok() else {
+        return Vec::new();
+    };
+    let Some(new_source_canonical) = canonicalize_with_missing_tail(&normalize_path(new_source))
+    else {
+        return Vec::new();
+    };
+    let Some(old_source_dir) = old_source.parent() else {
+        return Vec::new();
+    };
+    let mut edits = Vec::new();
+
+    let mut cursor = 0;
+    while let Some(at) = text[cursor..].find("[[").map(|offset| cursor + offset) {
+        let Some(end) = text[at + 2..].find("]]").map(|offset| at + 2 + offset) else {
+            break;
+        };
+        let range = (at + 2)..end;
+        let inner = &text[range.clone()];
+        if is_relative_link_path(inner) {
+            let path = inner
+                .trim()
+                .strip_prefix('<')
+                .and_then(|value| value.strip_suffix('>'))
+                .unwrap_or(inner.trim())
+                .split(['#', '|'])
+                .next()
+                .unwrap_or("");
+            if let Some(target) = resolve_relative_note(root, old_source_dir, path) {
+                let target = if target == old_source_canonical {
+                    new_source_canonical.clone()
+                } else {
+                    target
+                };
+                if let Some(relative) = relative_link_path_for(root, new_source, &target) {
+                    let replacement = retarget_link_path(inner, &relative);
+                    if replacement != inner {
+                        edits.push((range, replacement));
+                    }
+                }
+            }
+        }
+        cursor = end + 2;
+    }
+
+    let mut cursor = 0;
+    while let Some(at) = text[cursor..].find("](").map(|offset| cursor + offset) {
+        let Some(end) = text[at + 2..].find(')').map(|offset| at + 2 + offset) else {
+            break;
+        };
+        let range = (at + 2)..end;
+        let inner = &text[range.clone()];
+        if is_relative_link_path(inner) {
+            if let Some(target) = resolve_relative_markdown_path(root, old_source_dir, inner) {
+                let target = if target == old_source_canonical {
+                    new_source_canonical.clone()
+                } else {
+                    target
+                };
+                if let Some(relative) = relative_markdown_link_path_for(root, new_source, &target) {
+                    let replacement = retarget_md_link_path(inner, &relative);
+                    if replacement != inner {
+                        edits.push((range, replacement));
+                    }
+                }
+            }
+        }
+        cursor = end + 1;
+    }
+
+    non_overlapping_text_edits(edits)
+}
+
+fn resolve_relative_markdown_path(root: &Path, from_dir: &Path, inner: &str) -> Option<PathBuf> {
+    let inner = inner.trim();
+    let inner = inner
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(inner);
+    let raw = inner
+        .split('#')
+        .next()
+        .unwrap_or(inner)
+        .split('?')
+        .next()
+        .unwrap_or(inner);
+    let root = root.canonicalize().ok()?;
+    let from_dir = from_dir.canonicalize().ok()?;
+    let target = from_dir.join(percent_decode(raw)).canonicalize().ok()?;
+    (from_dir.starts_with(&root) && target.starts_with(&root) && target.is_file()).then_some(target)
 }
 
 fn without_markdown_extension(path: &Path) -> PathBuf {
@@ -1251,6 +1390,95 @@ mod link_diagnostics_tests {
             super::relative_link_path_for(&root, &source, &root.join("target/new.v1.2.md"),)
                 .as_deref(),
             Some("../../target/new.v1.2")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moved_notes_keep_relative_wiki_and_markdown_targets() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+
+        let root = std::env::temp_dir().join(format!(
+            "rista-relative-rename-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let old_dir = root.join("old");
+        let target_dir = root.join("target");
+        let incoming_dir = root.join("incoming");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::create_dir_all(&incoming_dir).unwrap();
+        let old_source = old_dir.join("source.md");
+        let new_source = root.join("new/deep/source.md");
+        let target = target_dir.join("Å v1.2.md");
+        let incoming = incoming_dir.join("linker.md");
+        std::fs::write(&old_source, "").unwrap();
+        std::fs::write(&target, "").unwrap();
+        std::fs::write(&incoming, "").unwrap();
+
+        let mut text = concat!(
+            "[[../target/Å v1.2#section|alias]]\n",
+            "[target](../target/Å%20v1.2.md#section)\n",
+            "[[./source|self]]\n",
+            "[self](./source.md)\n"
+        )
+        .to_string();
+        let edits = super::relative_link_edits_for_move(&root, &old_source, &new_source, &text);
+        for (range, replacement) in edits.into_iter().rev() {
+            text.replace_range(range, &replacement);
+        }
+        assert!(text.contains("[[../../target/Å v1.2#section|alias]]"));
+        assert!(text.contains("[target](../../target/Å%20v1.2.md#section)"));
+        assert!(text.contains("[[./source|self]]"));
+        assert!(text.contains("[self](./source.md)"));
+
+        std::fs::create_dir_all(new_source.parent().unwrap()).unwrap();
+        std::fs::write(&new_source, "").unwrap();
+        let old_incoming = "../old/source.md#heading";
+        assert_eq!(
+            super::resolve_relative_markdown_path(&root, incoming.parent().unwrap(), old_incoming,),
+            Some(old_source.canonicalize().unwrap())
+        );
+        std::fs::remove_file(&old_source).unwrap();
+        assert_eq!(
+            super::resolve_relative_note(
+                &root,
+                new_source.parent().unwrap(),
+                "../../target/Å v1.2"
+            ),
+            Some(target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            super::resolve_relative_markdown_path(
+                &root,
+                new_source.parent().unwrap(),
+                "../../target/Å%20v1.2.md#section",
+            ),
+            Some(target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            super::resolve_relative_markdown_path(
+                &root,
+                new_source.parent().unwrap(),
+                "./source.md",
+            ),
+            Some(new_source.canonicalize().unwrap())
+        );
+
+        let incoming_target =
+            super::relative_markdown_link_path_for(&root, &incoming, &new_source).unwrap();
+        assert!(incoming_target.ends_with(".md"));
+        let incoming_retargeted = super::retarget_md_link_path(old_incoming, &incoming_target);
+        assert!(incoming_retargeted.ends_with(".md#heading"));
+        assert_eq!(
+            super::resolve_relative_markdown_path(
+                &root,
+                incoming.parent().unwrap(),
+                &incoming_retargeted,
+            ),
+            Some(new_source.canonicalize().unwrap())
         );
         std::fs::remove_dir_all(root).unwrap();
     }

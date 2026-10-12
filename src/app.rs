@@ -5340,6 +5340,15 @@ impl Workspace {
                     (crate::vault_settings_import::ImportCategory::Hotkeys, count) => {
                         format!("{} {}", count, language.text("commands", "kommandoer"))
                     }
+                    (crate::vault_settings_import::ImportCategory::Links, "shortest") => {
+                        language.text("Shortest", "Korteste").to_string()
+                    }
+                    (crate::vault_settings_import::ImportCategory::Links, "relative") => {
+                        language.text("Relative", "Relativ").to_string()
+                    }
+                    (crate::vault_settings_import::ImportCategory::Links, "absolute") => {
+                        language.text("Absolute", "Absolutt").to_string()
+                    }
                     (_, "(none)") => language.text("(none)", "(ingen)").to_string(),
                     (_, value) => value.to_string(),
                 };
@@ -5507,6 +5516,7 @@ impl Workspace {
             "yearly format" => language.text("Yearly format", "Årlig format"),
             "attachments directory" => language.text("Attachments folder", "Vedleggsmappe"),
             "link format" => language.text("Link format", "Lenkeformat"),
+            "bookmarks" => language.text("Bookmarks", "Bokmerker"),
             "ignore filters" => language.text("Ignore filters", "Ignoreringsfiltre"),
             "shortcuts" => language.text("Shortcuts", "Snarveier"),
             "newLinkFormat" => language.text("Link format", "Lenkeformat"),
@@ -6069,6 +6079,11 @@ impl Workspace {
                 .unwrap_or_default();
             let wiki_rel = link_rel.trim_end_matches(".md").to_string();
             for note in &vault.notes {
+                let link_source = if moved && note == &path {
+                    new_path.as_path()
+                } else {
+                    note.as_path()
+                };
                 let text = match self.docs.iter().find(|d| d.entity.read(cx).path == *note) {
                     Some(doc) => doc.entity.read(cx).editor.read(cx).value().to_string(),
                     None => match std::fs::read_to_string(note) {
@@ -6089,7 +6104,9 @@ impl Workspace {
                                         .as_deref()
                                         .and_then(|root| {
                                             crate::vault::relative_link_path_for(
-                                                root, note, &new_path,
+                                                root,
+                                                link_source,
+                                                &new_path,
                                             )
                                         })
                                         .map(|relative| {
@@ -6133,8 +6150,10 @@ impl Workspace {
                                                 .root
                                                 .as_deref()
                                                 .and_then(|root| {
-                                                    crate::vault::relative_link_path_for(
-                                                        root, note, &new_path,
+                                                    crate::vault::relative_markdown_link_path_for(
+                                                        root,
+                                                        link_source,
+                                                        &new_path,
                                                     )
                                                 })
                                                 .map(|relative| {
@@ -6164,8 +6183,15 @@ impl Workspace {
                                 )
                             }),
                     );
-                    edits.sort_by_key(|(range, _)| range.start);
                 }
+                if note == &path {
+                    if let Some(root) = vault.root.as_deref() {
+                        edits.extend(crate::vault::relative_link_edits_for_move(
+                            root, &path, &new_path, &text,
+                        ));
+                    }
+                }
+                let edits = crate::vault::non_overlapping_text_edits(edits);
                 if !edits.is_empty() {
                     rewrites.push((note.clone(), edits));
                 }
@@ -7355,7 +7381,10 @@ impl Workspace {
                 .is_ok()
                 && bytes.len() <= crate::templater::MAX_EXPANSION_BYTES;
         let Ok(text) = String::from_utf8(bytes) else {
-            self.note_status("Could not read the template", cx);
+            self.note_status(
+                self.tr("Could not read the template.", "Kunne ikke lese malen."),
+                cx,
+            );
             return;
         };
         if !bounded {

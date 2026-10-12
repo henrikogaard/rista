@@ -669,8 +669,7 @@ pub(crate) fn publish(
     }
     let (settings, shared_settings, changed) = {
         let manager = cx.global::<WindowManager>();
-        let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
-        let mut merged = with_local_settings(merged, current);
+        let (mut merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
         let mut session = WindowSession::from_settings(id, current);
         session.geometry = manager.session(id).and_then(|session| session.geometry);
         update_session(&mut merged, session);
@@ -720,7 +719,7 @@ pub(crate) fn publish_checked(
             shared.settings = shared_settings;
         });
     }
-    Ok(settings)
+    Ok(with_local_settings(settings, current))
 }
 
 fn next_available_id(start: u64, sessions: &[WindowSession], records: &[WindowRecord]) -> u64 {
@@ -1298,5 +1297,59 @@ mod tests {
         assert_eq!(restored.open_tabs, vec!["/workspace.md"]);
         assert_eq!(restored.view_mode, ViewMode::Preview);
         assert!(authoritative.open_tabs.is_empty());
+    }
+
+    #[test]
+    fn checked_publication_result_keeps_caller_local_state_and_shared_sessions() {
+        let mut window_a = Settings::default();
+        window_a.last_vault = Some(PathBuf::from("/vault/a"));
+        window_a.open_tabs = vec!["/vault/a/note.md".into()];
+        window_a.active_tab = Some("/vault/a/note.md".into());
+        let mut window_b = Settings::default();
+        window_b.last_vault = Some(PathBuf::from("/vault/b"));
+        window_b.open_tabs = vec!["/vault/b/note.md".into()];
+        window_b.active_tab = Some("/vault/b/note.md".into());
+        window_b.view_mode = ViewMode::Preview;
+
+        let mut persisted = Settings::default();
+        persisted.window_sessions = vec![
+            WindowSession::from_settings(1, &window_a),
+            WindowSession::from_settings(2, &window_b),
+        ];
+        persisted.active_window_id = Some(1);
+        sync_compatibility_facade(&mut persisted);
+        let persisted_sessions = persisted.window_sessions.clone();
+        let mut current_window_b = window_b.clone();
+        current_window_b.window_sessions = persisted_sessions.clone();
+        current_window_b.active_window_id = Some(2);
+
+        let caller_settings = with_local_settings(persisted.clone(), &current_window_b);
+        assert_eq!(caller_settings.last_vault, Some(PathBuf::from("/vault/b")));
+        assert_eq!(caller_settings.open_tabs, vec!["/vault/b/note.md"]);
+        assert_eq!(
+            caller_settings.active_tab.as_deref(),
+            Some("/vault/b/note.md")
+        );
+        assert_eq!(caller_settings.view_mode, ViewMode::Preview);
+        assert_eq!(caller_settings.window_sessions.len(), 2);
+        assert_eq!(
+            caller_settings.window_sessions[0].last_vault,
+            Some(PathBuf::from("/vault/a"))
+        );
+        assert_eq!(
+            caller_settings.window_sessions[1].last_vault,
+            Some(PathBuf::from("/vault/b"))
+        );
+        assert_eq!(persisted.last_vault, Some(PathBuf::from("/vault/a")));
+        assert_eq!(persisted.open_tabs, vec!["/vault/a/note.md"]);
+        assert_eq!(persisted.window_sessions.len(), 2);
+        assert_eq!(
+            persisted.window_sessions[0].last_vault,
+            Some(PathBuf::from("/vault/a"))
+        );
+        assert_eq!(
+            persisted.window_sessions[1].last_vault,
+            Some(PathBuf::from("/vault/b"))
+        );
     }
 }
