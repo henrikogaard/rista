@@ -18,6 +18,109 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 type SpellRequestKey = (u64, String, Vec<std::ops::Range<usize>>);
+pub(crate) type ComposerFileChange = crate::note_composer::ComposerTransactionChange;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerHistoryDirection {
+    Undo,
+    Redo,
+}
+
+struct ComposerHistoryEntry {
+    before: Vec<u8>,
+    after: Vec<u8>,
+    changes: Vec<ComposerFileChange>,
+    path_references: ComposerPathReferenceDelta,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ComposerPathReferenceDelta {
+    pub(crate) workspaces: Vec<ComposerWorkspacePathReferenceDelta>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ComposerWorkspacePathReferenceDelta {
+    pub(crate) window_id: u64,
+    pub(crate) bookmarks: Vec<(
+        u64,
+        crate::bookmarks::BookmarkKind,
+        crate::bookmarks::BookmarkKind,
+    )>,
+    pub(crate) pinned_tabs: Vec<ComposerPathValueChange<String>>,
+    pub(crate) recent: Vec<ComposerPathValueChange<PathBuf>>,
+    pub(crate) closed_tabs: Vec<ComposerPathValueChange<PathBuf>>,
+    pub(crate) navigation: Vec<ComposerPathValueChange<PathBuf>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ComposerPathValueChange<T> {
+    pub(crate) index: usize,
+    pub(crate) before: T,
+    pub(crate) after: T,
+}
+
+struct PendingComposerHistory {
+    token: u64,
+    direction: ComposerHistoryDirection,
+    expected: Vec<u8>,
+}
+
+fn composer_history_boundary_matches(
+    direction: ComposerHistoryDirection,
+    current: &[u8],
+    before: &[u8],
+    after: &[u8],
+) -> bool {
+    match direction {
+        ComposerHistoryDirection::Undo => current == after,
+        ComposerHistoryDirection::Redo => current == before,
+    }
+}
+
+pub(crate) fn composer_history_buffer_conflicts(
+    expected: Option<&[u8]>,
+    current: &[u8],
+    baseline: Option<&[u8]>,
+    dirty: bool,
+    conflict: bool,
+) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    dirty || conflict || current != expected || baseline != Some(expected)
+}
+
+fn composer_files_match(root: &Path, changes: &[ComposerFileChange], reverse: bool) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    changes.iter().all(|(path, before, after)| {
+        let expected = if reverse { after } else { before };
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return expected.is_none()
+                    && path
+                        .parent()
+                        .and_then(|parent| parent.canonicalize().ok())
+                        .is_some_and(|parent| parent.starts_with(&root));
+            }
+            Err(_) => return false,
+        };
+        if metadata.file_type().is_symlink()
+            || metadata.len() > crate::note_composer::MAX_NOTE_BYTES as u64
+        {
+            return false;
+        }
+        let Ok(canonical) = path.canonicalize() else {
+            return false;
+        };
+        if !canonical.starts_with(&root) {
+            return false;
+        }
+        std::fs::read(canonical).ok().as_ref() == expected.as_ref()
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct SpellMenuContext {
@@ -34,6 +137,14 @@ pub enum DocumentEvent {
     Changed,
     /// Saved to disk.
     Saved,
+    /// A companion-file undo/redo could not be applied without overwriting
+    /// changes made outside the composer.
+    ComposerHistoryConflict,
+    ComposerHistoryApplied {
+        direction: ComposerHistoryDirection,
+        changes: Vec<ComposerFileChange>,
+        path_references: ComposerPathReferenceDelta,
+    },
     /// Caret moved — the status bar's Ln/Col display tracks it.
     Selection,
     SourceScrolled,
@@ -46,6 +157,7 @@ pub struct Document {
     /// The note's title, shared with its `/` completions so template
     /// items expand `{{title}}` — kept in step by `set_path`.
     completion_title: Rc<std::cell::RefCell<String>>,
+    completion_path: Rc<std::cell::RefCell<PathBuf>>,
     /// Image file — the editor stays empty and the workspace renders
     /// the picture itself instead of the source/preview panes.
     pub is_image: bool,
@@ -58,7 +170,9 @@ pub struct Document {
     pub base_embeds: preview::EmbedViews,
     pub query_embeds: preview::QueryEmbedViews,
     pub pdf_embeds: preview::PdfEmbedViews,
+    pub(crate) image_preview: crate::image_resize::ImagePreview,
     pub preview: Entity<TextViewState>,
+    pub(crate) preview_focus: FocusHandle,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
     pub conflict: bool,
@@ -95,6 +209,12 @@ pub struct Document {
     spell_request_key: Option<SpellRequestKey>,
     spell_request_pending: bool,
     spell_menu_context: Option<SpellMenuContext>,
+    composer_undo: Vec<ComposerHistoryEntry>,
+    composer_redo: Vec<ComposerHistoryEntry>,
+    composer_history_token: u64,
+    pending_composer_history: Option<PendingComposerHistory>,
+    composer_rollback_action: Option<ComposerHistoryDirection>,
+    native_history_action: Option<u64>,
     /// Focus mode: only the block under the caret stays lit —
     /// decorations recompute on cursor moves while this is on.
     pub focus_mode: bool,
@@ -194,6 +314,8 @@ impl Document {
         let completions_vault = vault.clone();
         let completion_title = Rc::new(std::cell::RefCell::new(note_title(&path)));
         let completions_title = completion_title.clone();
+        let completion_path = Rc::new(std::cell::RefCell::new(path.clone()));
+        let completions_path = completion_path.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("markdown")
@@ -205,15 +327,18 @@ impl Document {
                     hard_tabs: false,
                 })
                 .searchable(true);
-            state.lsp_mut().completion_provider = Some(Rc::new(
-                crate::slash::VaultCompletions::new(completions_vault, completions_title),
-            ));
+            state.lsp_mut().completion_provider =
+                Some(Rc::new(crate::slash::VaultCompletions::new(
+                    completions_vault,
+                    completions_title,
+                    completions_path,
+                )));
             state.set_value(content.clone(), window, cx);
             state
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let (preview_text, preview_line_offsets) = preview::preprocess_mapped(
+        let (preview_text, preview_line_offsets, image_spans) = preview::preprocess_with_images(
             &content,
             &path,
             vault_root.as_deref(),
@@ -237,12 +362,20 @@ impl Document {
             pdf,
             path,
             completion_title,
+            completion_path,
             editor,
             callout_folds: preview::CalloutFolds::default(),
             base_embeds: preview::EmbedViews::default(),
             query_embeds: preview::QueryEmbedViews::default(),
             pdf_embeds: preview::PdfEmbedViews::default(),
+            image_preview: crate::image_resize::ImagePreview::new(
+                cx.weak_entity(),
+                &content,
+                0,
+                image_spans,
+            ),
             preview,
+            preview_focus: cx.focus_handle(),
             dirty: false,
             conflict: false,
             disk_bytes,
@@ -270,6 +403,12 @@ impl Document {
             spell_request_key: None,
             spell_request_pending: false,
             spell_menu_context: None,
+            composer_undo: Vec::new(),
+            composer_redo: Vec::new(),
+            composer_history_token: 0,
+            pending_composer_history: None,
+            composer_rollback_action: None,
+            native_history_action: None,
             focus_mode: false,
             focus_cursor: None,
             status_cursor: None,
@@ -341,6 +480,7 @@ impl Document {
     /// Point the document at a renamed/moved/saved-as file.
     pub fn set_path(&mut self, path: PathBuf) {
         *self.completion_title.borrow_mut() = note_title(&path);
+        *self.completion_path.borrow_mut() = path.clone();
         self.path = path;
     }
 
@@ -352,8 +492,23 @@ impl Document {
             .to_string()
     }
 
-    fn on_edited(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.reloading || self.is_read_only() {
+            return;
+        }
+        let native_history_action = self.native_history_action.take().is_some();
+        if self.composer_rollback_action.take().is_some() {
+            let current = self.editor.read(cx).value().to_string().into_bytes();
+            self.dirty = self.disk_bytes.as_ref() != Some(&current);
+            self.save_task.take();
+            self.revision += 1;
+            self.spell_analysis = None;
+            self.spell_request_key = None;
+            self.clear_spellcheck(cx);
+            self.schedule_spellcheck(cx);
+            self.sync_preview(cx);
+            cx.emit(DocumentEvent::Changed);
+            cx.notify();
             return;
         }
         if !self.dirty
@@ -363,6 +518,9 @@ impl Document {
                 .is_some_and(|bytes| bytes.as_slice() == self.editor.read(cx).value().as_bytes())
         {
             return;
+        }
+        if !native_history_action {
+            self.composer_redo.clear();
         }
         self.dirty = true;
         self.revision += 1;
@@ -392,7 +550,200 @@ impl Document {
                 }
             });
         }));
+        self.complete_composer_history_action(window, cx);
         cx.notify();
+    }
+
+    pub(crate) fn record_composer_edit(
+        &mut self,
+        before: Vec<u8>,
+        after: Vec<u8>,
+        changes: Vec<ComposerFileChange>,
+        path_references: ComposerPathReferenceDelta,
+    ) {
+        self.pending_composer_history = None;
+        self.composer_redo.clear();
+        self.composer_undo.push(ComposerHistoryEntry {
+            before,
+            after,
+            changes,
+            path_references,
+        });
+        if self.composer_undo.len() > 64 {
+            self.composer_undo.remove(0);
+        }
+    }
+
+    pub(crate) fn composer_history_changes_for_action(
+        &self,
+        direction: ComposerHistoryDirection,
+        cx: &App,
+    ) -> Vec<ComposerFileChange> {
+        let current = self.editor.read(cx).value().to_string().into_bytes();
+        match direction {
+            ComposerHistoryDirection::Undo => self.composer_undo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
+            ComposerHistoryDirection::Redo => self.composer_redo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
+        }
+        .map(|entry| entry.changes.clone())
+        .unwrap_or_default()
+    }
+
+    pub(crate) fn composer_rollback_action(&self, direction: ComposerHistoryDirection) -> bool {
+        self.composer_rollback_action == Some(direction)
+    }
+
+    pub(crate) fn prepare_composer_history_action(
+        &mut self,
+        direction: ComposerHistoryDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let current = self.editor.read(cx).value().to_string().into_bytes();
+        let candidate = match direction {
+            ComposerHistoryDirection::Undo => self.composer_undo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
+            ComposerHistoryDirection::Redo => self.composer_redo.last().filter(|entry| {
+                composer_history_boundary_matches(direction, &current, &entry.before, &entry.after)
+            }),
+        };
+        let candidate = candidate.map(|entry| {
+            let expected = match direction {
+                ComposerHistoryDirection::Undo => entry.before.clone(),
+                ComposerHistoryDirection::Redo => entry.after.clone(),
+            };
+            (expected, entry.changes.clone())
+        });
+        self.pending_composer_history = None;
+        if let Some((_, changes)) = &candidate {
+            if self.conflict || self.flush_and_save(cx).is_err() {
+                return false;
+            }
+            let Some(root) = self.vault_root.as_deref() else {
+                return false;
+            };
+            if !composer_files_match(
+                root,
+                changes,
+                matches!(direction, ComposerHistoryDirection::Undo),
+            ) {
+                return false;
+            }
+        }
+        self.composer_history_token = self.composer_history_token.wrapping_add(1);
+        let token = self.composer_history_token;
+        self.native_history_action = Some(token);
+        if let Some((expected, _)) = candidate {
+            self.save_task.take();
+            self.pending_composer_history = Some(PendingComposerHistory {
+                token,
+                direction,
+                expected,
+            });
+        }
+        let weak = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = weak.update(cx, |doc, _| {
+                if doc.native_history_action == Some(token) {
+                    doc.native_history_action = None;
+                }
+                if doc
+                    .pending_composer_history
+                    .as_ref()
+                    .is_some_and(|pending| pending.token == token)
+                {
+                    doc.pending_composer_history = None;
+                }
+            });
+        });
+        true
+    }
+
+    fn rollback_composer_history_action(
+        &mut self,
+        direction: ComposerHistoryDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_task.take();
+        let rollback = match direction {
+            ComposerHistoryDirection::Undo => ComposerHistoryDirection::Redo,
+            ComposerHistoryDirection::Redo => ComposerHistoryDirection::Undo,
+        };
+        self.composer_rollback_action = Some(rollback);
+        window.defer(cx, move |window, cx| match rollback {
+            ComposerHistoryDirection::Undo => {
+                window.dispatch_action(Box::new(gpui_kit::component::input::Undo), cx)
+            }
+            ComposerHistoryDirection::Redo => {
+                window.dispatch_action(Box::new(gpui_kit::component::input::Redo), cx)
+            }
+        });
+        cx.emit(DocumentEvent::ComposerHistoryConflict);
+    }
+
+    fn complete_composer_history_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_composer_history.take() else {
+            return;
+        };
+        let current = self.editor.read(cx).value().to_string().into_bytes();
+        if current != pending.expected {
+            // Identical text can also occur at an unrelated native history
+            // boundary. Only the atomic composer replacement owns its files.
+            return;
+        }
+        let root = self.vault_root.as_deref();
+        let Some(root) = root else {
+            self.rollback_composer_history_action(pending.direction, window, cx);
+            return;
+        };
+        let (entry, reverse) = match pending.direction {
+            ComposerHistoryDirection::Undo => (self.composer_undo.last(), true),
+            ComposerHistoryDirection::Redo => (self.composer_redo.last(), false),
+        };
+        let Some(entry) = entry else {
+            self.rollback_composer_history_action(pending.direction, window, cx);
+            return;
+        };
+        let history_changes = entry.changes.clone();
+        let path_references = entry.path_references.clone();
+        let changes = entry
+            .changes
+            .iter()
+            .map(|(path, before, after)| {
+                if reverse {
+                    (path.clone(), after.clone(), before.clone())
+                } else {
+                    (path.clone(), before.clone(), after.clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        if crate::note_composer::merge_transaction_changes(root, &changes).is_err() {
+            self.rollback_composer_history_action(pending.direction, window, cx);
+            return;
+        }
+        match pending.direction {
+            ComposerHistoryDirection::Undo => {
+                if let Some(entry) = self.composer_undo.pop() {
+                    self.composer_redo.push(entry);
+                }
+            }
+            ComposerHistoryDirection::Redo => {
+                if let Some(entry) = self.composer_redo.pop() {
+                    self.composer_undo.push(entry);
+                }
+            }
+        }
+        self.mark_composer_written(current, cx);
+        cx.emit(DocumentEvent::ComposerHistoryApplied {
+            direction: pending.direction,
+            changes: history_changes,
+            path_references,
+        });
     }
 
     fn sync_preview(&mut self, cx: &mut Context<Self>) {
@@ -409,7 +760,7 @@ impl Document {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
-        let (text, offsets) = preview::preprocess_mapped(
+        let (text, offsets, image_spans) = preview::preprocess_with_images(
             &raw,
             &self.path,
             self.vault_root.as_deref(),
@@ -417,6 +768,7 @@ impl Document {
             &preview::MarkColors::from_theme(cx.theme()),
         );
         self.preview_line_offsets = offsets;
+        self.image_preview.refresh(&raw, self.revision, image_spans);
         self.preview_blocks = preview::navigation_blocks(&text);
         self.mapped_preview = None;
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
@@ -851,6 +1203,18 @@ impl Document {
 
     /// Write the buffer to disk only if its loaded bytes are still current.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
+        self.save_inner(cx, true)
+    }
+
+    pub(crate) fn save_without_history(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
+        self.save_inner(cx, false)
+    }
+
+    fn save_inner(
+        &mut self,
+        cx: &mut Context<Self>,
+        snapshot_history: bool,
+    ) -> std::io::Result<()> {
         let text = self.editor.read(cx).value();
         let Some(baseline) = self.disk_bytes.as_deref() else {
             return Err(io::Error::new(
@@ -862,8 +1226,10 @@ impl Document {
             self.mark_conflict(cx);
             return Err(err);
         }
-        if let Some(root) = &self.vault_root {
-            history::snapshot_before_write(root, &self.path, &text);
+        if snapshot_history {
+            if let Some(root) = &self.vault_root {
+                history::snapshot_before_write(root, &self.path, &text);
+            }
         }
         match guarded_write(&self.path, baseline, text.as_bytes()) {
             Ok(()) => {
@@ -886,6 +1252,33 @@ impl Document {
                 Err(err)
             }
         }
+    }
+
+    pub(crate) fn cli_snapshot_before_write(
+        &self,
+        vault_root: &Path,
+        replacement: &[u8],
+    ) -> Result<(), crate::cli::CliError> {
+        let baseline = self.disk_bytes.as_deref().ok_or_else(|| {
+            crate::cli::CliError::new(
+                "The open document cannot be saved as text",
+                "Det åpne dokumentet kan ikke lagres som tekst",
+            )
+        })?;
+        if crate::cli::read_bounded_bytes(&self.path)? != baseline {
+            return Err(crate::cli::CliError::new(
+                "The note changed on disk while appending; no changes were written",
+                "Notatet ble endret på disk under tilføying; ingen endringer ble skrevet",
+            ));
+        }
+        history::snapshot_before_write_checked(vault_root, &self.path, baseline, replacement)
+            .map_err(|error| {
+                crate::cli::CliError::new(
+                    format!("Could not save the pre-append history snapshot: {error}"),
+                    format!("Kunne ikke lagre historikkbildet før tilføying: {error}"),
+                )
+            })?;
+        Ok(())
     }
 
     pub fn flush_and_save(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
@@ -969,15 +1362,12 @@ impl Document {
     /// Load `text` into the editor as a user edit (dirty, syncs preview).
     /// Used to restore a history snapshot.
     pub fn restore_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_read_only() {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
-            editor.set_value(text, window, cx);
+            editor.replace_all(text, window, cx);
         });
-        self.dirty = true;
-        self.revision += 1;
-        self.reschedule_spellcheck_for_revision(true, cx);
-        self.sync_preview(cx);
-        cx.emit(DocumentEvent::Changed);
-        cx.notify();
     }
 
     /// Insert an expanded template at the caret, replacing any selection.
@@ -2555,6 +2945,64 @@ impl Document {
         Some((text[sel.clone()].to_string(), sel))
     }
 
+    pub(crate) fn resize_image(
+        &mut self,
+        anchor: &crate::image_resize::ResizeAnchor,
+        size: Option<(u32, u32)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let current = self.editor.read(cx).value();
+        if self.is_read_only() || self.conflict {
+            return false;
+        }
+        let Some(replacement) = anchor.replacement(&current, self.revision, size) else {
+            return false;
+        };
+        if replacement != anchor.original {
+            self.replace_range(anchor.source.clone(), replacement, window, cx);
+        }
+        true
+    }
+
+    pub(crate) fn composer_source(&self, cx: &App) -> String {
+        self.editor.read(cx).value().to_string()
+    }
+
+    pub(crate) fn composer_disk_baseline(&self) -> Option<Vec<u8>> {
+        self.disk_bytes.clone()
+    }
+
+    pub(crate) fn cancel_composer_save(&mut self) {
+        self.save_task.take();
+    }
+
+    pub(crate) fn composer_heading(
+        &self,
+        cx: &App,
+    ) -> Result<Option<(std::ops::Range<usize>, String)>, crate::note_composer::ComposeError> {
+        let editor = self.editor.read(cx);
+        crate::note_composer::heading_section(&editor.value(), editor.cursor())
+    }
+
+    /// Update the disk baseline after a guarded composer transaction. The
+    /// editor replacement itself is deliberately performed by the caller so
+    /// native undo history remains intact.
+    pub(crate) fn mark_composer_written(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        self.disk_bytes = Some(bytes);
+        self.mtime = std::fs::metadata(&self.path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        self.dirty = false;
+        self.conflict = false;
+        self.revision += 1;
+        self.reschedule_spellcheck_for_revision(false, cx);
+        self.save_task.take();
+        self.sync_preview(cx);
+        cx.emit(DocumentEvent::Saved);
+        cx.notify();
+    }
+
     /// Replace a byte range with new text, leaving the caret at its end.
     pub fn replace_range(
         &mut self,
@@ -3620,8 +4068,9 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_anchor, block_candidates, block_link_targets, format_table_md, guarded_write,
-        highlight_color_edit, linked_block_id_edit, new_block_id,
+        block_anchor, block_candidates, block_link_targets, composer_history_boundary_matches,
+        composer_history_buffer_conflicts, format_table_md, guarded_write, highlight_color_edit,
+        linked_block_id_edit, new_block_id, ComposerHistoryDirection,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3633,6 +4082,73 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn composer_history_requires_the_exact_native_editor_boundary() {
+        assert!(composer_history_boundary_matches(
+            ComposerHistoryDirection::Undo,
+            b"after",
+            b"before",
+            b"after"
+        ));
+        assert!(!composer_history_boundary_matches(
+            ComposerHistoryDirection::Undo,
+            b"later typing",
+            b"before",
+            b"after"
+        ));
+        assert!(composer_history_boundary_matches(
+            ComposerHistoryDirection::Redo,
+            b"before",
+            b"before",
+            b"after"
+        ));
+        assert!(!composer_history_boundary_matches(
+            ComposerHistoryDirection::Redo,
+            b"changed",
+            b"before",
+            b"after"
+        ));
+    }
+
+    #[test]
+    fn composer_history_preflights_created_and_deleted_buffers() {
+        assert!(!composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"created",
+            Some(b"created"),
+            false,
+            false
+        ));
+        assert!(composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"edited",
+            Some(b"created"),
+            true,
+            false
+        ));
+        assert!(composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"created",
+            Some(b"created"),
+            false,
+            true
+        ));
+        assert!(composer_history_buffer_conflicts(
+            Some(b"created"),
+            b"created",
+            Some(b"older"),
+            false,
+            false
+        ));
+        assert!(composer_history_buffer_conflicts(
+            None,
+            b"stale view",
+            None,
+            false,
+            false
+        ));
     }
 
     #[test]

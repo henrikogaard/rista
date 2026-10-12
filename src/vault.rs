@@ -4,8 +4,9 @@
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use gpui_kit::*;
 use notify::{RecursiveMode, Watcher};
+use regex::{Regex, RegexBuilder};
 
-use crate::settings::TreeSort;
+use crate::settings::{LinkFormat, TreeSort};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -51,6 +52,7 @@ pub struct Vault {
     /// Lowercase file stem → note — basename resolution. First note wins
     /// on duplicates, matching the old `.find()` scan order.
     by_stem: std::collections::HashMap<String, PathBuf>,
+    stem_counts: std::collections::HashMap<String, usize>,
     /// Per-note mtime → parsed `aliases:` values. Lets a refresh reuse
     /// frontmatter without re-reading every file's body.
     alias_cache: std::collections::HashMap<PathBuf, (std::time::SystemTime, Vec<String>)>,
@@ -69,12 +71,63 @@ pub struct Vault {
     /// File ordering inside each folder — dirs stay alphabetical.
     pub tree_sort: TreeSort,
     pub show_other_files: bool,
+    pub link_format: LinkFormat,
     /// Templates folder relative to the root — its notes stay visible
     /// and linkable but their scaffolding (`{{cursor}}` tasks, tags,
     /// aliases) doesn't pollute the vault indexes. Mirrors
     /// `Settings::templates_dir`, set by the workspace on open.
     pub templates_dir: String,
+    ignore_filters: IgnoreFilters,
     _tree_sub: Subscription,
+}
+
+#[derive(Clone, Default)]
+struct IgnoreFilters {
+    paths: Vec<String>,
+    regexes: Vec<Regex>,
+}
+
+impl IgnoreFilters {
+    fn from_settings(filters: &[String]) -> Self {
+        let mut compiled = Self::default();
+        for filter in filters.iter().take(1_000) {
+            if let Some(pattern) = filter.strip_prefix('/').and_then(|s| s.strip_suffix('/')) {
+                let mut builder = RegexBuilder::new(pattern);
+                builder.size_limit(256 * 1024).dfa_size_limit(256 * 1024);
+                if let Ok(regex) = builder.build() {
+                    compiled.regexes.push(regex);
+                }
+            } else if !filter.is_empty()
+                && filter.len() <= 4096
+                && !filter.starts_with('/')
+                && !filter.contains('\\')
+                && !filter.contains('*')
+                && !filter.contains('?')
+                && !Path::new(filter).components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                compiled.paths.push(filter.trim_matches('/').to_string());
+            }
+        }
+        compiled
+    }
+
+    fn matches(&self, root: &Path, path: &Path) -> bool {
+        let Some(relative) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
+            return false;
+        };
+        let relative = relative.replace('\\', "/");
+        self.paths
+            .iter()
+            .any(|ignored| relative == *ignored || relative.starts_with(&format!("{ignored}/")))
+            || self.regexes.iter().any(|regex| regex.is_match(&relative))
+    }
 }
 
 impl Vault {
@@ -105,6 +158,7 @@ impl Vault {
             aliases: std::collections::HashMap::new(),
             by_rel: std::collections::HashMap::new(),
             by_stem: std::collections::HashMap::new(),
+            stem_counts: std::collections::HashMap::new(),
             alias_cache: std::collections::HashMap::new(),
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
@@ -113,13 +167,23 @@ impl Vault {
             explorer_filter: Default::default(),
             tree_sort: TreeSort::default(),
             show_other_files: false,
+            link_format: LinkFormat::Shortest,
             templates_dir: "templates".to_string(),
+            ignore_filters: IgnoreFilters::default(),
             _tree_sub: tree_sub,
         }
     }
 
     pub fn is_open(&self) -> bool {
         self.root.is_some()
+    }
+
+    pub(crate) fn set_ignore_filters(&mut self, filters: &[String]) {
+        self.ignore_filters = IgnoreFilters::from_settings(filters);
+    }
+
+    pub(crate) fn set_link_format(&mut self, format: crate::settings::LinkFormat) {
+        self.link_format = format;
     }
 
     pub fn open(&mut self, root: PathBuf, restored_expanded: Vec<String>, cx: &mut Context<Self>) {
@@ -143,6 +207,7 @@ impl Vault {
         self.attachments.clear();
         self.by_rel.clear();
         self.by_stem.clear();
+        self.stem_counts.clear();
         self.aliases.clear();
         self.tree
             .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
@@ -154,7 +219,14 @@ impl Vault {
         let Some(root) = self.root.clone() else {
             return;
         };
-        self.all_items = build_items(&root, 0, self.tree_sort, self.show_other_files);
+        self.all_items = build_items(
+            &root,
+            &root,
+            0,
+            self.tree_sort,
+            self.show_other_files,
+            &self.ignore_filters,
+        );
         self.search_paths = Arc::new(crate::explorer::paths(&self.all_items));
         let items = mark_expanded(self.all_items.clone(), &self.expanded);
         let items = crate::explorer::filtered_tree(
@@ -167,7 +239,7 @@ impl Vault {
             notes,
             images,
             attachments,
-        } = collect_files(&root);
+        } = collect_files(&root, &self.ignore_filters);
         // Template files are scaffolding, not notes — they stay in the
         // tree and resolve as links, but their tags/tasks/aliases don't
         // index (a `- [ ] {{cursor}}` placeholder is not a vault task).
@@ -184,6 +256,7 @@ impl Vault {
         // files that actually changed instead of the whole vault.
         self.by_rel.clear();
         self.by_stem.clear();
+        self.stem_counts.clear();
         self.aliases.clear();
         let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
         self.alias_cache.retain(|p, _| note_set.contains(p));
@@ -194,9 +267,9 @@ impl Vault {
                     .insert(rel.trim_end_matches(".md").to_lowercase(), note.clone());
             }
             if let Some(stem) = note.file_stem().and_then(|s| s.to_str()) {
-                self.by_stem
-                    .entry(stem.to_lowercase())
-                    .or_insert_with(|| note.clone());
+                let stem = stem.to_lowercase();
+                *self.stem_counts.entry(stem.clone()).or_default() += 1;
+                self.by_stem.entry(stem).or_insert_with(|| note.clone());
             }
             // `aliases:` only live in markdown frontmatter — `.base`
             // files and templates get indexed above but skip the read.
@@ -357,6 +430,37 @@ impl Vault {
             .cloned()
     }
 
+    pub fn resolve_wikilink_from(&self, target: &str, source: &Path) -> Option<PathBuf> {
+        let raw = target.split(['#', '|']).next().unwrap_or(target).trim();
+        if raw.starts_with("./") || raw.starts_with("../") {
+            return self.resolve_relative_wikilink(raw, source.parent()?);
+        }
+        self.resolve_wikilink(raw)
+    }
+
+    fn resolve_relative_wikilink(&self, target: &str, from_dir: &Path) -> Option<PathBuf> {
+        resolve_relative_note(self.root.as_deref()?, from_dir, target)
+    }
+
+    pub fn link_target_for(&self, target: &Path, source: &Path) -> Option<String> {
+        let root = self.root.as_deref()?;
+        let target_rel = without_markdown_extension(target.strip_prefix(root).ok()?);
+        let target_text = target_rel.to_string_lossy().replace('\\', "/");
+        match self.link_format {
+            LinkFormat::Absolute => Some(target_text),
+            LinkFormat::Relative => relative_link_path_for(root, source, target),
+            LinkFormat::Shortest => {
+                let stem = target.file_stem()?.to_string_lossy().to_string();
+                let count = self
+                    .stem_counts
+                    .get(&stem.to_lowercase())
+                    .copied()
+                    .unwrap_or(0);
+                Some(if count <= 1 { stem } else { target_text })
+            }
+        }
+    }
+
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
     /// Scans note bodies — O(vault); callers should cache the result.
     pub fn backlinks_to(&self, target: &Path) -> Vec<PathBuf> {
@@ -368,17 +472,10 @@ impl Vault {
             let Ok(text) = std::fs::read_to_string(note) else {
                 continue;
             };
-            let mut cursor = 0;
-            while let Some(at) = text[cursor..].find("[[") {
-                let start = cursor + at + 2;
-                let Some(end) = text[start..].find("]]") else {
-                    break;
-                };
-                if self.resolve_wikilink(&text[start..start + end]).as_deref() == Some(target) {
-                    links.push(note.clone());
-                    break;
-                }
-                cursor = start + end + 2;
+            if local_link_targets(&text).iter().any(|(link, wiki)| {
+                *wiki && self.resolve_wikilink_from(link, note).as_deref() == Some(target)
+            }) {
+                links.push(note.clone());
             }
         }
         links
@@ -395,7 +492,11 @@ impl Vault {
                 let Some(end) = line[start..].find("]]") else {
                     break;
                 };
-                if self.resolve_wikilink(&line[start..start + end]).as_deref() == Some(target) {
+                if self
+                    .resolve_wikilink_from(&line[start..start + end], note)
+                    .as_deref()
+                    == Some(target)
+                {
                     return Some(line.trim().to_string());
                 }
                 cursor = start + end + 2;
@@ -444,14 +545,23 @@ impl Vault {
     /// Byte ranges of the inner `target` text of every `[[wikilink]]` /
     /// `![[embed]]` in `text` that resolves to `target` — used by
     /// link-safe rename to rewrite the span in place.
-    pub fn link_spans_to(&self, text: &str, target: &Path) -> Vec<std::ops::Range<usize>> {
+    pub fn link_spans_to(
+        &self,
+        text: &str,
+        from_path: &Path,
+        target: &Path,
+    ) -> Vec<std::ops::Range<usize>> {
         let mut out = Vec::new();
         let mut cursor = 0;
         while let Some(at) = text[cursor..].find("[[").map(|i| cursor + i) {
             let Some(end) = text[at + 2..].find("]]").map(|i| at + 2 + i) else {
                 break;
             };
-            if self.resolve_link_target(&text[at + 2..end]).as_deref() == Some(target) {
+            if self
+                .resolve_link_target_from(&text[at + 2..end], from_path)
+                .as_deref()
+                == Some(target)
+            {
                 out.push((at + 2)..end);
             }
             cursor = end + 2;
@@ -479,7 +589,11 @@ impl Vault {
         let mut unresolved: Vec<String> = Vec::new();
         for (target, wiki) in targets {
             match if *wiki {
-                self.resolve_link_target(target)
+                if target.starts_with("./") || target.starts_with("../") {
+                    self.resolve_relative_wikilink(target, from_dir)
+                } else {
+                    self.resolve_link_target(target)
+                }
             } else {
                 self.md_link_path(target, from_dir)
             } {
@@ -533,6 +647,27 @@ impl Vault {
     /// Note links and attachments, including files hidden from the sidebar.
     fn resolve_link_target(&self, target: &str) -> Option<PathBuf> {
         self.resolve_wikilink(target).or_else(|| {
+            let name = target
+                .split(['#', '|'])
+                .next()
+                .unwrap_or(target)
+                .trim()
+                .to_lowercase();
+            self.attachments.get(&name).cloned()
+        })
+    }
+
+    fn resolve_link_target_from(&self, target: &str, source: &Path) -> Option<PathBuf> {
+        self.resolve_wikilink_from(target, source).or_else(|| {
+            if target.starts_with("./") || target.starts_with("../") {
+                let root = self.root.as_deref()?.canonicalize().ok()?;
+                let parent = source.parent()?.canonicalize().ok()?;
+                let candidate = parent.join(target.split(['#', '|']).next().unwrap_or(target));
+                let candidate = candidate.canonicalize().ok()?;
+                if candidate.starts_with(&root) && candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
             let name = target
                 .split(['#', '|'])
                 .next()
@@ -603,6 +738,21 @@ impl Vault {
 /// note's text — produced by `link_spans_to` + `retarget_link`.
 pub type TextEdits = Vec<(std::ops::Range<usize>, String)>;
 
+pub(crate) fn non_overlapping_text_edits(mut edits: TextEdits) -> TextEdits {
+    edits.sort_by_key(|(range, _)| range.start);
+    let mut non_overlapping: TextEdits = Vec::with_capacity(edits.len());
+    for edit in edits {
+        if non_overlapping
+            .last()
+            .is_some_and(|(previous, _)| previous.end > edit.0.start)
+        {
+            continue;
+        }
+        non_overlapping.push(edit);
+    }
+    non_overlapping
+}
+
 /// The new inner text for a `[[...]]`/`![[...]]` whose target was renamed
 /// to `new_name` — swaps the last path segment only, keeping any
 /// `#anchor` and `|alias` suffix and the target's directory prefix.
@@ -643,6 +793,26 @@ pub fn retarget_link_full(inner: &str, new_rel: &str) -> String {
         new_rel.rsplit('/').next().unwrap_or(new_rel).to_string()
     };
     format!("{target}{rest}")
+}
+
+pub fn retarget_link_path(inner: &str, new_path: &str) -> String {
+    let (pre, rest) = match inner.find(['#', '|']) {
+        Some(i) => inner.split_at(i),
+        None => (inner, ""),
+    };
+    if pre.trim().is_empty() {
+        return inner.to_string();
+    }
+    format!("{new_path}{rest}")
+}
+
+pub fn is_relative_link_path(inner: &str) -> bool {
+    let trimmed = inner.trim();
+    let path = trimmed
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    path.starts_with("./") || path.starts_with("../")
 }
 
 /// The new inner text for a `[label](target)` link whose target was
@@ -713,6 +883,31 @@ pub fn retarget_md_link_full(inner: &str, new_rel: &str) -> String {
     }
 }
 
+pub fn retarget_md_link_path(inner: &str, new_path: &str) -> String {
+    let trimmed = inner.trim();
+    let wrapped = trimmed.starts_with('<');
+    let body = trimmed
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    let rest = match body.find(['#', '?']) {
+        Some(i) => &body[i..],
+        None => "",
+    };
+    let escaped = body.contains('%');
+    let path = if escaped {
+        new_path.replace(' ', "%20")
+    } else {
+        new_path.to_string()
+    };
+    let body = format!("{path}{rest}");
+    if wrapped || (!escaped && new_path.contains(' ')) {
+        format!("<{body}>")
+    } else {
+        body
+    }
+}
+
 fn normalize_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -725,6 +920,213 @@ fn normalize_path(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+pub fn relative_link_path_for(root: &Path, source: &Path, target: &Path) -> Option<String> {
+    relative_path_for(root, source, target, true)
+}
+
+pub fn relative_markdown_link_path_for(
+    root: &Path,
+    source: &Path,
+    target: &Path,
+) -> Option<String> {
+    relative_path_for(root, source, target, false)
+}
+
+fn relative_path_for(
+    root: &Path,
+    source: &Path,
+    target: &Path,
+    strip_markdown_extension: bool,
+) -> Option<String> {
+    let root = root.canonicalize().ok()?;
+    let source = canonicalize_with_missing_tail(&normalize_path(source.parent()?))?;
+    let target = canonicalize_with_missing_tail(&normalize_path(target))?;
+    (source.starts_with(&root) && target.starts_with(&root))
+        .then(|| relative_link_path_from_dirs(&root, &source, &target, strip_markdown_extension))?
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        missing.push(existing.file_name()?.to_os_string());
+        existing = existing.parent()?;
+    }
+    let mut resolved = existing.canonicalize().ok()?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Some(normalize_path(&resolved))
+}
+
+fn relative_link_path_from_dirs(
+    root: &Path,
+    source: &Path,
+    target: &Path,
+    strip_markdown_extension: bool,
+) -> Option<String> {
+    let source = source.strip_prefix(root).ok()?;
+    let target = target.strip_prefix(root).ok()?;
+    let target = if strip_markdown_extension {
+        without_markdown_extension(target)
+    } else {
+        target.to_path_buf()
+    };
+    let source: Vec<_> = source
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    let target: Vec<_> = target
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    let common = source
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut parts = vec![".."; source.len() - common];
+    parts.extend(target[common..].iter().copied());
+    let path = parts.join("/");
+    Some(if path.starts_with("../") {
+        path
+    } else {
+        format!("./{path}")
+    })
+}
+
+pub fn relative_link_edits_for_move(
+    root: &Path,
+    old_source: &Path,
+    new_source: &Path,
+    text: &str,
+) -> TextEdits {
+    let Some(old_source_canonical) = old_source.canonicalize().ok() else {
+        return Vec::new();
+    };
+    let Some(new_source_canonical) = canonicalize_with_missing_tail(&normalize_path(new_source))
+    else {
+        return Vec::new();
+    };
+    let Some(old_source_dir) = old_source.parent() else {
+        return Vec::new();
+    };
+    let mut edits = Vec::new();
+
+    let mut cursor = 0;
+    while let Some(at) = text[cursor..].find("[[").map(|offset| cursor + offset) {
+        let Some(end) = text[at + 2..].find("]]").map(|offset| at + 2 + offset) else {
+            break;
+        };
+        let range = (at + 2)..end;
+        let inner = &text[range.clone()];
+        if is_relative_link_path(inner) {
+            let path = inner
+                .trim()
+                .strip_prefix('<')
+                .and_then(|value| value.strip_suffix('>'))
+                .unwrap_or(inner.trim())
+                .split(['#', '|'])
+                .next()
+                .unwrap_or("");
+            if let Some(target) = resolve_relative_note(root, old_source_dir, path) {
+                let target = if target == old_source_canonical {
+                    new_source_canonical.clone()
+                } else {
+                    target
+                };
+                if let Some(relative) = relative_link_path_for(root, new_source, &target) {
+                    let replacement = retarget_link_path(inner, &relative);
+                    if replacement != inner {
+                        edits.push((range, replacement));
+                    }
+                }
+            }
+        }
+        cursor = end + 2;
+    }
+
+    let mut cursor = 0;
+    while let Some(at) = text[cursor..].find("](").map(|offset| cursor + offset) {
+        let Some(end) = text[at + 2..].find(')').map(|offset| at + 2 + offset) else {
+            break;
+        };
+        let range = (at + 2)..end;
+        let inner = &text[range.clone()];
+        if is_relative_link_path(inner) {
+            if let Some(target) = resolve_relative_markdown_path(root, old_source_dir, inner) {
+                let target = if target == old_source_canonical {
+                    new_source_canonical.clone()
+                } else {
+                    target
+                };
+                if let Some(relative) = relative_markdown_link_path_for(root, new_source, &target) {
+                    let replacement = retarget_md_link_path(inner, &relative);
+                    if replacement != inner {
+                        edits.push((range, replacement));
+                    }
+                }
+            }
+        }
+        cursor = end + 1;
+    }
+
+    non_overlapping_text_edits(edits)
+}
+
+fn resolve_relative_markdown_path(root: &Path, from_dir: &Path, inner: &str) -> Option<PathBuf> {
+    let inner = inner.trim();
+    let inner = inner
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(inner);
+    let raw = inner
+        .split('#')
+        .next()
+        .unwrap_or(inner)
+        .split('?')
+        .next()
+        .unwrap_or(inner);
+    let root = root.canonicalize().ok()?;
+    let from_dir = from_dir.canonicalize().ok()?;
+    let target = from_dir.join(percent_decode(raw)).canonicalize().ok()?;
+    (from_dir.starts_with(&root) && target.starts_with(&root) && target.is_file()).then_some(target)
+}
+
+fn without_markdown_extension(path: &Path) -> PathBuf {
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        let value = path.to_string_lossy();
+        PathBuf::from(value.strip_suffix(".md").unwrap_or(&value))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn resolve_relative_note(root: &Path, from_dir: &Path, target: &str) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let from_dir = from_dir.canonicalize().ok()?;
+    if !from_dir.starts_with(&root) {
+        return None;
+    }
+    let mut candidate = from_dir.join(target);
+    if !candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".md"))
+    {
+        candidate = PathBuf::from(format!("{}.md", candidate.to_string_lossy()));
+    }
+    let candidate = candidate.canonicalize().ok()?;
+    (candidate.starts_with(&root)
+        && candidate.is_file()
+        && candidate.extension().is_some_and(|ext| ext == "md"))
+    .then_some(candidate)
 }
 
 fn percent_decode(s: &str) -> String {
@@ -751,7 +1153,14 @@ pub(crate) fn should_skip(entry: &std::fs::DirEntry) -> bool {
     name.starts_with('.') || (entry.path().is_dir() && SKIP_DIRS.iter().any(|d| name == *d))
 }
 
-fn build_items(dir: &Path, depth: usize, sort: TreeSort, show_other_files: bool) -> Vec<TreeItem> {
+fn build_items(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    sort: TreeSort,
+    show_other_files: bool,
+    ignore_filters: &IgnoreFilters,
+) -> Vec<TreeItem> {
     if depth > 12 {
         return Vec::new();
     }
@@ -765,14 +1174,19 @@ fn build_items(dir: &Path, depth: usize, sort: TreeSort, show_other_files: bool)
             continue;
         }
         let path = entry.path();
+        if ignore_filters.matches(root, &path) {
+            continue;
+        }
         let label = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
             dirs.push(
                 TreeItem::new(path.to_string_lossy().to_string(), label).children(build_items(
+                    root,
                     &path,
                     depth + 1,
                     sort,
                     show_other_files,
+                    ignore_filters,
                 )),
             );
         } else if path.is_file() && crate::file_preview::visible(&path, show_other_files) {
@@ -936,6 +1350,140 @@ pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
 #[cfg(test)]
 mod link_diagnostics_tests {
     #[test]
+    fn relative_link_targets_round_trip_for_unicode_paths() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+
+        let root = std::env::temp_dir().join(format!(
+            "rista-relative-links-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source_dir = root.join("source/深い");
+        let target_dir = root.join("target");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let source = source_dir.join("source.md");
+        let target = target_dir.join("Å v1.2.md");
+        std::fs::write(&source, "").unwrap();
+        std::fs::write(&target, "").unwrap();
+
+        assert_eq!(
+            super::relative_link_path_for(&root, &source, &target).as_deref(),
+            Some("../../target/Å v1.2")
+        );
+        assert_eq!(
+            super::resolve_relative_note(&root, &source_dir, "../../target/Å v1.2"),
+            Some(target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            super::retarget_link_path("../old/Å v1.2|alias#heading", "../../target/Å v1.2"),
+            "../../target/Å v1.2|alias#heading"
+        );
+        assert!(super::is_relative_link_path(
+            "<../target/Å v1.2.md#heading>"
+        ));
+        assert!(!super::is_relative_link_path("target/Å v1.2.md"));
+        assert!(!super::is_relative_link_path("/target/Å v1.2.md"));
+        assert_eq!(
+            super::relative_link_path_for(&root, &source, &root.join("target/new.v1.2.md"),)
+                .as_deref(),
+            Some("../../target/new.v1.2")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moved_notes_keep_relative_wiki_and_markdown_targets() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+
+        let root = std::env::temp_dir().join(format!(
+            "rista-relative-rename-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let old_dir = root.join("old");
+        let target_dir = root.join("target");
+        let incoming_dir = root.join("incoming");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::create_dir_all(&incoming_dir).unwrap();
+        let old_source = old_dir.join("source.md");
+        let new_source = root.join("new/deep/source.md");
+        let target = target_dir.join("Å v1.2.md");
+        let incoming = incoming_dir.join("linker.md");
+        std::fs::write(&old_source, "").unwrap();
+        std::fs::write(&target, "").unwrap();
+        std::fs::write(&incoming, "").unwrap();
+
+        let mut text = concat!(
+            "[[../target/Å v1.2#section|alias]]\n",
+            "[target](../target/Å%20v1.2.md#section)\n",
+            "[[./source|self]]\n",
+            "[self](./source.md)\n"
+        )
+        .to_string();
+        let edits = super::relative_link_edits_for_move(&root, &old_source, &new_source, &text);
+        for (range, replacement) in edits.into_iter().rev() {
+            text.replace_range(range, &replacement);
+        }
+        assert!(text.contains("[[../../target/Å v1.2#section|alias]]"));
+        assert!(text.contains("[target](../../target/Å%20v1.2.md#section)"));
+        assert!(text.contains("[[./source|self]]"));
+        assert!(text.contains("[self](./source.md)"));
+
+        std::fs::create_dir_all(new_source.parent().unwrap()).unwrap();
+        std::fs::write(&new_source, "").unwrap();
+        let old_incoming = "../old/source.md#heading";
+        assert_eq!(
+            super::resolve_relative_markdown_path(&root, incoming.parent().unwrap(), old_incoming,),
+            Some(old_source.canonicalize().unwrap())
+        );
+        std::fs::remove_file(&old_source).unwrap();
+        assert_eq!(
+            super::resolve_relative_note(
+                &root,
+                new_source.parent().unwrap(),
+                "../../target/Å v1.2"
+            ),
+            Some(target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            super::resolve_relative_markdown_path(
+                &root,
+                new_source.parent().unwrap(),
+                "../../target/Å%20v1.2.md#section",
+            ),
+            Some(target.canonicalize().unwrap())
+        );
+        assert_eq!(
+            super::resolve_relative_markdown_path(
+                &root,
+                new_source.parent().unwrap(),
+                "./source.md",
+            ),
+            Some(new_source.canonicalize().unwrap())
+        );
+
+        let incoming_target =
+            super::relative_markdown_link_path_for(&root, &incoming, &new_source).unwrap();
+        assert!(incoming_target.ends_with(".md"));
+        let incoming_retargeted = super::retarget_md_link_path(old_incoming, &incoming_target);
+        assert!(incoming_retargeted.ends_with(".md#heading"));
+        assert_eq!(
+            super::resolve_relative_markdown_path(
+                &root,
+                incoming.parent().unwrap(),
+                &incoming_retargeted,
+            ),
+            Some(new_source.canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn attachment_index_includes_non_images_and_drops_removed_files() {
         let root = std::env::temp_dir().join(format!(
             "rista-attachment-index-{}-{}",
@@ -952,7 +1500,7 @@ mod link_diagnostics_tests {
         std::fs::write(&report, "Report").unwrap();
         std::fs::write(&image, b"image fixture").unwrap();
         std::fs::write(&note, "[[QA-report.txt]]").unwrap();
-        let index = super::collect_files(&root);
+        let index = super::collect_files(&root, &super::IgnoreFilters::default());
         assert_eq!(index.attachments.get("qa-report.txt"), Some(&report));
         assert_eq!(
             index.attachments.get("attachments/qa-report.txt"),
@@ -963,7 +1511,7 @@ mod link_diagnostics_tests {
         assert!(!index.images.contains_key("qa-report.txt"));
         assert_eq!(index.notes, vec![note]);
         std::fs::remove_file(&report).unwrap();
-        let refreshed = super::collect_files(&root);
+        let refreshed = super::collect_files(&root, &super::IgnoreFilters::default());
         assert!(!refreshed.attachments.contains_key("qa-report.txt"));
         assert!(!refreshed
             .attachments
@@ -984,6 +1532,33 @@ mod link_diagnostics_tests {
             ]
         );
     }
+
+    #[test]
+    fn ignore_filters_hide_paths_from_tree_index_and_search_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "rista-ignore-index-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        let visible = root.join("visible.md");
+        let hidden = root.join("private/hidden.md");
+        std::fs::write(&visible, "visible").unwrap();
+        std::fs::write(&hidden, "hidden").unwrap();
+        let filters = super::IgnoreFilters::from_settings(&[
+            "private".to_string(),
+            "/visible\\.md$/".to_string(),
+        ]);
+        let index = super::collect_files(&root, &filters);
+        assert!(index.notes.is_empty());
+        let visible_only = super::IgnoreFilters::from_settings(&["private".to_string()]);
+        let index = super::collect_files(&root, &visible_only);
+        assert_eq!(index.notes, vec![visible]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[derive(Default)]
@@ -993,7 +1568,7 @@ struct FileIndex {
     attachments: std::collections::HashMap<String, PathBuf>,
 }
 
-fn collect_files(root: &Path) -> FileIndex {
+fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
     let mut files = FileIndex::default();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -1005,6 +1580,9 @@ fn collect_files(root: &Path) -> FileIndex {
                 continue;
             }
             let path = entry.path();
+            if ignore_filters.matches(root, &path) {
+                continue;
+            }
             if path.is_dir() {
                 stack.push(path);
                 continue;

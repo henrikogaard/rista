@@ -116,6 +116,7 @@ const ITEMS: &[SlashItem] = &[
 /// on `[[` / `![[` (note/image links resolved against the live vault).
 pub struct VaultCompletions {
     vault: Option<Entity<Vault>>,
+    path: std::rc::Rc<std::cell::RefCell<std::path::PathBuf>>,
     /// The note's title, for `{{title}}` in template items.
     title: std::rc::Rc<std::cell::RefCell<String>>,
 }
@@ -124,8 +125,9 @@ impl VaultCompletions {
     pub fn new(
         vault: Option<Entity<Vault>>,
         title: std::rc::Rc<std::cell::RefCell<String>>,
+        path: std::rc::Rc<std::cell::RefCell<std::path::PathBuf>>,
     ) -> Self {
-        Self { vault, title }
+        Self { vault, title, path }
     }
 }
 
@@ -148,7 +150,7 @@ impl CompletionProvider for VaultCompletions {
         _window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
-        if let Some(resp) = wiki_items(text, offset, self.vault.as_ref(), cx) {
+        if let Some(resp) = wiki_items(text, offset, self.vault.as_ref(), &self.path, cx) {
             return Task::ready(Ok(safe_completion_labels(resp)));
         }
         if let Some(resp) = tag_items(text, offset, self.vault.as_ref(), cx) {
@@ -209,6 +211,7 @@ fn wiki_items(
     text: &Rope,
     offset: usize,
     vault: Option<&Entity<Vault>>,
+    source_path: &std::rc::Rc<std::cell::RefCell<std::path::PathBuf>>,
     cx: &mut App,
 ) -> Option<CompletionResponse> {
     let vault = vault?;
@@ -240,6 +243,7 @@ fn wiki_items(
     };
 
     let vault = vault.read(cx);
+    let source_path = source_path.borrow().clone();
 
     // `[[note#…` — heading anchors. The note part resolves the same way
     // the link itself does; an empty part (`[[#`) completes headings in
@@ -251,7 +255,7 @@ fn wiki_items(
             Some(text.to_string())
         } else {
             vault
-                .resolve_wikilink(note_part)
+                .resolve_wikilink_from(note_part, &source_path)
                 .and_then(|note| std::fs::read_to_string(note).ok())
         };
         let mut items: Vec<CompletionItem> = Vec::new();
@@ -372,16 +376,6 @@ fn wiki_items(
 
     let root = vault.root.clone().unwrap_or_default();
 
-    // Stems that appear more than once need their directory in the
-    // inserted target to stay unambiguous.
-    let mut stem_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for note in &vault.notes {
-        if let Some(stem) = note.file_stem().and_then(|s| s.to_str()) {
-            *stem_counts.entry(stem.to_lowercase()).or_default() += 1;
-        }
-    }
-
     let mut note_rows: Vec<(String, String, String)> = Vec::new();
     for note in &vault.notes {
         let Some(stem) = note.file_stem().and_then(|s| s.to_str()) else {
@@ -393,12 +387,9 @@ fn wiki_items(
             .with_extension("")
             .to_string_lossy()
             .replace('\\', "/");
-        let unique = stem_counts.get(&stem.to_lowercase()).copied().unwrap_or(0) <= 1;
-        let insert = if unique {
-            stem.to_string()
-        } else {
-            rel.clone()
-        };
+        let insert = vault
+            .link_target_for(note, &source_path)
+            .unwrap_or(rel.clone());
         note_rows.push((stem.to_string(), rel, insert));
     }
 
