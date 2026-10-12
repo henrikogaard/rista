@@ -987,20 +987,8 @@ impl CanvasDocument {
     pub(crate) fn search_projection(&self) -> String {
         let mut fields = Vec::new();
         for node in self.nodes() {
-            let Some(object) = node.as_object() else {
-                continue;
-            };
-            let searchable_fields: &[&str] = match object.get("type").and_then(Value::as_str) {
-                Some("text") => &["text"],
-                Some("file") => &["file"],
-                Some("link") => &["url"],
-                Some("group") => &["label"],
-                _ => &[],
-            };
-            for key in searchable_fields {
-                if let Some(value) = object.get(*key).and_then(Value::as_str) {
-                    fields.push(value.to_string());
-                }
+            if let Some(value) = node_search_text(node) {
+                fields.push(value.to_string());
             }
         }
         fields.join("\n")
@@ -1138,6 +1126,25 @@ pub(crate) fn is_canvas(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("canvas"))
+}
+
+pub(crate) fn node_search_text(node: &Value) -> Option<&str> {
+    let field = match node.get("type")?.as_str()? {
+        "text" => "text",
+        "file" => "file",
+        "link" => "url",
+        "group" => "label",
+        _ => return None,
+    };
+    node.get(field)?.as_str()
+}
+
+pub(crate) fn rejects_canvas_kind_change(
+    source: &Path,
+    destination: &Path,
+    source_is_directory: bool,
+) -> bool {
+    !source_is_directory && is_canvas(source) != is_canvas(destination)
 }
 
 pub(crate) fn valid_external_url(url: &str) -> bool {
@@ -1491,6 +1498,40 @@ mod tests {
         ));
         assert_eq!(canvas.node("future").unwrap()["file"], "folder/note.md");
         assert_eq!(canvas.node("text").unwrap()["file"], "folder/metadata.md");
+    }
+
+    #[test]
+    fn canvas_kind_change_guard_allows_only_same_kind_files_and_directories() {
+        assert!(rejects_canvas_kind_change(
+            Path::new("notes/source.md"),
+            Path::new("notes/destination.canvas"),
+            false
+        ));
+        assert!(rejects_canvas_kind_change(
+            Path::new("notes/source.canvas"),
+            Path::new("notes/destination.md"),
+            false
+        ));
+        assert!(!rejects_canvas_kind_change(
+            Path::new("notes/source.CANVAS"),
+            Path::new("notes/destination.canvas"),
+            false
+        ));
+        assert!(!rejects_canvas_kind_change(
+            Path::new("notes/source.canvas"),
+            Path::new("notes/destination.CANVAS"),
+            false
+        ));
+        assert!(!rejects_canvas_kind_change(
+            Path::new("notes/source.md"),
+            Path::new("notes/destination.MD"),
+            false
+        ));
+        assert!(!rejects_canvas_kind_change(
+            Path::new("folder.canvas"),
+            Path::new("folder.md"),
+            true
+        ));
     }
 
     #[test]

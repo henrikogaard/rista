@@ -10,6 +10,9 @@ read-only placeholders when their geometry is usable.
 Canvas content participates in the ordinary document save, dirty, conflict,
 autosave, and tab lifecycle. Board Undo and Redo use bounded per-document
 Canvas snapshots. Viewport and selection changes do not alter the file.
+Save As and file renames cannot convert between Canvas and text documents;
+choose a destination with the same document kind. Directory names ending in
+`.canvas` do not change directory rename behavior.
 
 ## Board controls
 

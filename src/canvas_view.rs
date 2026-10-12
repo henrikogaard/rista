@@ -168,6 +168,11 @@ fn canvas_file_reference(node: &serde_json::Value) -> Option<String> {
     Some(format!("{file}#{}", subpath.trim_start_matches('#')))
 }
 
+fn canvas_node_matches_search(node: &serde_json::Value, query_folded: &str) -> bool {
+    crate::canvas::node_search_text(node)
+        .is_some_and(|text| text.to_lowercase().contains(query_folded))
+}
+
 #[derive(Clone)]
 struct EdgePaint {
     id: String,
@@ -392,15 +397,7 @@ impl CanvasView {
                 .iter()
                 .filter_map(|node| {
                     let id = node["id"].as_str()?;
-                    let searchable = ["text", "label", "file", "url"]
-                        .iter()
-                        .filter_map(|field| node[*field].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    searchable
-                        .to_lowercase()
-                        .contains(&query_folded)
-                        .then(|| id.to_string())
+                    canvas_node_matches_search(node, &query_folded).then(|| id.to_string())
                 })
                 .collect()
         };
@@ -867,6 +864,14 @@ impl CanvasView {
             _focus_subscription: focus_subscription,
         });
         state.update(cx, |editor, cx| editor.focus(window, cx));
+        cx.notify();
+    }
+
+    fn finish_inline_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing = None;
+        self.source_revision = None;
+        self.sync_source(cx);
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
@@ -1653,12 +1658,8 @@ impl CanvasView {
             return;
         }
         if self.editing.is_some() && modifiers.platform && matches!(key, "enter" | "return") {
-            self.editing = None;
-            self.source_revision = None;
-            self.sync_source(cx);
-            self.focus_handle.focus(window, cx);
+            self.finish_inline_edit(window, cx);
             cx.stop_propagation();
-            cx.notify();
             return;
         }
         if self.editing.is_some() {
@@ -2042,6 +2043,14 @@ impl CanvasView {
             .size_full()
             .track_focus(&self.focus_handle)
             .key_context("CanvasBoard")
+            .capture_action::<input::Enter>(cx.listener(
+                |this, enter: &input::Enter, window, cx| {
+                    if enter.secondary && this.editing.is_some() {
+                        this.finish_inline_edit(window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape"
                     || (this.editing.is_some()
@@ -2052,6 +2061,33 @@ impl CanvasView {
                 }
             }))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(|this, _: &crate::actions::ZoomIn, window, cx| {
+                if !this.focus_handle.is_focused(window) {
+                    cx.propagate();
+                    return;
+                }
+                this.zoom = (this.zoom * 1.2).clamp(0.05, 4.);
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ZoomOut, window, cx| {
+                    if !this.focus_handle.is_focused(window) {
+                        cx.propagate();
+                        return;
+                    }
+                    this.zoom = (this.zoom / 1.2).clamp(0.05, 4.);
+                    cx.notify();
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ZoomReset, window, cx| {
+                    if !this.focus_handle.is_focused(window) {
+                        cx.propagate();
+                        return;
+                    }
+                    this.fit_selection(false, window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &input::Undo, window, cx| {
                 if !this.focus_handle.is_focused(window) {
                     cx.propagate();
@@ -3412,7 +3448,8 @@ impl Drop for CanvasView {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas_file_reference, canvas_markdown_excerpt, take_finished_drag, Drag, FinishedDrag,
+        canvas_file_reference, canvas_markdown_excerpt, canvas_node_matches_search,
+        take_finished_drag, Drag, FinishedDrag,
     };
     use gpui_kit::{point, px};
 
@@ -3479,5 +3516,49 @@ mod tests {
             ),
             "First block"
         );
+    }
+
+    #[test]
+    fn canvas_board_find_uses_only_typed_node_search_fields() {
+        let text = serde_json::json!({
+            "type": "text",
+            "text": "Visible prose",
+            "label": "hidden metadata"
+        });
+        assert!(canvas_node_matches_search(&text, "visible"));
+        assert!(!canvas_node_matches_search(&text, "hidden"));
+
+        let file = serde_json::json!({
+            "type": "file",
+            "file": "notes/guide.md",
+            "text": "hidden metadata"
+        });
+        assert!(canvas_node_matches_search(&file, "guide.md"));
+        assert!(!canvas_node_matches_search(&file, "hidden"));
+
+        let link = serde_json::json!({
+            "type": "link",
+            "url": "https://example.test/path",
+            "label": "hidden metadata"
+        });
+        assert!(canvas_node_matches_search(&link, "example.test"));
+        assert!(!canvas_node_matches_search(&link, "hidden"));
+
+        let group = serde_json::json!({
+            "type": "group",
+            "label": "Project group",
+            "url": "hidden metadata"
+        });
+        assert!(canvas_node_matches_search(&group, "project"));
+        assert!(!canvas_node_matches_search(&group, "hidden"));
+
+        let unknown = serde_json::json!({
+            "type": "future",
+            "text": "hidden metadata",
+            "label": "hidden metadata",
+            "file": "hidden metadata",
+            "url": "hidden metadata"
+        });
+        assert!(!canvas_node_matches_search(&unknown, "hidden"));
     }
 }

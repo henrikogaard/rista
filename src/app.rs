@@ -3958,6 +3958,21 @@ impl Workspace {
             if let Ok(Ok(Some(path))) = receiver.await {
                 let _ = window.update(|_window, cx| {
                     view.update(cx, |this, cx| {
+                        let source_path = doc.read(cx).path.clone();
+                        if crate::canvas::rejects_canvas_kind_change(
+                            &source_path,
+                            &path,
+                            false,
+                        ) {
+                            this.note_status(
+                                this.tr(
+                                    "Save As cannot convert between Canvas and text documents.",
+                                    "Lagre som kan ikke konvertere mellom Canvas- og tekstdokumenter.",
+                                ),
+                                cx,
+                            );
+                            return;
+                        }
                         match doc.update(cx, |doc, cx| doc.save_as(path, cx)) {
                             Err(err) => {
                                 this.note_status(format!("Could not save: {err}"), cx);
@@ -5491,6 +5506,16 @@ impl Workspace {
             dir.join(name)
         };
         if new_path == path || new_path.exists() {
+            return;
+        }
+        if crate::canvas::rejects_canvas_kind_change(&path, &new_path, path.is_dir()) {
+            self.note_status(
+                self.tr(
+                    "Renaming cannot convert between Canvas and text documents.",
+                    "Et nytt filnavn kan ikke konvertere mellom Canvas- og tekstdokumenter.",
+                ),
+                cx,
+            );
             return;
         }
         let canvas_rewrites = match self.vault.read(cx).root.clone() {

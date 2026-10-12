@@ -960,6 +960,12 @@ impl Document {
                 "Read-only files cannot be saved as text",
             ));
         }
+        if crate::canvas::rejects_canvas_kind_change(&self.path, &path, false) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Save As cannot convert between Canvas and text documents",
+            ));
+        }
         if same_existing_path(&self.path, &path) {
             return self.save(cx);
         }
