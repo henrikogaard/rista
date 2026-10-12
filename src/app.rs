@@ -3930,7 +3930,16 @@ impl Workspace {
                 return;
             }
             if let Err(err) = doc.update(cx, |doc, cx| doc.save(cx)) {
-                self.note_status(format!("Could not save: {err}"), cx);
+                let message = if doc.read(cx).conflict {
+                    self.tr(
+                        "Saving paused. Save a copy or reload from disk.",
+                        "Lagring er satt på pause. Lagre en kopi eller last inn fra disk.",
+                    )
+                    .to_string()
+                } else {
+                    format!("{}: {err}", self.tr("Could not save", "Kunne ikke lagre"))
+                };
+                self.note_status(message, cx);
             }
         }
     }
@@ -3978,7 +3987,7 @@ impl Workspace {
                         }
                         match doc.update(cx, |doc, cx| doc.save_as(path, cx)) {
                             Err(err) => {
-                                this.note_status(format!("Could not save: {err}"), cx);
+                                this.note_status(format!("{}: {err}", this.tr("Could not save", "Kunne ikke lagre")), cx);
                             }
                             Ok(()) => {
                                 let saved_path = doc.read(cx).path.clone();
@@ -4018,7 +4027,7 @@ impl Workspace {
                                 {
                                     this.vault.update(cx, |vault, cx| vault.refresh(cx));
                                 }
-                                this.note_status(format!("Saved {}", saved_path.display()), cx);
+                                this.note_status(format!("{} {}", this.tr("Saved", "Lagret"), saved_path.display()), cx);
                             }
                         }
                     })
@@ -4035,6 +4044,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let title = doc.read(cx).title();
+        let language = self.settings.language;
         let view = cx.entity();
         self.refocus(window, cx);
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
@@ -4042,16 +4052,30 @@ impl Workspace {
             let close_view = view.clone();
             let doc = doc.clone();
             dialog
-                .title(format!("Reload “{}” from disk?", title))
-                .description("This will discard your local changes.")
+                .title(match language {
+                    crate::settings::Language::Norwegian => format!("Last inn «{title}» fra disk?"),
+                    _ => format!("Reload “{title}” from disk?"),
+                })
+                .description(language.text(
+                    "This will discard your local changes.",
+                    "Dette forkaster de lokale endringene dine.",
+                ))
                 .show_cancel(true)
-                .ok_text("Discard and reload")
+                .cancel_text(language.text("Cancel", "Avbryt"))
+                .ok_text(language.text("Discard and reload", "Forkast og last inn"))
                 .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                 .on_ok(move |_, window, cx| {
                     let reload_result = doc.update(cx, |doc, cx| doc.reload(window, cx));
                     view.update(cx, |this, cx| match reload_result {
-                        Ok(()) => this.note_status("Reloaded from disk", cx),
-                        Err(err) => this.note_status(format!("Could not reload: {err}"), cx),
+                        Ok(()) => this
+                            .note_status(this.tr("Reloaded from disk", "Lastet inn fra disk"), cx),
+                        Err(err) => this.note_status(
+                            format!(
+                                "{}: {err}",
+                                this.tr("Could not reload", "Kunne ikke laste inn på nytt")
+                            ),
+                            cx,
+                        ),
                     });
                     true
                 })
@@ -10941,7 +10965,11 @@ impl Workspace {
                                 cx.theme().muted_foreground
                             })
                             .child(if conflict {
-                                format!("{} — changed on disk", rel_path)
+                                format!(
+                                    "{} — {}",
+                                    rel_path,
+                                    self.tr("changed on disk", "endret på disk")
+                                )
                             } else if dirty {
                                 format!("{} •", rel_path)
                             } else {
