@@ -35,7 +35,7 @@ pub struct Vault {
     /// Shared behind one `Rc`: resolvers handed out to documents stay live
     /// and see files added later (paste/drop, watcher refreshes).
     pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
-    attachments: std::collections::HashMap<String, PathBuf>,
+    attachments: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
     /// `(tag, note_count)` pairs, rebuilt with the index — completions read
     /// this snapshot instead of re-parsing every note per keystroke.
     pub tags: Vec<(String, usize)>,
@@ -149,7 +149,7 @@ impl Vault {
             tree,
             notes: Vec::new(),
             images: Rc::new(RefCell::new(std::collections::HashMap::new())),
-            attachments: std::collections::HashMap::new(),
+            attachments: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watcher: None,
             pending_events: 0,
             tags: Vec::new(),
@@ -204,7 +204,7 @@ impl Vault {
         self.all_items.clear();
         self.search_paths = Arc::new(Vec::new());
         self.notes.clear();
-        self.attachments.clear();
+        self.attachments.borrow_mut().clear();
         self.by_rel.clear();
         self.by_stem.clear();
         self.stem_counts.clear();
@@ -311,7 +311,7 @@ impl Vault {
         });
         self.notes = notes;
         *self.images.borrow_mut() = images;
-        self.attachments = attachments;
+        *self.attachments.borrow_mut() = attachments;
         cx.notify();
     }
 
@@ -338,7 +338,7 @@ impl Vault {
     }
 
     pub fn attachment_path_snapshot(&self) -> Arc<Vec<PathBuf>> {
-        let mut paths: Vec<_> = self.attachments.values().cloned().collect();
+        let mut paths: Vec<_> = self.attachments.borrow().values().cloned().collect();
         paths.sort();
         paths.dedup();
         Arc::new(paths)
@@ -653,7 +653,7 @@ impl Vault {
                 .unwrap_or(target)
                 .trim()
                 .to_lowercase();
-            self.attachments.get(&name).cloned()
+            self.attachments.borrow().get(&name).cloned()
         })
     }
 
@@ -674,7 +674,7 @@ impl Vault {
                 .unwrap_or(target)
                 .trim()
                 .to_lowercase();
-            self.attachments.get(&name).cloned()
+            self.attachments.borrow().get(&name).cloned()
         })
     }
 
@@ -727,10 +727,21 @@ impl Vault {
             .any(|p| normalize_path(p) == want)
     }
 
-    /// Resolver for `![[image.png]]` embeds — basename lookup, vault-wide.
+    /// Resolve image embeds by basename or vault-relative path.
     pub fn image_resolver(&self) -> crate::document::ImageResolver {
-        let images = Rc::clone(&self.images);
-        std::rc::Rc::new(move |name: &str| images.borrow().get(&name.to_lowercase()).cloned())
+        Self::image_resolver_for(Rc::clone(&self.attachments))
+    }
+
+    fn image_resolver_for(
+        attachments: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
+    ) -> crate::document::ImageResolver {
+        Rc::new(move |name: &str| {
+            attachments
+                .borrow()
+                .get(&name.to_lowercase())
+                .filter(|path| is_image_file(path))
+                .cloned()
+        })
     }
 }
 
@@ -1349,6 +1360,8 @@ pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
 
 #[cfg(test)]
 mod link_diagnostics_tests {
+    use std::path::PathBuf;
+
     #[test]
     fn relative_link_targets_round_trip_for_unicode_paths() {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -1517,6 +1530,35 @@ mod link_diagnostics_tests {
             .attachments
             .contains_key("attachments/qa-report.txt"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn image_resolver_supports_live_vault_paths_without_basename_collisions() {
+        let first = PathBuf::from("/vault/Assets/Grid.png");
+        let second = PathBuf::from("/vault/Other/Grid.png");
+        let attachments =
+            std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::from([
+                ("grid.png".to_string(), first.clone()),
+                ("assets/grid.png".to_string(), first.clone()),
+                ("other/grid.png".to_string(), second.clone()),
+                ("report.txt".to_string(), PathBuf::from("/vault/report.txt")),
+            ])));
+        let resolver = super::Vault::image_resolver_for(attachments.clone());
+        assert_eq!(resolver("Grid.png"), Some(first.clone()));
+        assert_eq!(resolver("Assets/Grid.png"), Some(first));
+        assert_eq!(resolver("Other/Grid.png"), Some(second.clone()));
+        assert!(resolver("Missing/Grid.png").is_none());
+        assert!(resolver("../Assets/Grid.png").is_none());
+        assert!(resolver("report.txt").is_none());
+
+        attachments.borrow_mut().remove("other/grid.png");
+        attachments
+            .borrow_mut()
+            .insert("new/grid.png".to_string(), second.clone());
+        assert!(resolver("Other/Grid.png").is_none());
+        assert_eq!(resolver("New/Grid.png"), Some(second));
+        attachments.borrow_mut().clear();
+        assert!(resolver("Grid.png").is_none());
     }
 
     #[test]
