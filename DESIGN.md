@@ -88,6 +88,10 @@ Syntax colours live under `highlight.syntax`; retain that nested object.
 - UI: system font (SF on macOS), 11–13px. Section labels uppercase, semibold, muted.
 - Editor: monospace stack (SF Mono default), 14px default, configurable 12–22.
 - Preview: headings weight 600+, tight leading; body matches UI font size.
+- Style snippets can supply a shared theme-color overlay and note-scoped
+  typography/layout via JSON; note-local styles resolve from frontmatter
+  classes and never mutate the application theme. See
+  [Style snippets](docs/style-snippets.md).
 
 ## Spacing & radius
 

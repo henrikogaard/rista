@@ -1,5 +1,7 @@
 # Documentation
 
+- [Style snippets](style-snippets.md)
+
 This index covers the native Rust/GPUI application shipped as Rísta v0.1.0. The former renderer-era material is preserved under [`archive/pre-gpui/`](archive/pre-gpui/README.md) as history, not active instructions.
 
 ## Current references

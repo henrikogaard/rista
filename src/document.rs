@@ -76,6 +76,9 @@ pub struct Document {
     /// `cssclasses:`/`cssclass:` frontmatter — per-note styling hook;
     /// `wide` lifts the readable-width cap, `narrow`/`readable` forces it.
     pub css_classes: Vec<String>,
+    /// Immutable style snapshot for this note's preview and editor.
+    pub resolved_style: std::sync::Arc<crate::style_snippets::ResolvedStyle>,
+    enabled_style_snippets: Vec<String>,
     /// Cached `(words, chars)` refreshed with the preview.
     pub stats: (usize, usize),
     /// Live-preview emphasis layer over the source editor — bold,
@@ -253,6 +256,8 @@ impl Document {
             banner,
             stats: word_stats(&content),
             css_classes: crate::properties::frontmatter_cssclasses(&content),
+            resolved_style: std::sync::Arc::new(crate::style_snippets::ResolvedStyle::default()),
+            enabled_style_snippets: settings.enabled_style_snippets.clone(),
             decorations: None,
             spell_decorations: None,
             spell_checker,
@@ -324,6 +329,7 @@ impl Document {
             }),
         ];
 
+        this.refresh_style(cx);
         this.schedule_spellcheck(cx);
         this
     }
@@ -416,6 +422,7 @@ impl Document {
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
         self.stats = word_stats(&raw);
         self.css_classes = crate::properties::frontmatter_cssclasses(&raw);
+        self.refresh_style(cx);
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));
         self.refresh_decorations(cx);
@@ -2989,6 +2996,10 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.enabled_style_snippets != settings.enabled_style_snippets {
+            self.enabled_style_snippets = settings.enabled_style_snippets.clone();
+            self.refresh_style(cx);
+        }
         if let Some(pdf) = &self.pdf {
             pdf.update(cx, |pdf, cx| {
                 pdf.set_language(settings.language, window, cx)
@@ -3010,6 +3021,20 @@ impl Document {
             self.schedule_spellcheck(cx);
         }
         cx.notify();
+    }
+
+    pub(crate) fn refresh_style(&mut self, cx: &mut Context<Self>) {
+        let Some(catalog) = cx.try_global::<crate::style_snippets::StyleSnippetCatalog>() else {
+            self.resolved_style =
+                std::sync::Arc::new(crate::style_snippets::ResolvedStyle::default());
+            return;
+        };
+        self.resolved_style = std::sync::Arc::new(crate::style_snippets::resolve(
+            &catalog.snapshot,
+            &self.enabled_style_snippets,
+            &self.css_classes,
+            cx.theme().is_dark(),
+        ));
     }
 }
 

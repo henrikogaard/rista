@@ -43,6 +43,9 @@ pub struct PreviewCtx {
     /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
     pub depth: usize,
+    pub style: std::sync::Arc<crate::style_snippets::ResolvedStyle>,
+    pub catalog: Option<std::sync::Arc<crate::style_snippets::Catalog>>,
+    pub enabled_style_snippets: Vec<String>,
 }
 
 /// The per-document embed map shared with [`PreviewCtx::views`].
@@ -54,6 +57,83 @@ pub type QueryEmbedViews = std::sync::Arc<
 >;
 pub type PdfEmbedViews =
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::pdf::PdfView>>>>;
+
+fn resolved_color(ctx: &PreviewCtx, role: &str, fallback: Hsla) -> Hsla {
+    ctx.style.colors.get(role).copied().unwrap_or(fallback)
+}
+
+pub fn text_style(ctx: &PreviewCtx, cx: &App) -> gpui_kit::base::TextViewStyle {
+    let theme = cx.theme();
+    let mut style = gpui_kit::base::TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
+        .with_foreground(resolved_color(ctx, "foreground", theme.foreground))
+        .with_muted_foreground(resolved_color(
+            ctx,
+            "muted.foreground",
+            theme.muted_foreground,
+        ))
+        .with_link(resolved_color(ctx, "link", theme.link))
+        .with_selection(resolved_color(ctx, "selection", theme.selection))
+        .with_code_background(resolved_color(ctx, "accent.background", theme.accent))
+        .with_border(resolved_color(ctx, "border", theme.border))
+        .with_dark(theme.is_dark());
+
+    let typography = &ctx.style.typography;
+    if typography.heading_sizes.is_some()
+        || typography.heading_weights.is_some()
+        || typography.heading_font.is_some()
+    {
+        let sizes = typography.heading_sizes.clone();
+        let weights = typography.heading_weights.clone();
+        let font = typography.heading_font.clone();
+        style = style.with_heading(move |level| {
+            let index = level.saturating_sub(1) as usize;
+            let mut refinement = StyleRefinement::default();
+            if let Some(size) = sizes
+                .as_ref()
+                .and_then(|sizes| sizes.get(index).and_then(|size| *size))
+            {
+                refinement = refinement.text_size(px(size));
+            }
+            if let Some(weight) = weights
+                .as_ref()
+                .and_then(|weights| weights.get(index).and_then(|weight| *weight))
+            {
+                refinement = refinement.font_weight(FontWeight(weight as f32));
+            }
+            if let Some(font) = font.as_ref() {
+                refinement = refinement.font_family(font.clone());
+            }
+            refinement
+        });
+    }
+    if let Some(font) = typography.code_font.as_ref() {
+        style = style.with_code_block(StyleRefinement::default().font_family(font.clone()));
+    }
+    style
+}
+
+pub fn styled_text_view(
+    id: impl Into<ElementId>,
+    markdown: impl Into<SharedString>,
+    ctx: Option<&PreviewCtx>,
+    cx: &App,
+) -> gpui_kit::base::TextView {
+    if let Some(ctx) = ctx {
+        gpui_kit::base::TextView::markdown(id, markdown)
+            .style(text_style(ctx, cx))
+            .when_some(ctx.style.typography.body_font.clone(), |view, font| {
+                view.font_family(font)
+            })
+            .when_some(ctx.style.typography.body_size, |view, size| {
+                view.text_size(px(size))
+            })
+            .when_some(ctx.style.typography.line_height, |view, line_height| {
+                view.line_height(relative(line_height))
+            })
+    } else {
+        gpui_kit::base::TextView::markdown(id, markdown)
+    }
+}
 
 /// Markdown extensions Rísta renders with. `doc_anchored` is true only
 /// when the text being parsed is the document itself — nested fragment
@@ -81,6 +161,7 @@ pub fn extensions(
         });
     let ext = match ctx {
         Some(ctx) => ext
+            .plugin(TagLinkPlugin { ctx: ctx.clone() })
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
             .plugin(QueryEmbedPlugin { ctx: ctx.clone() })
@@ -1284,6 +1365,12 @@ impl MarkdownPlugin for PropertiesPlugin {
         }
         let default_folded = visibility == crate::settings::PropertiesVisibility::Collapsed;
         let folded = self.folds.is_folded(*key, default_folded);
+        let tag_role = self
+            .ctx
+            .as_ref()
+            .and_then(|ctx| ctx.style.tag_token.as_deref())
+            .unwrap_or("link");
+        let tag_color = semantic_color(tag_role, self.ctx.as_ref(), cx);
         let folds = self.folds.clone();
         let key = *key;
         // Rows open the property-edit dialog only on the document's own
@@ -1457,7 +1544,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                             {
                                 let mut chip = div()
                                     .id(("property-tag", ix * 100 + jx))
-                                    .text_color(theme.info)
+                                    .text_color(tag_color)
                                     .child(format!("#{tag}"));
                                 if let Some(workspace) = edit_ctx.clone() {
                                     let tag = tag.to_string();
@@ -1781,7 +1868,7 @@ impl MarkdownPlugin for CalloutPlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let callout = node.data::<Callout>().expect("callout node data");
         let theme = cx.theme();
-        let accent = callout_accent(&callout.kind, cx);
+        let accent = callout_accent(&callout.kind, self.ctx.as_ref(), cx);
         let folded = callout
             .foldable
             .is_some_and(|default| self.folds.is_folded(callout.key, default));
@@ -1842,9 +1929,11 @@ impl MarkdownPlugin for CalloutPlugin {
                         .text_sm()
                         .text_color(theme.foreground)
                         .child(
-                            gpui_kit::component::text::TextView::markdown(
+                            styled_text_view(
                                 "callout-body",
                                 callout.body.clone(),
+                                self.ctx.as_ref(),
+                                cx,
                             )
                             .markdown_extensions(extensions(
                                 &self.folds,
@@ -1941,15 +2030,36 @@ fn callout_icon(kind: &str) -> gpui_kit::component::IconName {
     }
 }
 
-fn callout_accent(kind: &str, cx: &App) -> gpui_kit::Hsla {
-    let colors = &cx.theme().colors;
-    match kind {
-        "warning" | "caution" | "attention" => colors.warning,
-        "failure" | "fail" | "missing" | "danger" | "error" | "bug" => colors.danger,
-        "success" | "check" | "done" => colors.success,
-        "tip" | "hint" | "important" => colors.success,
-        _ => colors.info,
-    }
+fn callout_accent(kind: &str, ctx: Option<&PreviewCtx>, cx: &App) -> gpui_kit::Hsla {
+    let role = ctx
+        .and_then(|ctx| ctx.style.callout_tokens.get(kind))
+        .map(String::as_str)
+        .unwrap_or_else(|| match kind {
+            "warning" | "caution" | "attention" => "warning",
+            "failure" | "fail" | "missing" | "danger" | "error" | "bug" => "danger",
+            "success" | "check" | "done" | "tip" | "hint" | "important" => "success",
+            _ => "info.background",
+        });
+    semantic_color(role, ctx, cx)
+}
+
+fn semantic_color(role: &str, ctx: Option<&PreviewCtx>, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    let color_token = crate::style_snippets::color_token_for_role(role);
+    ctx.and_then(|ctx| ctx.style.colors.get(color_token).copied())
+        .unwrap_or_else(|| match role {
+            "foreground" => theme.foreground,
+            "muted.foreground" => theme.muted_foreground,
+            "link" => theme.link,
+            "info.background" => theme.info,
+            "warning" => theme.warning,
+            "danger" => theme.danger,
+            "success" => theme.success,
+            "accent.background" => theme.accent,
+            "background" => theme.background,
+            "border" => theme.border,
+            _ => theme.info,
+        })
 }
 
 // ── Link preview cards ──────────────────────────────────────────────
@@ -2582,7 +2692,7 @@ impl MarkdownPlugin for ColumnBlockPlugin {
         ))
     }
 
-    fn render(&self, node: &MarkdownNode, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let block = node.data::<ColumnBlock>().expect("column-block node data");
         let mut row = h_flex().w_full().items_start().gap_4().my_2();
         for (ix, segment) in block.body.split(":::colsep:::").enumerate() {
@@ -2590,9 +2700,11 @@ impl MarkdownPlugin for ColumnBlockPlugin {
             let segment = segment.trim_matches('\n').to_string();
             row = row.child(
                 div().flex_1().min_w_0().child(
-                    gpui_kit::component::text::TextView::markdown(
+                    styled_text_view(
                         SharedString::from(format!("column-{ix}")),
                         segment,
+                        Some(&nested),
+                        cx,
                     )
                     .markdown_extensions(extensions(
                         &self.folds,
@@ -2753,9 +2865,11 @@ impl MarkdownPlugin for TablePlugin {
                             });
                         })
                         .child(
-                            gpui_kit::component::text::TextView::markdown(
+                            styled_text_view(
                                 SharedString::from(format!("table-cell-{rix}-{cix}")),
                                 display,
+                                Some(&self.ctx),
+                                cx,
                             )
                             .markdown_extensions(extensions(
                                 &self.folds,
@@ -3012,9 +3126,14 @@ impl MarkdownPlugin for TranscludePlugin {
                     .into_any_element();
             }
         }
-        let content = resolved
+        let source = resolved
             .as_ref()
-            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        let embedded_classes = source
+            .as_deref()
+            .map(crate::properties::frontmatter_cssclasses)
+            .unwrap_or_default();
+        let content = source
             .map(|text| match crate::properties::frontmatter_span(&text) {
                 Some(span) => text[span.end..].to_string(),
                 None => text,
@@ -3031,6 +3150,14 @@ impl MarkdownPlugin for TranscludePlugin {
             (true, Some(content)) => {
                 let mut nested = self.ctx.clone();
                 nested.depth += 1;
+                if let Some(catalog) = &nested.catalog {
+                    nested.style = std::sync::Arc::new(crate::style_snippets::resolve(
+                        catalog,
+                        &nested.enabled_style_snippets,
+                        &embedded_classes,
+                        cx.theme().is_dark(),
+                    ));
+                }
                 // `this` inside the transcluded note's embeds is the
                 // transcluded file, not the page hosting it.
                 nested.doc_path = resolved.clone();
@@ -3041,7 +3168,7 @@ impl MarkdownPlugin for TranscludePlugin {
                     .border_color(theme.border)
                     .pl_3()
                     .child(
-                        gpui_kit::component::text::TextView::markdown("transclude", content)
+                        styled_text_view("transclude", content, Some(&nested), cx)
                             .markdown_extensions(extensions(&self.folds, Some(&nested), false)),
                     )
                     .into_any_element()
@@ -3053,7 +3180,7 @@ impl MarkdownPlugin for TranscludePlugin {
                 div()
                     .id(SharedString::from(format!("transclude-{target}")))
                     .text_sm()
-                    .text_color(theme.info)
+                    .text_color(semantic_color("info.background", Some(&self.ctx), cx))
                     .cursor_pointer()
                     .child(embed.target.clone())
                     .on_click(move |ev, window, cx| {
@@ -3069,6 +3196,52 @@ impl MarkdownPlugin for TranscludePlugin {
                     .into_any_element()
             }
         }
+    }
+}
+
+// ------------------------------------------------------------------
+// Tags — `[#tag](tag:tag)` links created by preprocessing keep the note-local
+// semantic role while routing to the existing project search.
+// ------------------------------------------------------------------
+
+struct TagLinkPlugin {
+    ctx: PreviewCtx,
+}
+
+impl MarkdownPlugin for TagLinkPlugin {
+    fn name(&self) -> &str {
+        "tag-link"
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let mdast::Node::Link(link) = node else {
+            return None;
+        };
+        let tag = link.url.strip_prefix("tag:")?.to_string();
+        (!tag.is_empty())
+            .then(|| MarkdownNode::new("tag-link", tag.clone()).text(format!("#{tag}")))
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tag = node.data::<String>().expect("tag-link data");
+        let role = self.ctx.style.tag_token.as_deref().unwrap_or("link");
+        let color = semantic_color(role, Some(&self.ctx), cx);
+        let query = format!("#{tag}");
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&tag, &mut hasher);
+        let key = std::hash::Hasher::finish(&hasher) as usize;
+        let workspace = self.ctx.workspace.clone();
+        div()
+            .id(("tag-link", key))
+            .text_color(color)
+            .cursor_pointer()
+            .hover(|element| element.underline())
+            .child(query.clone())
+            .on_click(move |_, window, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    crate::search::open_project_search_for(workspace, Some(&query), window, cx);
+                }
+            })
     }
 }
 
@@ -3135,7 +3308,6 @@ impl MarkdownPlugin for WikiLinkPlugin {
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let link = node.data::<WikiLink>().expect("wiki-link node data");
-        let theme = cx.theme();
         let resolved_path = self.ctx.vault.read(cx).resolve_wikilink(&link.target);
         let resolved = resolved_path.is_some();
         let workspace = self.ctx.workspace.clone();
@@ -3148,9 +3320,9 @@ impl MarkdownPlugin for WikiLinkPlugin {
             .id(("wiki-link", key))
             .text_sm()
             .text_color(if resolved {
-                theme.info
+                semantic_color("info.background", Some(&self.ctx), cx)
             } else {
-                theme.info.opacity(0.45)
+                semantic_color("info.background", Some(&self.ctx), cx).opacity(0.45)
             })
             .cursor_pointer()
             .hover(|d| d.underline())
@@ -3974,7 +4146,7 @@ impl MarkdownPlugin for TaskListPlugin {
                     .child(marker_el)
                     .child(
                         div().flex_1().min_w_0().child(
-                            gpui_kit::component::text::TextView::markdown(("task-item", ix), body)
+                            styled_text_view(("task-item", ix), body, self.ctx.as_ref(), cx)
                                 .markdown_extensions(extensions(
                                     &self.folds,
                                     self.ctx.as_ref(),
@@ -4111,9 +4283,11 @@ impl MarkdownPlugin for FootnoteDefPlugin {
             )
             .child(
                 div().flex_1().min_w_0().text_xs().child(
-                    gpui_kit::component::text::TextView::markdown(
+                    styled_text_view(
                         SharedString::from(format!("footnote-{label}")),
                         body.clone(),
+                        self.ctx.as_ref(),
+                        cx,
                     )
                     .markdown_extensions(extensions(
                         &self.folds,

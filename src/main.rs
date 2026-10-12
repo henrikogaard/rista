@@ -39,6 +39,7 @@ mod settings;
 mod settings_panel;
 mod slash;
 mod spellcheck;
+mod style_snippets;
 mod templater;
 mod terminal;
 mod terminal_session;
@@ -51,6 +52,90 @@ use crate::actions::*;
 use gpui_kit::component::input;
 use gpui_kit::component::Theme;
 use gpui_kit::*;
+
+fn install_style_snippet_watcher(cx: &mut App) {
+    use notify::Watcher;
+
+    let directory = style_snippets::snippets_dir();
+    let parent = directory.parent().unwrap_or(&directory).to_path_buf();
+    let observed_directory = directory.clone();
+    let (tx, rx) = smol::channel::bounded::<bool>(64);
+    let watcher =
+        notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
+            if event.is_err() {
+                let _ = tx.try_send(true);
+            } else if event.is_ok_and(|event| {
+                event.paths.iter().any(|path| {
+                    path == &observed_directory || path.starts_with(&observed_directory)
+                })
+            }) {
+                let _ = tx.try_send(false);
+            }
+        });
+    let Ok(mut watcher) = watcher else {
+        cx.set_global(
+            style_snippets::StyleSnippetCatalog::new(style_snippets::scan(&directory))
+                .with_watcher_warning(),
+        );
+        return;
+    };
+    if watcher
+        .watch(&parent, notify::RecursiveMode::NonRecursive)
+        .is_err()
+    {
+        cx.set_global(
+            style_snippets::StyleSnippetCatalog::new(style_snippets::scan(&directory))
+                .with_watcher_warning(),
+        );
+        return;
+    }
+    let directory_watched = watcher
+        .watch(&directory, notify::RecursiveMode::NonRecursive)
+        .is_ok();
+    if !directory_watched {
+        let snapshot = cx
+            .try_global::<style_snippets::StyleSnippetCatalog>()
+            .map(|current| current.snapshot.clone());
+        if let Some(snapshot) = snapshot {
+            cx.set_global(
+                style_snippets::StyleSnippetCatalog::new(snapshot.as_ref().clone())
+                    .with_watcher_warning(),
+            );
+        }
+    }
+    let watcher = style_snippets::StyleSnippetWatcher::new(watcher, directory_watched);
+    let watcher_for_task = watcher.clone();
+    cx.set_global(watcher);
+    cx.spawn(async move |cx| {
+        while rx.recv().await.is_ok() {
+            smol::Timer::after(std::time::Duration::from_millis(250)).await;
+            let mut watcher_error = false;
+            while let Ok(error) = rx.try_recv() {
+                watcher_error |= error;
+            }
+            let scan_directory = directory.clone();
+            let snapshot = smol::unblock(move || style_snippets::scan(&scan_directory)).await;
+            let directory_watched = watcher_for_task.watch_directory(&directory);
+            cx.update(|cx| {
+                let current = cx.try_global::<style_snippets::StyleSnippetCatalog>();
+                let watcher_warning = watcher_error || !directory_watched;
+                let changed = current.is_none_or(|current| {
+                    current.snapshot.as_ref() != &snapshot
+                        || current.watcher_warning != watcher_warning
+                });
+                if changed {
+                    let catalog = style_snippets::StyleSnippetCatalog::new(snapshot);
+                    cx.set_global(if watcher_warning {
+                        catalog.with_watcher_warning()
+                    } else {
+                        catalog
+                    });
+                }
+            });
+        }
+    })
+    .detach();
+}
 
 struct MenuLanguageSubscription {
     _subscription: Subscription,
@@ -84,7 +169,13 @@ fn main() {
         pdf::init(cx);
         theme::install_themes(cx);
 
+        let _ = std::fs::create_dir_all(style_snippets::snippets_dir());
         let settings = settings::Settings::load();
+        let style_catalog = style_snippets::StyleSnippetCatalog::new(style_snippets::scan(
+            &style_snippets::snippets_dir(),
+        ));
+        cx.set_global(style_catalog);
+        install_style_snippet_watcher(cx);
         windows::install(settings.clone(), cx);
         windows::observe_window_closed(cx);
         let menu_language_subscription = cx.observe_global::<windows::SharedPreferences>(|cx| {

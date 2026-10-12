@@ -996,11 +996,14 @@ impl SettingsView {
             .justify_between()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(label.into()),
             )
-            .child(control)
+            .child(div().flex_none().child(control))
     }
 }
 
@@ -1118,6 +1121,133 @@ impl Render for SettingsView {
                                         this.reload_themes(window, cx)
                                     })),
                             ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text("STYLE SNIPPETS", "STILUTDRAG")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("open-style-snippets")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text(
+                                        "Open snippets folder",
+                                        "Åpne utdragsmappe",
+                                    ))
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.reveal_path(&crate::style_snippets::snippets_dir());
+                                    })),
+                            )
+                            .child(
+                                Button::new("reload-style-snippets")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text(
+                                        "Reload snippets",
+                                        "Last inn utdrag på nytt",
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(ws) = this.workspace.upgrade() {
+                                            ws.update(cx, |ws, cx| ws.reload_style_snippets(cx));
+                                        }
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text(
+                                "Global switches apply to all notes; cssclasses can select a valid snippet for one note independently.",
+                                "Globale brytere gjelder alle notater; cssclasses kan velge et gyldig utdrag for ett notat uavhengig.",
+                            )),
+                    )
+                    .children(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .snapshot
+                            .entries()
+                            .keys()
+                            .map(|name| {
+                                let enabled = settings.enabled_style_snippets.iter().any(|item| item == name);
+                                let name_for_update = name.clone();
+                                Self::row(
+                                    cx,
+                                    name.clone(),
+                                    Switch::new(format!("style-snippet-{name}"))
+                                        .checked(enabled)
+                                        .on_click(cx.listener(move |this, checked, window, cx| {
+                                            let checked = *checked;
+                                            let name = name_for_update.clone();
+                                            this.update_setting(
+                                                cx,
+                                                move |settings| {
+                                                    if checked {
+                                                        if !settings.enabled_style_snippets.iter().any(|item| item == &name) {
+                                                            settings.enabled_style_snippets.push(name);
+                                                        }
+                                                    } else {
+                                                        settings.enabled_style_snippets.retain(|item| item != &name);
+                                                    }
+                                                },
+                                                window,
+                                            );
+                                        })),
+                                )
+                            }),
+                    )
+                    .children(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .snapshot
+                            .warnings()
+                            .iter()
+                            .map(|warning| {
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .v_flex()
+                                    .gap_0()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .text_color(cx.theme().danger)
+                                            .child(warning.filename.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().danger)
+                                            .child(settings.language.text(
+                                            warning.reason.text().0,
+                                            warning.reason.text().1,
+                                        )),
+                                    )
+                            }),
+                    )
+                    .when(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .watcher_warning,
+                        |view| {
+                            view.child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(settings.language.text(
+                                        "Live reload is unavailable; use Reload to refresh snippets.",
+                                        "Direkte oppdatering er utilgjengelig; bruk Last inn på nytt for å oppdatere utdrag.",
+                                    )),
+                            )
+                        },
                     )
                     .child(
                         div()

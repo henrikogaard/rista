@@ -251,6 +251,9 @@ pub struct Settings {
     pub active_window_id: Option<u64>,
     #[serde(default)]
     pub workspace_layouts: std::collections::BTreeMap<String, WindowSession>,
+    /// Style snippets enabled for all notes.
+    #[serde(default)]
+    pub enabled_style_snippets: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -465,6 +468,7 @@ impl Default for Settings {
             window_sessions: Vec::new(),
             active_window_id: None,
             workspace_layouts: Default::default(),
+            enabled_style_snippets: Vec::new(),
         }
     }
 }

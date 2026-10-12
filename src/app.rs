@@ -1240,6 +1240,13 @@ impl Workspace {
                 }
             },
         );
+        let style_catalog_sub =
+            cx.observe_global::<crate::style_snippets::StyleSnippetCatalog>(|this, cx| {
+                theme::apply(&this.settings, cx);
+                this.retheme_previews(cx);
+                this.settings_view.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            });
         let window_id_for_activation = window_id;
         let activation_sub = cx.observe_window_activation(window, move |_, window, cx| {
             crate::windows::activate_window(window_id_for_activation, window, cx);
@@ -1375,6 +1382,7 @@ impl Workspace {
                 explorer_sub,
                 shared_settings_sub,
                 activation_sub,
+                style_catalog_sub,
             ],
         };
 
@@ -4554,8 +4562,32 @@ impl Workspace {
     /// bake theme colors into the preview markup.
     fn retheme_previews(&self, cx: &mut Context<Self>) {
         for doc in &self.docs {
-            doc.entity.update(cx, |doc, cx| doc.resync_preview(cx));
+            doc.entity.update(cx, |doc, cx| {
+                doc.refresh_style(cx);
+                doc.resync_preview(cx);
+            });
         }
+    }
+
+    pub(crate) fn reload_style_snippets(&mut self, cx: &mut Context<Self>) {
+        let directory = crate::style_snippets::snippets_dir();
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let snapshot = smol::unblock(move || crate::style_snippets::scan(&directory)).await;
+            let _ = this.update(&mut *cx, |_, cx| {
+                let current = cx.try_global::<crate::style_snippets::StyleSnippetCatalog>();
+                let watcher_warning = current.is_some_and(|catalog| catalog.watcher_warning);
+                if current.is_some_and(|catalog| catalog.snapshot.as_ref() == &snapshot) {
+                    return;
+                }
+                let catalog = crate::style_snippets::StyleSnippetCatalog::new(snapshot);
+                cx.set_global(if watcher_warning {
+                    catalog.with_watcher_warning()
+                } else {
+                    catalog
+                });
+            });
+        })
+        .detach();
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -8834,6 +8866,7 @@ impl Workspace {
             mentions_open,
             has_frontmatter,
             doc_path,
+            style,
         ) = {
             let doc = doc.read(cx);
             (
@@ -8846,6 +8879,7 @@ impl Workspace {
                 doc.mentions_open,
                 crate::properties::frontmatter_span(doc.editor.read(cx).value().as_ref()).is_some(),
                 doc.path.clone(),
+                doc.resolved_style.clone(),
             )
         };
         let base_ctx = preview::PreviewCtx {
@@ -8858,9 +8892,27 @@ impl Workspace {
             pdf_views: doc.read(cx).pdf_embeds.clone(),
             doc_path: Some(doc_path),
             depth: 0,
+            style,
+            catalog: cx
+                .try_global::<crate::style_snippets::StyleSnippetCatalog>()
+                .map(|catalog| catalog.snapshot.clone()),
+            enabled_style_snippets: self.settings.enabled_style_snippets.clone(),
         };
         let theme = cx.theme();
         let footer_colors = (theme.foreground, theme.muted_foreground);
+        let note_classes = doc.read(cx).css_classes.clone();
+        let readable = if note_classes.iter().any(|class| class == "wide") {
+            false
+        } else if note_classes
+            .iter()
+            .any(|class| class == "narrow" || class == "readable")
+            || base_ctx.style.readable_width.is_some()
+        {
+            true
+        } else {
+            self.settings.readable_width
+        };
+        let readable_width = base_ctx.style.readable_width.unwrap_or(760.);
         v_flex()
             .size_full()
             .overflow_hidden()
@@ -8893,7 +8945,17 @@ impl Workspace {
                 },
             )
             .child(
-                TextView::new(&state)
+                gpui_kit::base::TextView::new(&state)
+                    .style(preview::text_style(&base_ctx, cx))
+                    .when_some(base_ctx.style.typography.body_font.clone(), |this, font| {
+                        this.font_family(font)
+                    })
+                    .when_some(base_ctx.style.typography.body_size, |this, size| {
+                        this.text_size(px(size))
+                    })
+                    .when_some(base_ctx.style.typography.line_height, |this, height| {
+                        this.line_height(relative(height))
+                    })
                     .markdown_extensions(preview::extensions(&folds, Some(&base_ctx), true))
                     .selectable(true)
                     .scrollable(true)
@@ -8931,6 +8993,7 @@ impl Workspace {
                     .w_full()
                     .flex_1()
                     .min_h_0()
+                    .when(readable, |this| this.max_w(px(readable_width)).mx_auto())
                     .px_6()
                     .py_4(),
             )
@@ -10039,10 +10102,20 @@ impl Workspace {
                 // `appearance(false)` — the editor's bordered box would
                 // draw a second frame inside the pane card.
                 let language = self.settings.language;
+                let note_style = doc.read(cx).resolved_style.clone();
                 let spell_doc = doc.clone();
                 let editor = Editor::new(&doc.read(cx).editor)
                     .h_full()
                     .appearance(false)
+                    .when_some(note_style.typography.editor_font.clone(), |this, font| {
+                        this.font_family(font)
+                    })
+                    .when_some(note_style.typography.body_size, |this, size| {
+                        this.text_size(px(size))
+                    })
+                    .when_some(note_style.typography.line_height, |this, height| {
+                        this.line_height(relative(height))
+                    })
                     .context_menu(move |menu, _window, cx| {
                         let spell_context = spell_doc.read(cx).spell_menu_context();
                         let spell_id = spell_doc.entity_id().as_non_zero_u64().get();
@@ -10146,11 +10219,14 @@ impl Workspace {
                 let classes = &doc.read(cx).css_classes;
                 let readable = if classes.iter().any(|c| c == "wide") {
                     false
-                } else if classes.iter().any(|c| c == "narrow" || c == "readable") {
+                } else if classes.iter().any(|c| c == "narrow" || c == "readable")
+                    || note_style.readable_width.is_some()
+                {
                     true
                 } else {
                     self.settings.readable_width
                 };
+                let readable_width = note_style.readable_width.unwrap_or(760.);
                 if readable {
                     // Readable line length: cap the text column and
                     // center it (the editor setting).
@@ -10158,7 +10234,13 @@ impl Workspace {
                         .size_full()
                         .flex()
                         .justify_center()
-                        .child(div().h_full().w(px(760.)).max_w_full().child(editor))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(px(readable_width))
+                                .max_w_full()
+                                .child(editor),
+                        )
                         .into_any_element()
                 } else {
                     editor.into_any_element()
