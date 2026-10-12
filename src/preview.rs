@@ -39,10 +39,14 @@ pub struct PreviewCtx {
     pub views: EmbedViews,
     pub query_views: QueryEmbedViews,
     pub pdf_views: PdfEmbedViews,
+    pub(crate) images: Option<crate::image_resize::ImagePreview>,
     /// The note being rendered — bound as `this` in ```` ```base ````
     /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
     pub depth: usize,
+    pub style: std::sync::Arc<crate::style_snippets::ResolvedStyle>,
+    pub catalog: Option<std::sync::Arc<crate::style_snippets::Catalog>>,
+    pub enabled_style_snippets: Vec<String>,
 }
 
 /// The per-document embed map shared with [`PreviewCtx::views`].
@@ -54,6 +58,107 @@ pub type QueryEmbedViews = std::sync::Arc<
 >;
 pub type PdfEmbedViews =
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, Entity<crate::pdf::PdfView>>>>;
+
+fn resolved_color(ctx: &PreviewCtx, role: &str, fallback: Hsla) -> Hsla {
+    ctx.style.colors.get(role).copied().unwrap_or(fallback)
+}
+
+pub fn text_style(ctx: &PreviewCtx, cx: &App) -> gpui_kit::base::TextViewStyle {
+    let theme = cx.theme();
+    let radius = theme.semantic_tokens().radius.md;
+    let mut table = StyleRefinement::default();
+    table.corner_radii.top_left = Some(radius.into());
+    table.corner_radii.top_right = Some(radius.into());
+    table.corner_radii.bottom_left = Some(radius.into());
+    table.corner_radii.bottom_right = Some(radius.into());
+    let code_block = StyleRefinement {
+        corner_radii: table.corner_radii.clone(),
+        ..Default::default()
+    };
+    let table_head_background = resolved_color(ctx, "table.head.background", theme.table_head);
+    let table_head_foreground =
+        resolved_color(ctx, "table.head.foreground", theme.table_head_foreground);
+    let mut style = gpui_kit::base::TextViewStyle::default()
+        .with_foreground(resolved_color(ctx, "foreground", theme.foreground))
+        .with_muted_foreground(resolved_color(
+            ctx,
+            "muted.foreground",
+            theme.muted_foreground,
+        ))
+        .with_link(resolved_color(ctx, "link", theme.link))
+        .with_selection(resolved_color(ctx, "selection", theme.selection))
+        .with_code_background(resolved_color(ctx, "muted.background", theme.muted))
+        .with_border(resolved_color(ctx, "border", theme.border))
+        .with_code_block(code_block.clone())
+        .with_table(table)
+        .with_table_head(
+            StyleRefinement::default()
+                .bg(table_head_background)
+                .text_color(table_head_foreground),
+        )
+        .with_inline_code(gpui_kit::HighlightStyle {
+            background_color: Some(resolved_color(ctx, "accent.background", theme.accent)),
+            ..Default::default()
+        })
+        .with_dark(theme.is_dark());
+
+    let typography = &ctx.style.typography;
+    if typography.heading_sizes.is_some()
+        || typography.heading_weights.is_some()
+        || typography.heading_font.is_some()
+    {
+        let sizes = typography.heading_sizes.clone();
+        let weights = typography.heading_weights.clone();
+        let font = typography.heading_font.clone();
+        style = style.with_heading(move |level| {
+            let index = level.saturating_sub(1) as usize;
+            let mut refinement = StyleRefinement::default();
+            if let Some(size) = sizes
+                .as_ref()
+                .and_then(|sizes| sizes.get(index).and_then(|size| *size))
+            {
+                refinement = refinement.text_size(px(size));
+            }
+            if let Some(weight) = weights
+                .as_ref()
+                .and_then(|weights| weights.get(index).and_then(|weight| *weight))
+            {
+                refinement = refinement.font_weight(FontWeight(weight as f32));
+            }
+            if let Some(font) = font.as_ref() {
+                refinement = refinement.font_family(font.clone());
+            }
+            refinement
+        });
+    }
+    if let Some(font) = typography.code_font.as_ref() {
+        style = style.with_code_block(code_block.font_family(font.clone()));
+    }
+    style
+}
+
+pub fn styled_text_view(
+    id: impl Into<ElementId>,
+    markdown: impl Into<SharedString>,
+    ctx: Option<&PreviewCtx>,
+    cx: &App,
+) -> gpui_kit::base::TextView {
+    if let Some(ctx) = ctx {
+        gpui_kit::base::TextView::markdown(id, markdown)
+            .style(text_style(ctx, cx))
+            .when_some(ctx.style.typography.body_font.clone(), |view, font| {
+                view.font_family(font)
+            })
+            .when_some(ctx.style.typography.body_size, |view, size| {
+                view.text_size(px(size))
+            })
+            .when_some(ctx.style.typography.line_height, |view, line_height| {
+                view.line_height(relative(line_height))
+            })
+    } else {
+        gpui_kit::base::TextView::markdown(id, markdown)
+    }
+}
 
 /// Markdown extensions Rísta renders with. `doc_anchored` is true only
 /// when the text being parsed is the document itself — nested fragment
@@ -70,7 +175,9 @@ pub fn extensions(
             folds: folds.clone(),
             ctx: ctx.cloned(),
         })
-        .plugin(LocalImagePlugin)
+        .plugin(LocalImagePlugin {
+            ctx: doc_anchored.then(|| ctx.cloned()).flatten(),
+        })
         .plugin(NoteIconPlugin)
         .plugin(CalloutPlugin::new(folds.clone(), ctx.cloned()))
         .plugin(LinkCardPlugin)
@@ -81,6 +188,7 @@ pub fn extensions(
         });
     let ext = match ctx {
         Some(ctx) => ext
+            .plugin(TagLinkPlugin { ctx: ctx.clone() })
             .plugin(WikiLinkPlugin { ctx: ctx.clone() })
             .plugin(BaseEmbedPlugin { ctx: ctx.clone() })
             .plugin(QueryEmbedPlugin { ctx: ctx.clone() })
@@ -99,6 +207,12 @@ pub fn extensions(
             .plugin(TranscludePlugin {
                 ctx: ctx.clone(),
                 folds: folds.clone(),
+                block: true,
+            })
+            .plugin(TranscludePlugin {
+                ctx: ctx.clone(),
+                folds: folds.clone(),
+                block: false,
             })
             .plugin(TaskListPlugin {
                 ctx: Some(ctx.clone()),
@@ -255,6 +369,18 @@ pub fn preprocess_mapped(
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
     marks: &MarkColors,
 ) -> (String, Vec<usize>) {
+    let (text, lines, _) =
+        preprocess_with_images(source, doc_path, vault_root, image_resolver, marks);
+    (text, lines)
+}
+
+pub(crate) fn preprocess_with_images(
+    source: &str,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
+    image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
+    marks: &MarkColors,
+) -> (String, Vec<usize>, Vec<crate::image_resize::SourceImage>) {
     let doc_dir = doc_path
         .parent()
         .map(|p| p.to_path_buf())
@@ -267,8 +393,12 @@ pub fn preprocess_mapped(
     let mut in_comment = false;
     let mut in_columns = false;
     let mut line_offsets = Vec::new();
+    let mut images = Vec::new();
+    let mut source_offset = 0;
 
     for (index, line) in source.split_inclusive('\n').enumerate() {
+        let line_start = source_offset;
+        source_offset += line.len();
         line_offsets.push(out.len());
         let trimmed = line.trim_start();
         // YAML frontmatter is untouched — wikilinks in `banner:` etc. are data.
@@ -310,15 +440,20 @@ pub fn preprocess_mapped(
             } else if colon_fence(trimmed).is_some_and(|n| n == "column") {
                 out.push_str(":::colsep:::\n");
             } else {
-                out.push_str(&rewrite_line(
-                    line,
-                    doc_dir,
-                    doc_path,
-                    vault_root,
-                    image_resolver,
-                    marks,
-                    &mut in_comment,
-                ));
+                append_rewritten(
+                    &mut out,
+                    &mut images,
+                    line_start,
+                    rewrite_line(
+                        line,
+                        doc_dir,
+                        doc_path,
+                        vault_root,
+                        image_resolver,
+                        marks,
+                        &mut in_comment,
+                    ),
+                );
             }
             continue;
         }
@@ -337,13 +472,27 @@ pub fn preprocess_mapped(
             marks,
             &mut in_comment,
         );
-        out.push_str(&line);
+        append_rewritten(&mut out, &mut images, line_start, line);
     }
     if in_columns {
         out.push_str("```\n");
     }
     line_offsets.push(out.len());
-    (out, line_offsets)
+    (out, line_offsets, images)
+}
+
+fn append_rewritten(
+    out: &mut String,
+    images: &mut Vec<crate::image_resize::SourceImage>,
+    source_start: usize,
+    (text, spans): (String, Vec<crate::image_resize::SourceImage>),
+) {
+    images.extend(spans.into_iter().map(|mut span| {
+        span.source = span.source.start + source_start..span.source.end + source_start;
+        span.preview = span.preview.start + out.len()..span.preview.end + out.len();
+        span
+    }));
+    out.push_str(&text);
 }
 
 /// `::: name` fence marker — accepts `::: columns`, `:::columns` and
@@ -351,8 +500,48 @@ pub fn preprocess_mapped(
 #[cfg(test)]
 mod navigation_tests {
     use super::{
-        headings, match_navigation_blocks, navigation_blocks, preprocess_mapped, slice_section,
+        headings, match_navigation_blocks, navigation_blocks, parse_tag_link, preprocess_mapped,
+        slice_section, Transclude,
     };
+
+    #[test]
+    fn image_resize_source_map_tracks_duplicate_images_after_rewrites() {
+        let source = "---\nbanner: '![[skip.png]]'\n---\n#tag ø ![[pic.png|60]] ![[pic.png|60]] ![alt|50](https://example.invalid/pic(1).png \"a ) title\")\n`![[code.png]]` \\![[escaped.png]] %% ![[hidden.png]] %%\n```\n![[fenced.png]]\n```\n";
+        let marks = super::MarkColors {
+            plain: String::new(),
+            colors: std::array::from_fn(|_| String::new()),
+        };
+        let (rendered, _, spans) = super::preprocess_with_images(
+            source,
+            std::path::Path::new("/vault/note.md"),
+            Some(std::path::Path::new("/vault")),
+            &|name| Some(std::path::Path::new("/vault").join(name)),
+            &marks,
+        );
+        assert_eq!(spans.len(), 3);
+        assert_eq!(&source[spans[0].source.clone()], "![[pic.png|60]]");
+        assert_eq!(&source[spans[1].source.clone()], "![[pic.png|60]]");
+        assert!(spans[0].source.end <= spans[1].source.start);
+        for span in &spans {
+            assert_eq!(&rendered[span.preview.clone()], span.rendered);
+        }
+        fn collect(node: &markdown::mdast::Node, spans: &mut Vec<std::ops::Range<usize>>) {
+            if let markdown::mdast::Node::Image(image) = node {
+                let p = image.position.as_ref().unwrap();
+                spans.push(p.start.offset..p.end.offset);
+            }
+            for child in node.children().into_iter().flatten() {
+                collect(child, spans);
+            }
+        }
+        let tree = markdown::to_mdast(&rendered, &markdown::ParseOptions::default()).unwrap();
+        let mut parsed = Vec::new();
+        collect(&tree, &mut parsed);
+        assert_eq!(
+            parsed,
+            spans.iter().map(|s| s.preview.clone()).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn block_embeds_resolve_inline_and_standalone_ids() {
@@ -371,6 +560,48 @@ mod navigation_tests {
             Some("| a |\n|---|\n| 1 |")
         );
     }
+
+    #[test]
+    fn custom_tag_link_label_is_separate_from_search_target() {
+        let source = "[Important](tag:work)";
+        let ast = markdown::to_mdast(source, &markdown::ParseOptions::gfm()).unwrap();
+        let link = &ast.children().unwrap()[0].children().unwrap()[0];
+        let tag = parse_tag_link(link, 0).unwrap();
+
+        assert_eq!(tag.label, "Important");
+        assert_eq!(tag.tag, "work");
+    }
+
+    #[test]
+    fn standalone_transclusions_use_block_layout_without_consuming_neighbors() {
+        let ast = markdown::to_mdast(
+            "![Child](transclude:Child#heading)",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        let paragraph = &ast.children().unwrap()[0];
+        let embed = Transclude::parse(paragraph, true).unwrap();
+        assert_eq!(embed.target, "Child#heading");
+        assert!(embed.height.is_none());
+
+        let ast = markdown::to_mdast(
+            "Before ![Child](transclude:Child) after",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        let paragraph = &ast.children().unwrap()[0];
+        assert!(Transclude::parse(paragraph, true).is_none());
+        let inline = &paragraph.children().unwrap()[1];
+        assert_eq!(Transclude::parse(inline, false).unwrap().target, "Child");
+
+        let ast = markdown::to_mdast(
+            "![Picture](file:///picture.png)",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        assert!(Transclude::parse(&ast.children().unwrap()[0], true).is_none());
+    }
+
     use std::path::Path;
 
     #[test]
@@ -529,8 +760,9 @@ fn rewrite_line(
     image_resolver: &dyn Fn(&str) -> Option<PathBuf>,
     marks: &MarkColors,
     in_comment: &mut bool,
-) -> String {
+) -> (String, Vec<crate::image_resize::SourceImage>) {
     let mut out = String::with_capacity(line.len() + 32);
+    let mut images = Vec::new();
     let bytes = line.as_bytes();
     let mut i = 0;
     let mut in_code = false;
@@ -546,6 +778,15 @@ fn rewrite_line(
                 i += 2;
             } else {
                 i += ch.len_utf8();
+            }
+            continue;
+        }
+        if ch == '\\' {
+            out.push(ch);
+            i += 1;
+            if let Some(next) = line[i..].chars().next() {
+                out.push(next);
+                i += next.len_utf8();
             }
             continue;
         }
@@ -578,9 +819,30 @@ fn rewrite_line(
         if line[i..].starts_with("![[") {
             if let Some(end) = line[i..].find("]]") {
                 let inner = &line[i + 3..i + end];
-                out.push_str(&render_embed(inner, doc_dir, image_resolver));
+                let rendered = render_embed(inner, doc_dir, image_resolver);
+                images.push(crate::image_resize::SourceImage {
+                    source: i..i + end + 2,
+                    preview: out.len()..out.len() + rendered.len(),
+                    rendered: rendered.clone(),
+                });
+                out.push_str(&rendered);
                 i += end + 2;
                 continue;
+            }
+        } else if line[i..].starts_with("![") {
+            if let Some(syntax) = crate::image_resize::ImageSyntax::parse(&line[i..]) {
+                let token = &line[i..i + syntax.len];
+                if let Some(rendered) = render_markdown_image(token, doc_dir, doc_path, vault_root)
+                {
+                    images.push(crate::image_resize::SourceImage {
+                        source: i..i + syntax.len,
+                        preview: out.len()..out.len() + rendered.len(),
+                        rendered: rendered.clone(),
+                    });
+                    out.push_str(&rendered);
+                    i += syntax.len;
+                    continue;
+                }
             }
         } else if line[i..].starts_with("[[") {
             if let Some(end) = line[i..].find("]]") {
@@ -700,7 +962,36 @@ fn rewrite_line(
         out.push(ch);
         i += ch.len_utf8();
     }
-    out
+    (out, images)
+}
+
+fn render_markdown_image(
+    token: &str,
+    doc_dir: &Path,
+    doc_path: &Path,
+    vault_root: Option<&Path>,
+) -> Option<String> {
+    let tree = markdown::to_mdast(token, &markdown::ParseOptions::default()).ok()?;
+    let image = tree.children()?.first()?.children()?.first()?;
+    let mdast::Node::Image(image) = image else {
+        return None;
+    };
+    let position = image.position.as_ref()?;
+    if position.start.offset != 0 || position.end.offset != token.len() {
+        return None;
+    }
+    let dest = format!("<{}>)", image.url.replace('>', "%3E"));
+    let Some((url, _, _)) = rewrite_link_dest(&dest, true, doc_dir, doc_path, vault_root) else {
+        return Some(token.to_string());
+    };
+    let syntax = crate::image_resize::ImageSyntax::parse(token)?;
+    let alt = syntax.label(token)?;
+    let title = image
+        .title
+        .as_ref()
+        .map(|title| format!(" \"{}\"", title.replace('\\', "\\\\").replace('"', "\\\"")))
+        .unwrap_or_default();
+    Some(format!("![{alt}]({url}{title})"))
 }
 
 fn render_embed(
@@ -739,11 +1030,16 @@ fn render_embed(
         return format!("![](<transclude:{target}{height}>)");
     }
     // `![[img|300]]` width, `![[img|300x200]]` w×h; anything else is a caption.
-    let size = parse_size_suffix(suffix);
-    let alt = if suffix.is_empty() || size.is_some() {
+    let (caption, size) = match suffix.rsplit_once('|') {
+        Some((caption, size)) if parse_size_suffix(size).is_some() => {
+            (caption, parse_size_suffix(size))
+        }
+        _ => (suffix, parse_size_suffix(suffix)),
+    };
+    let alt = if caption.is_empty() || parse_size_suffix(caption).is_some() {
         file_stem(target)
     } else {
-        suffix.to_string()
+        caption.to_string()
     };
     let resolved = image_resolver(target).or_else(|| {
         // Try a path relative to the document before giving up.
@@ -777,19 +1073,7 @@ fn file_stem(path: &str) -> String {
 
 /// `300` → width only, `300x200` → width × height.
 fn parse_size_suffix(s: &str) -> Option<(f32, Option<f32>)> {
-    if s.is_empty() {
-        return None;
-    }
-    let (w, h) = match s.split_once('x') {
-        Some((w, h)) => (w.trim(), Some(h.trim())),
-        None => (s.trim(), None),
-    };
-    let w: f32 = w.parse().ok()?;
-    let h = match h {
-        Some(h) => Some(h.parse::<f32>().ok()?),
-        None => None,
-    };
-    (w > 0. && h.is_none_or(|h| h > 0.)).then_some((w, h))
+    crate::image_resize::parse_size(s)
 }
 
 /// Percent-encode just enough of a path for a well-formed `file://` URI.
@@ -967,7 +1251,9 @@ struct LocalImage {
     size: Option<(f32, Option<f32>)>,
 }
 
-pub struct LocalImagePlugin;
+pub struct LocalImagePlugin {
+    ctx: Option<PreviewCtx>,
+}
 
 struct NoteIconPlugin;
 
@@ -1010,7 +1296,11 @@ impl MarkdownPlugin for LocalImagePlugin {
         "local-image"
     }
 
-    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+    fn parse(
+        &self,
+        node: &mdast::Node,
+        context: &MarkdownParseContext<'_>,
+    ) -> Option<MarkdownNode> {
         let mdast::Node::Image(image) = node else {
             return None;
         };
@@ -1018,17 +1308,27 @@ impl MarkdownPlugin for LocalImagePlugin {
             .title
             .as_deref()
             .and_then(|t| t.strip_prefix("rista:"))
-            .and_then(parse_size_suffix);
-        if size.is_none() && !image.url.starts_with("file://") {
+            .and_then(parse_size_suffix)
+            .or_else(|| {
+                let source = context.node_source(node)?;
+                crate::image_resize::ImageSyntax::parse(source)?.size(source)
+            });
+        if !image.url.starts_with("file://")
+            && !image.url.starts_with("https://")
+            && !image.url.starts_with("http://")
+        {
             return None;
         }
-        Some(MarkdownNode::new(
-            "local-image",
-            LocalImage {
-                url: image.url.clone(),
-                size,
-            },
-        ))
+        Some(
+            MarkdownNode::new(
+                "local-image",
+                LocalImage {
+                    url: image.url.clone(),
+                    size,
+                },
+            )
+            .markdown(context.node_source(node).unwrap_or_default().to_string()),
+        )
     }
 
     fn render_inline(
@@ -1039,6 +1339,14 @@ impl MarkdownPlugin for LocalImagePlugin {
         cx: &mut App,
     ) -> Option<InlineElement> {
         let image = node.data::<LocalImage>()?;
+        if let Some(context) = self.ctx.as_ref() {
+            if let Some(view) = context.images.as_ref().and_then(|images| {
+                let anchor = images.anchor(node.source_range()?, node.as_markdown())?;
+                images.view(anchor, image.url.clone(), image.size, context, cx)
+            }) {
+                return Some(InlineElement::new(view));
+            }
+        }
         let mut element = img(image_source(&image.url));
         match image.size {
             Some((width, Some(height))) => {
@@ -1060,7 +1368,7 @@ impl MarkdownPlugin for LocalImagePlugin {
     }
 }
 
-fn image_source(url: &str) -> ImageSource {
+pub(crate) fn image_source(url: &str) -> ImageSource {
     if let Some(path) = url.strip_prefix("file://") {
         return PathBuf::from(percent_decode(path)).into();
     }
@@ -1284,6 +1592,12 @@ impl MarkdownPlugin for PropertiesPlugin {
         }
         let default_folded = visibility == crate::settings::PropertiesVisibility::Collapsed;
         let folded = self.folds.is_folded(*key, default_folded);
+        let tag_role = self
+            .ctx
+            .as_ref()
+            .and_then(|ctx| ctx.style.tag_token.as_deref())
+            .unwrap_or("link");
+        let tag_color = semantic_color(tag_role, self.ctx.as_ref(), cx);
         let folds = self.folds.clone();
         let key = *key;
         // Rows open the property-edit dialog only on the document's own
@@ -1457,7 +1771,7 @@ impl MarkdownPlugin for PropertiesPlugin {
                             {
                                 let mut chip = div()
                                     .id(("property-tag", ix * 100 + jx))
-                                    .text_color(theme.info)
+                                    .text_color(tag_color)
                                     .child(format!("#{tag}"));
                                 if let Some(workspace) = edit_ctx.clone() {
                                     let tag = tag.to_string();
@@ -1781,7 +2095,9 @@ impl MarkdownPlugin for CalloutPlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let callout = node.data::<Callout>().expect("callout node data");
         let theme = cx.theme();
-        let accent = callout_accent(&callout.kind, cx);
+        let accent = callout_accent(&callout.kind, self.ctx.as_ref(), cx);
+        let callout_surface = semantic_color("accent.background", self.ctx.as_ref(), cx);
+        let foreground = semantic_color("foreground", self.ctx.as_ref(), cx);
         let folded = callout
             .foldable
             .is_some_and(|default| self.folds.is_folded(callout.key, default));
@@ -1830,7 +2146,7 @@ impl MarkdownPlugin for CalloutPlugin {
         v_flex()
             .w_full()
             .rounded(theme.radius)
-            .bg(theme.accent)
+            .bg(callout_surface)
             .overflow_hidden()
             .child(header)
             .when(!folded && !callout.body.trim().is_empty(), |this| {
@@ -1840,11 +2156,13 @@ impl MarkdownPlugin for CalloutPlugin {
                         .px_3()
                         .pb_2()
                         .text_sm()
-                        .text_color(theme.foreground)
+                        .text_color(foreground)
                         .child(
-                            gpui_kit::component::text::TextView::markdown(
+                            styled_text_view(
                                 "callout-body",
                                 callout.body.clone(),
+                                self.ctx.as_ref(),
+                                cx,
                             )
                             .markdown_extensions(extensions(
                                 &self.folds,
@@ -1941,15 +2259,36 @@ fn callout_icon(kind: &str) -> gpui_kit::component::IconName {
     }
 }
 
-fn callout_accent(kind: &str, cx: &App) -> gpui_kit::Hsla {
-    let colors = &cx.theme().colors;
-    match kind {
-        "warning" | "caution" | "attention" => colors.warning,
-        "failure" | "fail" | "missing" | "danger" | "error" | "bug" => colors.danger,
-        "success" | "check" | "done" => colors.success,
-        "tip" | "hint" | "important" => colors.success,
-        _ => colors.info,
-    }
+fn callout_accent(kind: &str, ctx: Option<&PreviewCtx>, cx: &App) -> gpui_kit::Hsla {
+    let role = ctx
+        .and_then(|ctx| ctx.style.callout_tokens.get(kind))
+        .map(String::as_str)
+        .unwrap_or_else(|| match kind {
+            "warning" | "caution" | "attention" => "warning",
+            "failure" | "fail" | "missing" | "danger" | "error" | "bug" => "danger",
+            "success" | "check" | "done" | "tip" | "hint" | "important" => "success",
+            _ => "info.background",
+        });
+    semantic_color(role, ctx, cx)
+}
+
+fn semantic_color(role: &str, ctx: Option<&PreviewCtx>, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    let color_token = crate::style_snippets::color_token_for_role(role);
+    ctx.and_then(|ctx| ctx.style.colors.get(color_token).copied())
+        .unwrap_or_else(|| match role {
+            "foreground" => theme.foreground,
+            "muted.foreground" => theme.muted_foreground,
+            "link" => theme.link,
+            "info.background" => theme.info,
+            "warning" => theme.warning,
+            "danger" => theme.danger,
+            "success" => theme.success,
+            "accent.background" => theme.accent,
+            "background" => theme.background,
+            "border" => theme.border,
+            _ => theme.info,
+        })
 }
 
 // ── Link preview cards ──────────────────────────────────────────────
@@ -2582,7 +2921,7 @@ impl MarkdownPlugin for ColumnBlockPlugin {
         ))
     }
 
-    fn render(&self, node: &MarkdownNode, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let block = node.data::<ColumnBlock>().expect("column-block node data");
         let mut row = h_flex().w_full().items_start().gap_4().my_2();
         for (ix, segment) in block.body.split(":::colsep:::").enumerate() {
@@ -2590,9 +2929,11 @@ impl MarkdownPlugin for ColumnBlockPlugin {
             let segment = segment.trim_matches('\n').to_string();
             row = row.child(
                 div().flex_1().min_w_0().child(
-                    gpui_kit::component::text::TextView::markdown(
+                    styled_text_view(
                         SharedString::from(format!("column-{ix}")),
                         segment,
+                        Some(&nested),
+                        cx,
                     )
                     .markdown_extensions(extensions(
                         &self.folds,
@@ -2710,6 +3051,13 @@ impl MarkdownPlugin for TablePlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let table = node.data::<EditableTable>().expect("editable-table data");
         let theme = cx.theme();
+        let table_head_background =
+            resolved_color(&self.ctx, "table.head.background", theme.table_head);
+        let table_head_foreground = resolved_color(
+            &self.ctx,
+            "table.head.foreground",
+            theme.table_head_foreground,
+        );
         let last = table.rows.len().saturating_sub(1);
         let mut tbl = v_flex()
             .w_full()
@@ -2721,7 +3069,7 @@ impl MarkdownPlugin for TablePlugin {
         for (rix, row) in table.rows.iter().enumerate() {
             let mut r = h_flex().w_full();
             if rix == 0 {
-                r = r.bg(theme.table_head);
+                r = r.bg(table_head_background);
             }
             if rix < last {
                 r = r.border_b_1().border_color(theme.border);
@@ -2752,17 +3100,25 @@ impl MarkdownPlugin for TablePlugin {
                                 ws.show_table_cell_dialog(line, col, window, cx)
                             });
                         })
-                        .child(
-                            gpui_kit::component::text::TextView::markdown(
+                        .child({
+                            let mut view = styled_text_view(
                                 SharedString::from(format!("table-cell-{rix}-{cix}")),
                                 display,
-                            )
-                            .markdown_extensions(extensions(
+                                Some(&self.ctx),
+                                cx,
+                            );
+                            if rix == 0 {
+                                view = view.style(
+                                    text_style(&self.ctx, cx)
+                                        .with_foreground(table_head_foreground),
+                                );
+                            }
+                            view.markdown_extensions(extensions(
                                 &self.folds,
                                 Some(&self.ctx),
                                 false,
-                            )),
-                        ),
+                            ))
+                        }),
                 );
             }
             if rix == 0 {
@@ -2932,18 +3288,19 @@ struct Transclude {
     height: Option<f32>,
 }
 
-struct TranscludePlugin {
-    ctx: PreviewCtx,
-    folds: CalloutFolds,
-}
-
-impl MarkdownPlugin for TranscludePlugin {
-    // Inline: `![[note]]` parses to an image node inside a paragraph.
-    fn name(&self) -> &str {
-        "transclude"
-    }
-
-    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+impl Transclude {
+    fn parse(node: &mdast::Node, block: bool) -> Option<Self> {
+        let node = if block {
+            let mdast::Node::Paragraph(paragraph) = node else {
+                return None;
+            };
+            let [image] = paragraph.children.as_slice() else {
+                return None;
+            };
+            image
+        } else {
+            node
+        };
         let mdast::Node::Image(image) = node else {
             return None;
         };
@@ -2953,16 +3310,50 @@ impl MarkdownPlugin for TranscludePlugin {
             Some((t, h)) => (t.to_string(), h.parse::<f32>().ok()),
             None => (target.to_string(), None),
         };
+        Some(Self { target, height })
+    }
+}
+
+struct TranscludePlugin {
+    ctx: PreviewCtx,
+    folds: CalloutFolds,
+    block: bool,
+}
+
+impl MarkdownPlugin for TranscludePlugin {
+    fn is_block(&self) -> bool {
+        self.block
+    }
+
+    fn name(&self) -> &str {
+        if self.block {
+            "transclude-block"
+        } else {
+            "transclude"
+        }
+    }
+
+    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
         Some(MarkdownNode::new(
-            "transclude",
-            Transclude { target, height },
+            self.name(),
+            Transclude::parse(node, self.block)?,
         ))
     }
 
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let embed = node.data::<Transclude>().expect("transclude node data");
         let theme = cx.theme().clone();
-        let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
+        let resolved = self
+            .ctx
+            .doc_path
+            .as_deref()
+            .and_then(|source| {
+                self.ctx
+                    .vault
+                    .read(cx)
+                    .resolve_wikilink_from(&embed.target, source)
+            })
+            .or_else(|| self.ctx.vault.read(cx).resolve_wikilink(&embed.target));
         let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
         // `![[db.base]]` embeds the live base view —
         // keyed by spec text + view anchor so the view survives re-renders.
@@ -3012,9 +3403,14 @@ impl MarkdownPlugin for TranscludePlugin {
                     .into_any_element();
             }
         }
-        let content = resolved
+        let source = resolved
             .as_ref()
-            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        let embedded_classes = source
+            .as_deref()
+            .map(crate::properties::frontmatter_cssclasses)
+            .unwrap_or_default();
+        let content = source
             .map(|text| match crate::properties::frontmatter_span(&text) {
                 Some(span) => text[span.end..].to_string(),
                 None => text,
@@ -3031,6 +3427,14 @@ impl MarkdownPlugin for TranscludePlugin {
             (true, Some(content)) => {
                 let mut nested = self.ctx.clone();
                 nested.depth += 1;
+                if let Some(catalog) = &nested.catalog {
+                    nested.style = std::sync::Arc::new(crate::style_snippets::resolve(
+                        catalog,
+                        &nested.enabled_style_snippets,
+                        &embedded_classes,
+                        cx.theme().is_dark(),
+                    ));
+                }
                 // `this` inside the transcluded note's embeds is the
                 // transcluded file, not the page hosting it.
                 nested.doc_path = resolved.clone();
@@ -3041,7 +3445,7 @@ impl MarkdownPlugin for TranscludePlugin {
                     .border_color(theme.border)
                     .pl_3()
                     .child(
-                        gpui_kit::component::text::TextView::markdown("transclude", content)
+                        styled_text_view("transclude", content, Some(&nested), cx)
                             .markdown_extensions(extensions(&self.folds, Some(&nested), false)),
                     )
                     .into_any_element()
@@ -3053,7 +3457,7 @@ impl MarkdownPlugin for TranscludePlugin {
                 div()
                     .id(SharedString::from(format!("transclude-{target}")))
                     .text_sm()
-                    .text_color(theme.info)
+                    .text_color(semantic_color("info.background", Some(&self.ctx), cx))
                     .cursor_pointer()
                     .child(embed.target.clone())
                     .on_click(move |ev, window, cx| {
@@ -3070,6 +3474,91 @@ impl MarkdownPlugin for TranscludePlugin {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------
+// Tags — `[#tag](tag:tag)` links created by preprocessing keep the note-local
+// semantic role while routing to the existing project search.
+// ------------------------------------------------------------------
+
+struct TagLink {
+    tag: String,
+    label: String,
+    source_offset: usize,
+}
+
+struct TagLinkPlugin {
+    ctx: PreviewCtx,
+}
+
+impl MarkdownPlugin for TagLinkPlugin {
+    fn name(&self) -> &str {
+        "tag-link"
+    }
+
+    fn parse(&self, node: &mdast::Node, parse: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let link = parse_tag_link(node, parse.offset())?;
+        if link.tag.is_empty() {
+            return None;
+        }
+        let label = link.label.clone();
+        let mut markdown_node = MarkdownNode::new("tag-link", link)
+            .text(label.clone())
+            .accessibility_label(label);
+        if let Some(source) = parse.node_source(node) {
+            markdown_node = markdown_node.markdown(source.to_string());
+        }
+        Some(markdown_node)
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tag_link = node.data::<TagLink>().expect("tag-link data");
+        let tag = tag_link.tag.clone();
+        let role = self.ctx.style.tag_token.as_deref().unwrap_or("link");
+        let color = semantic_color(role, Some(&self.ctx), cx);
+        let query = format!("#{tag}");
+        let label = tag_link.label.clone();
+        let key = tag_link.source_offset;
+        let workspace = self.ctx.workspace.clone();
+        div()
+            .id(("tag-link", key))
+            .text_color(color)
+            .cursor_pointer()
+            .hover(|element| element.underline())
+            .child(label)
+            .on_click(move |_, window, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    crate::search::open_project_search_for(workspace, Some(&query), window, cx);
+                }
+            })
+    }
+}
+
+fn parse_tag_link(node: &mdast::Node, offset: usize) -> Option<TagLink> {
+    let mdast::Node::Link(link) = node else {
+        return None;
+    };
+    let tag = link.url.strip_prefix("tag:")?.to_string();
+    let label = link
+        .children
+        .iter()
+        .map(mdast_plain_text)
+        .collect::<String>();
+    let label = if label.is_empty() {
+        format!("#{tag}")
+    } else {
+        label
+    };
+    let source_offset = offset.saturating_add(
+        node.position()
+            .map(|position| position.start.offset)
+            .unwrap_or_default(),
+    );
+    Some(TagLink {
+        tag,
+        label,
+        source_offset,
+    })
 }
 
 // ------------------------------------------------------------------
@@ -3135,11 +3624,21 @@ impl MarkdownPlugin for WikiLinkPlugin {
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let link = node.data::<WikiLink>().expect("wiki-link node data");
-        let theme = cx.theme();
-        let resolved_path = self.ctx.vault.read(cx).resolve_wikilink(&link.target);
+        let resolved_path = self
+            .ctx
+            .doc_path
+            .as_deref()
+            .and_then(|source| {
+                self.ctx
+                    .vault
+                    .read(cx)
+                    .resolve_wikilink_from(&link.target, source)
+            })
+            .or_else(|| self.ctx.vault.read(cx).resolve_wikilink(&link.target));
         let resolved = resolved_path.is_some();
         let workspace = self.ctx.workspace.clone();
         let target = link.target.clone();
+        let source_path = self.ctx.doc_path.clone();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&link.target, &mut hasher);
         let key = std::hash::Hasher::finish(&hasher) as usize;
@@ -3148,21 +3647,24 @@ impl MarkdownPlugin for WikiLinkPlugin {
             .id(("wiki-link", key))
             .text_sm()
             .text_color(if resolved {
-                theme.info
+                semantic_color("info.background", Some(&self.ctx), cx)
             } else {
-                theme.info.opacity(0.45)
+                semantic_color("info.background", Some(&self.ctx), cx).opacity(0.45)
             })
             .cursor_pointer()
             .hover(|d| d.underline())
             .child(link.label.clone())
             .on_click(move |ev, window, cx| {
                 let target = target.clone();
+                let source_path = source_path.clone();
                 let _ = workspace.update(cx, |ws, cx| {
-                    if ev.modifiers().platform {
-                        ws.open_wikilink_new_tab(&target, window, cx)
-                    } else {
-                        ws.open_wikilink(&target, window, cx)
-                    }
+                    ws.open_wikilink_from(
+                        &target,
+                        source_path.as_deref(),
+                        ev.modifiers().platform,
+                        window,
+                        cx,
+                    );
                 });
             });
         // Resolved links get the page-preview hover: the card
@@ -3974,7 +4476,7 @@ impl MarkdownPlugin for TaskListPlugin {
                     .child(marker_el)
                     .child(
                         div().flex_1().min_w_0().child(
-                            gpui_kit::component::text::TextView::markdown(("task-item", ix), body)
+                            styled_text_view(("task-item", ix), body, self.ctx.as_ref(), cx)
                                 .markdown_extensions(extensions(
                                     &self.folds,
                                     self.ctx.as_ref(),
@@ -4111,9 +4613,11 @@ impl MarkdownPlugin for FootnoteDefPlugin {
             )
             .child(
                 div().flex_1().min_w_0().text_xs().child(
-                    gpui_kit::component::text::TextView::markdown(
+                    styled_text_view(
                         SharedString::from(format!("footnote-{label}")),
                         body.clone(),
+                        self.ctx.as_ref(),
+                        cx,
                     )
                     .markdown_extensions(extensions(
                         &self.folds,

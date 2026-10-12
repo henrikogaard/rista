@@ -40,6 +40,7 @@ pub struct SettingsView {
     dark_theme_select: Entity<SelectState<SearchableVec<String>>>,
     light_theme_select: Entity<SelectState<SearchableVec<String>>>,
     theme_write_failed: bool,
+    snippets_folder_failed: bool,
     attachments_input: Entity<InputState>,
     templates_input: Entity<InputState>,
     daily_dir_input: Entity<InputState>,
@@ -446,6 +447,7 @@ impl SettingsView {
             dark_theme_select,
             light_theme_select,
             theme_write_failed: false,
+            snippets_folder_failed: false,
             font_select,
             font_size_select,
             ui_size_select,
@@ -996,11 +998,14 @@ impl SettingsView {
             .justify_between()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(label.into()),
             )
-            .child(control)
+            .child(div().flex_none().child(control))
     }
 }
 
@@ -1157,6 +1162,172 @@ impl Render for SettingsView {
                             )
                         },
                     )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text("STYLE SNIPPETS", "STILUTDRAG")),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("open-style-snippets")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text(
+                                        "Open folder",
+                                        "Åpne mappe",
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let directory = crate::style_snippets::snippets_dir();
+                                        this.snippets_folder_failed =
+                                            std::fs::create_dir_all(&directory).is_err()
+                                                || !directory.is_dir()
+                                                || std::fs::read_dir(&directory).is_err();
+                                        if !this.snippets_folder_failed {
+                                            cx.reveal_path(&directory);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("reload-style-snippets")
+                                    .small()
+                                    .ghost()
+                                    .label(settings.language.text(
+                                        "Reload",
+                                        "Last inn",
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(ws) = this.workspace.upgrade() {
+                                            ws.update(cx, |ws, cx| ws.reload_style_snippets(cx));
+                                        }
+                                    })),
+                            ),
+                    )
+                    .when(
+                        self.snippets_folder_failed,
+                        |view| {
+                            view.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(settings.language.text(
+                                        "Could not open the snippets folder. Check folder permissions.",
+                                        "Kunne ikke åpne utdragsmappen. Sjekk mappetillatelser.",
+                                    )),
+                            )
+                        },
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text(
+                                "Global switches apply to all notes; cssclasses can select a valid snippet for one note independently.",
+                                "Globale brytere gjelder alle notater; cssclasses kan velge et gyldig utdrag for ett notat uavhengig.",
+                            )),
+                    )
+                    .children(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .snapshot
+                            .entries()
+                            .keys()
+                            .map(|name| {
+                                let enabled = settings.enabled_style_snippets.iter().any(|item| item == name);
+                                let name_for_update = name.clone();
+                                Self::row(
+                                    cx,
+                                    name.clone(),
+                                    Switch::new(format!("style-snippet-{name}"))
+                                        .checked(enabled)
+                                        .on_click(cx.listener(move |this, checked, window, cx| {
+                                            let checked = *checked;
+                                            let name = name_for_update.clone();
+                                            this.update_setting(
+                                                cx,
+                                                move |settings| {
+                                                    if checked {
+                                                        if !settings.enabled_style_snippets.iter().any(|item| item == &name) {
+                                                            settings.enabled_style_snippets.push(name);
+                                                        }
+                                                    } else {
+                                                        settings.enabled_style_snippets.retain(|item| item != &name);
+                                                    }
+                                                },
+                                                window,
+                                            );
+                                        })),
+                                )
+                            }),
+                    )
+                    .when(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .snapshot
+                            .entries()
+                            .is_empty(),
+                        |view| {
+                            view.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(settings.language.text(
+                                        "No snippets yet. Add JSON files in this folder and see the Style snippets guide.",
+                                        "Ingen utdrag ennå. Legg til JSON-filer i mappen, og se veiledningen for stilutdrag.",
+                                    )),
+                            )
+                        },
+                    )
+                    .children(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .snapshot
+                            .warnings()
+                            .iter()
+                            .map(|warning| {
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .v_flex()
+                                    .gap_0()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .text_color(cx.theme().danger)
+                                            .child(warning.filename.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().danger)
+                                            .child(settings.language.text(
+                                            warning.reason.text().0,
+                                            warning.reason.text().1,
+                                        )),
+                                    )
+                            }),
+                    )
+                    .when(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .watcher_warning,
+                        |view| {
+                            view.child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(settings.language.text(
+                                        "Live reload is unavailable; use Reload to refresh snippets.",
+                                        "Direkte oppdatering er utilgjengelig; bruk Last inn på nytt for å oppdatere utdrag.",
+                                    )),
+                            )
+                        },
+                    )
                     .child(Self::row(
                         cx,
                         "Editor font",
@@ -1241,6 +1412,16 @@ impl Render for SettingsView {
                                 this.update_setting(cx, |s| s.soft_wrap = checked, window);
                             })),
                     ))
+                    .child(Self::row(
+                        cx,
+                        settings.language.text("Vim mode", "Vim-modus"),
+                        Switch::new("vim-mode")
+                            .checked(settings.vim_mode)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                let checked = *checked;
+                                this.update_setting(cx, |s| s.vim_mode = checked, window);
+                            })),
+                    ))
                     .child(Self::row(cx, settings.language.text("Show non-Markdown files", "Vis andre filer enn Markdown"),
                         Switch::new("show-other-files")
                             .checked(settings.show_other_files)
@@ -1281,6 +1462,36 @@ impl Render for SettingsView {
                         cx,
                         "Tab size",
                         Select::new(&self.tab_size_select).w(px(90.)),
+                    ))
+                    .child(
+                        v_flex().w_full().gap_1()
+                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text("After extracting text", "Etter uttrekk av tekst")))
+                        .child(TabBar::new("extract-behavior")
+                            .segmented()
+                            .selected_index(match settings.extract_behavior {
+                                crate::note_composer::ExtractBehavior::Link => 0,
+                                crate::note_composer::ExtractBehavior::Embed => 1,
+                                crate::note_composer::ExtractBehavior::Nothing => 2,
+                            })
+                            .children([
+                                Tab::new().label(settings.language.text("Link", "Lenke")),
+                                Tab::new().label(settings.language.text("Embed", "Bygg inn")),
+                                Tab::new().label(settings.language.text("Nothing", "Ingenting")),
+                            ])
+                            .on_click(cx.listener(|this, &index, window, cx| {
+                                this.update_setting(
+                                    cx,
+                                    |settings| {
+                                        settings.extract_behavior = match index {
+                                            1 => crate::note_composer::ExtractBehavior::Embed,
+                                            2 => crate::note_composer::ExtractBehavior::Nothing,
+                                            _ => crate::note_composer::ExtractBehavior::Link,
+                                        }
+                                    },
+                                    window,
+                                );
+                            })),
                     ))
                     .child(Self::row(
                         cx,

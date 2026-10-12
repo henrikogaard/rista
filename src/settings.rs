@@ -131,6 +131,15 @@ pub enum TreeSort {
     Size,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkFormat {
+    #[default]
+    Shortest,
+    Relative,
+    Absolute,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -158,8 +167,12 @@ pub struct Settings {
     pub ui_font_size: f32,
     pub soft_wrap: bool,
     pub show_line_numbers: bool,
+    #[serde(default)]
+    pub vim_mode: bool,
     pub spellcheck_enabled: bool,
     pub spellcheck_languages: Vec<String>,
+    #[serde(default)]
+    pub extract_behavior: crate::note_composer::ExtractBehavior,
     pub tab_size: usize,
     pub view_mode: ViewMode,
     pub sidebar_collapsed: bool,
@@ -176,6 +189,10 @@ pub struct Settings {
     /// Vault-relative folder pasted/dropped images are copied into
     /// (the "attachment folder path").
     pub attachments_dir: String,
+    #[serde(default)]
+    pub link_format: LinkFormat,
+    #[serde(default)]
+    pub user_ignore_filters: Vec<String>,
     /// Vault-relative folder the template picker and the daily-note
     /// template live in (the template folder setting).
     #[serde(default = "default_templates_dir")]
@@ -213,10 +230,14 @@ pub struct Settings {
     pub yearly_dir: String,
     #[serde(default = "default_yearly_format")]
     pub yearly_format: String,
+    #[serde(default)]
+    pub period_templates: std::collections::BTreeMap<String, String>,
     /// Folder templates: vault-relative folder (`""` = root) → template
     /// path relative to the vault. New notes in that folder start from it.
     #[serde(default)]
     pub folder_templates: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub vault_settings_import_dismissed: Vec<String>,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     pub bookmarks: crate::bookmarks::Bookmarks,
@@ -251,6 +272,9 @@ pub struct Settings {
     pub active_window_id: Option<u64>,
     #[serde(default)]
     pub workspace_layouts: std::collections::BTreeMap<String, WindowSession>,
+    /// Style snippets enabled for all notes.
+    #[serde(default)]
+    pub enabled_style_snippets: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -426,8 +450,10 @@ impl Default for Settings {
             ui_font_size: 13.0,
             soft_wrap: true,
             show_line_numbers: true,
+            vim_mode: false,
             spellcheck_enabled: cfg!(target_os = "macos"),
             spellcheck_languages: Vec::new(),
+            extract_behavior: crate::note_composer::ExtractBehavior::default(),
             tab_size: 4,
             view_mode: ViewMode::Source,
             sidebar_collapsed: false,
@@ -437,6 +463,8 @@ impl Default for Settings {
             focus_mode: false,
             last_vault: None,
             attachments_dir: "attachments".to_string(),
+            link_format: LinkFormat::Shortest,
+            user_ignore_filters: Vec::new(),
             templates_dir: default_templates_dir(),
             daily_dir: String::new(),
             daily_format: default_daily_format(),
@@ -450,7 +478,9 @@ impl Default for Settings {
             quarterly_format: default_quarterly_format(),
             yearly_dir: String::new(),
             yearly_format: default_yearly_format(),
+            period_templates: Default::default(),
             folder_templates: Default::default(),
+            vault_settings_import_dismissed: Vec::new(),
             starred: Vec::new(),
             bookmarks: crate::bookmarks::Bookmarks::default(),
             panes: SidebarPanes::default(),
@@ -465,6 +495,7 @@ impl Default for Settings {
             window_sessions: Vec::new(),
             active_window_id: None,
             workspace_layouts: Default::default(),
+            enabled_style_snippets: Vec::new(),
         }
     }
 }
@@ -517,6 +548,36 @@ impl Settings {
         }
     }
 
+    pub(crate) fn save_checked(&self) -> std::io::Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static TEMP_ID: AtomicU64 = AtomicU64::new(0);
+        let path = config_path();
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(
+            ".settings.{}.{}.tmp",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let serialized = serde_json::to_vec_pretty(self)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| {
+            file.write_all(&serialized)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+
     /// Resolve the appearance pref into a concrete mode — `System`
     /// follows the OS appearance reported by the windowing layer.
     pub fn theme_mode(&self, cx: &mut App) -> ThemeMode {
@@ -549,11 +610,17 @@ mod tests {
     fn older_settings_keep_defaults_and_new_preferences_roundtrip() {
         let mut settings: Settings = serde_json::from_str(r#"{"appearance":"light"}"#).unwrap();
         assert_eq!(
+            settings.extract_behavior,
+            crate::note_composer::ExtractBehavior::Link
+        );
+        assert_eq!(
             settings.properties_visibility,
             PropertiesVisibility::Expanded
         );
         assert_eq!(settings.spellcheck_enabled, cfg!(target_os = "macos"));
         assert!(settings.spellcheck_languages.is_empty());
+        assert!(!settings.vim_mode);
+        settings.vim_mode = true;
         assert_eq!(settings.dark_theme, crate::theme::NIGHT_THEME_NAME);
         assert!(!settings.show_other_files);
         settings.show_other_files = true;
@@ -563,6 +630,7 @@ mod tests {
         settings.properties_visibility = PropertiesVisibility::Hidden;
         settings.spellcheck_enabled = true;
         settings.spellcheck_languages = vec!["en_US".into(), "nb_NO".into()];
+        settings.extract_behavior = crate::note_composer::ExtractBehavior::Embed;
         let restored: Settings =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(restored.dark_theme, "Rose Night");
@@ -571,9 +639,14 @@ mod tests {
         assert_eq!(restored.light_theme, "Fjord Day");
         assert_eq!(restored.properties_visibility, PropertiesVisibility::Hidden);
         assert!(restored.spellcheck_enabled);
+        assert!(restored.vim_mode);
         assert_eq!(
             restored.spellcheck_languages,
             vec!["en_US".to_string(), "nb_NO".to_string()]
+        );
+        assert_eq!(
+            restored.extract_behavior,
+            crate::note_composer::ExtractBehavior::Embed
         );
     }
 

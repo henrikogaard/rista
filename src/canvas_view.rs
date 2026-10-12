@@ -274,6 +274,9 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let catalog = cx
+            .try_global::<crate::style_snippets::StyleSnippetCatalog>()
+            .map(|catalog| catalog.snapshot.clone());
         let (preview_context, vault_root) = {
             let doc = document.read(cx);
             (
@@ -285,8 +288,12 @@ impl CanvasView {
                     views: doc.base_embeds.clone(),
                     query_views: doc.query_embeds.clone(),
                     pdf_views: doc.pdf_embeds.clone(),
+                    images: None,
                     doc_path: Some(doc.path.clone()),
                     depth: 0,
+                    style: doc.resolved_style.clone(),
+                    catalog,
+                    enabled_style_snippets: doc.enabled_style_snippets().to_vec(),
                 },
                 doc.vault_root.clone(),
             )
@@ -554,11 +561,18 @@ impl CanvasView {
         &mut self,
         language: Language,
         visibility: crate::settings::PropertiesVisibility,
+        style: std::sync::Arc<crate::style_snippets::ResolvedStyle>,
+        enabled_style_snippets: Vec<String>,
         cx: &mut Context<Self>,
     ) {
         self.language = language;
         self.preview_context.language = language;
         self.preview_context.properties_visibility = visibility;
+        self.preview_context.style = style;
+        self.preview_context.catalog = cx
+            .try_global::<crate::style_snippets::StyleSnippetCatalog>()
+            .map(|catalog| catalog.snapshot.clone());
+        self.preview_context.enabled_style_snippets = enabled_style_snippets;
         self.text_sources.clear();
         self.file_signatures.clear();
         self.source_revision = None;
