@@ -2043,6 +2043,13 @@ impl CanvasView {
             .size_full()
             .track_focus(&self.focus_handle)
             .key_context("CanvasBoard")
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ToggleCheckbox, window, cx| {
+                    if this.editing.is_some() {
+                        this.finish_inline_edit(window, cx);
+                    }
+                }),
+            )
             .capture_action::<input::Enter>(cx.listener(
                 |this, enter: &input::Enter, window, cx| {
                     if enter.secondary && this.editing.is_some() {

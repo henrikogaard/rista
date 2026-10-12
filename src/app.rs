@@ -3356,6 +3356,9 @@ impl Workspace {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };
+        if doc.read(cx).is_canvas {
+            return;
+        }
         let text = text.to_string();
         doc.update(cx, |doc, cx| {
             doc.editor
@@ -4151,6 +4154,9 @@ impl Workspace {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };
+        if doc.read(cx).is_canvas {
+            return;
+        }
         let Some((body, range)) = doc.read(cx).selected_text(cx) else {
             self.note_status("Select some text first", cx);
             return;
@@ -10559,6 +10565,9 @@ impl Workspace {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };
+        if doc.read(cx).is_canvas {
+            return;
+        }
         let ext = src
             .extension()
             .and_then(|e| e.to_str())
@@ -10672,6 +10681,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.active_doc().is_some_and(|doc| doc.read(cx).is_canvas) {
+            return false;
+        }
         let (Some(root), Some(dir)) = (self.vault.read(cx).root.clone(), self.attachments_dir(cx))
         else {
             return false;
@@ -10790,6 +10802,9 @@ impl Workspace {
         let Some(doc) = self.active_doc().cloned() else {
             return;
         };
+        if doc.read(cx).is_canvas {
+            return;
+        }
         let text = format!("![[{name}]]");
         doc.update(cx, |doc, cx| {
             doc.editor.update(cx, |editor, cx| {

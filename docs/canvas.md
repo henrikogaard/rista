@@ -13,6 +13,7 @@ Canvas snapshots. Viewport and selection changes do not alter the file.
 Save As and file renames cannot convert between Canvas and text documents;
 choose a destination with the same document kind. Directory names ending in
 `.canvas` do not change directory rename behavior.
+Note-formatting, template, and property commands do not modify Canvas JSON.
 
 ## Board controls
 

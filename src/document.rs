@@ -803,6 +803,9 @@ impl Document {
     /// when the file doesn't end with one). The caret lands after the
     /// inserted line; autosave persists it.
     pub fn append_line(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value();
             let len = text.len();
@@ -825,6 +828,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut start = 0usize;
@@ -852,6 +858,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut spans = Vec::new();
@@ -882,6 +891,9 @@ impl Document {
     /// (Advanced Tables style). Returns false when the caret isn't in
     /// a table.
     pub fn format_table(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let caret = editor.selected_range().start.min(text.len());
@@ -1047,6 +1059,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let doc = editor.value().to_string();
             let (frontmatter, body) = crate::templater::merge_into(&doc, expanded);
@@ -1079,6 +1094,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         let text = self.editor.read(cx).value().to_string();
         let span = crate::properties::frontmatter_span(&text);
         self.editor.update(cx, |editor, cx| match (span, body) {
@@ -1478,6 +1496,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut start = 0usize;
@@ -1821,6 +1842,9 @@ impl Document {
     /// rich (⌥↑/⌥↓). Selection is expanded to whole lines and
     /// follows the moved block.
     pub fn move_block(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -1893,6 +1917,9 @@ impl Document {
     /// strips the marker, ending the list. Returns false outside
     /// lists so the default newline proceeds.
     pub fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             if !sel.is_empty() {
@@ -1998,6 +2025,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let shift = |b: usize| if b > at { b + text.len() } else { b };
@@ -2016,6 +2046,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self.is_canvas {
+            return None;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let cursor = editor.cursor().min(text.len());
@@ -2040,6 +2073,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let (range, new_text, caret) =
@@ -2059,6 +2095,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             if sel.is_empty() {
@@ -2076,6 +2115,9 @@ impl Document {
     /// label (`[sel](url)`). `url` comes from the clipboard; when it
     /// is empty the caret lands inside `()` ready to type the target.
     pub fn insert_link(&mut self, url: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2099,6 +2141,9 @@ impl Document {
     /// caret, separated by blank lines (it starts its own line when
     /// the caret is mid-line).
     pub fn insert_hr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2119,6 +2164,9 @@ impl Document {
     /// separator, one body row. The caret lands in the first header
     /// cell so a header name can be typed right away (the "Insert table").
     pub fn insert_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2140,6 +2188,9 @@ impl Document {
     /// caret after the definition marker so the text can be typed
     /// right away — the "Insert footnote".
     pub fn insert_footnote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut n = 1usize;
@@ -2166,6 +2217,9 @@ impl Document {
     /// `kind` word stays selected so typing replaces it (`note` →
     /// `warning`, `tip`, …).
     pub fn toggle_callout(&mut self, kind: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2241,6 +2295,9 @@ impl Document {
     /// Duplicate the line(s) covered by the selection (⌘D). The copy
     /// lands right below and the selection follows it.
     pub fn duplicate_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2276,6 +2333,9 @@ impl Document {
     /// Toggle `%%` around the selection — the ⌘/ comment. With
     /// no selection it toggles the current line's trimmed span.
     pub fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2329,6 +2389,9 @@ impl Document {
     /// the inline formatting toggle. With no selection it wraps
     /// the word under the caret; already-wrapped text unwraps.
     pub fn toggle_wrap(&mut self, marker: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2388,6 +2451,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2430,6 +2496,9 @@ impl Document {
     /// "Code block" command. Unwraps when the selection already sits
     /// between a ``` pair; otherwise wraps whole lines.
     pub fn toggle_fence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2499,6 +2568,9 @@ impl Document {
     /// `style`: `- `, `- [ ] ` or `1. `; existing markers are
     /// stripped first so list styles convert rather than nest.
     pub fn toggle_list(&mut self, style: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2586,6 +2658,9 @@ impl Document {
     /// so `# a` → level 2 becomes `## a`; toggles off (plain text)
     /// when every non-empty line is already that level.
     pub fn toggle_heading(&mut self, level: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2643,6 +2718,9 @@ impl Document {
     /// newline included; the caret lands on the next line (or the
     /// previous one at EOF).
     pub fn delete_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2693,6 +2771,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let end = range.start + text.len();
             editor.set_selected_range(range, cx);
@@ -2802,12 +2883,18 @@ impl Document {
     /// `=`/`%`/`$` don't pair after a letter/digit (apostrophes, `a=b`) —
     /// the rules.
     pub fn insert_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.pair_edit(pair, true, window, cx);
     }
 
     /// Closer key (`)`, `]`, `}`): selection → wrap in the pair; caret against
     /// the closer → step over it; otherwise insert the closer alone.
     pub fn close_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.pair_edit(pair, false, window, cx);
     }
 
@@ -2815,6 +2902,9 @@ impl Document {
     /// both chars — the pair-delete. Returns false when the caret
     /// isn't between a pair so the editor's own Backspace runs.
     pub fn delete_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             if sel.start != sel.end {
@@ -2899,6 +2989,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2970,6 +3063,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             for (range, text) in edits.into_iter().rev() {
                 editor.set_selected_range(range, cx);
