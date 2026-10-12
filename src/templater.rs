@@ -98,13 +98,52 @@ pub fn prompts(text: &str) -> Vec<Prompt> {
     out
 }
 
-/// Fill in a template — see the module docs for what's supported.
-pub fn expand(text: &str, ctx: &TemplateCtx) -> Expanded {
-    expand_depth(text, ctx, 0)
+pub fn requires_interactive_context(text: &str) -> bool {
+    tags(text).into_iter().any(|tag| {
+        !tag.script
+            && parse_call(tag.code).is_some_and(|call| {
+                call.is_call
+                    && matches!(
+                        (call.module.as_str(), call.name.as_str()),
+                        ("system", "clipboard")
+                            | ("system", "prompt")
+                            | ("system", "suggester")
+                            | ("file", "selection")
+                    )
+            })
+    })
 }
 
-fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize) -> Expanded {
-    let mut out = String::with_capacity(text.len());
+pub fn include_references(text: &str) -> Vec<String> {
+    tags(text)
+        .into_iter()
+        .filter(|tag| !tag.script)
+        .filter_map(|tag| parse_call(tag.code))
+        .filter(|call| call.is_call && call.module == "file" && call.name == "include")
+        .filter_map(|call| arg_str(&call.args, 0))
+        .collect()
+}
+
+/// Fill in a template — see the module docs for what's supported.
+pub fn expand(text: &str, ctx: &TemplateCtx) -> Expanded {
+    expand_bounded(text, ctx, usize::MAX).expect("unbounded template expansion")
+}
+
+pub fn expand_bounded(text: &str, ctx: &TemplateCtx, limit: usize) -> Result<Expanded, ()> {
+    expand_depth(text, ctx, 0, limit)
+}
+
+fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize, limit: usize) -> Result<Expanded, ()> {
+    let mut out = String::with_capacity(text.len().min(limit));
+    macro_rules! append {
+        ($value:expr) => {{
+            let value = $value;
+            if out.len().saturating_add(value.len()) > limit {
+                return Err(());
+            }
+            out.push_str(value);
+        }};
+    }
     let mut cursor = None;
     let mut unsupported = 0;
     let mut answers = ctx.answers.iter();
@@ -118,11 +157,11 @@ fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize) -> Expanded {
             (None, Some(a)) => a,
             (None, None) => break,
         };
-        out.push_str(&rest[..at]);
+        append!(&rest[..at]);
         let here = &rest[at..];
         if let Some(after) = here.strip_prefix("{{") {
             let Some(close) = after.find("}}") else {
-                out.push_str(here);
+                append!(here);
                 rest = "";
                 break;
             };
@@ -132,20 +171,20 @@ fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize) -> Expanded {
                 None => (inner, None),
             };
             match (name.to_ascii_lowercase().as_str(), format) {
-                ("title", None) => out.push_str(ctx.title),
-                ("date", f) => out.push_str(&fmt(ctx.now, f.unwrap_or("YYYY-MM-DD"))),
-                ("time", f) => out.push_str(&fmt(ctx.now, f.unwrap_or("HH:mm"))),
+                ("title", None) => append!(ctx.title),
+                ("date", f) => append!(&fmt(ctx.now, f.unwrap_or("YYYY-MM-DD"))),
+                ("time", f) => append!(&fmt(ctx.now, f.unwrap_or("HH:mm"))),
                 ("cursor", None) => {
                     cursor.get_or_insert(out.len());
                 }
-                _ => out.push_str(&here[..close + 4]),
+                _ => append!(&here[..close + 4]),
             }
             rest = &here[close + 4..];
             continue;
         }
         // `<% … %>`
         let Some(tag) = tags(here).into_iter().next().filter(|t| t.start == 0) else {
-            out.push_str("<%");
+            append!("<%");
             rest = &here[2..];
             continue;
         };
@@ -160,16 +199,17 @@ fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize) -> Expanded {
         let value = if tag.script {
             None
         } else {
-            parse_call(tag.code).and_then(|call| eval(&call, ctx, &mut answers, depth))
+            parse_call(tag.code).and_then(|call| eval(&call, ctx, &mut answers, depth, limit))
         };
         match value {
             Some(Value::Cursor) => {
                 cursor.get_or_insert(out.len());
             }
-            Some(Value::Text(text)) => out.push_str(&text),
+            Some(Value::Text(text)) => append!(&text),
+            Some(Value::Overflow) => return Err(()),
             None => {
                 unsupported += 1;
-                out.push_str(&here[..tag.end]);
+                append!(&here[..tag.end]);
             }
         }
         rest = &here[tag.end..];
@@ -178,12 +218,12 @@ fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize) -> Expanded {
             rest = rest.strip_prefix('\n').unwrap_or(rest);
         }
     }
-    out.push_str(rest);
-    Expanded {
+    append!(rest);
+    Ok(Expanded {
         text: out,
         cursor,
         unsupported,
-    }
+    })
 }
 
 fn fmt(dt: NaiveDateTime, format: &str) -> String {
@@ -417,6 +457,7 @@ fn arg_list(args: &[Arg], ix: usize) -> Vec<String> {
 enum Value {
     Text(String),
     Cursor,
+    Overflow,
 }
 
 fn eval<'a>(
@@ -424,6 +465,7 @@ fn eval<'a>(
     ctx: &TemplateCtx,
     answers: &mut impl Iterator<Item = &'a String>,
     depth: usize,
+    limit: usize,
 ) -> Option<Value> {
     // Arguments that are property reads (`tp.file.title`) resolve first.
     let args: Vec<Arg> = call
@@ -501,7 +543,10 @@ fn eval<'a>(
             let link = arg_str(&args, 0)?;
             let name = link.trim().trim_start_matches("[[").trim_end_matches("]]");
             let included = (ctx.include?)(name)?;
-            text(expand_depth(&included, ctx, depth + 1).text)
+            Some(match expand_depth(&included, ctx, depth + 1, limit) {
+                Ok(expanded) => Value::Text(expanded.text),
+                Err(()) => Value::Overflow,
+            })
         }
         ("system", "clipboard", true) => text(ctx.clipboard.unwrap_or_default().to_string()),
         ("system", "prompt", true) => {
@@ -799,6 +844,16 @@ mod tests {
             expand("Body\n<% tp.file.include(\"[[Footer]]\") %>", &ctx).text,
             "Body\n— Plan"
         );
+    }
+
+    #[test]
+    fn bounded_expansion_rejects_large_include_output() {
+        let include = |name: &str| (name == "Large").then(|| "0123456789".repeat(100));
+        let ctx = TemplateCtx {
+            include: Some(&include),
+            ..TemplateCtx::new("Plan", now())
+        };
+        assert!(expand_bounded("<% tp.file.include(\"[[Large]]\") %>", &ctx, 32).is_err());
     }
 
     #[test]

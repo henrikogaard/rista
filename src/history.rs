@@ -8,7 +8,8 @@
 //! `.rista` is dot-prefixed, so the vault tree never shows it.
 
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::ffi::OsStr;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_SNAPSHOTS: usize = 30;
@@ -41,10 +42,12 @@ pub fn epoch() -> u64 {
 /// Directory holding a document's snapshots: mirrors its vault-relative
 /// path with the `.md` extension stripped.
 fn snapshot_dir(root: &Path, path: &Path) -> Option<PathBuf> {
-    let rel = path.strip_prefix(root).ok()?;
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let rel = path.strip_prefix(&root).ok()?;
     let mut dir = rel.to_path_buf();
     dir.set_extension("");
-    Some(history_dir(root).join(dir))
+    Some(history_dir(&root).join(dir))
 }
 
 /// Copy the file's current on-disk content into history before `new_text`
@@ -56,55 +59,157 @@ pub fn snapshot_before_write(root: &Path, path: &Path, new_text: &str) {
     if existing == new_text {
         return;
     }
-    let Some(dir) = snapshot_dir(root, path) else {
-        return;
-    };
-    let Ok(dir) = checked_meta_dir(root, &dir) else {
-        return;
-    };
+    let _ = snapshot_before_write_checked(root, path, existing.as_bytes(), new_text.as_bytes());
+}
+
+pub(crate) fn snapshot_before_write_checked(
+    root: &Path,
+    path: &Path,
+    existing: &[u8],
+    replacement: &[u8],
+) -> io::Result<Option<PathBuf>> {
+    if existing == replacement {
+        return Ok(None);
+    }
+    let root = root.canonicalize()?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot source is not a regular file",
+        ));
+    }
+    let path = path.canonicalize()?;
+    if !path.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot source is outside vault",
+        ));
+    }
+    let dir = snapshot_dir(&root, &path)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path is outside vault"))?;
+    let relative = dir
+        .strip_prefix(&root)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let mut current = root.clone();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsafe history path",
+            ));
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "history path is not a safe directory",
+                ))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current)?;
+            }
+            Err(error) => return Err(error),
+        }
+        if !current.canonicalize()?.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "history path escapes vault",
+            ));
+        }
+    }
+
     let timestamp = epoch();
     let mut suffix = 0u64;
-    loop {
+    let snapshot = loop {
         let name = if suffix == 0 {
             format!("{timestamp}.md")
         } else {
             format!("{timestamp}-{suffix}.md")
         };
-        let destination = dir.join(name);
+        let candidate = dir.join(name);
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&destination)
+            .open(&candidate)
         {
             Ok(mut file) => {
-                use std::io::Write;
-                if file.write_all(existing.as_bytes()).is_err() || file.sync_all().is_err() {
-                    drop(file);
-                    let _ = std::fs::remove_file(destination);
+                let result = file.write_all(existing).and_then(|()| file.sync_all());
+                drop(file);
+                if let Err(error) = result {
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(error);
                 }
-                break;
+                break candidate;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 suffix = suffix.saturating_add(1);
             }
-            Err(_) => break,
+            Err(error) => return Err(error),
         }
-    }
+    };
     prune(&dir);
+    Ok(Some(snapshot))
+}
+
+pub(crate) fn snapshot_composer_before_write_checked(
+    root: &Path,
+    path: &Path,
+    new_bytes: &[u8],
+) -> io::Result<Option<PathBuf>> {
+    let root = root.canonicalize()?;
+    let path = path.canonicalize()?;
+    if !path.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path outside vault",
+        ));
+    }
+    if std::fs::metadata(&path)?.len() > crate::note_composer::MAX_NOTE_BYTES as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "note exceeds composer history limit",
+        ));
+    }
+    let existing = std::fs::read(&path)?;
+    snapshot_before_write_checked(&root, &path, &existing, new_bytes)
 }
 
 fn prune(dir: &Path) {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
+    let mut paths: Vec<(u64, u64, PathBuf)> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|entry| {
+                    entry
+                        .file_type()
+                        .map(|file_type| file_type.is_file())
+                        .unwrap_or(false)
+                })
+                .filter_map(|entry| {
+                    let (timestamp, suffix) = snapshot_stamp(&entry.file_name())?;
+                    Some((timestamp, suffix, entry.path()))
+                })
                 .collect()
         })
         .unwrap_or_default();
-    names.sort();
-    for name in names.iter().take(names.len().saturating_sub(MAX_SNAPSHOTS)) {
-        let _ = std::fs::remove_file(dir.join(name));
+    paths.sort_by_key(|(timestamp, suffix, path)| (*timestamp, *suffix, path.clone()));
+    let excess = paths.len().saturating_sub(MAX_SNAPSHOTS);
+    for (_, _, path) in paths.into_iter().take(excess) {
+        if std::fs::symlink_metadata(&path)
+            .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(path);
+        }
     }
+}
+
+fn snapshot_stamp(name: &OsStr) -> Option<(u64, u64)> {
+    let stem = name.to_str()?.strip_suffix(".md")?;
+    let (timestamp, suffix) = stem.split_once('-').unwrap_or((stem, "0"));
+    Some((timestamp.parse().ok()?, suffix.parse().ok()?))
 }
 
 /// Snapshots for `path`, newest first: `(epoch, file)`.
@@ -116,23 +221,21 @@ pub fn snapshots(root: &Path, path: &Path) -> Vec<(u64, PathBuf)> {
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let stem = name.strip_suffix(".md")?;
-                    let (epoch, suffix) = stem.split_once('-').unwrap_or((stem, "0"));
-                    Some((epoch.parse().ok()?, suffix.parse().ok()?, e.path()))
+                    let (timestamp, suffix) = snapshot_stamp(&e.file_name())?;
+                    Some((timestamp, suffix, e.path()))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    out.sort_by_key(|(epoch, suffix, path)| {
+    out.sort_by_key(|(timestamp, suffix, path)| {
         (
-            std::cmp::Reverse(*epoch),
+            std::cmp::Reverse(*timestamp),
             std::cmp::Reverse(*suffix),
             path.clone(),
         )
     });
     out.into_iter()
-        .map(|(epoch, _, path)| (epoch, path))
+        .map(|(timestamp, _, path)| (timestamp, path))
         .collect()
 }
 
@@ -280,63 +383,6 @@ fn write_index(root: &Path, entries: &[TrashEntry]) {
     if let Ok(json) = serde_json::to_string_pretty(entries) {
         let _ = std::fs::write(dir.join(INDEX_NAME), json);
     }
-}
-
-pub fn snapshot_before_write_checked(
-    root: &Path,
-    path: &Path,
-    new_bytes: &[u8],
-) -> io::Result<Option<PathBuf>> {
-    let canonical_root = root.canonicalize()?;
-    let canonical_path = path.canonicalize()?;
-    let relative = canonical_path
-        .strip_prefix(&canonical_root)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path outside vault"))?;
-    if std::fs::metadata(&canonical_path)?.len() > crate::note_composer::MAX_NOTE_BYTES as u64 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "note exceeds composer history limit",
-        ));
-    }
-    let existing = std::fs::read(&canonical_path)?;
-    if existing == new_bytes {
-        return Ok(None);
-    }
-    let mut dir = relative.to_path_buf();
-    dir.set_extension("");
-    let dir = checked_meta_dir(&canonical_root, &history_dir(&canonical_root).join(dir))?;
-    let timestamp = epoch();
-    let mut suffix = 0u64;
-    let mut destination;
-    loop {
-        destination = if suffix == 0 {
-            dir.join(format!("{timestamp}.md"))
-        } else {
-            dir.join(format!("{timestamp}-{suffix}.md"))
-        };
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                suffix = suffix.saturating_add(1);
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        use std::io::Write;
-        let result = file.write_all(&existing).and_then(|_| file.sync_all());
-        drop(file);
-        if let Err(error) = result {
-            let _ = std::fs::remove_file(&destination);
-            return Err(error);
-        }
-        break;
-    }
-    prune(&dir);
-    Ok(Some(destination))
 }
 
 pub(crate) fn prepare_composer_snapshots(
@@ -499,18 +545,21 @@ pub fn format_epoch(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     fn temp_vault() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "rista-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        loop {
+            let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+            let dir =
+                std::env::temp_dir().join(format!("rista-history-{}-{id}", std::process::id()));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("could not create test vault: {error}"),
+            }
+        }
     }
 
     #[test]
@@ -543,6 +592,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn checked_snapshot_refuses_symlinked_history_directory() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_vault();
+        let outside = temp_vault();
+        let note = root.join("note.md");
+        std::fs::write(&note, b"before").unwrap();
+        std::fs::create_dir_all(root.join(".rista/history")).unwrap();
+        symlink(&outside, root.join(".rista/history/note")).unwrap();
+
+        assert!(snapshot_before_write_checked(&root, &note, b"before", b"after").is_err());
+        assert_eq!(std::fs::read(&note).unwrap(), b"before");
+        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn snapshots_sort_same_second_suffixes_numerically() {
+        let root = temp_vault();
+        let note = root.join("note.md");
+        std::fs::write(&note, "").unwrap();
+        let history = root.join(".rista/history/note");
+        std::fs::create_dir_all(&history).unwrap();
+        for name in ["100.md", "100-2.md", "100-10.md", "99.md"] {
+            std::fs::write(history.join(name), "").unwrap();
+        }
+
+        let paths = snapshots(&root, &note)
+            .into_iter()
+            .map(|(_, path)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["100-10.md", "100-2.md", "100.md", "99.md"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn checked_composer_history_preserves_snapshot_and_rejects_bad_trash_index() {
         let root = std::env::temp_dir().join(format!(
@@ -556,7 +645,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let note = root.join("note.md");
         std::fs::write(&note, "before").unwrap();
-        let snapshot = snapshot_before_write_checked(&root, &note, b"after")
+        let snapshot = snapshot_composer_before_write_checked(&root, &note, b"after")
             .unwrap()
             .unwrap();
         assert_eq!(std::fs::read(snapshot).unwrap(), b"before");

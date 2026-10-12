@@ -63,6 +63,7 @@ actions!(
         ToggleTerminal,
         OpenTools,
         ToggleTheme,
+        InstallCli,
         CheckForUpdates,
         Quit,
         About,
