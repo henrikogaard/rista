@@ -10,7 +10,9 @@ This index covers the native Rust/GPUI application shipped as Rísta v0.1.0. The
 - [AGENTS.md](../AGENTS.md) — repository and engineering guidance.
 - [Architecture](ARCHITECTURE.md) — current runtime structure and file behavior.
 - [Advanced search](advanced-search.md) — query operators, scopes, and embedded query blocks.
+- [Command-line interface](cli.md) — local commands, URL actions, and installation.
 - [Folder pages](folder-pages.md) — portable dashboard metadata, layouts, pins, and filters.
+- [Vault settings import](vault-settings-import.md) — read-only preview and explicit import of compatible vault preferences.
 - [Extensions and terminal](extensions.md) — JSON API v1, local tool launchers, and process permissions.
 - [Release checklist](RELEASE-CHECKLIST.md) — per-candidate release checks; items are intentionally not marked complete.
 - [Test cases](TEST-CASES.md) — manual regression checklist; items are intentionally not marked complete.

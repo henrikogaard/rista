@@ -3116,7 +3116,17 @@ impl MarkdownPlugin for TranscludePlugin {
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let embed = node.data::<Transclude>().expect("transclude node data");
         let theme = cx.theme().clone();
-        let resolved = self.ctx.vault.read(cx).resolve_wikilink(&embed.target);
+        let resolved = self
+            .ctx
+            .doc_path
+            .as_deref()
+            .and_then(|source| {
+                self.ctx
+                    .vault
+                    .read(cx)
+                    .resolve_wikilink_from(&embed.target, source)
+            })
+            .or_else(|| self.ctx.vault.read(cx).resolve_wikilink(&embed.target));
         let anchor = embed.target.split_once('#').map(|(_, a)| a.to_string());
         // `![[db.base]]` embeds the live base view —
         // keyed by spec text + view anchor so the view survives re-renders.
@@ -3290,10 +3300,21 @@ impl MarkdownPlugin for WikiLinkPlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let link = node.data::<WikiLink>().expect("wiki-link node data");
         let theme = cx.theme();
-        let resolved_path = self.ctx.vault.read(cx).resolve_wikilink(&link.target);
+        let resolved_path = self
+            .ctx
+            .doc_path
+            .as_deref()
+            .and_then(|source| {
+                self.ctx
+                    .vault
+                    .read(cx)
+                    .resolve_wikilink_from(&link.target, source)
+            })
+            .or_else(|| self.ctx.vault.read(cx).resolve_wikilink(&link.target));
         let resolved = resolved_path.is_some();
         let workspace = self.ctx.workspace.clone();
         let target = link.target.clone();
+        let source_path = self.ctx.doc_path.clone();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&link.target, &mut hasher);
         let key = std::hash::Hasher::finish(&hasher) as usize;
@@ -3311,12 +3332,15 @@ impl MarkdownPlugin for WikiLinkPlugin {
             .child(link.label.clone())
             .on_click(move |ev, window, cx| {
                 let target = target.clone();
+                let source_path = source_path.clone();
                 let _ = workspace.update(cx, |ws, cx| {
-                    if ev.modifiers().platform {
-                        ws.open_wikilink_new_tab(&target, window, cx)
-                    } else {
-                        ws.open_wikilink(&target, window, cx)
-                    }
+                    ws.open_wikilink_from(
+                        &target,
+                        source_path.as_deref(),
+                        ev.modifiers().platform,
+                        window,
+                        cx,
+                    );
                 });
             });
         // Resolved links get the page-preview hover: the card

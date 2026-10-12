@@ -10,7 +10,7 @@ use crate::preview;
 use crate::properties;
 use crate::search;
 use crate::search_service::SearchService;
-use crate::settings::{Appearance, Period, Settings, TreeSort, ViewMode};
+use crate::settings::{Appearance, Language, Period, Settings, TreeSort, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
@@ -20,9 +20,10 @@ use gpui_kit::base::ElementExt;
 use gpui_kit::base::Placement;
 use gpui_kit::base::Selectable;
 use gpui_kit::base::StyledExt;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
+use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::list::ListItem;
@@ -40,6 +41,8 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -85,6 +88,37 @@ fn file_metadata_snapshot(path: &Path) -> Option<FileMetadataSnapshot> {
         len: metadata.len(),
         identity,
     })
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+fn bookmark_kinds(items: &[crate::bookmarks::Bookmark], kinds: &mut HashMap<u64, BookmarkKind>) {
+    for item in items {
+        kinds.insert(item.id, item.kind.clone());
+        if let BookmarkKind::Group { items, .. } = &item.kind {
+            bookmark_kinds(items, kinds);
+        }
+    }
+}
+
+fn apply_composer_path_list<T: Clone + PartialEq>(
+    values: &mut [T],
+    changes: &[crate::document::ComposerPathValueChange<T>],
+    direction: crate::document::ComposerHistoryDirection,
+) {
+    for change in changes {
+        let (expected, desired) = match direction {
+            crate::document::ComposerHistoryDirection::Undo => (&change.after, &change.before),
+            crate::document::ComposerHistoryDirection::Redo => (&change.before, &change.after),
+        };
+        if values.get(change.index) == Some(expected) {
+            values[change.index] = desired.clone();
+        }
+    }
 }
 
 fn update_observed_snapshot(
@@ -233,6 +267,16 @@ struct OpenDoc {
     _focus_sub: Subscription,
 }
 
+fn tab_matches_window_move(
+    doc: &Document,
+    snapshot: &crate::windows::TabWindowMove,
+    cx: &App,
+) -> bool {
+    doc.path.canonicalize().is_ok_and(|path| {
+        snapshot.matches(&path, doc.editor.read(cx).value().as_ref(), doc.conflict)
+    })
+}
+
 fn preview_tab_is_replaceable(preview: bool, dirty: bool, conflict: bool, pinned: bool) -> bool {
     preview && !dirty && !conflict && !pinned
 }
@@ -316,6 +360,7 @@ pub(crate) enum PaletteCmd {
     DeleteWorkspace,
     NewWindow,
     OpenInNewWindow,
+    MoveToNewWindow,
     NewFile,
     NewFolder,
     OpenFile,
@@ -350,6 +395,8 @@ pub(crate) enum PaletteCmd {
     ToggleHighlight,
     ToggleStrike,
     ExtractSelection,
+    ExtractHeading,
+    MergeNote,
     NewBase,
     ToggleCode,
     ToggleQuote,
@@ -402,6 +449,7 @@ pub(crate) enum PaletteCmd {
     ExportHtml,
     ExportPdf,
     Settings,
+    ImportVaultSettings,
     ToggleTheme,
     Quit,
     Graph,
@@ -418,6 +466,7 @@ impl PaletteCmd {
         Self::DeleteWorkspace,
         Self::NewWindow,
         Self::OpenInNewWindow,
+        Self::MoveToNewWindow,
         Self::NewFile,
         Self::NewUniqueNote,
         Self::NewFromTemplate,
@@ -457,6 +506,8 @@ impl PaletteCmd {
         Self::ToggleHighlight,
         Self::ToggleStrike,
         Self::ExtractSelection,
+        Self::ExtractHeading,
+        Self::MergeNote,
         Self::ToggleCode,
         Self::ToggleQuote,
         Self::CodeBlock,
@@ -508,6 +559,7 @@ impl PaletteCmd {
         Self::ExportPdf,
         Self::ToggleTheme,
         Self::Settings,
+        Self::ImportVaultSettings,
         Self::CloseFolder,
         Self::Quit,
     ];
@@ -521,6 +573,7 @@ impl PaletteCmd {
             DeleteWorkspace => "delete_workspace",
             NewWindow => "new_window",
             OpenInNewWindow => "open_in_new_window",
+            MoveToNewWindow => "move_to_new_window",
             NewFile => "new_file",
             NewUniqueNote => "new_unique_note",
             NewFromTemplate => "new_from_template",
@@ -560,6 +613,8 @@ impl PaletteCmd {
             ToggleHighlight => "toggle_highlight",
             ToggleStrike => "toggle_strikethrough",
             ExtractSelection => "extract_selection",
+            ExtractHeading => "extract_heading",
+            MergeNote => "merge_note",
             ToggleCode => "toggle_code",
             ToggleQuote => "toggle_quote",
             CodeBlock => "insert_code_block",
@@ -611,6 +666,7 @@ impl PaletteCmd {
             ExportPdf => "export_pdf",
             ToggleTheme => "toggle_theme",
             Settings => "open_settings",
+            ImportVaultSettings => "import_vault_settings",
             CloseFolder => "close_folder",
             Quit => "quit",
         }
@@ -629,6 +685,7 @@ impl PaletteCmd {
             DeleteWorkspace => "Slett arbeidsoppsett…",
             NewWindow => "Nytt vindu",
             OpenInNewWindow => "Åpne i nytt vindu",
+            MoveToNewWindow => "Flytt til nytt vindu",
             NewFile => "Ny fil",
             NewUniqueNote => "Nytt unikt notat",
             NewFromTemplate => "Nytt notat fra mal",
@@ -668,6 +725,8 @@ impl PaletteCmd {
             ToggleHighlight => "Veksle utheving",
             ToggleStrike => "Veksle gjennomstreking",
             ExtractSelection => "Trekk ut markering",
+            ExtractHeading => "Trekk ut denne overskriften…",
+            MergeNote => "Slå sammen gjeldende notat med…",
             ToggleCode => "Veksle kode",
             ToggleQuote => "Veksle sitat",
             CodeBlock => "Sett inn kodeblokk",
@@ -719,6 +778,7 @@ impl PaletteCmd {
             ExportPdf => "Eksporter notat som PDF…",
             ToggleTheme => "Veksle tema",
             Settings => "Innstillinger",
+            ImportVaultSettings => "Importer hvelvinnstillinger…",
             CloseFolder => "Lukk mappe",
             Quit => "Avslutt",
         }
@@ -756,6 +816,11 @@ impl PaletteCmd {
                 assets::IconName::AppWindow,
                 "Open in New Window",
                 &["open", "document", "window"],
+            ),
+            MoveToNewWindow => (
+                assets::IconName::AppWindow,
+                "Move to New Window",
+                &["move", "tab", "window"],
             ),
             NewFile => (assets::IconName::FilePlus, "New file", &["create", "note"]),
             NewBase => (
@@ -915,6 +980,16 @@ impl PaletteCmd {
                 assets::IconName::Scissors,
                 "Extract selection to new note…",
                 &["cut", "refactor", "composer"],
+            ),
+            ExtractHeading => (
+                assets::IconName::Scissors,
+                "Extract this heading…",
+                &["heading", "refactor", "composer"],
+            ),
+            MergeNote => (
+                assets::IconName::Scissors,
+                "Merge current note into…",
+                &["merge", "composer"],
             ),
             ToggleCode => (
                 assets::IconName::Code,
@@ -1177,6 +1252,11 @@ impl PaletteCmd {
                 assets::IconName::Settings,
                 "Settings…",
                 &["preferences", "theme"],
+            ),
+            ImportVaultSettings => (
+                assets::IconName::FolderOpen,
+                "Import vault settings…",
+                &["vault", "settings", "import", "preferences"],
             ),
             ToggleTheme => (assets::IconName::Moon, "Toggle theme", &["dark", "light"]),
             Quit => (assets::IconName::Close, "Quit Rísta", &["exit"]),
@@ -1490,6 +1570,7 @@ impl Workspace {
         this.persist_tabs(cx);
         this.sync_graph_active(cx);
         this.focus_active_pane_after_mount(window, cx);
+        this.queue_vault_settings_offer(window, cx);
         if missing_saved_path {
             this.note_status(
                 this.tr(
@@ -1563,6 +1644,22 @@ impl Workspace {
                 return false;
             }
         };
+        if !self.docs.iter().any(|open| {
+            open.entity
+                .read(cx)
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                .starts_with(&root)
+        }) {
+            if let Err(error) = crate::note_composer::recover_pending_transactions(&root) {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        }
         self.close_all_docs(window, cx);
         self.clear_file_menu();
         self.graph = None;
@@ -1576,7 +1673,9 @@ impl Workspace {
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
             vault.show_other_files = self.settings.show_other_files;
+            vault.set_link_format(self.settings.link_format);
             vault.templates_dir = self.settings.templates_dir.clone();
+            vault.set_ignore_filters(&self.settings.user_ignore_filters);
             vault.open(
                 root.clone(),
                 self.settings
@@ -1594,6 +1693,9 @@ impl Workspace {
         self.persist_settings(cx);
         self.status_note = None;
         self.open_folder_page(root, window, cx);
+        if !self.restoring_session {
+            self.queue_vault_settings_offer(window, cx);
+        }
         cx.notify();
         true
     }
@@ -1902,12 +2004,14 @@ impl Workspace {
                 .icon(assets::IconName::Copy)
                 .on_click({
                     let path = path.clone();
+                    let view = view.clone();
                     move |_, _window, cx| {
-                        let stem = path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        cx.write_to_clipboard(ClipboardItem::new_string(format!("[[{stem}]]")));
+                        view.update(cx, |this, cx| {
+                            let target = this.vault_wikilink_target(&path, cx);
+                            cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                                "[[{target}]]"
+                            )));
+                        });
                     }
                 }),
         )
@@ -1961,10 +2065,258 @@ impl Workspace {
         cx.notify();
     }
 
+    pub(crate) fn show_cli_results(
+        &mut self,
+        title: String,
+        lines: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut visible = lines
+            .iter()
+            .take(100)
+            .map(|line| line.chars().take(500).collect::<String>())
+            .collect::<Vec<_>>();
+        if lines.len() > 100 {
+            let remaining = lines.len() - 100;
+            visible.push(
+                if self.settings.language == crate::settings::Language::Norwegian {
+                    format!("… og {remaining} til")
+                } else {
+                    format!("… and {remaining} more")
+                },
+            );
+        }
+        let close = self.tr("Close", "Lukk");
+        let scroll_handle = ScrollHandle::new();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(title.clone())
+                .w(px(560.))
+                .child(
+                    v_flex()
+                        .id("cli-results")
+                        .max_h(px(420.))
+                        .gap_1()
+                        .track_scroll(&scroll_handle)
+                        .overflow_y_scroll()
+                        .vertical_scrollbar(&scroll_handle)
+                        .children(visible.iter().cloned().map(|line| {
+                            div().flex_none().text_sm().child(line).into_any_element()
+                        })),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label(close))),
+                )
+        });
+    }
+
+    pub(crate) fn cli_is_showing_vault(&self, root: &Path, cx: &Context<Self>) -> bool {
+        self.vault
+            .read(cx)
+            .root
+            .as_deref()
+            .is_some_and(|current| same_canonical_path(current, root))
+    }
+
+    pub(crate) fn cli_guard_destination(
+        &self,
+        destination: &Path,
+        cx: &Context<Self>,
+    ) -> Result<bool, crate::cli::CliError> {
+        let mut open = false;
+        for tab in &self.docs {
+            let result = tab.entity.read(cx);
+            if !same_canonical_path(&result.path, destination) {
+                continue;
+            }
+            open = true;
+            if result.is_read_only() {
+                return Err(crate::cli::CliError::new(
+                    "The note is open read-only; close it before writing",
+                    "Notatet er åpnet skrivebeskyttet; lukk det før du skriver",
+                ));
+            }
+            let disk = crate::cli::read_bounded_bytes(&result.path)?;
+            crate::cli::preflight_open_buffer(
+                result.dirty,
+                result.conflict,
+                result.editor.read(cx).value().as_bytes(),
+                &disk,
+            )?;
+        }
+        Ok(open)
+    }
+
+    pub(crate) fn cli_refresh_vault(&mut self, root: &Path, cx: &mut Context<Self>) {
+        if self.cli_is_showing_vault(root, cx) {
+            self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        }
+    }
+
+    pub(crate) fn confirm_cli_write(
+        &mut self,
+        request: crate::cli::CliRequest,
+        settings: crate::settings::Settings,
+        now: chrono::NaiveDateTime,
+        destination: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let (title, action) = match &request.command {
+            crate::cli::Command::New { .. } => (
+                language.text("Create this note?", "Opprette dette notatet?"),
+                language.text("Create", "Opprett"),
+            ),
+            crate::cli::Command::Daily { .. } => (
+                language.text(
+                    "Create or use today's note?",
+                    "Opprette eller bruke dagens notat?",
+                ),
+                language.text("Continue", "Fortsett"),
+            ),
+            crate::cli::Command::Append { .. } => (
+                language.text("Append to this note?", "Legge til tekst i dette notatet?"),
+                language.text("Append", "Legg til"),
+            ),
+            _ => return,
+        };
+        let destination_display = destination.display().to_string();
+        let description = if language == crate::settings::Language::Norwegian {
+            format!("Den forespurte handlingen påvirker:\n{destination_display}")
+        } else {
+            format!("The requested action will affect:\n{destination_display}")
+        };
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let request = request.clone();
+            let settings = settings.clone();
+            let now = now;
+            let view = view.clone();
+            let destination = destination.clone();
+            dialog
+                .title(title)
+                .description(description.clone())
+                .show_cancel(false)
+                .on_ok(|_, _, _| true)
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| {
+                            button
+                                .label(language.text("Cancel", "Avbryt"))
+                                .with_variant(ButtonVariant::Primary)
+                        }))
+                        .child(
+                            Button::new("confirm-cli-write")
+                                .label(action)
+                                .with_variant(ButtonVariant::Secondary)
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let request = request.clone();
+                                    let settings = settings.clone();
+                                    let now = now;
+                                    let destination = destination.clone();
+                                    let view = view.clone();
+                                    cx.defer(move |cx| {
+                                        let result = crate::windows::execute_cli_write_confirmed(
+                                            request,
+                                            destination,
+                                            settings,
+                                            now,
+                                            cx,
+                                        );
+                                        view.update(cx, |workspace, cx| match result {
+                                            Ok(paths) => {
+                                                let paths = paths.join(", ");
+                                                let message = if language
+                                                    == crate::settings::Language::Norwegian
+                                                {
+                                                    format!("Lagret {paths}")
+                                                } else {
+                                                    format!("Saved {paths}")
+                                                };
+                                                workspace.note_status(message, cx)
+                                            }
+                                            Err(error) => workspace.note_status(
+                                                error.message(language).to_owned(),
+                                                cx,
+                                            ),
+                                        });
+                                    });
+                                }),
+                        ),
+                )
+        });
+    }
+
+    pub(crate) fn cli_append_open_document(
+        &mut self,
+        vault_root: &Path,
+        destination: &Path,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, crate::cli::CliError> {
+        let matches = self
+            .docs
+            .iter()
+            .filter(|tab| same_canonical_path(&tab.entity.read(cx).path, destination))
+            .map(|tab| tab.entity.clone())
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return Ok(false);
+        }
+        let document = matches.into_iter().next().expect("checked non-empty");
+        document.update(cx, |document, cx| {
+            let current = document.editor.read(cx).value().to_string();
+            let size = current.len().checked_add(text.len());
+            if size.is_none_or(|size| size > crate::cli::MAX_NOTE_BYTES) {
+                return Err(crate::cli::CliError::new(
+                    "The note or appended text exceeds the 2 MiB limit",
+                    "Notatet eller den tilføyde teksten overskrider grensen på 2 MiB",
+                ));
+            }
+            let mut replacement = current;
+            replacement.push_str(text);
+            document.cli_snapshot_before_write(vault_root, replacement.as_bytes())?;
+            document
+                .editor
+                .update(cx, |editor, cx| editor.replace_all(replacement, window, cx));
+            document.save_without_history(cx).map_err(|error| {
+                crate::cli::CliError::new(
+                    format!("Could not save the appended note: {error}"),
+                    format!("Kunne ikke lagre notatet med tilføyelsen: {error}"),
+                )
+            })?;
+            Ok(())
+        })?;
+        Ok(true)
+    }
+
+    pub(crate) fn cli_refresh_open_document(
+        &mut self,
+        destination: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for tab in &self.docs {
+            if same_canonical_path(&tab.entity.read(cx).path, destination) {
+                tab.entity
+                    .update(cx, |document, cx| document.check_external(window, cx));
+            }
+        }
+    }
+
     pub(crate) fn focus_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !window.has_active_dialog(cx) {
             self.refocus(window, cx);
         }
+    }
+
+    pub(crate) fn cli_focus_after_mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_active_pane_after_mount(window, cx);
     }
 
     /// Put keyboard focus back where it belongs after a dialog or sheet
@@ -2093,6 +2445,105 @@ impl Workspace {
 
     pub(crate) fn active_document_path(&self, cx: &App) -> Option<PathBuf> {
         self.active_doc().map(|doc| doc.read(cx).path.clone())
+    }
+
+    pub(crate) fn prepare_tab_window_move(
+        &mut self,
+        token: Option<TabToken>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::windows::TabWindowMove> {
+        let token = token.or_else(|| {
+            self.active
+                .and_then(|index| self.doc_tokens.get(index).copied())
+        })?;
+        let index = self.doc_index_for_token(token)?;
+        let doc = self.docs[index].entity.clone();
+        if doc.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
+            self.note_status(
+                self.tr("Save failed; tab kept.", "Lagring feilet; fane beholdt."),
+                cx,
+            );
+            return None;
+        }
+        let Some(path) = doc
+            .read(cx)
+            .path
+            .canonicalize()
+            .ok()
+            .filter(|path| path.is_file())
+        else {
+            self.note_status(
+                self.tr(
+                    "File unavailable; tab kept.",
+                    "Fil utilgjengelig; fane beholdt.",
+                ),
+                cx,
+            );
+            return None;
+        };
+        let doc = doc.read(cx);
+        let editor = doc.editor.read(cx);
+        let group = self.layout.group_for(token)?;
+        let mode = self
+            .layout
+            .group_specs()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == group)?
+            .3;
+        Some(crate::windows::TabWindowMove {
+            token,
+            path,
+            text: editor.value().to_string(),
+            cursor: editor.cursor(),
+            pinned: self.is_pinned(&doc.path),
+            mode,
+        })
+    }
+
+    pub(crate) fn accept_tab_window_move(
+        &mut self,
+        snapshot: &crate::windows::TabWindowMove,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(doc) = self.active_doc().cloned() else {
+            return false;
+        };
+        if !tab_matches_window_move(doc.read(cx), snapshot, cx) {
+            return false;
+        }
+        if snapshot.pinned && !self.is_pinned(&snapshot.path) {
+            self.settings
+                .pinned_tabs
+                .push(snapshot.path.to_string_lossy().into_owned());
+        }
+        doc.read(cx).editor.clone().update(cx, |editor, cx| {
+            editor.set_selected_range(snapshot.cursor..snapshot.cursor, cx);
+        });
+        self.set_pane_view_mode(self.layout.focused(), snapshot.mode, window, cx);
+        self.persist_tabs(cx);
+        self.focus_active_pane_after_mount(window, cx);
+        true
+    }
+
+    pub(crate) fn finish_tab_window_move(
+        &mut self,
+        snapshot: &crate::windows::TabWindowMove,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self.doc_index_for_token(snapshot.token) else {
+            return false;
+        };
+        let doc = self.docs[index].entity.read(cx);
+        if !tab_matches_window_move(doc, snapshot, cx) {
+            return false;
+        }
+        let path = doc.path.to_string_lossy().into_owned();
+        self.settings.pinned_tabs.retain(|pinned| pinned != &path);
+        self.close_tab_now(index, window, cx);
+        true
     }
 
     /// `(`/`[`/`{`/quotes/etc. — insert the pair, wrap the selection, or
@@ -2320,9 +2771,61 @@ impl Workspace {
         if path.is_dir() {
             self.open_vault_at(path, window, cx);
         } else if path.is_file() {
-            self.open_document(path, window, cx);
+            self.open_document(path.clone(), window, cx);
         } else {
             self.note_status(format!("Could not open {}", path.display()), cx);
+        }
+    }
+
+    pub(crate) fn cli_open_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), crate::cli::CliError> {
+        let path = path.canonicalize().map_err(|error| {
+            crate::cli::CliError::new(
+                format!("Could not open '{}': {error}", path.display()),
+                format!("Kunne ikke åpne '{}': {error}", path.display()),
+            )
+        })?;
+        if path.is_dir() {
+            if !self.open_vault_at(path.clone(), window, cx) {
+                return Err(crate::cli::CliError::new(
+                    format!("Could not open folder '{}'", path.display()),
+                    format!("Kunne ikke åpne mappen '{}'", path.display()),
+                ));
+            }
+            let opened_root = self.vault.read(cx).root.as_ref() == Some(&path);
+            if opened_root {
+                Ok(())
+            } else {
+                Err(crate::cli::CliError::new(
+                    format!("Folder '{}' did not open", path.display()),
+                    format!("Mappen '{}' ble ikke åpnet", path.display()),
+                ))
+            }
+        } else if path.is_file() {
+            self.open_document(path.clone(), window, cx);
+            if self.docs.iter().any(|doc| doc.entity.read(cx).path == path) {
+                Ok(())
+            } else {
+                Err(crate::cli::CliError::new(
+                    format!("Could not open file '{}'", path.display()),
+                    format!("Kunne ikke åpne filen '{}'", path.display()),
+                ))
+            }
+        } else {
+            Err(crate::cli::CliError::new(
+                format!(
+                    "Could not open '{}': it is not a file or folder",
+                    path.display()
+                ),
+                format!(
+                    "Kunne ikke åpne '{}': den er ikke en fil eller mappe",
+                    path.display()
+                ),
+            ))
         }
     }
 
@@ -2489,6 +2992,26 @@ impl Workspace {
                     cx.notify();
                 }
                 DocumentEvent::Selection => cx.notify(),
+                DocumentEvent::ComposerHistoryConflict => {
+                    this.note_status(
+                        this.tr(
+                            "Composer Undo/Redo could not complete safely; the editor was restored.",
+                            "Composer-angring eller gjentaking kunne ikke fullføres trygt; redigeringsvinduet ble gjenopprettet.",
+                        ),
+                        cx,
+                    );
+                }
+                DocumentEvent::ComposerHistoryApplied {
+                    direction,
+                    changes,
+                    path_references,
+                } => this.apply_composer_history_changes(
+                    *direction,
+                    changes,
+                    path_references,
+                    window,
+                    cx,
+                ),
                 DocumentEvent::SourceScrolled => {
                     let follows_in_group = this
                         .docs
@@ -3298,6 +3821,230 @@ impl Workspace {
         Ok(())
     }
 
+    fn composer_change_conflicts(&self, changes: &[(PathBuf, Vec<u8>, Vec<u8>)], cx: &App) -> bool {
+        self.docs.iter().any(|open| {
+            let doc = open.entity.read(cx);
+            let path = doc.path.canonicalize().unwrap_or_else(|_| doc.path.clone());
+            changes.iter().any(|(changed_path, before, _)| {
+                path == *changed_path
+                    && (doc.dirty
+                        || doc.conflict
+                        || doc.composer_source(cx).as_bytes() != before
+                        || doc.composer_disk_baseline().as_deref() != Some(before.as_slice())
+                        || std::fs::read(&path).ok().as_deref() != Some(before.as_slice()))
+            })
+        })
+    }
+
+    fn composer_history_buffer_conflict(
+        &self,
+        owner: Option<&Entity<Document>>,
+        changes: &[crate::document::ComposerFileChange],
+        direction: crate::document::ComposerHistoryDirection,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let conflicts = |workspace: &Workspace, owner: Option<&Entity<Document>>, cx: &App| {
+            changes.iter().any(|(path, before, after)| {
+                if path.extension().is_none_or(|extension| extension != "md") {
+                    return false;
+                }
+                let expected = match direction {
+                    crate::document::ComposerHistoryDirection::Undo => after,
+                    crate::document::ComposerHistoryDirection::Redo => before,
+                };
+                workspace.docs.iter().any(|open| {
+                    if owner.is_some_and(|owner| open.entity.entity_id() == owner.entity_id()) {
+                        return false;
+                    }
+                    let document = open.entity.read(cx);
+                    if document
+                        .path
+                        .canonicalize()
+                        .unwrap_or_else(|_| document.path.clone())
+                        != *path
+                    {
+                        return false;
+                    }
+                    let current = document.composer_source(cx);
+                    crate::document::composer_history_buffer_conflicts(
+                        expected.as_deref(),
+                        current.as_bytes(),
+                        document.composer_disk_baseline().as_deref(),
+                        document.dirty,
+                        document.conflict,
+                    ) || expected.as_deref().is_some_and(|expected| {
+                        std::fs::read(path).ok().as_deref() != Some(expected)
+                    })
+                })
+            })
+        };
+        if conflicts(self, owner, cx) {
+            return true;
+        }
+        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
+        peers
+            .iter()
+            .filter(|peer| peer.id != self.window_id)
+            .any(|peer| {
+                let conflict = peer.window.update(cx, |_, _window, cx| {
+                    peer.workspace
+                        .update(cx, |workspace, cx| conflicts(workspace, None, cx))
+                });
+                !matches!(conflict, Ok(Ok(false)))
+            })
+    }
+
+    fn apply_composer_changes(
+        &mut self,
+        changes: &[(PathBuf, Vec<u8>, Vec<u8>)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (path, before, after) in changes {
+            let text = match String::from_utf8(after.clone()) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+            let affected = self
+                .docs
+                .iter()
+                .filter(|open| {
+                    let doc = open.entity.read(cx);
+                    doc.path.canonicalize().unwrap_or_else(|_| doc.path.clone()) == *path
+                })
+                .map(|open| open.entity.clone())
+                .collect::<Vec<_>>();
+            for entity in affected {
+                let current = entity.read(cx).composer_source(cx);
+                if current.as_bytes() != before {
+                    continue;
+                }
+                entity.update(cx, |doc, cx| {
+                    doc.replace_range(0..current.len(), text.clone(), window, cx);
+                    doc.mark_composer_written(after.clone(), cx);
+                });
+            }
+        }
+    }
+
+    fn apply_composer_history_changes(
+        &mut self,
+        direction: crate::document::ComposerHistoryDirection,
+        changes: &[crate::document::ComposerFileChange],
+        path_references: &crate::document::ComposerPathReferenceDelta,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut text_changes = Vec::new();
+        let mut deleted_paths = Vec::new();
+        for (path, before, after) in changes {
+            if path.extension().is_none_or(|extension| extension != "md") {
+                continue;
+            }
+            let (expected, desired) = match direction {
+                crate::document::ComposerHistoryDirection::Undo => (after, before),
+                crate::document::ComposerHistoryDirection::Redo => (before, after),
+            };
+            match (expected, desired) {
+                (Some(expected), Some(desired)) => {
+                    text_changes.push((path.clone(), expected.clone(), desired.clone()));
+                }
+                (Some(_), None) => deleted_paths.push(path.clone()),
+                _ => {}
+            }
+        }
+        self.apply_composer_path_references(direction, path_references, cx);
+        self.close_composer_deleted_paths(&deleted_paths, window, cx);
+        self.apply_composer_changes(&text_changes, window, cx);
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+
+        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let _ = peer.window.update(cx, |_, window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.apply_composer_path_references(direction, path_references, cx);
+                    workspace.close_composer_deleted_paths(&deleted_paths, window, cx);
+                    workspace.apply_composer_changes(&text_changes, window, cx);
+                    workspace.vault.update(cx, |vault, cx| vault.refresh(cx));
+                })
+            });
+        }
+    }
+
+    fn apply_composer_path_references(
+        &mut self,
+        direction: crate::document::ComposerHistoryDirection,
+        delta: &crate::document::ComposerPathReferenceDelta,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(delta) = delta
+            .workspaces
+            .iter()
+            .find(|delta| delta.window_id == self.window_id)
+        else {
+            return;
+        };
+        for (id, before, after) in &delta.bookmarks {
+            let (expected_kind, desired_kind) = match direction {
+                crate::document::ComposerHistoryDirection::Undo => (after, before),
+                crate::document::ComposerHistoryDirection::Redo => (before, after),
+            };
+            if let Some(bookmark) = self.settings.bookmarks.find_mut(*id) {
+                if &bookmark.kind == expected_kind {
+                    bookmark.kind = desired_kind.clone();
+                }
+            }
+        }
+        apply_composer_path_list(
+            &mut self.settings.pinned_tabs,
+            &delta.pinned_tabs,
+            direction,
+        );
+        apply_composer_path_list(&mut self.recent, &delta.recent, direction);
+        apply_composer_path_list(&mut self.closed_tabs, &delta.closed_tabs, direction);
+        apply_composer_path_list(&mut self.nav_stack, &delta.navigation, direction);
+        self.settings.starred = self.settings.bookmarks.starred_paths();
+        let starred = self.settings.starred.iter().cloned().collect();
+        self.vault.update(cx, |vault, cx| {
+            vault.starred = starred;
+            cx.emit(VaultEvent::Starred);
+        });
+        self.persist_settings(cx);
+        self.persist_tabs(cx);
+    }
+
+    fn close_composer_deleted_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let deleted = paths
+            .iter()
+            .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+            .collect::<HashSet<_>>();
+        let indices = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, open)| {
+                let path = open.entity.read(cx).path.clone();
+                deleted
+                    .contains(&path.canonicalize().unwrap_or(path))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in indices.into_iter().rev() {
+            if let Some(open) = self.docs.get(index) {
+                open.entity.update(cx, |doc, _| doc.cancel_composer_save());
+            }
+            self.close_tab_now(index, window, cx);
+        }
+        self.closed_tabs.retain(|path| {
+            !deleted.contains(&path.canonicalize().unwrap_or_else(|_| path.clone()))
+        });
+    }
+
     pub(crate) fn flush_path_for_new_window(
         &mut self,
         path: &Path,
@@ -3516,7 +4263,12 @@ impl Workspace {
         let root = self.vault.read(cx).root.clone()?;
         let (dir, format) = self.settings.period(period);
         let name = crate::bases::format_moment(date.and_hms_opt(0, 0, 0)?, format);
-        Some(root.join(dir).join(format!("{name}.md")))
+        let relative = if dir.is_empty() {
+            format!("{name}.md")
+        } else {
+            format!("{dir}/{name}.md")
+        };
+        crate::vault_settings_import::checked_vault_path(&root, &relative)
     }
 
     /// The period and a date of the note at `path`, when it is a
@@ -3578,29 +4330,59 @@ impl Workspace {
         template: &str,
         date: chrono::NaiveDateTime,
         cx: &App,
-    ) -> String {
-        let title = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        self.vault
-            .read(cx)
-            .root
-            .as_ref()
-            .and_then(|root| {
-                std::fs::read_to_string(root.join(&self.settings.templates_dir).join(template)).ok()
-            })
-            .map(|template| {
-                let job = TemplateJob {
-                    template,
-                    path: path.to_path_buf(),
-                    now: date,
-                    frontmatter: None,
-                    selection: String::new(),
-                };
-                self.expand_template_for(&job, &[], cx).text
-            })
-            .unwrap_or_else(|| format!("# {}\n\n", title))
+    ) -> Result<String, ()> {
+        let heading = || {
+            Ok(format!(
+                "# {}\n\n",
+                path.file_stem().unwrap_or_default().to_string_lossy()
+            ))
+        };
+        let Some(template_path) = self.vault.read(cx).root.as_ref().and_then(|root| {
+            let selected = self.settings.period_templates.get("daily");
+            let template_path = match selected {
+                Some(selected) if selected.is_empty() => None,
+                Some(selected) => crate::vault_settings_import::checked_vault_path(root, selected),
+                None => {
+                    let folder = self.settings.templates_dir.trim_matches('/');
+                    let relative = if folder.is_empty() {
+                        template.to_string()
+                    } else {
+                        format!("{folder}/{template}")
+                    };
+                    crate::vault_settings_import::checked_vault_path(root, &relative)
+                }
+            };
+            template_path
+        }) else {
+            return heading();
+        };
+        let Ok(mut file) = std::fs::File::open(template_path) else {
+            return heading();
+        };
+        let mut bytes = Vec::new();
+        if std::io::Read::take(&mut file, crate::templater::MAX_EXPANSION_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() > crate::templater::MAX_EXPANSION_BYTES
+        {
+            return Err(());
+        }
+        let Ok(template) = String::from_utf8(bytes) else {
+            return heading();
+        };
+        let job = TemplateJob {
+            template,
+            path: path.to_path_buf(),
+            now: date,
+            frontmatter: None,
+            selection: String::new(),
+        };
+        let expanded = self.expand_template_for(&job, &[], cx);
+        if expanded.overflowed {
+            Err(())
+        } else {
+            Ok(expanded.text)
+        }
     }
 
     pub(crate) fn open_daily_at(
@@ -3631,9 +4413,21 @@ impl Workspace {
             return;
         }
         let when = date.and_time(chrono::Local::now().time());
-        let template = self.vault.read(cx).root.clone().map(|root| {
-            root.join(&self.settings.templates_dir)
-                .join(format!("{}.md", period.name()))
+        let template = self.vault.read(cx).root.clone().and_then(|root| {
+            match self.settings.period_templates.get(period.name()) {
+                Some(template) if template.is_empty() => None,
+                Some(template) => crate::vault_settings_import::checked_vault_path(&root, template),
+                None => {
+                    let folder = self.settings.templates_dir.trim_matches('/');
+                    let filename = format!("{}.md", period.name());
+                    let relative = if folder.is_empty() {
+                        filename
+                    } else {
+                        format!("{folder}/{filename}")
+                    };
+                    crate::vault_settings_import::checked_vault_path(&root, &relative)
+                }
+            }
         });
         self.create_note(path, template, when, window, cx);
     }
@@ -3685,18 +4479,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !path.exists()
-            && (path
+        if !path.exists() {
+            let seed = match self.template_seed(
+                path,
+                "daily.md",
+                chrono::Local::now().naive_local(),
+                cx,
+            ) {
+                Ok(seed) => seed,
+                Err(()) => {
+                    self.note_status(
+                        self.tr(
+                            "Template output exceeded the size limit; the note was not created.",
+                            "Malutdata overskred størrelsesgrensen; notatet ble ikke opprettet.",
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+            };
+            if path
                 .parent()
                 .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
-                || std::fs::write(
-                    path,
-                    self.template_seed(path, "daily.md", chrono::Local::now().naive_local(), cx),
-                )
-                .is_err())
-        {
-            self.note_status("Could not create daily note", cx);
-            return;
+                || std::fs::write(path, seed).is_err()
+            {
+                self.note_status("Could not create daily note", cx);
+                return;
+            }
         }
         let line = format!("- {text}");
         if let Some(doc) = self
@@ -3949,35 +4758,67 @@ impl Workspace {
             return;
         };
         let Some((body, range)) = doc.read(cx).selected_text(cx) else {
-            self.note_status("Select some text first", cx);
+            self.note_status(
+                self.tr("Select some text first.", "Marker først litt tekst."),
+                cx,
+            );
             return;
         };
+        let source_before = doc.read(cx).composer_source(cx);
+        let language = self.settings.language;
         let input = self.rename_input.clone();
-        input.update(cx, |input, cx| input.set_value("", window, cx));
+        input.update(cx, |input, cx| {
+            input.set_placeholder(language.text("Name", "Navn"), window, cx);
+            input.set_value("", window, cx);
+        });
         let view = cx.entity();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
-                .title("Extract to new note")
+                .title(language.text("Extract to new note", "Trekk ut til nytt notat"))
                 .w(px(400.))
                 .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new()
+                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("composer-extract-confirm")
+                                    .label(language.text("Extract", "Trekk ut"))
+                                    .primary(),
+                            ),
+                        ),
+                )
                 .on_ok({
                     let view = view.clone();
                     let doc = doc.clone();
                     let range = range.clone();
                     let body = body.clone();
+                    let source_before = source_before.clone();
                     move |_, window, cx| {
-                        view.update(cx, |this, cx| {
+                        let committed = view.update(cx, |this, cx| {
                             this.commit_extract(
                                 doc.clone(),
+                                source_before.clone(),
                                 range.clone(),
                                 body.clone(),
                                 window,
                                 cx,
-                            );
-                            this.refocus(window, cx);
+                            )
                         });
-                        true
+                        if committed {
+                            window.close_dialog(cx);
+                            let deferred_view = view.clone();
+                            window.defer(cx, move |window, cx| {
+                                deferred_view.update(cx, |this, cx| {
+                                    this.focus_active_pane_after_mount(window, cx)
+                                });
+                            });
+                        }
+                        false
                     }
                 })
         });
@@ -3988,16 +4829,824 @@ impl Workspace {
         });
     }
 
+    fn show_extract_heading_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            return;
+        };
+        let Ok(Some((range, _))) = doc.read(cx).composer_heading(cx) else {
+            self.note_status(
+                self.tr(
+                    "Place the caret inside a heading.",
+                    "Plasser markøren i en overskrift.",
+                ),
+                cx,
+            );
+            return;
+        };
+        let source_before = doc.read(cx).composer_source(cx);
+        let body = source_before[range.clone()].to_string();
+        self.show_extract_dialog_for(doc, source_before, range, body, window, cx);
+    }
+
+    fn show_extract_dialog_for(
+        &mut self,
+        doc: Entity<Document>,
+        source_before: String,
+        range: Range<usize>,
+        body: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.rename_input.clone();
+        let language = self.settings.language;
+        input.update(cx, |input, cx| {
+            input.set_placeholder(language.text("Name", "Navn"), window, cx);
+            input.set_value("", window, cx);
+        });
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(language.text("Extract to new note", "Trekk ut til nytt notat"))
+                .w(px(400.))
+                .child(div().w_full().child(Input::new(&input).appearance(true)))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new()
+                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("composer-extract-confirm")
+                                    .label(language.text("Extract", "Trekk ut"))
+                                    .primary(),
+                            ),
+                        ),
+                )
+                .on_ok({
+                    let view = view.clone();
+                    let doc = doc.clone();
+                    let range = range.clone();
+                    let body = body.clone();
+                    let source_before = source_before.clone();
+                    move |_, window, cx| {
+                        let committed = view.update(cx, |this, cx| {
+                            this.commit_extract(
+                                doc.clone(),
+                                source_before.clone(),
+                                range.clone(),
+                                body.clone(),
+                                window,
+                                cx,
+                            )
+                        });
+                        if committed {
+                            window.close_dialog(cx);
+                            let deferred_view = view.clone();
+                            window.defer(cx, move |window, cx| {
+                                deferred_view.update(cx, |this, cx| {
+                                    this.focus_active_pane_after_mount(window, cx)
+                                });
+                            });
+                        }
+                        false
+                    }
+                })
+        });
+        let input = self.rename_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx))
+        });
+    }
+
+    fn show_merge_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.active_doc().cloned() else {
+            return;
+        };
+        let language = self.settings.language;
+        let order = Rc::new(RefCell::new(crate::note_composer::MergeOrder::Append));
+        let tab_order = order.clone();
+        let input = self.rename_input.clone();
+        let target_input = input.clone();
+        let source_path = source.read(cx).path.clone();
+        let root = self.vault.read(cx).root.clone();
+        let targets = self
+            .vault
+            .read(cx)
+            .notes
+            .iter()
+            .filter(|path| {
+                path.as_path() != source_path.as_path()
+                    && path.extension().is_some_and(|extension| extension == "md")
+            })
+            .filter_map(|path| {
+                root.as_ref()
+                    .and_then(|root| path.strip_prefix(root).ok())
+                    .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            })
+            .take(100)
+            .collect::<Vec<_>>();
+        input.update(cx, |input, cx| {
+            input.set_placeholder(language.text("Name", "Navn"), window, cx);
+            input.set_value("", window, cx);
+        });
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let target_rows = targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let value = target.clone();
+                    let input = target_input.clone();
+                    Button::new(format!("composer-merge-target-{index}"))
+                        .label(target.clone())
+                        .on_click(move |_, window, cx| {
+                            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx))
+                        })
+                })
+                .collect::<Vec<_>>();
+            dialog
+                .title(language.text(
+                    "Merge current note into…",
+                    "Slå sammen gjeldende notat med…",
+                ))
+                .w(px(440.))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(Input::new(&input).appearance(true))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(_cx.theme().muted_foreground)
+                                .child(language.text(
+                                    "Enter an existing Markdown path relative to the vault.",
+                                    "Skriv inn en eksisterende Markdown-sti relativt til hvelvet.",
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(_cx.theme().muted_foreground)
+                                .child(language.text("Choose a target", "Velg et mål")),
+                        )
+                        .child(
+                            v_flex()
+                                .max_h(px(160.))
+                                .overflow_y_scrollbar()
+                                .gap_1()
+                                .children(target_rows),
+                        )
+                        .child(
+                            ButtonGroup::new("note-merge-order")
+                                .child(
+                                    Button::new("note-merge-append")
+                                        .label(language.text("Append", "Legg til sist"))
+                                        .selected(
+                                            *tab_order.borrow()
+                                                == crate::note_composer::MergeOrder::Append,
+                                        ),
+                                )
+                                .child(
+                                    Button::new("note-merge-prepend")
+                                        .label(language.text("Prepend", "Legg til først"))
+                                        .selected(
+                                            *tab_order.borrow()
+                                                == crate::note_composer::MergeOrder::Prepend,
+                                        ),
+                                )
+                                .on_click({
+                                    let tab_order = tab_order.clone();
+                                    move |indices, window, _| {
+                                        *tab_order.borrow_mut() = if indices.contains(&1) {
+                                            crate::note_composer::MergeOrder::Prepend
+                                        } else {
+                                            crate::note_composer::MergeOrder::Append
+                                        };
+                                        window.refresh();
+                                    }
+                                }),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new()
+                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("composer-merge-confirm")
+                                    .label(language.text("Merge", "Slå sammen"))
+                                    .primary(),
+                            ),
+                        ),
+                )
+                .on_ok({
+                    let view = view.clone();
+                    let dialog_input = input.clone();
+                    let dialog_source = source.clone();
+                    let order = order.clone();
+                    move |_, window, cx| {
+                        let target = dialog_input.read(cx).value().to_string();
+                        if target.trim().is_empty() {
+                            return false;
+                        }
+                        let order = *order.borrow();
+                        let title = language.text(
+                            "Merge this note into the selected target?",
+                            "Slå sammen dette notatet med det valgte målet?",
+                        );
+                        let description = language.text(
+                            "The source note will be moved to the vault trash.",
+                            "Kildenotatet flyttes til hvelvets papirkurv.",
+                        );
+                        let deferred_view = view.clone();
+                        let deferred_source = dialog_source.clone();
+                        let deferred_target = target.clone();
+                        window.close_dialog(cx);
+                        window.defer(cx, move |window, cx| {
+                            deferred_view.update(cx, |this, cx| this.refocus(window, cx));
+                            window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+                                let view = deferred_view.clone();
+                                let dialog_source = deferred_source.clone();
+                                let target = deferred_target.clone();
+                                dialog
+                                    .title(title)
+                                    .description(description)
+                                    .show_cancel(true)
+                                    .cancel_text(language.text("Cancel", "Avbryt"))
+                                    .ok_text(language.text("Merge", "Slå sammen"))
+                                    .on_ok(move |_, window, cx| {
+                                        // Animated dismissal would later restore focus to
+                                        // the source editor that this merge closes.
+                                        window.close_dialog(cx);
+                                        view.update(cx, |this, cx| {
+                                            this.commit_merge(
+                                                dialog_source.clone(),
+                                                target.clone(),
+                                                order,
+                                                window,
+                                                cx,
+                                            )
+                                        });
+                                        let deferred_view = view.clone();
+                                        window.defer(cx, move |window, cx| {
+                                            deferred_view.update(cx, |this, cx| {
+                                                this.focus_active_pane_after_mount(window, cx)
+                                            });
+                                        });
+                                        false
+                                    })
+                            });
+                        });
+                        false
+                    }
+                })
+        });
+        let input = self.rename_input.clone();
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| input.focus(window, cx))
+        });
+    }
+
+    fn commit_merge(
+        &mut self,
+        source: Entity<Document>,
+        target_name: String,
+        order: crate::note_composer::MergeOrder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let Ok(root) = root.canonicalize() else {
+            self.note_status(
+                self.tr(
+                    "The vault path is unavailable.",
+                    "Hvelvstien er utilgjengelig.",
+                ),
+                cx,
+            );
+            return;
+        };
+        let source_path = source
+            .read(cx)
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| source.read(cx).path.clone());
+        let target_name = target_name.trim();
+        let mut target_relative = PathBuf::from(target_name);
+        if target_relative.extension().is_none() {
+            target_relative.set_extension("md");
+        }
+        if target_relative.is_absolute()
+            || target_relative.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                )
+            })
+            || target_relative
+                .extension()
+                .is_none_or(|extension| extension != "md")
+        {
+            self.note_status(
+                self.tr(
+                    "Choose an existing Markdown note inside this vault.",
+                    "Velg et eksisterende Markdown-notat i dette hvelvet.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let Ok(target_path) = root.join(target_relative).canonicalize() else {
+            self.note_status(
+                self.tr(
+                    "Choose an existing Markdown note inside this vault.",
+                    "Velg et eksisterende Markdown-notat i dette hvelvet.",
+                ),
+                cx,
+            );
+            return;
+        };
+        if !source_path.starts_with(&root)
+            || !target_path.starts_with(&root)
+            || source_path
+                .extension()
+                .is_none_or(|extension| extension != "md")
+            || target_path
+                .extension()
+                .is_none_or(|extension| extension != "md")
+        {
+            self.note_status(
+                self.tr(
+                    "Choose Markdown notes inside this vault.",
+                    "Velg Markdown-notater i dette hvelvet.",
+                ),
+                cx,
+            );
+            return;
+        }
+        if source_path == target_path {
+            self.note_status(
+                self.tr(
+                    "A note cannot be merged into itself.",
+                    "Et notat kan ikke slås sammen med seg selv.",
+                ),
+                cx,
+            );
+            return;
+        }
+        if source.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
+            self.note_status(
+                self.tr(
+                    "The source note could not be flushed safely; the merge was cancelled.",
+                    "Kildenotatet kunne ikke lagres trygt; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let source_text = source.read(cx).composer_source(cx);
+        let source_bytes = source_text.as_bytes().to_vec();
+        if source.read(cx).dirty
+            || source.read(cx).conflict
+            || source.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed on disk; the merge was cancelled.",
+                    "Kildenotatet ble endret på disken; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let source_views = self
+            .docs
+            .iter()
+            .filter(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == source_path
+            })
+            .map(|open| open.entity.clone())
+            .collect::<Vec<_>>();
+        if source_views.iter().any(|view| {
+            let doc = view.read(cx);
+            doc.dirty
+                || doc.conflict
+                || doc.composer_source(cx).as_bytes() != source_bytes
+                || doc.composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+        }) {
+            self.note_status(
+                self.tr(
+                    "A duplicate source tab has conflicting or unsaved content.",
+                    "En duplisert kildefane har motstridende eller ulagret innhold.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
+        let local_targets = self
+            .docs
+            .iter()
+            .filter(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == target_path
+            })
+            .count();
+        if local_targets > 1 {
+            self.note_status(
+                self.tr(
+                    "The target is open in duplicate tabs; close duplicates before merging.",
+                    "Målet er åpent i dupliserte faner; lukk duplikatene før sammenslåing.",
+                ),
+                cx,
+            );
+            return;
+        }
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let target_open = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.docs.iter().any(|open| {
+                        let path = &open.entity.read(cx).path;
+                        path.canonicalize().unwrap_or_else(|_| path.clone()) == target_path
+                    })
+                })
+            });
+            if !matches!(target_open, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "The target is open in another window; close it there before merging.",
+                        "Målet er åpent i et annet vindu; lukk det der før sammenslåing.",
+                    ),
+                    cx,
+                );
+                return;
+            }
+        }
+        self.open_document(target_path.clone(), window, cx);
+        let Some(target_doc) = self
+            .docs
+            .iter()
+            .find(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == target_path
+            })
+            .map(|open| open.entity.clone())
+        else {
+            self.note_status(
+                self.tr(
+                    "The target note could not be opened safely.",
+                    "Målnotatet kunne ikke åpnes trygt.",
+                ),
+                cx,
+            );
+            return;
+        };
+        if target_doc
+            .update(cx, |doc, cx| doc.flush_and_save(cx))
+            .is_err()
+        {
+            self.note_status(
+                self.tr(
+                    "The target note could not be flushed safely; the merge was cancelled.",
+                    "Målnotatet kunne ikke lagres trygt; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let target_text = target_doc.read(cx).composer_source(cx);
+        let target_bytes = target_text.as_bytes().to_vec();
+        if target_doc.read(cx).dirty
+            || target_doc.read(cx).conflict
+            || target_doc.read(cx).composer_disk_baseline().as_deref()
+                != Some(target_bytes.as_slice())
+            || std::fs::read(&target_path).ok().as_deref() != Some(target_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The target note changed on disk; the merge was cancelled.",
+                    "Målnotatet ble endret på disken; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let note_paths = self.vault.read(cx).notes.clone();
+        let snapshot = match crate::note_composer::LinkSnapshot::new(&root, &note_paths) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return;
+            }
+        };
+        if snapshot.text(&source_path) != Some(source_text.as_str())
+            || snapshot.text(&target_path) != Some(target_text.as_str())
+        {
+            self.note_status(
+                self.tr(
+                    "A source or target note changed while preparing the merge.",
+                    "Et kilde- eller målnotat ble endret under klargjøring av sammenslåingen.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let Some(target_text) = snapshot.text(&target_path).map(str::to_string) else {
+            self.note_status(
+                self.tr(
+                    "The target note could not be read safely.",
+                    "Målnotatet kunne ikke leses trygt.",
+                ),
+                cx,
+            );
+            return;
+        };
+        let target_rewritten = match snapshot.rewrite_inbound(
+            &target_text,
+            &target_path,
+            &source_path,
+            &target_path,
+        ) {
+            Ok(text) => text,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return;
+            }
+        };
+        let source_text = match snapshot
+            .rewrite_inbound(&source_text, &source_path, &source_path, &target_path)
+            .and_then(|text| {
+                crate::note_composer::rebase_markdown_links(
+                    &text,
+                    &source_path,
+                    &target_path,
+                    &root,
+                )
+            }) {
+            Ok(text) => text,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return;
+            }
+        };
+        let merged = match crate::note_composer::merge_text(&target_rewritten, &source_text, order)
+        {
+            Ok(merged) => merged,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return;
+            }
+        };
+        if merged == target_text {
+            self.note_status(
+                self.tr(
+                    "The source note adds no content to the target.",
+                    "Kildenotatet tilfører ikke innhold til målet.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let mut changes = vec![(
+            target_path.clone(),
+            target_text.into_bytes(),
+            merged.into_bytes(),
+        )];
+        for note in snapshot.notes() {
+            if note == &source_path || note == &target_path {
+                continue;
+            }
+            let Some(before) = snapshot.text(note) else {
+                continue;
+            };
+            let after = match snapshot.rewrite_inbound(before, note, &source_path, &target_path) {
+                Ok(after) => after,
+                Err(error) => {
+                    self.note_status(
+                        error.message(
+                            self.settings.language == crate::settings::Language::Norwegian,
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+            };
+            if after != before {
+                changes.push((note.clone(), before.as_bytes().to_vec(), after.into_bytes()));
+            }
+        }
+        let mut buffer_changes = changes.clone();
+        buffer_changes.push((source_path.clone(), source_bytes.clone(), Vec::new()));
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let conflict = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.composer_change_conflicts(&buffer_changes, cx)
+                })
+            });
+            if !matches!(conflict, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "A related note is open in another window and cannot be synchronized safely.",
+                        "Et beslektet notat er åpent i et annet vindu og kan ikke synkroniseres trygt.",
+                    ),
+                    cx,
+                );
+                return;
+            }
+        }
+        if self.composer_change_conflicts(&buffer_changes, cx) {
+            self.note_status(
+                self.tr(
+                    "A related note changed while preparing the merge.",
+                    "Et beslektet notat ble endret under klargjøring av sammenslåingen.",
+                ),
+                cx,
+            );
+            return;
+        }
+        if source.read(cx).composer_source(cx).as_bytes() != source_bytes
+            || source.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed before the merge could commit.",
+                    "Kildenotatet ble endret før sammenslåingen kunne fullføres.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let (_trash_entry, trash_changes) =
+            match crate::history::prepare_trash_transaction(&root, &source_path, &source_bytes) {
+                Ok(plan) => plan,
+                Err(_) => {
+                    self.note_status(
+                        self.tr(
+                            "The source note could not be prepared for safe trashing.",
+                            "Kildenotatet kunne ikke klargjøres for trygg sletting.",
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+            };
+        for (path, _, after) in &changes {
+            if crate::history::snapshot_composer_before_write_checked(&root, path, after).is_err() {
+                self.note_status(
+                    self.tr(
+                        "Could not create a history snapshot; the merge was cancelled.",
+                        "Kunne ikke opprette et historikkøyeblikksbilde; sammenslåingen ble avbrutt.",
+                    ),
+                    cx,
+                );
+                return;
+            }
+        }
+        if crate::history::snapshot_composer_before_write_checked(&root, &source_path, b"").is_err()
+        {
+            self.note_status(
+                self.tr(
+                    "Could not create a history snapshot; the merge was cancelled.",
+                    "Kunne ikke opprette et historikkøyeblikksbilde; sammenslåingen ble avbrutt.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let mut transaction_changes = changes
+            .iter()
+            .map(|(path, before, after)| (path.clone(), Some(before.clone()), Some(after.clone())))
+            .collect::<Vec<_>>();
+        transaction_changes.extend(trash_changes);
+        if let Err(error) =
+            crate::note_composer::merge_transaction_changes(&root, &transaction_changes)
+        {
+            self.note_status(
+                error.message(self.settings.language == crate::settings::Language::Norwegian),
+                cx,
+            );
+            return;
+        }
+        self.apply_composer_changes(&changes, window, cx);
+        let mut workspace_path_references = Vec::new();
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            if let Ok(Ok(delta)) = peer.window.update(cx, |_, window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.apply_composer_changes(&changes, window, cx);
+                    let delta =
+                        workspace.repoint_trashed_composer_source(&source_path, &target_path, cx);
+                    workspace.close_composer_deleted_paths(
+                        std::slice::from_ref(&source_path),
+                        window,
+                        cx,
+                    );
+                    delta
+                })
+            }) {
+                workspace_path_references.push(delta);
+            }
+        }
+        workspace_path_references.push(self.repoint_trashed_composer_source(
+            &source_path,
+            &target_path,
+            cx,
+        ));
+        for view in &source_views {
+            view.update(cx, |doc, _| doc.cancel_composer_save());
+        }
+        let mut source_indices = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, open)| {
+                (open
+                    .entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == source_path)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        source_indices.sort_unstable_by(|left, right| right.cmp(left));
+        for source_index in source_indices {
+            self.close_tab_now(source_index, window, cx);
+        }
+        self.closed_tabs.retain(|path| path != &source_path);
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        target_doc.update(cx, |doc, _| {
+            doc.record_composer_edit(
+                changes[0].1.clone(),
+                changes[0].2.clone(),
+                transaction_changes.clone(),
+                crate::document::ComposerPathReferenceDelta {
+                    workspaces: workspace_path_references,
+                },
+            );
+        });
+        if let Some(index) = self
+            .docs
+            .iter()
+            .position(|open| open.entity.entity_id() == target_doc.entity_id())
+        {
+            self.active = Some(index);
+            if let Some(token) = self.doc_tokens.get(index).copied() {
+                self.layout.activate(token);
+            }
+        }
+        self.note_status(
+            self.tr(
+                "Merged note; the source was moved to trash.",
+                "Notatet er slått sammen; kilden ble flyttet til papirkurven.",
+            ),
+            cx,
+        );
+    }
+
     /// Writes `<name>.md` with the selection's body and replaces the
     /// selection with `[[name]]` — the Note Composer extract.
     fn commit_extract(
         &mut self,
         doc: Entity<Document>,
+        source_before: String,
         range: std::ops::Range<usize>,
         body: String,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let name = self.rename_input.read(cx).value().to_string();
         let name = name.trim().trim_end_matches(".md").replace('\\', "/");
         let name = name.trim();
@@ -4008,36 +5657,395 @@ impl Workspace {
                 .chars()
                 .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'));
         if bad_name {
-            self.note_status("Invalid note name", cx);
-            return;
+            self.note_status(self.tr("Invalid note name.", "Ugyldig notatnavn."), cx);
+            return false;
         }
         let Some(root) = self.vault.read(cx).root.clone() else {
-            return;
+            return false;
         };
+        if doc.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
+            self.note_status(
+                self.tr(
+                    "The source note could not be flushed safely; extraction was cancelled.",
+                    "Kildenotatet kunne ikke lagres trygt; uttrekket ble avbrutt.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        let source_path = doc
+            .read(cx)
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| doc.read(cx).path.clone());
+        let source = doc.read(cx).composer_source(cx);
+        let source_bytes = source.as_bytes().to_vec();
+        if doc.read(cx).dirty
+            || doc.read(cx).conflict
+            || doc.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed on disk; extraction was cancelled.",
+                    "Kildenotatet ble endret på disken; uttrekket ble avbrutt.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        if source != source_before || source.get(range.clone()) != Some(body.as_str()) {
+            self.note_status(
+                self.tr(
+                    "The source note changed; extraction was cancelled.",
+                    "Kildenotatet ble endret; uttrekket ble avbrutt.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        let source_views = self
+            .docs
+            .iter()
+            .filter(|open| {
+                open.entity
+                    .read(cx)
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                    == source_path
+            })
+            .map(|open| open.entity.clone())
+            .collect::<Vec<_>>();
+        if source_views.iter().any(|view| {
+            let open = view.read(cx);
+            open.dirty
+                || open.conflict
+                || open.composer_source(cx).as_bytes() != source_bytes
+                || open.composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+        }) {
+            self.note_status(
+                self.tr(
+                    "A duplicate source tab has conflicting or unsaved content.",
+                    "En duplisert kildefane har motstridende eller ulagret innhold.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        if source_views.len() > 1 {
+            self.note_status(
+                self.tr(
+                    "The source is open in duplicate tabs; close duplicates before extracting.",
+                    "Kilden er åpen i dupliserte faner; lukk duplikatene før uttrekk.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        let peers = cx.global::<crate::windows::WindowManager>().records.clone();
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let open = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.docs.iter().any(|open| {
+                        open.entity
+                            .read(cx)
+                            .path
+                            .canonicalize()
+                            .unwrap_or_else(|_| open.entity.read(cx).path.clone())
+                            == source_path
+                    })
+                })
+            });
+            if !matches!(open, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "The source note is open in another window; close it before extracting.",
+                        "Kildenotatet er åpent i et annet vindu; lukk det før uttrekk.",
+                    ),
+                    cx,
+                );
+                return false;
+            }
+        }
         let dir = if name.contains('/') {
             root.clone()
         } else {
-            doc.read(cx)
-                .path
+            source_path
                 .parent()
-                .map(|p| p.to_path_buf())
-                .filter(|p| p.starts_with(&root))
+                .map(PathBuf::from)
                 .unwrap_or_else(|| root.clone())
         };
         let path = dir.join(format!("{name}.md"));
-        if path.exists() {
-            self.note_status(format!("\u{201c}{name}\u{201d} already exists"), cx);
-            return;
+        let Ok(path) = path.canonicalize().or_else(|_| {
+            let parent = path.parent().and_then(|parent| parent.canonicalize().ok());
+            let file_name = path.file_name().map(PathBuf::from);
+            match (parent, file_name) {
+                (Some(parent), Some(file_name)) => Ok(parent.join(file_name)),
+                _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            }
+        }) else {
+            self.note_status(
+                self.tr("Invalid extraction path.", "Ugyldig uttrekkssti."),
+                cx,
+            );
+            return false;
+        };
+        let note_paths = self.vault.read(cx).notes.clone();
+        let snapshot = match crate::note_composer::LinkSnapshot::new(&root, &note_paths) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        if snapshot.text(&source_path) != Some(source.as_str()) {
+            self.note_status(
+                self.tr(
+                    "A source or linked note changed while preparing the extraction.",
+                    "Kilde- eller lenkenotatet ble endret under klargjøring av uttrekket.",
+                ),
+                cx,
+            );
+            return false;
         }
-        if std::fs::write(&path, body).is_err() {
-            self.note_status("Couldn't write the note", cx);
-            return;
+        let anchors = match crate::note_composer::ExtractionAnchors::new(&source, range.clone()) {
+            Ok(anchors) => anchors,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        let (body, source_definitions) = match crate::note_composer::extract_reference_definitions(
+            &source,
+            range.clone(),
+            &body,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        let body =
+            match crate::note_composer::rebase_markdown_links(&body, &source_path, &path, &root)
+                .and_then(|body| {
+                    snapshot.rewrite_extraction_links(
+                        &body,
+                        &path,
+                        &source_path,
+                        &path,
+                        &anchors,
+                        true,
+                    )
+                }) {
+                Ok(body) => body,
+                Err(error) => {
+                    self.note_status(
+                        error.message(
+                            self.settings.language == crate::settings::Language::Norwegian,
+                        ),
+                        cx,
+                    );
+                    return false;
+                }
+            };
+        let relative = path
+            .strip_prefix(&root)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| name.to_string());
+        let link_target = self.wikilink_target(&path, &source_path, cx);
+        let replacement = self.settings.extract_behavior.replacement(&link_target);
+        let mut source_after = source.clone();
+        source_after.replace_range(range.clone(), &replacement);
+        if !source_definitions.is_empty() {
+            if !source_after.ends_with("\n\n") {
+                if source_after.ends_with('\n') {
+                    source_after.push('\n');
+                } else {
+                    source_after.push_str("\n\n");
+                }
+            }
+            source_after.push_str(&source_definitions);
         }
-        doc.update(cx, |doc, cx| {
-            doc.replace_range(range, format!("[[{name}]]"), window, cx);
-        });
+        source_after = match snapshot.rewrite_extraction_links(
+            &source_after,
+            &source_path,
+            &source_path,
+            &path,
+            &anchors,
+            false,
+        ) {
+            Ok(source_after) => source_after,
+            Err(error) => {
+                self.note_status(
+                    error.message(self.settings.language == crate::settings::Language::Norwegian),
+                    cx,
+                );
+                return false;
+            }
+        };
+        let mut additional_changes = Vec::new();
+        for note in snapshot.notes() {
+            if note == &source_path {
+                continue;
+            }
+            let Some(before) = snapshot.text(note) else {
+                self.note_status(
+                    self.tr(
+                        "A linked note could not be read safely.",
+                        "Et lenket notat kunne ikke leses trygt.",
+                    ),
+                    cx,
+                );
+                return false;
+            };
+            let after = match snapshot.rewrite_extraction_links(
+                before,
+                note,
+                &source_path,
+                &path,
+                &anchors,
+                false,
+            ) {
+                Ok(after) => after,
+                Err(error) => {
+                    self.note_status(
+                        error.message(
+                            self.settings.language == crate::settings::Language::Norwegian,
+                        ),
+                        cx,
+                    );
+                    return false;
+                }
+            };
+            if after != before {
+                additional_changes.push((
+                    note.clone(),
+                    Some(before.as_bytes().to_vec()),
+                    Some(after.into_bytes()),
+                ));
+            }
+        }
+        let affected_paths = additional_changes
+            .iter()
+            .map(|(path, _, _)| path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        if self.docs.iter().any(|open| {
+            let path = open
+                .entity
+                .read(cx)
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| open.entity.read(cx).path.clone());
+            affected_paths.contains(&path)
+        }) {
+            self.note_status(
+                self.tr(
+                    "A linked note that needs updating is open in another tab; close it before extracting.",
+                    "Et lenket notat som må oppdateres er åpent i en annen fane; lukk det før uttrekk.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let open = peer.window.update(cx, |_, _window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.docs.iter().any(|open| {
+                        let path = open
+                            .entity
+                            .read(cx)
+                            .path
+                            .canonicalize()
+                            .unwrap_or_else(|_| open.entity.read(cx).path.clone());
+                        affected_paths.contains(&path)
+                    })
+                })
+            });
+            if !matches!(open, Ok(Ok(false))) {
+                self.note_status(
+                    self.tr(
+                        "A linked note that needs updating is open in another window; close it before extracting.",
+                        "Et lenket notat som må oppdateres er åpent i et annet vindu; lukk det før uttrekk.",
+                    ),
+                    cx,
+                );
+                return false;
+            }
+        }
+        if source.as_bytes() != source_bytes
+            || doc.read(cx).composer_disk_baseline().as_deref() != Some(source_bytes.as_slice())
+            || std::fs::read(&source_path).ok().as_deref() != Some(source_bytes.as_slice())
+        {
+            self.note_status(
+                self.tr(
+                    "The source note changed before extraction could commit.",
+                    "Kildenotatet ble endret før uttrekket kunne fullføres.",
+                ),
+                cx,
+            );
+            return false;
+        }
+        if let Err(error) = crate::note_composer::extract_transaction(
+            &root,
+            &source_path,
+            source.as_bytes(),
+            source_after.as_bytes(),
+            &path,
+            body.as_bytes(),
+            &additional_changes,
+        ) {
+            self.note_status(
+                error.message(self.settings.language == crate::settings::Language::Norwegian),
+                cx,
+            );
+            return false;
+        }
+        let mut history_changes = vec![
+            (
+                source_path.clone(),
+                Some(source.as_bytes().to_vec()),
+                Some(source_after.as_bytes().to_vec()),
+            ),
+            (path.clone(), None, Some(body.as_bytes().to_vec())),
+        ];
+        history_changes.extend(additional_changes);
+        for source_view in source_views {
+            let owner = source_view.entity_id() == doc.entity_id();
+            source_view.update(cx, |source_doc, cx| {
+                source_doc.replace_range(0..source.len(), source_after.clone(), window, cx);
+                source_doc.mark_composer_written(source_after.as_bytes().to_vec(), cx);
+                if owner {
+                    source_doc.record_composer_edit(
+                        source.as_bytes().to_vec(),
+                        source_after.as_bytes().to_vec(),
+                        history_changes.clone(),
+                        crate::document::ComposerPathReferenceDelta::default(),
+                    );
+                }
+            });
+        }
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
-        self.note_status(format!("Extracted to {name}.md"), cx);
+        self.note_status(
+            if self.settings.language == crate::settings::Language::Norwegian {
+                format!("Trukket ut til {relative}")
+            } else {
+                format!("Extracted to {relative}")
+            },
+            cx,
+        );
+        true
     }
 
     /// Palette list toggles — bulleted/numbered/checklist.
@@ -4107,6 +6115,39 @@ impl Workspace {
         self.note_status("Path copied", cx);
     }
 
+    fn wikilink_target(&self, target: &Path, source: &Path, cx: &App) -> String {
+        self.vault
+            .read(cx)
+            .link_target_for(target, source)
+            .or_else(|| {
+                target
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+            })
+            .unwrap_or_default()
+    }
+
+    fn vault_wikilink_target(&self, target: &Path, cx: &App) -> String {
+        self.vault
+            .read(cx)
+            .root
+            .as_deref()
+            .and_then(|root| target.strip_prefix(root).ok())
+            .map(|relative| {
+                relative
+                    .with_extension("")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .filter(|relative| !relative.is_empty())
+            .or_else(|| {
+                target
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+            })
+            .unwrap_or_default()
+    }
+
     /// ⌘⇧K — delete the line(s) under the selection.
     fn on_delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
@@ -4163,17 +6204,14 @@ impl Workspace {
             self.note_status(self.tr("No note open", "Ingen notater er åpne"), cx);
             return;
         };
-        let Some(stem) = doc
-            .read(cx)
-            .path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-        else {
+        let path = doc.read(cx).path.clone();
+        let target = self.vault_wikilink_target(&path, cx);
+        if target.is_empty() {
             return;
-        };
+        }
         match doc.update(cx, |doc, cx| doc.ensure_block_id(window, cx)) {
             Some(id) => {
-                let link = format!("{}[[{stem}#^{id}]]", if embed { "!" } else { "" });
+                let link = format!("{}[[{target}#^{id}]]", if embed { "!" } else { "" });
                 cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
                 self.note_status(format!("{} {link}", self.tr("Copied", "Kopiert")), cx);
             }
@@ -4455,6 +6493,80 @@ impl Workspace {
         cx.notify();
     }
 
+    fn repoint_trashed_composer_source(
+        &mut self,
+        source: &Path,
+        target: &Path,
+        cx: &mut Context<Self>,
+    ) -> crate::document::ComposerWorkspacePathReferenceDelta {
+        fn repoint_paths(
+            paths: &mut [PathBuf],
+            source: &Path,
+            target: &Path,
+        ) -> Vec<crate::document::ComposerPathValueChange<PathBuf>> {
+            paths
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(index, path)| {
+                    let before = path.clone();
+                    crate::explorer::repoint_path(path, source, target);
+                    (before != *path).then(|| crate::document::ComposerPathValueChange {
+                        index,
+                        before,
+                        after: path.clone(),
+                    })
+                })
+                .collect()
+        }
+
+        let mut before = HashMap::new();
+        bookmark_kinds(&self.settings.bookmarks.items, &mut before);
+        self.settings.bookmarks.repoint(source, target);
+        let mut pinned_tabs = Vec::new();
+        for (index, value) in self.settings.pinned_tabs.iter_mut().enumerate() {
+            let before = value.clone();
+            let mut path = PathBuf::from(&before);
+            crate::explorer::repoint_path(&mut path, source, target);
+            let after = path.to_string_lossy().to_string();
+            if before != after {
+                *value = after.clone();
+                pinned_tabs.push(crate::document::ComposerPathValueChange {
+                    index,
+                    before,
+                    after,
+                });
+            }
+        }
+        let recent = repoint_paths(&mut self.recent, source, target);
+        let closed_tabs = repoint_paths(&mut self.closed_tabs, source, target);
+        let navigation = repoint_paths(&mut self.nav_stack, source, target);
+        let mut after = HashMap::new();
+        bookmark_kinds(&self.settings.bookmarks.items, &mut after);
+        let bookmarks = before
+            .into_iter()
+            .filter_map(|(id, before)| {
+                let after = after.get(&id)?;
+                (before != *after).then(|| (id, before, after.clone()))
+            })
+            .collect();
+        self.settings.starred = self.settings.bookmarks.starred_paths();
+        let starred = self.settings.starred.iter().cloned().collect();
+        self.vault.update(cx, |vault, cx| {
+            vault.starred = starred;
+            cx.emit(VaultEvent::Starred);
+        });
+        self.persist_settings(cx);
+        self.persist_tabs(cx);
+        crate::document::ComposerWorkspacePathReferenceDelta {
+            window_id: self.window_id,
+            bookmarks,
+            pinned_tabs,
+            recent,
+            closed_tabs,
+            navigation,
+        }
+    }
+
     pub(crate) fn bookmark_search(
         &mut self,
         query: String,
@@ -4553,6 +6665,43 @@ impl Workspace {
         self.retheme_previews(cx);
         self.persist_settings(cx);
         cx.notify();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn on_install_cli(&mut self, _: &InstallCli, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.settings.language;
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let view = view.clone();
+            dialog
+                .title(language.text(
+                    "Install the command-line tool?",
+                    "Installere kommandolinjeverktøyet?",
+                ))
+                .description(language.text(
+                    "This adds /usr/local/bin/rista for the current packaged app. Existing commands are never replaced.",
+                    "Dette legger til /usr/local/bin/rista for den pakkede appen. Eksisterende kommandoer erstattes aldri.",
+                ))
+                .show_cancel(true)
+                .cancel_text(language.text("Cancel", "Avbryt"))
+                .ok_text(language.text("Install", "Installer"))
+                .on_ok(move |_, _window, cx| {
+                    let result = crate::cli_install::install_current();
+                    view.update(cx, |workspace, cx| match result {
+                        Ok(()) => workspace.note_status(
+                            language.text(
+                                "Command-line tool installed at /usr/local/bin/rista",
+                                "Kommandolinjeverktøy installert i /usr/local/bin/rista",
+                            ),
+                            cx,
+                        ),
+                        Err(error) => {
+                            workspace.note_status(error.message(language).to_owned(), cx)
+                        }
+                    });
+                    true
+                })
+        });
     }
 
     /// Re-render open previews after a theme change — colored highlights
@@ -4811,6 +6960,9 @@ impl Workspace {
             PaletteCmd::OpenInNewWindow => {
                 window.dispatch_action(OpenInNewWindow.boxed_clone(), cx)
             }
+            PaletteCmd::MoveToNewWindow => {
+                window.dispatch_action(MoveToNewWindow.boxed_clone(), cx)
+            }
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
             PaletteCmd::NewBase => self.new_base(window, cx),
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
@@ -4866,6 +7018,10 @@ impl Workspace {
             PaletteCmd::ExtractSelection => {
                 self.defer_dialog(Self::show_extract_dialog, window, cx)
             }
+            PaletteCmd::ExtractHeading => {
+                self.defer_dialog(Self::show_extract_heading_dialog, window, cx)
+            }
+            PaletteCmd::MergeNote => self.defer_dialog(Self::show_merge_dialog, window, cx),
             PaletteCmd::ToggleCode => self.wrap("`", window, cx),
             PaletteCmd::ToggleQuote => {
                 if let Some(doc) = self.active_doc().cloned() {
@@ -4993,11 +7149,9 @@ impl Workspace {
                 }
             }
             PaletteCmd::CopyLink => {
-                let link = self.active_doc().and_then(|d| {
-                    d.read(cx)
-                        .path
-                        .file_stem()
-                        .map(|s| format!("[[{}]]", s.to_string_lossy()))
+                let link = self.active_doc().map(|d| {
+                    let path = d.read(cx).path.clone();
+                    format!("[[{}]]", self.vault_wikilink_target(&path, cx))
                 });
                 match link {
                     Some(link) => {
@@ -5014,9 +7168,10 @@ impl Workspace {
             PaletteCmd::CopyLinkHeading => {
                 // `[[stem#heading]]` for the nearest heading at or above
                 // the caret — the "copy link to heading".
-                let link = self.active_doc().and_then(|d| {
+                let link = self.active_doc().map(|d| {
                     let doc = d.read(cx);
-                    let stem = doc.path.file_stem()?.to_string_lossy().to_string();
+                    let path = doc.path.clone();
+                    let target = self.vault_wikilink_target(&path, cx);
                     let text = doc.editor.read(cx).value().to_string();
                     let cursor = doc.editor.read(cx).cursor().min(text.len());
                     let line_no = text[..cursor].matches('\n').count() + 1;
@@ -5039,10 +7194,10 @@ impl Workspace {
                             heading = Some(t[level + 1..].trim().to_string());
                         }
                     }
-                    Some(match heading {
-                        Some(h) => format!("[[{stem}#{h}]]"),
-                        None => format!("[[{stem}]]"),
-                    })
+                    match heading {
+                        Some(h) => format!("[[{target}#{h}]]"),
+                        None => format!("[[{target}]]"),
+                    }
                 });
                 match link {
                     Some(link) => {
@@ -5088,6 +7243,7 @@ impl Workspace {
                 window,
                 cx,
             ),
+            PaletteCmd::ImportVaultSettings => self.show_vault_settings_import(false, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => window.dispatch_action(Quit.boxed_clone(), cx),
         }
@@ -5110,6 +7266,630 @@ impl Workspace {
         let view = self.settings_view.clone();
         window.open_sheet_at(Placement::Right, cx, move |sheet, _window, _cx| {
             sheet.title("Settings").w(px(360.)).child(view.clone())
+        });
+    }
+
+    fn queue_vault_settings_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.restoring_session {
+            return;
+        }
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let Some(root_key) = root.canonicalize().ok() else {
+            return;
+        };
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                let current_root = this
+                    .vault
+                    .read(cx)
+                    .root
+                    .as_ref()
+                    .and_then(|root| root.canonicalize().ok());
+                if this.restoring_session
+                    || current_root.as_ref() != Some(&root_key)
+                    || this
+                        .settings
+                        .vault_settings_import_dismissed
+                        .iter()
+                        .any(|dismissed| dismissed == &root_key.to_string_lossy())
+                {
+                    return;
+                }
+                this.show_vault_settings_import(true, window, cx);
+            });
+        });
+    }
+
+    fn show_vault_settings_import(
+        &mut self,
+        first_offer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.note_status(
+                self.tr(
+                    "Open a vault before importing vault settings.",
+                    "Åpne et hvelv før du importerer hvelvinnstillinger.",
+                ),
+                cx,
+            );
+            return;
+        };
+        let mut plan = match crate::vault_settings_import::plan_import(&root, &self.settings) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let (message, detail) =
+                    if let Some(detail) = error.strip_prefix("Could not resolve vault: ") {
+                        (
+                            self.tr("Could not resolve the vault.", "Hvelvet kunne ikke finnes."),
+                            Some(detail),
+                        )
+                    } else {
+                        (
+                            self.tr(
+                                "The selected vault is not a folder.",
+                                "Det valgte hvelvet er ikke en mappe.",
+                            ),
+                            None,
+                        )
+                    };
+                self.show_vault_import_report(
+                    self.tr(
+                        "Vault settings could not be inspected.",
+                        "Hvelvinnstillingene kunne ikke undersøkes.",
+                    ),
+                    std::iter::once(message.to_string())
+                        .chain(detail.map(str::to_string))
+                        .collect(),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+        plan.hotkey_baseline = crate::hotkeys::imported_bindings_snapshot(cx, &plan.hotkeys);
+        if first_offer && !plan.has_sources() {
+            return;
+        }
+        self.show_vault_import_preview(plan, first_offer, window, cx);
+    }
+
+    fn show_vault_import_preview(
+        &mut self,
+        plan: crate::vault_settings_import::ImportPlan,
+        first_offer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let app_wide = language.text(
+            "Imported preferences and shortcuts apply to the whole app, not only this vault.",
+            "Importerte innstillinger og snarveier gjelder hele appen, ikke bare dette hvelvet.",
+        );
+        let mut rows = Vec::new();
+        if plan.preview.is_empty() {
+            rows.push(
+                language
+                    .text(
+                        "No supported changes were found.",
+                        "Fant ingen støttede endringer.",
+                    )
+                    .to_string(),
+            );
+        } else {
+            for change in &plan.preview {
+                let value = match (change.category, change.value.as_str()) {
+                    (crate::vault_settings_import::ImportCategory::Bookmarks, count) => {
+                        format!("{} {}", count, language.text("items", "elementer"))
+                    }
+                    (crate::vault_settings_import::ImportCategory::Hotkeys, count) => {
+                        format!("{} {}", count, language.text("commands", "kommandoer"))
+                    }
+                    (crate::vault_settings_import::ImportCategory::Links, "shortest") => {
+                        language.text("Shortest", "Korteste").to_string()
+                    }
+                    (crate::vault_settings_import::ImportCategory::Links, "relative") => {
+                        language.text("Relative", "Relativ").to_string()
+                    }
+                    (crate::vault_settings_import::ImportCategory::Links, "absolute") => {
+                        language.text("Absolute", "Absolutt").to_string()
+                    }
+                    (_, "(none)") => language.text("(none)", "(ingen)").to_string(),
+                    (_, value) => value.to_string(),
+                };
+                rows.push(format!(
+                    "{} — {}: {}",
+                    Self::import_category_label(change.category, language),
+                    Self::import_field_label(&change.field, language),
+                    value
+                ));
+            }
+        }
+        if plan.bookmarks_skipped > 0 {
+            rows.push(format!(
+                "{} {}",
+                language.text("Bookmarks skipped:", "Bokmerker som hoppes over:",),
+                plan.bookmarks_skipped
+            ));
+        }
+        for warning in &plan.warnings {
+            rows.push(Self::import_warning_label(warning, language));
+        }
+        if !plan.unsupported_plugins.is_empty() {
+            rows.push(format!(
+                "{} {}",
+                language.text(
+                    "Enabled plugins are not imported:",
+                    "Aktiverte programtillegg importeres ikke:",
+                ),
+                plan.unsupported_plugins.join(", ")
+            ));
+        }
+        let scroll = ScrollHandle::new();
+        let view = cx.entity();
+        let root = plan.root.clone();
+        let plan = std::sync::Arc::new(plan);
+        let title = language.text("Import vault settings…", "Importer hvelvinnstillinger…");
+        let cancel = language.text("Cancel", "Avbryt");
+        let import = language.text("Import", "Importer");
+        let dismiss = {
+            let view = view.clone();
+            let root = root.clone();
+            std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+                let view = view.clone();
+                let root = root.clone();
+                if first_offer {
+                    window.defer(cx, move |window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.persist_vault_import_dismissal(&root, window, cx);
+                            this.refocus(window, cx);
+                        });
+                    });
+                } else {
+                    window.defer(cx, move |window, cx| {
+                        view.update(cx, |this, cx| this.refocus(window, cx));
+                    });
+                }
+            })
+        };
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let preview = div()
+                .id("vault-settings-import-preview")
+                .h(px(300.))
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .children(rows.iter().cloned().map(|row| div().flex_none().child(row))),
+                )
+                .vertical_scrollbar(&scroll);
+            dialog
+                .title(title)
+                .w(px(520.))
+                .description(app_wide)
+                .confirm()
+                .child(preview)
+                .footer(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(Button::new("cancel").label(cancel).on_click({
+                            let dismiss = dismiss.clone();
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                dismiss(window, cx);
+                            }
+                        }))
+                        .child(Button::new("import").label(import).primary().on_click({
+                            let view = view.clone();
+                            let plan = plan.clone();
+                            let root = root.clone();
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                window.defer(cx, {
+                                    let view = view.clone();
+                                    let plan = plan.clone();
+                                    let root = root.clone();
+                                    move |window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.apply_vault_import_plan(&plan, &root, window, cx);
+                                        });
+                                    }
+                                });
+                            }
+                        })),
+                )
+                .on_ok({
+                    let dismiss = dismiss.clone();
+                    move |_, window, cx| {
+                        dismiss(window, cx);
+                        true
+                    }
+                })
+                .on_cancel({
+                    let dismiss = dismiss.clone();
+                    move |_, window, cx| {
+                        dismiss(window, cx);
+                        true
+                    }
+                })
+        });
+    }
+
+    fn import_category_label(
+        category: crate::vault_settings_import::ImportCategory,
+        language: Language,
+    ) -> &'static str {
+        use crate::vault_settings_import::ImportCategory::*;
+        match category {
+            DailyNotes => language.text("Daily notes", "Daglige notater"),
+            PeriodicNotes => language.text("Periodic notes", "Periodiske notater"),
+            Templates => language.text("Templates", "Maler"),
+            Attachments => language.text("Attachments", "Vedlegg"),
+            Links => language.text("Links", "Lenker"),
+            IgnoreFilters => language.text("Ignore filters", "Ignoreringsfiltre"),
+            Bookmarks => language.text("Bookmarks", "Bokmerker"),
+            Hotkeys => language.text("Shortcuts", "Snarveier"),
+            CommunityPlugins => language.text("Plugins", "Programtillegg"),
+        }
+    }
+
+    fn import_field_label(field: &str, language: Language) -> String {
+        if let Some(folder) = field.strip_prefix("folder template ") {
+            return format!("{} {folder}", language.text("Folder template", "Mappemal"));
+        }
+        match field {
+            "folder" | "templates folder" => language.text("Folder", "Mappe"),
+            "daily template" => language.text("Daily template", "Daglig mal"),
+            "weekly template" => language.text("Weekly template", "Ukentlig mal"),
+            "monthly template" => language.text("Monthly template", "Månedlig mal"),
+            "quarterly template" => language.text("Quarterly template", "Kvartalsmal"),
+            "yearly template" => language.text("Yearly template", "Årlig mal"),
+            "format" => language.text("Format", "Format"),
+            "daily directory" => language.text("Daily folder", "Daglig mappe"),
+            "weekly directory" => language.text("Weekly folder", "Ukentlig mappe"),
+            "monthly directory" => language.text("Monthly folder", "Månedlig mappe"),
+            "quarterly directory" => language.text("Quarterly folder", "Kvartalsmappe"),
+            "yearly directory" => language.text("Yearly folder", "Årlig mappe"),
+            "daily format" => language.text("Daily format", "Daglig format"),
+            "weekly format" => language.text("Weekly format", "Ukentlig format"),
+            "monthly format" => language.text("Monthly format", "Månedlig format"),
+            "quarterly format" => language.text("Quarterly format", "Kvartalsformat"),
+            "yearly format" => language.text("Yearly format", "Årlig format"),
+            "attachments directory" => language.text("Attachments folder", "Vedleggsmappe"),
+            "link format" => language.text("Link format", "Lenkeformat"),
+            "bookmarks" => language.text("Bookmarks", "Bokmerker"),
+            "ignore filters" => language.text("Ignore filters", "Ignoreringsfiltre"),
+            "shortcuts" => language.text("Shortcuts", "Snarveier"),
+            "newLinkFormat" => language.text("Link format", "Lenkeformat"),
+            "userIgnoreFilters" => language.text("Ignore filters", "Ignoreringsfiltre"),
+            "enabled community plugins" => {
+                language.text("Enabled plugins", "Aktiverte programtillegg")
+            }
+            _ => language.text("Setting", "Innstilling"),
+        }
+        .to_string()
+    }
+
+    fn import_warning_label(
+        warning: &crate::vault_settings_import::ImportWarning,
+        language: Language,
+    ) -> String {
+        use crate::vault_settings_import::ImportProblem::*;
+        let message = match warning.problem {
+            ReadFailed => language.text("could not be read", "kunne ikke leses"),
+            InvalidJson => language.text("contains invalid JSON", "inneholder ugyldig JSON"),
+            TooLarge => language.text(
+                "exceeds the import size limit",
+                "overskrider størrelsesgrensen",
+            ),
+            UnsafePath => language.text("uses an unsafe source path", "har en utrygg kildebane"),
+            TooManyEntries => language.text(
+                "contains too many entries",
+                "inneholder for mange oppføringer",
+            ),
+            InvalidFieldType => {
+                language.text("has an invalid value type", "har en ugyldig verditype")
+            }
+            UnsupportedValue => language.text(
+                "contains an unsupported value",
+                "inneholder en verdi som ikke støttes",
+            ),
+            UnsafeConfiguredPath => language.text(
+                "contains a path outside the vault",
+                "inneholder en bane utenfor hvelvet",
+            ),
+            TemplateNotFound => language.text(
+                "references a template that could not be found",
+                "refererer til en mal som ikke ble funnet",
+            ),
+            InvalidRegex => language.text(
+                "contains an invalid filter expression",
+                "inneholder et ugyldig filteruttrykk",
+            ),
+            UnsupportedHotkey => language.text(
+                "contains a shortcut that cannot be imported",
+                "inneholder en snarvei som ikke kan importeres",
+            ),
+            UnsupportedCommand => language.text(
+                "contains an unsupported command",
+                "inneholder en handling som ikke støttes",
+            ),
+            Precedence => language.text(
+                "the active template folder takes precedence, so this folder was ignored",
+                "den aktive malmappen har prioritet, så denne mappen ble ignorert",
+            ),
+        };
+        let mut label = format!(
+            "{}: {} ({})",
+            warning.source,
+            message,
+            Self::import_category_label(warning.category, language)
+        );
+        if let Some(detail) = &warning.detail {
+            label.push_str(": ");
+            label.push_str(detail);
+        }
+        label
+    }
+
+    fn apply_vault_import_plan(
+        &mut self,
+        plan: &crate::vault_settings_import::ImportPlan,
+        expected_root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let current_root = self
+            .vault
+            .read(cx)
+            .root
+            .as_ref()
+            .and_then(|root| root.canonicalize().ok());
+        if current_root.as_deref() != Some(expected_root) || !plan.validate_targets() {
+            self.show_vault_import_report(
+                language.text(
+                    "The vault or an imported path changed after preview. Nothing was imported.",
+                    "Hvelvet eller en importert bane ble endret etter forhåndsvisningen. Ingenting ble importert.",
+                ),
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
+        if crate::hotkeys::imported_bindings_snapshot(cx, &plan.hotkeys) != plan.hotkey_baseline {
+            self.show_vault_import_report(
+                language.text(
+                    "Shortcuts changed after preview. Nothing was imported; review a new preview.",
+                    "Snarveier ble endret etter forhåndsvisningen. Ingenting ble importert; gå gjennom en ny forhåndsvisning.",
+                ),
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
+        let latest = cx
+            .global::<crate::windows::WindowManager>()
+            .settings
+            .clone();
+        let mut proposed = crate::windows::with_local_settings(latest.clone(), &self.settings);
+        if plan.apply_settings(&mut proposed).is_err() {
+            self.show_vault_import_report(
+                language.text(
+                    "Some settings changed after preview. Nothing was imported; review a new preview.",
+                    "Noen innstillinger ble endret etter forhåndsvisningen. Ingenting ble importert; gå gjennom en ny forhåndsvisning.",
+                ),
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
+        let bookmarks_added = proposed.bookmarks.merge_imported(plan.bookmarks.clone());
+        let root_key = expected_root.to_string_lossy().to_string();
+        let dismissed_offer_added = if proposed.vault_settings_import_dismissed.contains(&root_key)
+        {
+            false
+        } else {
+            proposed.vault_settings_import_dismissed.push(root_key);
+            true
+        };
+        let imported_settings_changed = plan.has_settings_changes() || bookmarks_added > 0;
+        let needs_settings_save = imported_settings_changed || dismissed_offer_added;
+        let mut successes: Vec<String> = Vec::new();
+        let mut warnings = plan
+            .warnings
+            .iter()
+            .map(|warning| Self::import_warning_label(warning, language))
+            .collect::<Vec<_>>();
+        if plan.bookmarks_skipped > 0 {
+            warnings.push(format!(
+                "{} {}",
+                language.text("Bookmarks skipped:", "Bokmerker som hoppes over:"),
+                plan.bookmarks_skipped
+            ));
+        }
+        if needs_settings_save {
+            match crate::windows::publish_checked(self.window_id, &latest, &proposed, cx) {
+                Ok(saved) => {
+                    self.apply_settings_inner(saved.clone(), window, cx, false);
+                    self.settings_baseline = saved;
+                    if imported_settings_changed {
+                        successes.push(
+                            language
+                                .text(
+                                    "Vault preferences and bookmarks were imported.",
+                                    "Hvelvinnstillinger og bokmerker ble importert.",
+                                )
+                                .to_string(),
+                        );
+                    }
+                    if bookmarks_added > 0 {
+                        successes.push(format!(
+                            "{} {}",
+                            language.text("Bookmarks added:", "Bokmerker lagt til:"),
+                            bookmarks_added
+                        ));
+                    }
+                }
+                Err(error) => {
+                    warnings.push(format!(
+                        "{}: {error}",
+                        language.text(
+                            "Settings could not be saved; shortcuts were not imported",
+                            "Innstillingene kunne ikke lagres; snarveier ble ikke importert",
+                        )
+                    ));
+                    self.show_vault_import_report(
+                        language.text(
+                            "The import did not complete.",
+                            "Importen ble ikke fullført.",
+                        ),
+                        warnings,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+            }
+        }
+        if !plan.hotkeys.is_empty() {
+            match crate::hotkeys::apply_imported_bindings(cx, &plan.hotkeys) {
+                Ok(()) => successes.push(
+                    language
+                        .text("Shortcuts were imported.", "Snarveier ble importert.")
+                        .to_string(),
+                ),
+                Err(error) => warnings.push(format!(
+                    "{}: {}",
+                    language.text(
+                        "Shortcuts were not imported",
+                        "Snarveier ble ikke importert"
+                    ),
+                    error.message(language)
+                )),
+            }
+        }
+        if !plan.unsupported_plugins.is_empty() {
+            warnings.push(format!(
+                "{} {}",
+                language.text(
+                    "Enabled plugins are unsupported and were not imported:",
+                    "Aktiverte programtillegg støttes ikke og ble ikke importert:",
+                ),
+                plan.unsupported_plugins.join(", ")
+            ));
+        }
+        if successes.is_empty() && warnings.is_empty() {
+            successes.push(
+                language
+                    .text(
+                        "No settings needed to be changed.",
+                        "Ingen innstillinger trengte endring.",
+                    )
+                    .to_string(),
+            );
+        }
+        self.show_vault_import_report(
+            language.text(
+                "Vault settings import report",
+                "Rapport for import av hvelvinnstillinger",
+            ),
+            successes.into_iter().chain(warnings).collect(),
+            window,
+            cx,
+        );
+    }
+
+    fn persist_vault_import_dismissal(
+        &mut self,
+        root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.vault.read(cx).root.as_deref() != Some(root) {
+            return;
+        }
+        let key = root.to_string_lossy().to_string();
+        if self.settings.vault_settings_import_dismissed.contains(&key) {
+            return;
+        }
+        let latest = cx
+            .global::<crate::windows::WindowManager>()
+            .settings
+            .clone();
+        let mut proposed = crate::windows::with_local_settings(latest.clone(), &self.settings);
+        proposed.vault_settings_import_dismissed.push(key);
+        match crate::windows::publish_checked(self.window_id, &latest, &proposed, cx) {
+            Ok(saved) => {
+                self.apply_settings_inner(saved.clone(), window, cx, false);
+                self.settings_baseline = saved;
+            }
+            Err(error) => self.note_status(
+                format!(
+                    "{}: {error}",
+                    self.tr(
+                        "Could not remember that import offer",
+                        "Kunne ikke huske dette importtilbudet",
+                    )
+                ),
+                cx,
+            ),
+        }
+    }
+
+    fn show_vault_import_report(
+        &mut self,
+        title: impl Into<SharedString>,
+        lines: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let ok = language.text("OK", "OK");
+        let title = title.into();
+        let scroll = ScrollHandle::new();
+        let view = cx.entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let body = div()
+                .id("vault-settings-import-report")
+                .h(px(300.))
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .child(
+                    v_flex().w_full().gap_2().children(
+                        lines
+                            .iter()
+                            .cloned()
+                            .map(|line| div().flex_none().child(line)),
+                    ),
+                )
+                .vertical_scrollbar(&scroll);
+            dialog
+                .title(title.clone())
+                .w(px(520.))
+                .ok_text(ok)
+                .child(body)
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let view = view.clone();
+                        window.defer(cx, move |window, cx| {
+                            view.update(cx, |this, cx| this.refocus(window, cx));
+                        });
+                    }
+                })
         });
     }
 
@@ -5141,6 +7921,9 @@ impl Workspace {
         let files_changed = self.settings.show_other_files != settings.show_other_files;
         let tree_sort_changed = self.settings.tree_sort != settings.tree_sort;
         let templates_dir_changed = self.settings.templates_dir != settings.templates_dir;
+        let link_format_changed = self.settings.link_format != settings.link_format;
+        let ignore_filters_changed =
+            self.settings.user_ignore_filters != settings.user_ignore_filters;
         let focus_mode_changed = self.focus_mode != settings.focus_mode
             || self.settings.focus_mode != settings.focus_mode;
         let language_changed = self.settings.language != settings.language;
@@ -5173,13 +7956,18 @@ impl Workspace {
                 );
             });
         }
-        if files_changed || tree_sort_changed || templates_dir_changed {
+        if files_changed || tree_sort_changed || templates_dir_changed || ignore_filters_changed {
             self.vault.update(cx, |vault, cx| {
                 vault.tree_sort = settings.tree_sort;
                 vault.show_other_files = settings.show_other_files;
                 vault.templates_dir = settings.templates_dir.clone();
+                vault.set_ignore_filters(&settings.user_ignore_filters);
                 vault.refresh(cx);
             });
+        }
+        if link_format_changed {
+            self.vault
+                .update(cx, |vault, _cx| vault.set_link_format(settings.link_format));
         }
         if files_changed {
             if let Some(page) = &self.folder {
@@ -5340,6 +8128,11 @@ impl Workspace {
                 .unwrap_or_default();
             let wiki_rel = link_rel.trim_end_matches(".md").to_string();
             for note in &vault.notes {
+                let link_source = if moved && note == &path {
+                    new_path.as_path()
+                } else {
+                    note.as_path()
+                };
                 let text = match self.docs.iter().find(|d| d.entity.read(cx).path == *note) {
                     Some(doc) => doc.entity.read(cx).editor.read(cx).value().to_string(),
                     None => match std::fs::read_to_string(note) {
@@ -5348,13 +8141,41 @@ impl Workspace {
                     },
                 };
                 let mut edits: Vec<_> = vault
-                    .link_spans_to(&text, &path)
+                    .link_spans_to(&text, note, &path)
                     .into_iter()
                     .map(|range| {
                         (
                             range.clone(),
                             if moved {
-                                crate::vault::retarget_link_full(&text[range], &wiki_rel)
+                                if crate::vault::is_relative_link_path(&text[range.clone()]) {
+                                    vault
+                                        .root
+                                        .as_deref()
+                                        .and_then(|root| {
+                                            crate::vault::relative_link_path_for(
+                                                root,
+                                                link_source,
+                                                &new_path,
+                                            )
+                                        })
+                                        .map(|relative| {
+                                            crate::vault::retarget_link_path(
+                                                &text[range.clone()],
+                                                &relative,
+                                            )
+                                        })
+                                        .unwrap_or_else(|| {
+                                            crate::vault::retarget_link_full(
+                                                &text[range.clone()],
+                                                &wiki_rel,
+                                            )
+                                        })
+                                } else {
+                                    crate::vault::retarget_link_full(
+                                        &text[range.clone()],
+                                        &wiki_rel,
+                                    )
+                                }
                             } else {
                                 crate::vault::retarget_link(&text[range], &link_name)
                             },
@@ -5372,15 +8193,54 @@ impl Workspace {
                                 (
                                     range.clone(),
                                     if moved {
-                                        crate::vault::retarget_md_link_full(&text[range], &link_rel)
+                                        if crate::vault::is_relative_link_path(&text[range.clone()])
+                                        {
+                                            vault
+                                                .root
+                                                .as_deref()
+                                                .and_then(|root| {
+                                                    crate::vault::relative_markdown_link_path_for(
+                                                        root,
+                                                        link_source,
+                                                        &new_path,
+                                                    )
+                                                })
+                                                .map(|relative| {
+                                                    crate::vault::retarget_md_link_path(
+                                                        &text[range.clone()],
+                                                        &relative,
+                                                    )
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    crate::vault::retarget_md_link_full(
+                                                        &text[range.clone()],
+                                                        &link_rel,
+                                                    )
+                                                })
+                                        } else {
+                                            crate::vault::retarget_md_link_full(
+                                                &text[range.clone()],
+                                                &link_rel,
+                                            )
+                                        }
                                     } else {
-                                        crate::vault::retarget_md_link(&text[range], &file_name)
+                                        crate::vault::retarget_md_link(
+                                            &text[range.clone()],
+                                            &file_name,
+                                        )
                                     },
                                 )
                             }),
                     );
-                    edits.sort_by_key(|(range, _)| range.start);
                 }
+                if note == &path {
+                    if let Some(root) = vault.root.as_deref() {
+                        edits.extend(crate::vault::relative_link_edits_for_move(
+                            root, &path, &new_path, &text,
+                        ));
+                    }
+                }
+                let edits = crate::vault::non_overlapping_text_edits(edits);
                 if !edits.is_empty() {
                     rewrites.push((note.clone(), edits));
                 }
@@ -6234,13 +9094,17 @@ impl Workspace {
     /// action on unlinked mentions. Splices through the editor when
     /// the note is open, writes the file otherwise.
     fn link_up_mention(&mut self, note: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(stem) = self
-            .active_doc()
-            .and_then(|d| d.read(cx).path.file_stem().and_then(|s| s.to_str()))
-            .map(|s| s.to_string())
+        let Some(target_path) = self.active_doc().map(|doc| doc.read(cx).path.clone()) else {
+            return;
+        };
+        let Some(stem) = target_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
         else {
             return;
         };
+        let target = self.wikilink_target(&target_path, &note, cx);
         let needle = stem.to_lowercase();
         if let Some(doc) = self
             .docs
@@ -6253,14 +9117,14 @@ impl Workspace {
                 if let Some(start) = crate::vault::plain_mention_offset(&text, &needle) {
                     doc.editor.update(cx, |editor, cx| {
                         editor.set_selected_range(start..start + stem.len(), cx);
-                        editor.replace(format!("[[{stem}]]"), window, cx);
+                        editor.replace(format!("[[{target}]]"), window, cx);
                     });
                 }
             });
         } else if let Ok(text) = std::fs::read_to_string(&note) {
             if let Some(start) = crate::vault::plain_mention_offset(&text, &needle) {
                 let mut text = text;
-                text.replace_range(start..start + stem.len(), &format!("[[{stem}]]"));
+                text.replace_range(start..start + stem.len(), &format!("[[{target}]]"));
                 if std::fs::write(&note, text).is_err() {
                     self.note_status("Couldn't update the mention", cx);
                     return;
@@ -6525,7 +9389,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(text) = template.and_then(|t| std::fs::read_to_string(t).ok()) else {
+        let Some(template) = template else {
             let title = path
                 .file_stem()
                 .unwrap_or_default()
@@ -6535,10 +9399,53 @@ impl Workspace {
                 text: format!("# {title}\n\n"),
                 cursor: None,
                 unsupported: 0,
+                overflowed: false,
             };
             self.write_new_note(path, heading, window, cx);
             return;
         };
+        let Ok(mut file) = std::fs::File::open(template) else {
+            let title = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            self.write_new_note(
+                path,
+                crate::templater::Expanded {
+                    text: format!("# {title}\n\n"),
+                    cursor: None,
+                    unsupported: 0,
+                    overflowed: false,
+                },
+                window,
+                cx,
+            );
+            return;
+        };
+        let mut bytes = Vec::new();
+        let bounded =
+            std::io::Read::take(&mut file, crate::templater::MAX_EXPANSION_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .is_ok()
+                && bytes.len() <= crate::templater::MAX_EXPANSION_BYTES;
+        let Ok(text) = String::from_utf8(bytes) else {
+            self.note_status(
+                self.tr("Could not read the template.", "Kunne ikke lese malen."),
+                cx,
+            );
+            return;
+        };
+        if !bounded {
+            self.note_status(
+                self.tr(
+                    "Template output exceeded the size limit; the note was not created.",
+                    "Malutdata overskred størrelsesgrensen; notatet ble ikke opprettet.",
+                ),
+                cx,
+            );
+            return;
+        }
         let job = TemplateJob {
             template: text,
             path: path.clone(),
@@ -6583,11 +9490,25 @@ impl Workspace {
     }
 
     fn warn_unsupported(&mut self, expanded: &crate::templater::Expanded, cx: &mut Context<Self>) {
+        if expanded.overflowed {
+            self.note_status(
+                self.tr(
+                    "Template output exceeded the 4 MiB limit; the template was not applied.",
+                    "Malutdata overskred grensen på 4 MiB; malen ble ikke brukt.",
+                ),
+                cx,
+            );
+            return;
+        }
         if expanded.unsupported > 0 {
             self.note_status(
                 format!(
-                    "{} template command(s) left as written — Rísta runs no scripts",
-                    expanded.unsupported
+                    "{} {}",
+                    expanded.unsupported,
+                    self.tr(
+                        "template command(s) were left as written; scripts are not run.",
+                        "malhandling(er) ble stående uendret; skript kjøres ikke.",
+                    )
                 ),
                 cx,
             );
@@ -6612,6 +9533,10 @@ impl Workspace {
                   window: &mut Window,
                   cx: &mut Context<Self>| {
                 let expanded = this.expand_template_for(&job, &answers, cx);
+                if expanded.overflowed {
+                    this.warn_unsupported(&expanded, cx);
+                    return;
+                }
                 then(this, expanded, window, cx);
             },
         ))));
@@ -6640,10 +9565,18 @@ impl Workspace {
         let rel = vault_rel(&root, path);
         let abs = path.to_string_lossy().to_string();
         let clipboard = cx.read_from_clipboard().and_then(|c| c.text());
+        let canonical_root = root.canonicalize().ok();
         let include = |name: &str| {
-            find_vault_file(&root, &format!("{name}.md"))
-                .or_else(|| find_vault_file(&root, name))
-                .and_then(|p| std::fs::read_to_string(p).ok())
+            let root = canonical_root.as_ref()?;
+            let path = find_vault_markdown(root, name)?;
+            let file = std::fs::File::open(path).ok()?;
+            let mut file = file.take(crate::templater::MAX_EXPANSION_BYTES as u64 + 1);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).ok()?;
+            if bytes.len() > crate::templater::MAX_EXPANSION_BYTES {
+                return None;
+            }
+            String::from_utf8(bytes).ok()
         };
         let ctx = crate::templater::TemplateCtx {
             rel_path: &rel,
@@ -6655,7 +9588,13 @@ impl Workspace {
             answers,
             ..crate::templater::TemplateCtx::new(&title, *now)
         };
-        crate::templater::expand(template, &ctx)
+        crate::templater::expand_bounded(template, &ctx, crate::templater::MAX_EXPANSION_BYTES)
+            .unwrap_or(crate::templater::Expanded {
+                text: String::new(),
+                cursor: None,
+                unsupported: 0,
+                overflowed: true,
+            })
     }
 
     /// Ask template prompts one dialog at a time; `done` runs with the
@@ -6915,7 +9854,7 @@ impl Workspace {
     /// jumps the caret to the heading (Source view); `[[#heading]]`
     /// jumps within the open note.
     pub fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_wikilink_impl(target, false, window, cx);
+        self.open_wikilink_impl(target, false, None, window, cx);
     }
 
     /// ⌘+click: open the wikilink target in a new tab.
@@ -6925,19 +9864,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_wikilink_impl(target, true, window, cx);
+        self.open_wikilink_impl(target, true, None, window, cx);
+    }
+
+    pub(crate) fn open_wikilink_from(
+        &mut self,
+        target: &str,
+        source: Option<&Path>,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_wikilink_impl(target, new_tab, source, window, cx);
     }
 
     fn open_wikilink_impl(
         &mut self,
         target: &str,
         new_tab: bool,
+        source_path: Option<&Path>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(target) = crate::pdf::PdfTarget::parse(target) {
             let vault = self.vault.read(cx);
-            let doc_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+            let doc_path = source_path
+                .map(Path::to_path_buf)
+                .or_else(|| self.active_doc().map(|doc| doc.read(cx).path.clone()));
             let path = target
                 .resolve(
                     doc_path.as_deref(),
@@ -6976,11 +9929,17 @@ impl Workspace {
         // `|` aliases arrive via ⌥⏎ on the raw `[[inner]]` — the alias
         // is display text, never part of the target.
         let note = note.split('|').next().unwrap_or(note).trim();
+        let source_path = source_path
+            .map(Path::to_path_buf)
+            .or_else(|| self.active_doc().map(|doc| doc.read(cx).path.clone()));
         let resolved = if note.is_empty() {
             // `[[#heading]]` — an anchor inside the open note.
-            self.active_doc().map(|d| d.read(cx).path.clone())
+            source_path.clone()
         } else {
-            self.vault.read(cx).resolve_wikilink(note)
+            source_path
+                .as_deref()
+                .and_then(|source| self.vault.read(cx).resolve_wikilink_from(note, source))
+                .or_else(|| self.vault.read(cx).resolve_wikilink(note))
         };
         match resolved {
             Some(path) => {
@@ -7036,7 +9995,7 @@ impl Workspace {
             let target = if note.is_empty() {
                 Some(own_path.clone())
             } else {
-                self.vault.read(cx).resolve_wikilink(&note)
+                self.vault.read(cx).resolve_wikilink_from(&note, &own_path)
             };
             let Some(target) = target else {
                 continue;
@@ -9271,6 +12230,9 @@ impl Workspace {
                     let reveal_label = workspace.tr("Reveal in tree", "Vis i filtrær");
                     let open_in_new_window =
                         workspace.tr("Open in New Window", "Åpne i nytt vindu");
+                    let move_to_new_window =
+                        workspace.tr("Move to New Window", "Flytt til nytt vindu");
+                    let source_window_id = workspace.window_id;
                     let split_right = workspace.tr("Split right", "Del til høyre");
                     let split_down = workspace.tr("Split down", "Del ned");
                     let next_pane = workspace.tr("Next pane", "Neste redigeringsfelt");
@@ -9321,6 +12283,19 @@ impl Workspace {
                                         );
                                     });
                                 }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(move_to_new_window)
+                            .icon(assets::IconName::AppWindow)
+                            .on_click(move |_, _, cx| {
+                                cx.defer(move |cx| {
+                                    crate::windows::move_tab_to_new_window(
+                                        source_window_id,
+                                        Some(token),
+                                        cx,
+                                    );
+                                });
                             }),
                     )
                     .separator()
@@ -9701,27 +12676,35 @@ impl Workspace {
         let banner = h_flex()
             .w_full()
             .min_h(px(36.))
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap_2()
             .px_3()
+            .py_1()
             .bg(cx.theme().warning.opacity(0.12))
             .child(
                 div()
+                    .max_w_full()
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().warning)
-                    .child("Changed on disk — saving paused"),
+                    .child(self.tr(
+                        "Changed on disk — saving paused",
+                        "Endret på disken — lagring satt på pause",
+                    )),
             )
             .child(
                 h_flex()
+                    .max_w_full()
+                    .flex_wrap()
                     .items_center()
                     .gap_1()
                     .child(
                         Button::new("conflict-save-copy")
                             .ghost()
                             .xsmall()
-                            .label("Save copy…")
+                            .label(self.tr("Save copy…", "Lagre kopi…"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_save_as(&SaveFileAs, window, cx);
                             })),
@@ -9730,7 +12713,7 @@ impl Workspace {
                         Button::new("conflict-reload")
                             .ghost()
                             .xsmall()
-                            .label("Reload from disk")
+                            .label(self.tr("Reload from disk", "Last inn fra disk på nytt"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_reload_from_disk(reload_doc.clone(), window, cx);
                             })),
@@ -9980,6 +12963,8 @@ impl Workspace {
     /// key equivalent intercepts it on macOS).
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
         let context_doc = doc.clone();
+        let undo_doc = doc.clone();
+        let redo_doc = doc.clone();
         div()
             .size_full()
             .px_3()
@@ -9998,6 +12983,94 @@ impl Workspace {
             .on_action(cx.listener(Self::on_pair_close))
             .capture_action::<input::Paste>(cx.listener(|this, _paste, window, cx| {
                 this.on_editor_paste_action(window, cx);
+            }))
+            .capture_action::<input::Undo>(cx.listener(move |this, _, window, cx| {
+                if undo_doc.read(cx).composer_rollback_action(
+                    crate::document::ComposerHistoryDirection::Undo,
+                ) {
+                    return;
+                }
+                let changes = undo_doc.read(cx).composer_history_changes_for_action(
+                    crate::document::ComposerHistoryDirection::Undo,
+                    cx,
+                );
+                if this.composer_history_buffer_conflict(
+                    Some(&undo_doc),
+                    &changes,
+                    crate::document::ComposerHistoryDirection::Undo,
+                    cx,
+                ) {
+                    this.note_status(
+                        this.tr(
+                            "Composer undo stopped because a related note has unsaved changes.",
+                            "Angring av sammensetningen ble stoppet fordi et tilknyttet notat har ulagrede endringer.",
+                        ),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                    return;
+                }
+                let prepared = undo_doc.update(cx, |doc, cx| {
+                    doc.prepare_composer_history_action(
+                        crate::document::ComposerHistoryDirection::Undo,
+                        window,
+                        cx,
+                    )
+                });
+                if !prepared {
+                    this.note_status(
+                        this.tr(
+                            "Composer undo stopped because a related file changed.",
+                            "Angring av sammensetningen ble stoppet fordi en tilknyttet fil ble endret.",
+                        ),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action::<input::Redo>(cx.listener(move |this, _, window, cx| {
+                if redo_doc.read(cx).composer_rollback_action(
+                    crate::document::ComposerHistoryDirection::Redo,
+                ) {
+                    return;
+                }
+                let changes = redo_doc.read(cx).composer_history_changes_for_action(
+                    crate::document::ComposerHistoryDirection::Redo,
+                    cx,
+                );
+                if this.composer_history_buffer_conflict(
+                    Some(&redo_doc),
+                    &changes,
+                    crate::document::ComposerHistoryDirection::Redo,
+                    cx,
+                ) {
+                    this.note_status(
+                        this.tr(
+                            "Composer redo stopped because a related note has unsaved changes.",
+                            "Gjentaking av sammensetningen ble stoppet fordi et tilknyttet notat har ulagrede endringer.",
+                        ),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                    return;
+                }
+                let prepared = redo_doc.update(cx, |doc, cx| {
+                    doc.prepare_composer_history_action(
+                        crate::document::ComposerHistoryDirection::Redo,
+                        window,
+                        cx,
+                    )
+                });
+                if !prepared {
+                    this.note_status(
+                        this.tr(
+                            "Composer redo stopped because a related file changed.",
+                            "Gjentaking av sammensetningen ble stoppet fordi en tilknyttet fil ble endret.",
+                        ),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
             }))
             .capture_action::<input::Enter>(cx.listener(|this, _enter, window, cx| {
                 let handled = this
@@ -10290,7 +13363,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(dir) = self.attachments_dir(cx) else {
+        let active_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+        let Some(dir) = self.attachments_dir(active_path.as_deref(), cx) else {
             return false;
         };
         let stamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -10319,13 +13393,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (Some(root), Some(dir)) = (self.vault.read(cx).root.clone(), self.attachments_dir(cx))
-        else {
+        let active_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+        let (Some(root), Some(dir)) = (
+            self.vault.read(cx).root.clone(),
+            self.attachments_dir(active_path.as_deref(), cx),
+        ) else {
             return false;
         };
-        let note_dir = self
-            .active_doc()
-            .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf));
+        let note_dir = active_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
         let mut links = Vec::new();
         for src in paths {
             if !src.is_file() {
@@ -10445,11 +13523,24 @@ impl Workspace {
         });
     }
 
-    /// The vault's attachment folder (`settings.attachments_dir`, relative to
-    /// the vault root unless absolute).
-    fn attachments_dir(&self, cx: &App) -> Option<PathBuf> {
-        let root = self.vault.read(cx).root.clone()?;
-        Some(root.join(&self.settings.attachments_dir))
+    fn attachments_dir(&self, note_path: Option<&Path>, cx: &App) -> Option<PathBuf> {
+        let root = self.vault.read(cx).root.as_ref()?.canonicalize().ok()?;
+        let configured = self.settings.attachments_dir.as_str();
+        if configured == "." || configured.is_empty() {
+            return Some(root);
+        }
+        let relative = if configured.starts_with("./") {
+            let note_dir = note_path?.parent()?;
+            let note_dir = note_dir.canonicalize().ok()?;
+            let note_relative = note_dir.strip_prefix(&root).ok()?;
+            note_relative.join(configured.trim_start_matches("./"))
+        } else {
+            PathBuf::from(configured)
+        };
+        crate::vault_settings_import::checked_vault_path(
+            &root,
+            &relative.to_string_lossy().replace('\\', "/"),
+        )
     }
 
     fn render_empty_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -10597,7 +13688,11 @@ impl Workspace {
                                 cx.theme().muted_foreground
                             })
                             .child(if conflict {
-                                format!("{} — changed on disk", rel_path)
+                                format!(
+                                    "{} — {}",
+                                    rel_path,
+                                    self.tr("changed on disk", "endret på disken")
+                                )
                             } else if dirty {
                                 format!("{} •", rel_path)
                             } else {
@@ -10936,6 +14031,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_terminal))
             .on_action(cx.listener(Self::on_open_tools))
             .on_action(cx.listener(Self::on_toggle_theme));
+        #[cfg(target_os = "macos")]
+        let root = root.on_action(cx.listener(Self::on_install_cli));
         #[cfg(not(target_os = "macos"))]
         let root = root.on_action(cx.listener(Self::on_about));
         root
@@ -11553,6 +14650,77 @@ fn find_vault_file(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+fn find_vault_markdown(root: &Path, name: &str) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let name_path = Path::new(name);
+    let target = match name_path.extension() {
+        Some(extension)
+            if !extension
+                .to_str()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md")) =>
+        {
+            return None;
+        }
+        Some(_) => name.to_string(),
+        None => format!("{name}.md"),
+    };
+    let exact = crate::vault_settings_import::checked_vault_path(&root, &target)?;
+    match exact.canonicalize() {
+        Ok(path) => {
+            return (path.starts_with(&root)
+                && path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md")))
+            .then_some(path);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+    if target.contains('/') {
+        return None;
+    }
+    let basename = Path::new(&target)
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
+    let mut stack = vec![root.clone()];
+    let mut found = None;
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file()
+                && entry.file_name().to_string_lossy().to_lowercase() == basename
+            {
+                let canonical = path.canonicalize().ok()?;
+                if canonical.starts_with(&root) && found.replace(canonical).is_some() {
+                    return None;
+                }
+            }
+        }
+    }
+    found
+}
+
 /// Copy `src` into `dir` under a free name and return where it went.
 /// A same-named file there with identical bytes is reused instead, so
 /// pasting the same image twice links one file.
@@ -11789,14 +14957,71 @@ mod preview_tab_tests {
 }
 
 #[cfg(test)]
+mod composer_path_reference_tests {
+    use super::apply_composer_path_list;
+    use crate::document::{ComposerHistoryDirection, ComposerPathValueChange};
+
+    #[test]
+    fn note_composer_path_history_only_changes_the_captured_unchanged_slot() {
+        let change = ComposerPathValueChange {
+            index: 0,
+            before: "source.md".to_string(),
+            after: "target.md".to_string(),
+        };
+        let mut paths = vec!["target.md".to_string(), "target.md".to_string()];
+
+        apply_composer_path_list(
+            &mut paths,
+            std::slice::from_ref(&change),
+            ComposerHistoryDirection::Undo,
+        );
+        assert_eq!(
+            paths,
+            vec!["source.md".to_string(), "target.md".to_string()]
+        );
+
+        apply_composer_path_list(
+            &mut paths,
+            std::slice::from_ref(&change),
+            ComposerHistoryDirection::Redo,
+        );
+        assert_eq!(
+            paths,
+            vec!["target.md".to_string(), "target.md".to_string()]
+        );
+
+        paths[0] = "later.md".to_string();
+        apply_composer_path_list(&mut paths, &[change], ComposerHistoryDirection::Undo);
+        assert_eq!(paths, vec!["later.md".to_string(), "target.md".to_string()]);
+    }
+}
+
+#[cfg(test)]
 mod import_tests {
-    use super::{copy_into, find_vault_file, free_path};
+    use super::{copy_into, find_vault_file, find_vault_markdown, free_path};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rista-import-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let dir = std::env::temp_dir().join(format!(
+                "rista-import-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("could not create test directory: {error}"),
+            }
+        }
     }
 
     #[test]
@@ -11842,5 +15067,34 @@ mod import_tests {
             Some(root.join("attachments/deep/Report.pdf"))
         );
         assert_eq!(find_vault_file(&root, "missing.pdf"), None);
+    }
+
+    #[test]
+    fn template_lookup_is_vault_contained_and_refuses_ambiguous_names() {
+        let root = unique_temp_dir("markdown");
+        let outside = unique_temp_dir("markdown-outside");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir_all(root.join("two")).unwrap();
+        std::fs::write(root.join("nested/Note.md"), b"nested").unwrap();
+        std::fs::write(root.join("one/Shared.md"), b"one").unwrap();
+        std::fs::write(root.join("two/Shared.md"), b"two").unwrap();
+        assert_eq!(
+            find_vault_markdown(&root, "nested/Note"),
+            Some(root.canonicalize().unwrap().join("nested/Note.md"))
+        );
+        assert_eq!(find_vault_markdown(&root, "Shared"), None);
+        assert_eq!(find_vault_markdown(&root, "nested/Note.txt"), None);
+
+        #[cfg(unix)]
+        {
+            std::fs::write(outside.join("Secret.md"), b"outside").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+            assert_eq!(find_vault_markdown(&root, "linked/Secret"), None);
+            assert_eq!(find_vault_markdown(&root, "Secret"), None);
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
     }
 }

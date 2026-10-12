@@ -65,6 +65,14 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         OpenInNewWindow
     ),
     action_command!(
+        "move_to_new_window",
+        "Move to New Window",
+        "Flytt til nytt vindu",
+        None,
+        None,
+        MoveToNewWindow
+    ),
+    action_command!(
         "new_file",
         "New file",
         "Ny fil",
@@ -862,16 +870,11 @@ fn replace_bindings(cx: &mut App, bindings: Vec<KeyBinding>) {
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
     // Native menu key equivalents are snapshots, not live keymap references.
-    if let Some(record) = cx
+    if let Some(language) = cx
         .try_global::<crate::windows::WindowManager>()
-        .and_then(crate::windows::WindowManager::active)
+        .map(|manager| manager.settings.language)
     {
-        if let Ok(language) = record
-            .workspace
-            .update(cx, |workspace, _cx| workspace.settings().language)
-        {
-            cx.set_menus(crate::menus(language));
-        }
+        cx.set_menus(crate::menus(language));
     }
 }
 
@@ -964,6 +967,37 @@ fn commit_config(cx: &mut App, config: KeymapConfig) -> Result<(), HotkeyNotice>
     Ok(())
 }
 
+pub(crate) fn apply_imported_bindings(
+    cx: &mut App,
+    imported: &BTreeMap<String, Option<String>>,
+) -> Result<(), HotkeyNotice> {
+    let config = merge_imported_config(cx.global::<HotkeyRuntime>().config.clone(), imported)?;
+    commit_config(cx, config)
+}
+
+pub(crate) fn imported_bindings_snapshot(
+    cx: &App,
+    imported: &BTreeMap<String, Option<String>>,
+) -> BTreeMap<String, Option<String>> {
+    imported
+        .keys()
+        .map(|id| (id.clone(), shortcut(cx, id)))
+        .collect()
+}
+
+fn merge_imported_config(
+    mut config: KeymapConfig,
+    imported: &BTreeMap<String, Option<String>>,
+) -> Result<KeymapConfig, HotkeyNotice> {
+    for (id, shortcut) in imported {
+        if command(id).is_none() {
+            return Err(HotkeyNotice::UnknownCommand(id.clone()));
+        }
+        config.bindings.insert(id.clone(), shortcut.clone());
+    }
+    Ok(config)
+}
+
 fn prepare_config_commit(
     runtime: &HotkeyRuntime,
     config: &KeymapConfig,
@@ -1034,12 +1068,14 @@ pub(crate) fn reload(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    use super::merge_imported_config;
     use super::{
         binding_sequence, command, commands, default_bindings, effective_shortcut, input,
         parse_config, parse_keystrokes, prepare_config_commit, read_config,
         rebuild_runtime_with_mapper, resolve_bindings, DummyKeyboardMapper, HotkeyNotice,
         HotkeyRuntime, KeyBinding, KeymapConfig, ACTION_COMMANDS,
     };
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -1073,6 +1109,32 @@ mod tests {
             .id
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')));
+    }
+
+    #[test]
+    fn imported_bindings_preserve_unrelated_shortcuts() {
+        let mut existing = KeymapConfig::default();
+        existing
+            .bindings
+            .insert("new_file".into(), Some("cmd-shift-n".into()));
+        existing
+            .bindings
+            .insert("save".into(), Some("cmd-alt-s".into()));
+        let imported = BTreeMap::from([
+            ("save".to_string(), Some("cmd-s".to_string())),
+            ("open_daily_note".to_string(), None),
+        ]);
+
+        let merged = merge_imported_config(existing, &imported).unwrap();
+        assert_eq!(
+            merged.bindings.get("new_file"),
+            Some(&Some("cmd-shift-n".to_string()))
+        );
+        assert_eq!(
+            merged.bindings.get("save"),
+            Some(&Some("cmd-s".to_string()))
+        );
+        assert_eq!(merged.bindings.get("open_daily_note"), Some(&None));
     }
 
     #[test]
