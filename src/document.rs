@@ -157,6 +157,7 @@ pub struct Document {
     /// The note's title, shared with its `/` completions so template
     /// items expand `{{title}}` — kept in step by `set_path`.
     completion_title: Rc<std::cell::RefCell<String>>,
+    completion_path: Rc<std::cell::RefCell<PathBuf>>,
     /// Image file — the editor stays empty and the workspace renders
     /// the picture itself instead of the source/preview panes.
     pub is_image: bool,
@@ -308,6 +309,8 @@ impl Document {
         let completions_vault = vault.clone();
         let completion_title = Rc::new(std::cell::RefCell::new(note_title(&path)));
         let completions_title = completion_title.clone();
+        let completion_path = Rc::new(std::cell::RefCell::new(path.clone()));
+        let completions_path = completion_path.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("markdown")
@@ -319,9 +322,12 @@ impl Document {
                     hard_tabs: false,
                 })
                 .searchable(true);
-            state.lsp_mut().completion_provider = Some(Rc::new(
-                crate::slash::VaultCompletions::new(completions_vault, completions_title),
-            ));
+            state.lsp_mut().completion_provider =
+                Some(Rc::new(crate::slash::VaultCompletions::new(
+                    completions_vault,
+                    completions_title,
+                    completions_path,
+                )));
             state.set_value(content.clone(), window, cx);
             state
         });
@@ -351,6 +357,7 @@ impl Document {
             pdf,
             path,
             completion_title,
+            completion_path,
             editor,
             callout_folds: preview::CalloutFolds::default(),
             base_embeds: preview::EmbedViews::default(),
@@ -458,6 +465,7 @@ impl Document {
     /// Point the document at a renamed/moved/saved-as file.
     pub fn set_path(&mut self, path: PathBuf) {
         *self.completion_title.borrow_mut() = note_title(&path);
+        *self.completion_path.borrow_mut() = path.clone();
         self.path = path;
     }
 

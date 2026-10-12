@@ -7,6 +7,8 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime};
 /// Looks up a note by name for `tp.file.include`.
 pub type Include<'a> = &'a dyn Fn(&str) -> Option<String>;
 
+pub const MAX_EXPANSION_BYTES: usize = 4 * 1024 * 1024;
+
 /// What a template can read about the note it fills.
 pub struct TemplateCtx<'a> {
     /// The note's title (file stem).
@@ -53,6 +55,7 @@ pub struct Expanded {
     pub cursor: Option<usize>,
     /// `<% … %>` commands left as written (unsupported or scripts).
     pub unsupported: usize,
+    pub overflowed: bool,
 }
 
 /// A question a template asks before it expands.
@@ -223,6 +226,7 @@ fn expand_depth(text: &str, ctx: &TemplateCtx, depth: usize, limit: usize) -> Re
         text: out,
         cursor,
         unsupported,
+        overflowed: false,
     })
 }
 
@@ -844,6 +848,17 @@ mod tests {
             expand("Body\n<% tp.file.include(\"[[Footer]]\") %>", &ctx).text,
             "Body\n— Plan"
         );
+    }
+
+    #[test]
+    fn bounded_expansion_rejects_oversized_include_output() {
+        let include = |_name: &str| Some("expanded".repeat(32));
+        let ctx = TemplateCtx {
+            include: Some(&include),
+            ..TemplateCtx::new("Plan", now())
+        };
+
+        assert!(expand_bounded("<% tp.file.include(\"[[Footer]]\") %>", &ctx, 64).is_err());
     }
 
     #[test]
