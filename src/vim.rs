@@ -107,6 +107,7 @@ enum Recipe {
     },
     ChangeObject {
         object: Object,
+        count: usize,
         text: String,
     },
     DeleteObject {
@@ -228,7 +229,7 @@ pub struct VimState {
     pending_text_object: Option<(Operator, bool, usize)>,
     pending_visual_text_object: Option<bool>,
     pending_change_motion: Option<MotionSpec>,
-    pending_change_object: Option<Object>,
+    pending_change_object: Option<(Object, usize)>,
     pending_change_line: Option<usize>,
     pending_find: Option<FindKind>,
     pending_g: bool,
@@ -256,8 +257,9 @@ struct InsertSession {
     start: usize,
     kind: InsertKind,
     change_motion: Option<MotionSpec>,
-    change_object: Option<Object>,
+    change_object: Option<(Object, usize)>,
     change_line: Option<usize>,
+    record_recipe: bool,
 }
 
 impl Default for VimState {
@@ -357,6 +359,24 @@ impl VimState {
         self.mode = Mode::Normal;
     }
 
+    pub fn suspend(&mut self) {
+        let insert = self.mode == Mode::Insert;
+        self.clear_pending();
+        self.command_line.clear();
+        self.search_line.clear();
+        self.visual_anchor = None;
+        self.expected_selection = None;
+        self.desired_column = None;
+        self.status = None;
+        if insert {
+            self.insert = None;
+            self.last_change = None;
+        } else {
+            self.insert = None;
+            self.mode = Mode::Normal;
+        }
+    }
+
     pub fn status_text(&self, norwegian: bool) -> Option<String> {
         self.status.as_ref().map(|status| status.text(norwegian))
     }
@@ -452,9 +472,13 @@ impl VimState {
                         let is_change = insert.change_motion.is_some()
                             || insert.change_object.is_some()
                             || insert.change_line.is_some();
-                        if !delta.is_empty()
-                            || is_change
-                            || matches!(insert.kind, InsertKind::OpenAbove | InsertKind::OpenBelow)
+                        if insert.record_recipe
+                            && (!delta.is_empty()
+                                || is_change
+                                || matches!(
+                                    insert.kind,
+                                    InsertKind::OpenAbove | InsertKind::OpenBelow
+                                ))
                         {
                             self.last_change = Some(
                                 match (
@@ -467,8 +491,9 @@ impl VimState {
                                         motion,
                                         text: delta,
                                     },
-                                    (_, Some(object), _, _) => Recipe::ChangeObject {
+                                    (_, Some((object, count)), _, _) => Recipe::ChangeObject {
                                         object,
+                                        count,
                                         text: delta,
                                     },
                                     (_, _, Some(count), _) => {
@@ -584,6 +609,13 @@ impl VimState {
         key: Key,
         clipboard: Option<&str>,
     ) -> Outcome {
+        if matches!(key, Key::Escape) {
+            let visual = matches!(self.mode, Mode::Visual | Mode::VisualLine);
+            self.clear_pending();
+            self.mode = Mode::Normal;
+            self.visual_anchor = None;
+            return self.simple_move(if visual { self.active_cursor } else { cursor });
+        }
         if self.pending_register {
             self.pending_register = false;
             if let Key::Text(value) = &key {
@@ -592,6 +624,22 @@ impl VimState {
                 }
             }
             return Outcome::handled();
+        }
+
+        if self.pending_find.is_some() {
+            return self.handle_find(text, cursor, key);
+        }
+
+        if let Key::Text(value) = &key {
+            if value.chars().all(|char| char.is_ascii_digit())
+                && (!value.starts_with('0') || !self.count.is_empty())
+            {
+                self.count.push_str(value);
+                if self.count.len() > 7 {
+                    self.count.truncate(7);
+                }
+                return Outcome::handled();
+            }
         }
 
         if self.mode == Mode::Visual || self.mode == Mode::VisualLine {
@@ -661,7 +709,7 @@ impl VimState {
                 };
                 self.mode = Mode::Normal;
                 self.visual_anchor = None;
-                return self.apply_operator_range(
+                let outcome = self.apply_operator_range(
                     text,
                     self.active_cursor,
                     operator,
@@ -669,14 +717,20 @@ impl VimState {
                     linewise,
                     1,
                 );
+                if matches!(operator, Operator::Delete | Operator::Change) {
+                    self.last_change = None;
+                }
+                if operator == Operator::Change {
+                    if let Some(insert) = self.insert.as_mut() {
+                        insert.record_recipe = false;
+                    }
+                }
+                return outcome;
             }
         }
 
         if self.pending_text_object.is_some() {
             return self.handle_text_object(text, key);
-        }
-        if self.pending_find.is_some() {
-            return self.handle_find(text, cursor, key);
         }
         if self.pending_g {
             self.pending_g = false;
@@ -712,15 +766,6 @@ impl VimState {
         if let Key::Text(value) = &key {
             if value == "\"" {
                 self.pending_register = true;
-                return Outcome::handled();
-            }
-            if value.chars().all(|char| char.is_ascii_digit())
-                && (!value.starts_with('0') || !self.count.is_empty())
-            {
-                self.count.push_str(value);
-                if self.count.len() > 7 {
-                    self.count.truncate(7);
-                }
                 return Outcome::handled();
             }
         }
@@ -1036,7 +1081,8 @@ impl VimState {
             self.active_cursor = found;
             let mut result = Outcome::handled();
             let range = if self.mode == Mode::VisualLine {
-                line_range(text, found)
+                let anchor = self.visual_anchor.unwrap_or(found);
+                line_start(text, anchor.min(found))..line_after(text, anchor.max(found))
             } else {
                 visual_range(text, self.visual_anchor.unwrap_or(found), found)
             };
@@ -1068,7 +1114,7 @@ impl VimState {
             ));
         };
         if operator == Operator::Change {
-            self.pending_change_object = Some(object);
+            self.pending_change_object = Some((object, count));
         }
         let outcome = self.apply_operator_range(text, cursor, operator, range, false, 1);
         if operator == Operator::Delete {
@@ -1148,43 +1194,49 @@ impl VimState {
         let Some(next) = self.motion_target(text, cursor, spec.motion, spec.count) else {
             return Outcome::handled();
         };
-        let inclusive = matches!(
+        let linewise = matches!(
             spec.motion,
-            Motion::WordEnd
-                | Motion::LineEnd
-                | Motion::Find(_, _)
-                | Motion::MatchPair
-                | Motion::FileEnd
+            Motion::Up | Motion::Down | Motion::FileStart | Motion::FileEnd
         );
-        let (start, end) = if next >= cursor {
-            (
-                cursor,
-                if spec.motion == Motion::FileEnd && spec.count == 1 {
-                    text.len()
-                } else if inclusive {
-                    next_boundary(text, next)
-                } else {
-                    next
-                },
-            )
+        let range = if linewise {
+            line_start(text, cursor.min(next))..line_after(text, cursor.max(next))
         } else {
-            (
-                next,
-                if inclusive {
-                    next_boundary(text, cursor)
-                } else {
-                    cursor
-                },
-            )
+            let inclusive = matches!(
+                spec.motion,
+                Motion::WordEnd
+                    | Motion::LineEnd
+                    | Motion::Find(_, _)
+                    | Motion::MatchPair
+                    | Motion::FileEnd
+            );
+            let (start, end) = if next >= cursor {
+                (
+                    cursor,
+                    if spec.motion == Motion::FileEnd && spec.count == 1 {
+                        text.len()
+                    } else if inclusive {
+                        next_boundary(text, next)
+                    } else {
+                        next
+                    },
+                )
+            } else {
+                (
+                    next,
+                    if inclusive {
+                        next_boundary(text, cursor)
+                    } else {
+                        cursor
+                    },
+                )
+            };
+            start..end
         };
-        if start == end {
-            return Outcome::handled();
-        }
         if operator == Operator::Change {
             self.pending_change_motion = Some(spec);
         }
         let outcome =
-            self.apply_operator_range(text, cursor, operator, start..end, false, spec.count);
+            self.apply_operator_range(text, cursor, operator, range, linewise, spec.count);
         if operator == Operator::Delete {
             self.last_change = Some(Recipe::DeleteMotion(spec));
         }
@@ -1233,7 +1285,32 @@ impl VimState {
         _count: usize,
     ) -> Outcome {
         let range = clamp_range(text, range);
+        let range = if operator == Operator::Change && linewise {
+            let end = range
+                .end
+                .checked_sub(1)
+                .map(|offset| line_end(text, offset))
+                .unwrap_or(range.end);
+            range.start..end.max(range.start)
+        } else {
+            range
+        };
         if range.start == range.end {
+            if operator == Operator::Change {
+                self.mode = Mode::Insert;
+                self.insert = Some(InsertSession {
+                    before: text.to_string(),
+                    start: range.start,
+                    kind: InsertKind::Before,
+                    change_motion: self.pending_change_motion.take(),
+                    change_object: self.pending_change_object.take(),
+                    change_line: self.pending_change_line.take(),
+                    record_recipe: true,
+                });
+                let mut result = Outcome::handled();
+                self.set_move(&mut result, range.start, range.start..range.start);
+                return result;
+            }
             return Outcome::handled();
         }
         let value = text[range.clone()].to_string();
@@ -1277,6 +1354,7 @@ impl VimState {
                         change_motion: self.pending_change_motion.take(),
                         change_object: self.pending_change_object.take(),
                         change_line: self.pending_change_line.take(),
+                        record_recipe: true,
                     });
                 } else {
                     self.mode = Mode::Normal;
@@ -1298,6 +1376,7 @@ impl VimState {
             change_motion: None,
             change_object: None,
             change_line: None,
+            record_recipe: true,
         });
         let mut outcome = Outcome::handled();
         self.set_move(&mut outcome, cursor, cursor..cursor);
@@ -1320,6 +1399,7 @@ impl VimState {
             change_motion: None,
             change_object: None,
             change_line: None,
+            record_recipe: true,
         });
         result
     }
@@ -1357,6 +1437,7 @@ impl VimState {
             change_motion: None,
             change_object: None,
             change_line: None,
+            record_recipe: true,
         });
         result
     }
@@ -1430,35 +1511,47 @@ impl VimState {
         };
         let mut simulated = text.to_string();
         let mut active_cursor = cursor;
-        let mut edits = Vec::new();
-        for _ in 0..count.min(text.len().saturating_add(1)) {
+        let budget = (16 * 1024 * 1024).max(text.len().saturating_mul(2));
+        let mut work = 0usize;
+        for _ in 0..count {
             let outcome = self.repeat_once(&simulated, active_cursor, recipe.clone());
-            let mut changed = false;
-            for effect in outcome.effects {
-                if let Effect::Replace(mut edit) = effect {
-                    simulated.replace_range(edit.range.clone(), &edit.replacement);
-                    active_cursor = if !edit.replacement.is_empty()
-                        && edit.cursor == edit.range.start + edit.replacement.len()
-                    {
-                        normal_cursor_in_line(&simulated, edit.cursor)
-                    } else if edit.replacement.is_empty() {
-                        normal_cursor_after_delete(&simulated, edit.cursor)
-                    } else {
-                        edit.cursor.min(simulated.len())
-                    };
-                    edit.cursor = active_cursor;
-                    edits.push(edit);
-                    changed = true;
-                }
-            }
-            if !changed {
+            let Some(edit) = outcome.effects.into_iter().find_map(|effect| match effect {
+                Effect::Replace(edit) => Some(edit),
+                _ => None,
+            }) else {
+                break;
+            };
+            if simulated.get(edit.range.clone()) == Some(edit.replacement.as_str()) {
                 break;
             }
+            let cost = simulated.len().saturating_add(edit.replacement.len());
+            if work.saturating_add(cost) > budget {
+                return Outcome::with_status(StatusMessage::Error(
+                    "Repeat exceeds the work limit",
+                    "Gjentakelsen overskrider arbeidsgrensen",
+                ));
+            }
+            work = work.saturating_add(cost);
+            simulated.replace_range(edit.range.clone(), &edit.replacement);
+            active_cursor = if !edit.replacement.is_empty()
+                && edit.cursor == edit.range.start + edit.replacement.len()
+            {
+                normal_cursor_in_line(&simulated, edit.cursor)
+            } else if edit.replacement.is_empty() {
+                normal_cursor_after_delete(&simulated, edit.cursor)
+            } else {
+                normal_cursor(&simulated, edit.cursor)
+            };
         }
+        let Some((range, replacement)) = diff_range(text, &simulated) else {
+            return Outcome::handled();
+        };
         let mut result = Outcome::handled();
-        result
-            .effects
-            .extend(edits.into_iter().map(Effect::Replace));
+        result.effects.push(Effect::Replace(Edit {
+            range,
+            replacement,
+            cursor: active_cursor,
+        }));
         result
     }
 
@@ -1489,9 +1582,9 @@ impl VimState {
                 let cursor = if value.is_empty() {
                     at
                 } else if insertion_after_break {
-                    at + value.len()
+                    at + 1 + previous_boundary(&value, value.len())
                 } else {
-                    at + value.len() - 1
+                    at + previous_boundary(&value, value.len())
                 };
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
@@ -1505,9 +1598,25 @@ impl VimState {
                 motion,
                 text: value,
             } => {
-                let Some(range) = motion_range(text, cursor, motion) else {
+                let Some(next) = self.motion_target(text, cursor, motion.motion, motion.count)
+                else {
                     return Outcome::handled();
                 };
+                let linewise = matches!(
+                    motion.motion,
+                    Motion::Up | Motion::Down | Motion::FileStart | Motion::FileEnd
+                );
+                let mut range = if linewise {
+                    line_start(text, cursor.min(next))..line_after(text, cursor.max(next))
+                } else {
+                    let Some(range) = motion_range(text, cursor, motion) else {
+                        return Outcome::handled();
+                    };
+                    range
+                };
+                if linewise && range.end > range.start {
+                    range.end = line_end(text, previous_boundary(text, range.end));
+                }
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
                     range: range.clone(),
@@ -1518,9 +1627,10 @@ impl VimState {
             }
             Recipe::ChangeObject {
                 object,
+                count,
                 text: value,
             } => {
-                let Some(range) = text_object_range(text, cursor, object) else {
+                let Some(range) = text_object_range_count(text, cursor, object, count) else {
                     return Outcome::handled();
                 };
                 let mut result = Outcome::handled();
@@ -1554,8 +1664,20 @@ impl VimState {
                 result
             }
             Recipe::DeleteMotion(motion) => {
-                let Some(range) = motion_range(text, cursor, motion) else {
+                let Some(next) = self.motion_target(text, cursor, motion.motion, motion.count)
+                else {
                     return Outcome::handled();
+                };
+                let range = if matches!(
+                    motion.motion,
+                    Motion::Up | Motion::Down | Motion::FileStart | Motion::FileEnd
+                ) {
+                    line_start(text, cursor.min(next))..line_after(text, cursor.max(next))
+                } else {
+                    let Some(range) = motion_range(text, cursor, motion) else {
+                        return Outcome::handled();
+                    };
+                    range
                 };
                 let mut result = Outcome::handled();
                 result.effects.push(Effect::Replace(Edit {
@@ -1780,6 +1902,7 @@ impl VimState {
     fn clear_pending(&mut self) {
         self.pending_operator = None;
         self.pending_text_object = None;
+        self.pending_visual_text_object = None;
         self.pending_change_motion = None;
         self.pending_change_object = None;
         self.pending_change_line = None;
@@ -1835,6 +1958,40 @@ fn repeat_text(value: &str, count: usize, limit: usize) -> String {
     }
     let count = count.min((limit / value.len()).max(1));
     value.repeat(count)
+}
+
+fn diff_range(before: &str, after: &str) -> Option<(Range<usize>, String)> {
+    let mut prefix = 0;
+    for (left, right) in before.chars().zip(after.chars()) {
+        if left != right {
+            break;
+        }
+        prefix += left.len_utf8();
+    }
+    let mut suffix = 0;
+    for (left, right) in before[prefix..]
+        .chars()
+        .rev()
+        .zip(after[prefix..].chars().rev())
+    {
+        let left_len = left.len_utf8();
+        if suffix + left_len > before.len() - prefix
+            || suffix + right.len_utf8() > after.len() - prefix
+        {
+            break;
+        }
+        if left != right {
+            break;
+        }
+        suffix += left_len;
+    }
+    let range = prefix..before.len() - suffix;
+    let replacement = after[prefix..after.len() - suffix].to_string();
+    if range.start == range.end && replacement.is_empty() {
+        None
+    } else {
+        Some((range, replacement))
+    }
 }
 
 fn normal_cursor(text: &str, cursor: usize) -> usize {
@@ -2077,7 +2234,7 @@ fn move_motion(text: &str, cursor: usize, motion: Motion, count: usize) -> usize
             if count > 1 {
                 line_for_number(text, count)
             } else {
-                let offset = text.len().saturating_sub(1);
+                let offset = previous_boundary(text, text.len());
                 move_motion(text, offset, Motion::LineFirstText, 1)
             }
         }
@@ -2532,7 +2689,10 @@ mod tests {
                         selection = next_selection;
                     }
                     Effect::Replace(edit) => {
+                        assert!(text.is_char_boundary(edit.range.start));
+                        assert!(text.is_char_boundary(edit.range.end));
                         text.replace_range(edit.range, &edit.replacement);
+                        assert!(text.is_char_boundary(edit.cursor));
                         *cursor = edit.cursor;
                         selection = *cursor..*cursor;
                     }
@@ -2955,5 +3115,177 @@ mod tests {
         run(&mut engine, &mut text, &mut cursor, "w");
         run(&mut engine, &mut text, &mut cursor, ".");
         assert_eq!(text, "new new three");
+    }
+
+    #[test]
+    fn unicode_file_end_and_open_line_repeat_keep_boundaries() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\nå".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "G");
+        assert!(text.is_char_boundary(cursor));
+
+        text = "one\ntwo".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "o");
+        run(&mut engine, &mut text, &mut cursor, "å");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        run(&mut engine, &mut text, &mut cursor, "gg");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert!(text.is_char_boundary(cursor));
+    }
+
+    #[test]
+    fn visual_pending_find_counts_and_line_anchor_are_preserved() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "a h".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "vfh");
+        assert_eq!(engine.expected_selection, Some(0..3));
+
+        engine.reset(0);
+        text = "a d".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "vfd");
+        assert_eq!(engine.expected_selection, Some(0..3));
+
+        engine.reset(0);
+        text = "one two".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "vf");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(engine.mode, Mode::Normal);
+        assert!(engine.pending_find.is_none());
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "\"");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(engine.mode, Mode::Normal);
+        assert!(!engine.pending_register);
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "i");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert!(engine.pending_visual_text_object.is_none());
+
+        engine.reset(0);
+        text = (1..=12).map(|n| format!("line{n}\n")).collect();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "v10j");
+        assert!(cursor > text.find("line10").unwrap());
+
+        engine.reset(5);
+        text = "one\ntwo x\nthree y".into();
+        cursor = 4;
+        run(&mut engine, &mut text, &mut cursor, "Vjf y");
+        assert_eq!(engine.expected_selection.as_ref().unwrap().start, 4);
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        assert_eq!(engine.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn counted_repeat_is_one_atomic_edit_and_has_a_work_limit() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "a b c".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "x");
+        run(&mut engine, &mut text, &mut cursor, "2.");
+        assert_eq!(text, " c");
+
+        engine.last_change = Some(Recipe::Insert {
+            kind: InsertKind::Before,
+            text: "x".into(),
+        });
+        let outcome = engine.repeat("a", 0, 2);
+        assert_eq!(
+            outcome
+                .effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Replace(_)))
+                .count(),
+            1
+        );
+
+        engine.last_change = Some(Recipe::Insert {
+            kind: InsertKind::Before,
+            text: String::new(),
+        });
+        let outcome = engine.repeat("a", 0, MAX_COUNT);
+        assert!(outcome.effects.is_empty());
+
+        engine.last_change = Some(Recipe::Insert {
+            kind: InsertKind::Before,
+            text: "x".repeat(MAX_EDIT_BYTES),
+        });
+        let outcome = engine.repeat("", 0, 20);
+        assert!(outcome
+            .effects
+            .iter()
+            .all(|effect| !matches!(effect, Effect::Replace(_))));
+        assert_eq!(
+            outcome.status.as_ref().map(|status| status.text(false)),
+            Some("Repeat exceeds the work limit".into())
+        );
+    }
+
+    #[test]
+    fn line_motion_change_and_counted_change_object_are_relative() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        let mut text = "one\ntwo\nthree".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "dj");
+        assert_eq!(text, "three");
+
+        engine.reset(0);
+        text = "one two three four".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "c2iw");
+        run(&mut engine, &mut text, &mut cursor, "new");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        run(&mut engine, &mut text, &mut cursor, "w");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert_eq!(text, "new new");
+
+        engine.reset(0);
+        text = "one two".into();
+        cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "v");
+        run(&mut engine, &mut text, &mut cursor, "l");
+        run(&mut engine, &mut text, &mut cursor, "c");
+        run(&mut engine, &mut text, &mut cursor, "x");
+        run(&mut engine, &mut text, &mut cursor, "Escape");
+        run(&mut engine, &mut text, &mut cursor, ".");
+        let after_visual = text.clone();
+        run(&mut engine, &mut text, &mut cursor, ".");
+        assert_eq!(text, after_visual);
+    }
+
+    #[test]
+    fn suspend_cancels_prefixes_but_keeps_insert_mode() {
+        let mut engine = VimState::with_registers(Arc::new(Mutex::new(RegisterBank::default())));
+        engine.last_change = Some(Recipe::Insert {
+            kind: InsertKind::Before,
+            text: "x".into(),
+        });
+        engine.pending_operator = Some((Operator::Delete, 1));
+        engine.count = "12".into();
+        engine.suspend();
+        assert_eq!(engine.mode, Mode::Normal);
+        assert!(engine.pending_operator.is_none());
+        assert!(engine.last_change.is_some());
+
+        engine.mode = Mode::VisualLine;
+        engine.visual_anchor = Some(0);
+        engine.last_search = Some("two".into());
+        engine.suspend();
+        assert_eq!(engine.mode, Mode::Normal);
+        assert!(engine.visual_anchor.is_none());
+        assert_eq!(engine.last_search.as_deref(), Some("two"));
+
+        let mut text = "one".to_string();
+        let mut cursor = 0;
+        run(&mut engine, &mut text, &mut cursor, "i");
+        engine.suspend();
+        assert_eq!(engine.mode, Mode::Insert);
+        assert!(engine.insert.is_none());
+        assert!(engine.last_change.is_none());
     }
 }

@@ -364,8 +364,29 @@ impl Document {
                 }
             }
         });
+        let editor_focus = this.editor.read(cx).focus_handle(cx).clone();
+        let vim_blur_subscription = cx.on_blur(&editor_focus, window, |this, _window, cx| {
+            if !this.vim_enabled {
+                return;
+            }
+            let clear_selection = matches!(
+                this.vim.mode(),
+                crate::vim::Mode::Visual | crate::vim::Mode::VisualLine
+            );
+            let cursor = this.editor.read(cx).cursor();
+            this.vim.suspend();
+            if clear_selection {
+                this.editor.update(cx, |editor, cx| {
+                    editor.set_selected_range(cursor..cursor, cx);
+                });
+            }
+            this.vim_internal_text = None;
+            this.vim_insert_keystroke_pending = false;
+            cx.emit(DocumentEvent::Selection);
+        });
         this._subscriptions = vec![
             vim_subscription,
+            vim_blur_subscription,
             cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     let is_vim_edit = if this.vim_enabled {

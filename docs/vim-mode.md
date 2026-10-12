@@ -29,8 +29,15 @@ This is a focused command subset, not full Vim compatibility.
 - `p` and `P` paste after or before the cursor; linewise registers paste whole
   lines.
 - `.` repeats supported Normal-mode edits and changes relative to the current
-  cursor. It does not repeat yanks or navigation.
+  cursor. It does not repeat yanks, navigation, or Visual edits; Visual changes
+  are intentionally non-repeatable in this focused subset.
 - `u` invokes native Undo and `Ctrl-r` invokes native Redo.
+
+Counts are bounded to keep command processing linear. Counted dot repeats are
+simulated atomically and then applied as one native editor replacement. The
+repeat work budget is at least 16 MiB, or twice the initial note size when that
+is larger; an over-budget repeat is rejected with a localized status and no
+partial edit. A repeat that makes no change emits no edit.
 
 The editor's native undo system does not expose a Vim transaction API. A change
 operator's deletion and the text subsequently typed in Insert mode may therefore
