@@ -9822,7 +9822,10 @@ impl Workspace {
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().warning)
-                    .child("Changed on disk — saving paused"),
+                    .child(self.tr(
+                        "Changed on disk — saving paused",
+                        "Endret på disken — lagring satt på pause",
+                    )),
             )
             .child(
                 h_flex()
@@ -9832,7 +9835,7 @@ impl Workspace {
                         Button::new("conflict-save-copy")
                             .ghost()
                             .xsmall()
-                            .label("Save copy…")
+                            .label(self.tr("Save copy…", "Lagre kopi…"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_save_as(&SaveFileAs, window, cx);
                             })),
@@ -9841,7 +9844,7 @@ impl Workspace {
                         Button::new("conflict-reload")
                             .ghost()
                             .xsmall()
-                            .label("Reload from disk")
+                            .label(self.tr("Reload from disk", "Last inn fra disk på nytt"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_reload_from_disk(reload_doc.clone(), window, cx);
                             })),
@@ -10708,7 +10711,11 @@ impl Workspace {
                                 cx.theme().muted_foreground
                             })
                             .child(if conflict {
-                                format!("{} — changed on disk", rel_path)
+                                format!(
+                                    "{} — {}",
+                                    rel_path,
+                                    self.tr("changed on disk", "endret på disken")
+                                )
                             } else if dirty {
                                 format!("{} •", rel_path)
                             } else {
