@@ -3444,6 +3444,34 @@ impl Document {
         cx.notify();
     }
 
+    pub(crate) fn apply_composer_canvas_snapshot(
+        &mut self,
+        expected: &[u8],
+        bytes: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.is_canvas
+            || self.is_read_only()
+            || self.dirty
+            || self.conflict
+            || self.disk_bytes.as_deref() != Some(expected)
+            || self.editor.read(cx).value().as_bytes() != expected
+            || std::fs::read(&self.path).ok().as_deref() != Some(bytes.as_slice())
+        {
+            return false;
+        }
+        let Ok(text) = String::from_utf8(bytes.clone()) else {
+            return false;
+        };
+        self.save_task.take();
+        self.canvas_history.clear();
+        self.replace_canvas_source(&text, window, cx);
+        self.canvas_history.clear();
+        self.mark_composer_written(bytes, cx);
+        true
+    }
+
     /// Replace a byte range with new text, leaving the caret at its end.
     pub fn replace_range(
         &mut self,

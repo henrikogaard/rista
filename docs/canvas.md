@@ -65,6 +65,14 @@ a closed Canvas during the subsequent guarded write, its data is preserved and
 the operation reports an incomplete reference update rather than overwriting
 the external change.
 
+Composer merge and extraction update recognized file-card paths and text-card
+Markdown links in boards. Merge may also retarget group-background paths.
+Extraction retargets anchored references only when their heading or block
+moves; whole-file file-card references stay at the source. Link-card URLs and
+unknown fields are left untouched. These writes belong to Composer's guarded
+multi-file Undo/Redo; applying one clears the board's independent local
+snapshot history so it cannot restore pre-transaction references.
+
 **New File** defaults to creating a note; choose **Canvas** for a board. The
 dedicated **New Canvas** command remains available from the File menu, palette,
 and vault tree.

@@ -3934,7 +3934,7 @@ impl Workspace {
     ) -> bool {
         let conflicts = |workspace: &Workspace, owner: Option<&Entity<Document>>, cx: &App| {
             changes.iter().any(|(path, before, after)| {
-                if path.extension().is_none_or(|extension| extension != "md") {
+                if !crate::note_composer::is_composer_reference_document(path) {
                     return false;
                 }
                 let expected = match direction {
@@ -4009,8 +4009,12 @@ impl Workspace {
                     continue;
                 }
                 entity.update(cx, |doc, cx| {
-                    doc.replace_range(0..current.len(), text.clone(), window, cx);
-                    doc.mark_composer_written(after.clone(), cx);
+                    if doc.is_canvas {
+                        doc.apply_composer_canvas_snapshot(before, after.clone(), window, cx);
+                    } else {
+                        doc.replace_range(0..current.len(), text.clone(), window, cx);
+                        doc.mark_composer_written(after.clone(), cx);
+                    }
                 });
             }
         }
@@ -4027,7 +4031,7 @@ impl Workspace {
         let mut text_changes = Vec::new();
         let mut deleted_paths = Vec::new();
         for (path, before, after) in changes {
-            if path.extension().is_none_or(|extension| extension != "md") {
+            if !crate::note_composer::is_composer_reference_document(path) {
                 continue;
             }
             let (expected, desired) = match direction {
