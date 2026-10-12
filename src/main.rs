@@ -216,14 +216,21 @@ fn main() {
         // before visiting every workspace through its window handle.
         cx.on_action(|_: &Quit, cx| cx.defer(windows::quit));
         cx.on_action(|_: &NewWindow, cx| {
-            cx.defer(|cx| windows::open_new_window(Vec::new(), cx));
+            cx.defer(|cx| {
+                windows::open_new_window(Vec::new(), cx);
+            });
         });
         cx.on_action(|_: &OpenInNewWindow, cx| {
             cx.defer(windows::open_active_document_in_new_window);
         });
+        cx.on_action(|_: &MoveToNewWindow, cx| {
+            cx.defer(windows::move_active_document_to_new_window);
+        });
         cx.on_action(|action: &OpenPathInNewWindow, cx| {
             let path = std::path::PathBuf::from(&action.path);
-            cx.defer(move |cx| windows::open_new_window(vec![path], cx));
+            cx.defer(move |cx| {
+                windows::open_new_window(vec![path], cx);
+            });
         });
         cx.activate(true);
         updater::start();
@@ -432,6 +439,15 @@ fn menus(language: settings::Language) -> Vec<Menu> {
                     .text("Open in New Window", "Åpne i nytt vindu")
                     .into(),
                 action: Box::new(OpenInNewWindow),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: language
+                    .text("Move to New Window", "Flytt til nytt vindu")
+                    .into(),
+                action: Box::new(MoveToNewWindow),
                 os_action: None,
                 checked: false,
                 disabled: false,

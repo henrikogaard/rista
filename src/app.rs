@@ -264,6 +264,16 @@ struct OpenDoc {
     _focus_sub: Subscription,
 }
 
+fn tab_matches_window_move(
+    doc: &Document,
+    snapshot: &crate::windows::TabWindowMove,
+    cx: &App,
+) -> bool {
+    doc.path.canonicalize().is_ok_and(|path| {
+        snapshot.matches(&path, doc.editor.read(cx).value().as_ref(), doc.conflict)
+    })
+}
+
 fn preview_tab_is_replaceable(preview: bool, dirty: bool, conflict: bool, pinned: bool) -> bool {
     preview && !dirty && !conflict && !pinned
 }
@@ -347,6 +357,7 @@ pub(crate) enum PaletteCmd {
     DeleteWorkspace,
     NewWindow,
     OpenInNewWindow,
+    MoveToNewWindow,
     NewFile,
     NewFolder,
     OpenFile,
@@ -452,6 +463,7 @@ impl PaletteCmd {
         Self::DeleteWorkspace,
         Self::NewWindow,
         Self::OpenInNewWindow,
+        Self::MoveToNewWindow,
         Self::NewFile,
         Self::NewUniqueNote,
         Self::NewFromTemplate,
@@ -558,6 +570,7 @@ impl PaletteCmd {
             DeleteWorkspace => "delete_workspace",
             NewWindow => "new_window",
             OpenInNewWindow => "open_in_new_window",
+            MoveToNewWindow => "move_to_new_window",
             NewFile => "new_file",
             NewUniqueNote => "new_unique_note",
             NewFromTemplate => "new_from_template",
@@ -669,6 +682,7 @@ impl PaletteCmd {
             DeleteWorkspace => "Slett arbeidsoppsett…",
             NewWindow => "Nytt vindu",
             OpenInNewWindow => "Åpne i nytt vindu",
+            MoveToNewWindow => "Flytt til nytt vindu",
             NewFile => "Ny fil",
             NewUniqueNote => "Nytt unikt notat",
             NewFromTemplate => "Nytt notat fra mal",
@@ -799,6 +813,11 @@ impl PaletteCmd {
                 assets::IconName::AppWindow,
                 "Open in New Window",
                 &["open", "document", "window"],
+            ),
+            MoveToNewWindow => (
+                assets::IconName::AppWindow,
+                "Move to New Window",
+                &["move", "tab", "window"],
             ),
             NewFile => (assets::IconName::FilePlus, "New file", &["create", "note"]),
             NewBase => (
@@ -2421,6 +2440,105 @@ impl Workspace {
 
     pub(crate) fn active_document_path(&self, cx: &App) -> Option<PathBuf> {
         self.active_doc().map(|doc| doc.read(cx).path.clone())
+    }
+
+    pub(crate) fn prepare_tab_window_move(
+        &mut self,
+        token: Option<TabToken>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::windows::TabWindowMove> {
+        let token = token.or_else(|| {
+            self.active
+                .and_then(|index| self.doc_tokens.get(index).copied())
+        })?;
+        let index = self.doc_index_for_token(token)?;
+        let doc = self.docs[index].entity.clone();
+        if doc.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
+            self.note_status(
+                self.tr("Save failed; tab kept.", "Lagring feilet; fane beholdt."),
+                cx,
+            );
+            return None;
+        }
+        let Some(path) = doc
+            .read(cx)
+            .path
+            .canonicalize()
+            .ok()
+            .filter(|path| path.is_file())
+        else {
+            self.note_status(
+                self.tr(
+                    "File unavailable; tab kept.",
+                    "Fil utilgjengelig; fane beholdt.",
+                ),
+                cx,
+            );
+            return None;
+        };
+        let doc = doc.read(cx);
+        let editor = doc.editor.read(cx);
+        let group = self.layout.group_for(token)?;
+        let mode = self
+            .layout
+            .group_specs()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == group)?
+            .3;
+        Some(crate::windows::TabWindowMove {
+            token,
+            path,
+            text: editor.value().to_string(),
+            cursor: editor.cursor(),
+            pinned: self.is_pinned(&doc.path),
+            mode,
+        })
+    }
+
+    pub(crate) fn accept_tab_window_move(
+        &mut self,
+        snapshot: &crate::windows::TabWindowMove,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(doc) = self.active_doc().cloned() else {
+            return false;
+        };
+        if !tab_matches_window_move(doc.read(cx), snapshot, cx) {
+            return false;
+        }
+        if snapshot.pinned && !self.is_pinned(&snapshot.path) {
+            self.settings
+                .pinned_tabs
+                .push(snapshot.path.to_string_lossy().into_owned());
+        }
+        doc.read(cx).editor.clone().update(cx, |editor, cx| {
+            editor.set_selected_range(snapshot.cursor..snapshot.cursor, cx);
+        });
+        self.set_pane_view_mode(self.layout.focused(), snapshot.mode, window, cx);
+        self.persist_tabs(cx);
+        self.focus_active_pane_after_mount(window, cx);
+        true
+    }
+
+    pub(crate) fn finish_tab_window_move(
+        &mut self,
+        snapshot: &crate::windows::TabWindowMove,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self.doc_index_for_token(snapshot.token) else {
+            return false;
+        };
+        let doc = self.docs[index].entity.read(cx);
+        if !tab_matches_window_move(doc, snapshot, cx) {
+            return false;
+        }
+        let path = doc.path.to_string_lossy().into_owned();
+        self.settings.pinned_tabs.retain(|pinned| pinned != &path);
+        self.close_tab_now(index, window, cx);
+        true
     }
 
     /// `(`/`[`/`{`/quotes/etc. — insert the pair, wrap the selection, or
@@ -6836,6 +6954,9 @@ impl Workspace {
             PaletteCmd::NewWindow => window.dispatch_action(NewWindow.boxed_clone(), cx),
             PaletteCmd::OpenInNewWindow => {
                 window.dispatch_action(OpenInNewWindow.boxed_clone(), cx)
+            }
+            PaletteCmd::MoveToNewWindow => {
+                window.dispatch_action(MoveToNewWindow.boxed_clone(), cx)
             }
             PaletteCmd::NewFile => self.on_new_file(&NewFile, window, cx),
             PaletteCmd::NewBase => self.new_base(window, cx),
@@ -12080,6 +12201,9 @@ impl Workspace {
                     let reveal_label = workspace.tr("Reveal in tree", "Vis i filtrær");
                     let open_in_new_window =
                         workspace.tr("Open in New Window", "Åpne i nytt vindu");
+                    let move_to_new_window =
+                        workspace.tr("Move to New Window", "Flytt til nytt vindu");
+                    let source_window_id = workspace.window_id;
                     let split_right = workspace.tr("Split right", "Del til høyre");
                     let split_down = workspace.tr("Split down", "Del ned");
                     let next_pane = workspace.tr("Next pane", "Neste redigeringsfelt");
@@ -12130,6 +12254,19 @@ impl Workspace {
                                         );
                                     });
                                 }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(move_to_new_window)
+                            .icon(assets::IconName::AppWindow)
+                            .on_click(move |_, _, cx| {
+                                cx.defer(move |cx| {
+                                    crate::windows::move_tab_to_new_window(
+                                        source_window_id,
+                                        Some(token),
+                                        cx,
+                                    );
+                                });
                             }),
                     )
                     .separator()
@@ -12510,27 +12647,35 @@ impl Workspace {
         let banner = h_flex()
             .w_full()
             .min_h(px(36.))
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap_2()
             .px_3()
+            .py_1()
             .bg(cx.theme().warning.opacity(0.12))
             .child(
                 div()
+                    .max_w_full()
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().warning)
-                    .child("Changed on disk — saving paused"),
+                    .child(self.tr(
+                        "Changed on disk — saving paused",
+                        "Endret på disken — lagring satt på pause",
+                    )),
             )
             .child(
                 h_flex()
+                    .max_w_full()
+                    .flex_wrap()
                     .items_center()
                     .gap_1()
                     .child(
                         Button::new("conflict-save-copy")
                             .ghost()
                             .xsmall()
-                            .label("Save copy…")
+                            .label(self.tr("Save copy…", "Lagre kopi…"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_save_as(&SaveFileAs, window, cx);
                             })),
@@ -12539,7 +12684,7 @@ impl Workspace {
                         Button::new("conflict-reload")
                             .ghost()
                             .xsmall()
-                            .label("Reload from disk")
+                            .label(self.tr("Reload from disk", "Last inn fra disk på nytt"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_reload_from_disk(reload_doc.clone(), window, cx);
                             })),
@@ -13514,7 +13659,11 @@ impl Workspace {
                                 cx.theme().muted_foreground
                             })
                             .child(if conflict {
-                                format!("{} — changed on disk", rel_path)
+                                format!(
+                                    "{} — {}",
+                                    rel_path,
+                                    self.tr("changed on disk", "endret på disken")
+                                )
                             } else if dirty {
                                 format!("{} •", rel_path)
                             } else {

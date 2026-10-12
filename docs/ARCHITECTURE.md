@@ -51,6 +51,12 @@ The comparison is a guarded check followed by a write, not an atomic compare-and
 
 ## Preview and structured notes
 
+### Moving tabs between windows
+
+**Move to New Window** / **Flytt til nytt vindu** is available from the tab context menu, command palette and File menu. It saves pending edits with the normal conflict guard, opens the saved document in a new window, and removes the original tab only after the destination loads matching content. Save failures, conflicts or a destination mismatch keep the original tab. The last source tab may move without closing its window; an empty split pane collapses normally.
+
+The destination inherits the source vault, pane mode, pin state and caret. Other tabs and windows are left in place. **Open in New Window** continues to keep both copies open. A move reopens the saved document rather than transferring a window-bound editor: prior Undo/Redo history, selection range and scroll position do not transfer. Subsequent edits have normal Undo/Redo. Both resulting window sessions participate in normal session restore.
+
 The preview pipeline supports headings, local images, cover/banner content, callouts, wiki-note transclusion, base embeds, and a subset of math notation. Math support is not full TeX. `.base` views provide query/formula-backed structured collections and can relate or roll up note properties.
 
 ## Platform and release scope
