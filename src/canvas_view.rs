@@ -758,6 +758,7 @@ impl CanvasView {
 
     fn apply_model(&mut self, next: CanvasDocument, window: &mut Window, cx: &mut Context<Self>) {
         self.apply_model_group(next, None, window, cx);
+        self.focus_handle.focus(window, cx);
     }
 
     fn apply_model_group(
@@ -875,6 +876,15 @@ impl CanvasView {
         cx.notify();
     }
 
+    fn focus_after_overlay(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        let focus = self.focus_handle.clone();
+        window.on_next_frame(move |window, cx| {
+            if !window.has_active_dialog(cx) {
+                focus.focus(window, cx);
+            }
+        });
+    }
+
     fn add_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.add_text_at(self.center_world(window), window, cx);
     }
@@ -903,6 +913,12 @@ impl CanvasView {
             dialog
                 .title(language.text("Add link", "Legg til lenke"))
                 .child(Input::new(&input).appearance(true))
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| this.focus_after_overlay(window, cx));
+                    }
+                })
                 .on_ok({
                     let input = input.clone();
                     let view = view.clone();
@@ -1000,6 +1016,9 @@ impl CanvasView {
                     });
                 }
             }
+            let _ = window.update(|window, cx| {
+                let _ = view.update(cx, |this, cx| this.focus_after_overlay(window, cx));
+            });
         })
         .detach();
     }
@@ -1208,6 +1227,12 @@ impl CanvasView {
                 .title(language.text("Canvas selection", "Canvas-utvalg"))
                 .w(px(420.))
                 .child(body)
+                .on_close({
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |this, cx| this.focus_after_overlay(window, cx));
+                    }
+                })
                 .on_ok({
                     let view = view.clone();
                     let id = id.clone();
@@ -1482,6 +1507,7 @@ impl CanvasView {
             self.source_revision = None;
             cx.notify();
         }
+        self.focus_handle.focus(window, cx);
     }
 
     fn duplicate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
