@@ -158,6 +158,8 @@ pub struct Settings {
     pub ui_font_size: f32,
     pub soft_wrap: bool,
     pub show_line_numbers: bool,
+    #[serde(default)]
+    pub vim_mode: bool,
     pub spellcheck_enabled: bool,
     pub spellcheck_languages: Vec<String>,
     pub tab_size: usize,
@@ -426,6 +428,7 @@ impl Default for Settings {
             ui_font_size: 13.0,
             soft_wrap: true,
             show_line_numbers: true,
+            vim_mode: false,
             spellcheck_enabled: cfg!(target_os = "macos"),
             spellcheck_languages: Vec::new(),
             tab_size: 4,
@@ -554,6 +557,8 @@ mod tests {
         );
         assert_eq!(settings.spellcheck_enabled, cfg!(target_os = "macos"));
         assert!(settings.spellcheck_languages.is_empty());
+        assert!(!settings.vim_mode);
+        settings.vim_mode = true;
         assert_eq!(settings.dark_theme, crate::theme::NIGHT_THEME_NAME);
         assert!(!settings.show_other_files);
         settings.show_other_files = true;
@@ -571,6 +576,7 @@ mod tests {
         assert_eq!(restored.light_theme, "Fjord Day");
         assert_eq!(restored.properties_visibility, PropertiesVisibility::Hidden);
         assert!(restored.spellcheck_enabled);
+        assert!(restored.vim_mode);
         assert_eq!(
             restored.spellcheck_languages,
             vec!["en_US".to_string(), "nb_NO".to_string()]

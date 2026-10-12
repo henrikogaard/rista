@@ -45,6 +45,7 @@ mod terminal_session;
 mod theme;
 mod updater;
 mod vault;
+mod vim;
 mod windows;
 
 use crate::actions::*;

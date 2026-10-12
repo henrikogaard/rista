@@ -5,6 +5,7 @@ use crate::history;
 use crate::preview;
 use crate::settings::Settings;
 use crate::spellcheck::{self, Analysis, Projection, SpellChecker};
+use crate::vim::{Effect as VimEffect, Key as VimKey, Outcome as VimOutcome, VimState};
 use gpui_kit::component::input::{
     EditorState, InputEvent, TabSize, TextDecoration, TextDecorationCollection,
 };
@@ -120,6 +121,10 @@ pub struct Document {
     /// Whether the preview's linked-mentions footer is expanded.
     pub mentions_open: bool,
     _subscriptions: Vec<Subscription>,
+    vim: VimState,
+    vim_enabled: bool,
+    vim_internal_text: Option<String>,
+    vim_insert_keystroke_pending: bool,
 }
 
 pub(crate) struct InitialDocument {
@@ -275,14 +280,104 @@ impl Document {
             outgoing_unresolved: Vec::new(),
             mentions_open: false,
             _subscriptions: Vec::new(),
+            vim: VimState::new(),
+            vim_enabled: settings.vim_mode,
+            vim_internal_text: None,
+            vim_insert_keystroke_pending: false,
         };
 
         this.refresh_decorations(cx);
         this.refresh_linked_mentions(cx);
         this.refresh_outgoing(cx);
+        let weak_document = cx.weak_entity();
+        let vim_subscription = cx.intercept_keystrokes(move |event, window, cx| {
+            let modifiers = &event.keystroke.modifiers;
+            if modifiers.platform || modifiers.alt || modifiers.function {
+                return;
+            }
+            let key = normalize_vim_key(&event.keystroke);
+            let Some(key) = key else {
+                return;
+            };
+            let Ok((enabled, read_only, focus, wants_clipboard, insert_mode)) = weak_document
+                .update(cx, |document, cx| {
+                    (
+                        document.vim_enabled,
+                        document.is_read_only(),
+                        document.editor.read(cx).focus_handle(cx).clone(),
+                        document.vim.wants_clipboard(&key),
+                        document.vim.is_insert(),
+                    )
+                })
+            else {
+                return;
+            };
+            if !enabled || read_only || !focus.is_focused(window) {
+                return;
+            }
+            if insert_mode && !matches!(key, VimKey::Escape | VimKey::CtrlR) {
+                let is_text = matches!(key, VimKey::Text(_))
+                    && event
+                        .keystroke
+                        .key_char
+                        .as_deref()
+                        .is_some_and(|value| !value.is_empty());
+                let is_edit_key = matches!(key, VimKey::Backspace | VimKey::Delete | VimKey::Enter)
+                    && !modifiers.control
+                    && !modifiers.shift;
+                if is_text || is_edit_key {
+                    let _ = weak_document.update(cx, |document, _| {
+                        document.vim_insert_keystroke_pending = true;
+                    });
+                }
+                return;
+            }
+            let clipboard = wants_clipboard
+                .then(|| cx.read_from_clipboard())
+                .flatten()
+                .and_then(|item| item.text());
+            let Ok(outcome) = weak_document.update(cx, |document, cx| {
+                document.handle_vim_key(key, clipboard.as_deref(), window, cx)
+            }) else {
+                return;
+            };
+            if !outcome.handled {
+                return;
+            }
+            window.prevent_default();
+            cx.stop_propagation();
+            for effect in outcome.effects {
+                match effect {
+                    VimEffect::Undo => {
+                        window.dispatch_action(Box::new(gpui_kit::component::input::Undo), cx)
+                    }
+                    VimEffect::Redo => {
+                        window.dispatch_action(Box::new(gpui_kit::component::input::Redo), cx)
+                    }
+                    VimEffect::Save => {
+                        window.dispatch_action(Box::new(crate::actions::SaveFile), cx)
+                    }
+                    VimEffect::ClipboardWrite(text) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                    VimEffect::Move { .. } | VimEffect::Replace(_) => {}
+                }
+            }
+        });
         this._subscriptions = vec![
+            vim_subscription,
             cx.subscribe_in(&this.editor, window, |this, _editor, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
+                    let current = this.editor.read(cx).value().to_string();
+                    let is_vim_edit = this
+                        .vim_internal_text
+                        .take()
+                        .is_some_and(|expected| expected == current);
+                    let is_insert_keystroke =
+                        std::mem::take(&mut this.vim_insert_keystroke_pending);
+                    if !is_vim_edit && !is_insert_keystroke {
+                        this.vim.invalidate_external_edit();
+                    }
                     this.on_edited(window, cx);
                 }
             }),
@@ -326,6 +421,100 @@ impl Document {
 
         this.schedule_spellcheck(cx);
         this
+    }
+
+    fn handle_vim_key(
+        &mut self,
+        key: VimKey,
+        clipboard: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> VimOutcome {
+        let text = self.editor.read(cx).value().to_string();
+        let cursor = self.editor.read(cx).cursor();
+        let selection = self.editor.read(cx).selected_range();
+        let outcome = self.vim.handle(&text, cursor, selection, key, clipboard);
+        for effect in &outcome.effects {
+            match effect {
+                VimEffect::Move { selection, .. } => {
+                    self.editor.update(cx, |editor, cx| {
+                        editor.set_selected_range(selection.clone(), cx);
+                    });
+                }
+                VimEffect::Replace(edit) => {
+                    let mut expected = text.clone();
+                    expected.replace_range(edit.range.clone(), &edit.replacement);
+                    self.vim_internal_text = Some(expected);
+                    self.editor.update(cx, |editor, cx| {
+                        editor.set_selected_range(edit.range.clone(), cx);
+                        editor.replace(edit.replacement.clone(), window, cx);
+                        editor.set_selected_range(edit.cursor..edit.cursor, cx);
+                    });
+                }
+                VimEffect::Undo
+                | VimEffect::Redo
+                | VimEffect::Save
+                | VimEffect::ClipboardWrite(_) => {}
+            }
+        }
+        if outcome.state_changed {
+            cx.emit(DocumentEvent::Selection);
+            cx.notify();
+        }
+        outcome
+    }
+
+    pub fn vim_status(&self, language: crate::settings::Language) -> Option<String> {
+        if !self.vim_enabled || self.is_read_only() {
+            return None;
+        }
+        let norwegian = matches!(language, crate::settings::Language::Norwegian);
+        let mode = match self.vim.mode() {
+            crate::vim::Mode::Normal => "NORMAL",
+            crate::vim::Mode::Insert => {
+                if norwegian {
+                    "SETT INN"
+                } else {
+                    "INSERT"
+                }
+            }
+            crate::vim::Mode::Visual => {
+                if norwegian {
+                    "VISUELL"
+                } else {
+                    "VISUAL"
+                }
+            }
+            crate::vim::Mode::VisualLine => {
+                if norwegian {
+                    "VISUELL LINJE"
+                } else {
+                    "V-LINE"
+                }
+            }
+            crate::vim::Mode::Command => {
+                if norwegian {
+                    "KOMMANDO"
+                } else {
+                    "COMMAND"
+                }
+            }
+            crate::vim::Mode::Search => {
+                if norwegian {
+                    "SØK"
+                } else {
+                    "SEARCH"
+                }
+            }
+        };
+        let mut parts = vec![format!("Vim {mode}")];
+        if let Some(entry) = self.vim.entry_text() {
+            parts.push(entry);
+        }
+        if let Some(status) = self.vim.status_text(norwegian) {
+            parts.push(status);
+        }
+        Some(parts.join(" · "))
     }
 
     pub fn title(&self) -> String {
@@ -1655,9 +1844,13 @@ impl Document {
         self.save_task.take();
         self.revision += 1;
         self.reloading = true;
+        self.vim_internal_text = None;
+        self.vim_insert_keystroke_pending = false;
         self.editor.update(cx, |editor, cx| {
             editor.set_value(content, window, cx);
         });
+        self.vim.reset(self.editor.read(cx).cursor());
+        cx.emit(DocumentEvent::Selection);
         self.reloading = false;
         self.disk_bytes = Some(bytes);
         self.mtime = std::fs::metadata(&self.path)
@@ -2998,6 +3191,13 @@ impl Document {
             || self.spell_languages != settings.spellcheck_languages;
         self.spell_enabled = settings.spellcheck_enabled;
         self.spell_languages = settings.spellcheck_languages.clone();
+        if self.vim_enabled != settings.vim_mode {
+            self.vim_enabled = settings.vim_mode;
+            self.vim.reset(self.editor.read(cx).cursor());
+            self.vim_internal_text = None;
+            self.vim_insert_keystroke_pending = false;
+            cx.emit(DocumentEvent::Selection);
+        }
         if spell_changed {
             self.spell_analysis = None;
             self.clear_spellcheck(cx);
@@ -3010,6 +3210,29 @@ impl Document {
             self.schedule_spellcheck(cx);
         }
         cx.notify();
+    }
+}
+
+fn normalize_vim_key(keystroke: &Keystroke) -> Option<VimKey> {
+    if keystroke.modifiers.control {
+        return match keystroke.key.as_str() {
+            "r" => Some(VimKey::CtrlR),
+            "[" | "bracketleft" | "openbracket" => Some(VimKey::Escape),
+            _ => None,
+        };
+    }
+    let value = keystroke
+        .key_char
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&keystroke.key);
+    match value.to_ascii_lowercase().as_str() {
+        "escape" => Some(VimKey::Escape),
+        "enter" | "return" => Some(VimKey::Enter),
+        "backspace" => Some(VimKey::Backspace),
+        "delete" => Some(VimKey::Delete),
+        _ if value.is_empty() => None,
+        _ => Some(VimKey::Text(value.to_string())),
     }
 }
 
