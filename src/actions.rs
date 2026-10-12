@@ -9,6 +9,7 @@ actions!(
         NewFile,
         NewWindow,
         OpenInNewWindow,
+        MoveToNewWindow,
         NewFolder,
         OpenFile,
         OpenFolder,

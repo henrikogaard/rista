@@ -65,6 +65,14 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         OpenInNewWindow
     ),
     action_command!(
+        "move_to_new_window",
+        "Move to New Window",
+        "Flytt til nytt vindu",
+        None,
+        None,
+        MoveToNewWindow
+    ),
+    action_command!(
         "new_file",
         "New file",
         "Ny fil",

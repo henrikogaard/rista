@@ -1,4 +1,5 @@
 use crate::app::Workspace;
+use crate::editor_layout::{PaneMode, TabToken};
 use crate::settings::{Settings, WindowSession};
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
@@ -34,6 +35,77 @@ pub(crate) struct WindowRecord {
     pub(crate) id: u64,
     pub(crate) window: AnyWindowHandle,
     pub(crate) workspace: WeakEntity<Workspace>,
+}
+
+pub(crate) struct TabWindowMove {
+    pub(crate) token: TabToken,
+    pub(crate) path: PathBuf,
+    pub(crate) text: String,
+    pub(crate) cursor: usize,
+    pub(crate) pinned: bool,
+    pub(crate) mode: PaneMode,
+}
+
+impl TabWindowMove {
+    pub(crate) fn matches(&self, path: &std::path::Path, text: &str, conflict: bool) -> bool {
+        !conflict && path == self.path && text == self.text
+    }
+}
+
+pub(crate) fn move_active_document_to_new_window(cx: &mut App) {
+    if let Some(record) = cx.global::<WindowManager>().active() {
+        move_tab_to_new_window(record.id, None, cx);
+    }
+}
+
+pub(crate) fn move_tab_to_new_window(id: u64, token: Option<TabToken>, cx: &mut App) {
+    let Some(source) = cx
+        .global::<WindowManager>()
+        .records
+        .iter()
+        .find(|record| record.id == id)
+        .cloned()
+    else {
+        return;
+    };
+    let snapshot = source.window.update(cx, |_, window, cx| {
+        source.workspace.update(cx, |workspace, cx| {
+            workspace.prepare_tab_window_move(token, window, cx)
+        })
+    });
+    let Ok(Ok(Some(snapshot))) = snapshot else {
+        return;
+    };
+    // The source remains mounted until the new window has loaded matching bytes.
+    let Some(destination) =
+        open_new_window_from_source(vec![snapshot.path.clone()], Some(source.clone()), cx)
+    else {
+        return;
+    };
+    let accepted = destination.window.update(cx, |_, window, cx| {
+        destination.workspace.update(cx, |workspace, cx| {
+            workspace.accept_tab_window_move(&snapshot, window, cx)
+        })
+    });
+    let _ = source.window.update(cx, |_, window, cx| {
+        let _ = source.workspace.update(cx, |workspace, cx| {
+            if matches!(accepted, Ok(Ok(true)))
+                && workspace.finish_tab_window_move(&snapshot, window, cx)
+            {
+                return;
+            }
+            workspace.note_status(
+                workspace.tr(
+                    "The note could not be moved safely. The original tab was kept.",
+                    "Notatet kunne ikke flyttes trygt. Den opprinnelige fanen ble beholdt.",
+                ),
+                cx,
+            );
+        });
+    });
+    let _ = destination
+        .window
+        .update(cx, |_, window, _cx| window.activate_window());
 }
 
 pub(crate) struct WindowManager {
@@ -195,7 +267,15 @@ pub(crate) fn open_workspace(initial_paths: Vec<PathBuf>, restore_session: bool,
     create_workspace(id, session, initial_paths, restore_session, reserved, cx);
 }
 
-pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
+pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) -> Option<WindowRecord> {
+    open_new_window_from_source(paths, None, cx)
+}
+
+fn open_new_window_from_source(
+    paths: Vec<PathBuf>,
+    source: Option<WindowRecord>,
+    cx: &mut App,
+) -> Option<WindowRecord> {
     if let Some(path) = paths.first() {
         let path = path.canonicalize().unwrap_or_else(|_| path.clone());
         let records = cx.global::<WindowManager>().records.clone();
@@ -218,7 +298,7 @@ pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
                         );
                     });
                 });
-                return;
+                return None;
             }
         }
     }
@@ -227,10 +307,11 @@ pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
         &mut cx.global_mut::<WindowManager>().settings,
         has_live_windows,
     );
-    let active_record = cx
-        .global::<WindowManager>()
-        .active()
-        .or_else(|| cx.global::<WindowManager>().records.last().cloned());
+    let active_record = source.or_else(|| {
+        cx.global::<WindowManager>()
+            .active()
+            .or_else(|| cx.global::<WindowManager>().records.last().cloned())
+    });
     let active_session = active_record.and_then(|record| {
         record
             .workspace
@@ -241,7 +322,7 @@ pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
     });
     let id = cx.global_mut::<WindowManager>().reserve_id();
     let session = active_session.map(|session| prepare_new_window_session(session, &paths));
-    create_workspace(id, session, paths, false, true, cx);
+    create_workspace(id, session, paths, false, true, cx)
 }
 
 fn prepare_new_window_session(mut session: WindowSession, paths: &[PathBuf]) -> WindowSession {
@@ -348,7 +429,7 @@ fn create_workspace(
     restore_session: bool,
     reserved: bool,
     cx: &mut App,
-) {
+) -> Option<WindowRecord> {
     let initial_geometry = session
         .as_ref()
         .and_then(|session| session.geometry.clone());
@@ -438,7 +519,7 @@ fn create_workspace(
                 );
             });
         }
-        return;
+        return None;
     };
     let initial_session = workspace.update(cx, |workspace, _cx| {
         WindowSession::from_settings(id, workspace.settings())
@@ -467,6 +548,11 @@ fn create_workspace(
         }
     });
     cx.activate(true);
+    Some(WindowRecord {
+        id,
+        window,
+        workspace: workspace.downgrade(),
+    })
 }
 
 pub(crate) fn save_geometry(
@@ -1219,6 +1305,22 @@ mod tests {
         let allocated = next_available_id(u64::MAX, &settings.window_sessions, &[]);
         assert_ne!(allocated, 0);
         assert!(!ids.contains(&allocated));
+    }
+
+    #[test]
+    fn window_move_requires_matching_path_text_and_no_conflict() {
+        let snapshot = super::TabWindowMove {
+            token: Default::default(),
+            path: PathBuf::from("/vault/Ø.md"),
+            text: "# Hei 🌊\n".into(),
+            cursor: 2,
+            pinned: true,
+            mode: crate::editor_layout::PaneMode::Source,
+        };
+        assert!(snapshot.matches(&snapshot.path, &snapshot.text, false));
+        assert!(!snapshot.matches(&PathBuf::from("/vault/other.md"), &snapshot.text, false));
+        assert!(!snapshot.matches(&snapshot.path, "# Hei\n", false));
+        assert!(!snapshot.matches(&snapshot.path, &snapshot.text, true));
     }
 
     #[test]
