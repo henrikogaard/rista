@@ -689,6 +689,10 @@ impl Document {
         self.refresh_linked_mentions(cx);
     }
 
+    pub fn refresh_preview_style(&mut self, cx: &mut Context<Self>) {
+        self.sync_preview(cx);
+    }
+
     /// Notes that `[[link]]` here — drives the preview's mentions footer.
     /// Only runs on open/vault events, not the typing debounce: the scan
     /// reads every note and inbound links only change elsewhere.

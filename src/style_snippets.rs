@@ -8,6 +8,7 @@ use gpui_kit::component::theme::{ThemeConfig, ThemeConfigColors};
 use gpui_kit::Hsla;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -329,21 +330,46 @@ pub fn scan(path: &Path) -> Catalog {
             return catalog;
         }
     };
-    let mut files = Vec::new();
+    let mut files = BTreeMap::<OsString, std::fs::DirEntry>::new();
+    let mut too_many = false;
+    let mut unreadable_entry = false;
     for entry in entries {
         match entry {
             Ok(entry) if entry.path().extension().is_some_and(|ext| ext == "json") => {
-                files.push(entry)
+                let filename = entry.file_name();
+                if files.len() < MAX_ENTRIES {
+                    files.insert(filename, entry);
+                } else {
+                    too_many = true;
+                    if files
+                        .last_key_value()
+                        .is_some_and(|(last, _)| filename < *last)
+                    {
+                        let last = files.last_key_value().map(|(name, _)| name.clone());
+                        if let Some(last) = last {
+                            files.remove(&last);
+                        }
+                        files.insert(filename, entry);
+                    }
+                }
             }
             Ok(_) => {}
-            Err(_) => catalog.warnings.push(SnippetWarning {
-                filename: "snippets".to_string(),
-                reason: WarningReason::Unreadable,
-            }),
+            Err(_) => unreadable_entry = true,
         }
     }
-    files.sort_by_key(|entry| entry.file_name());
-    for (index, entry) in files.into_iter().enumerate() {
+    if too_many {
+        catalog.warnings.push(SnippetWarning {
+            filename: "snippets".to_string(),
+            reason: WarningReason::TooManyEntries,
+        });
+    }
+    if unreadable_entry {
+        catalog.warnings.push(SnippetWarning {
+            filename: "snippets".to_string(),
+            reason: WarningReason::Unreadable,
+        });
+    }
+    for (_, entry) in files {
         let path = entry.path();
         let filename = entry.file_name().to_string_lossy().to_string();
         let name = path
@@ -351,13 +377,6 @@ pub fn scan(path: &Path) -> Catalog {
             .and_then(|stem| stem.to_str())
             .unwrap_or_default()
             .to_string();
-        if index >= MAX_ENTRIES {
-            catalog.warnings.push(SnippetWarning {
-                filename,
-                reason: WarningReason::TooManyEntries,
-            });
-            continue;
-        }
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(_) => {
@@ -507,11 +526,22 @@ fn merge_typography(target: &mut Typography, source: &Typography) {
             *target = *source;
         }
     }
-    if source.heading_sizes.is_some() {
-        target.heading_sizes = source.heading_sizes.clone();
-    }
-    if source.heading_weights.is_some() {
-        target.heading_weights = source.heading_weights.clone();
+    merge_sparse_array(&mut target.heading_sizes, &source.heading_sizes);
+    merge_sparse_array(&mut target.heading_weights, &source.heading_weights);
+}
+
+fn merge_sparse_array<T: Copy>(
+    target: &mut Option<Vec<Option<T>>>,
+    source: &Option<Vec<Option<T>>>,
+) {
+    let Some(source) = source else {
+        return;
+    };
+    let target = target.get_or_insert_with(|| vec![None; source.len()]);
+    for (target, source) in target.iter_mut().zip(source) {
+        if source.is_some() {
+            *target = *source;
+        }
     }
 }
 
@@ -573,41 +603,116 @@ impl StyleSnippetCatalog {
 
 impl gpui_kit::Global for StyleSnippetCatalog {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReloadRequest {
+    Startup,
+    Manual,
+    Filesystem,
+}
+
+#[derive(Clone)]
+pub struct StyleSnippetReloadQueue {
+    sender: smol::channel::Sender<ReloadRequest>,
+    watcher_error: Arc<std::sync::atomic::AtomicBool>,
+    directory_replaced: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StyleSnippetReloadQueue {
+    pub fn new(sender: smol::channel::Sender<ReloadRequest>) -> Self {
+        Self {
+            sender,
+            watcher_error: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            directory_replaced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub fn request_startup(&self) {
+        let _ = self.sender.try_send(ReloadRequest::Startup);
+    }
+
+    pub fn request_manual(&self) {
+        let _ = self.sender.try_send(ReloadRequest::Manual);
+    }
+
+    pub fn request_filesystem(&self, watcher_error: bool, directory_replaced: bool) {
+        use std::sync::atomic::Ordering;
+
+        if watcher_error {
+            self.watcher_error.store(true, Ordering::Release);
+        }
+        if directory_replaced {
+            self.directory_replaced.store(true, Ordering::Release);
+        }
+        let _ = self.sender.try_send(ReloadRequest::Filesystem);
+    }
+
+    pub fn take_watcher_error(&self) -> bool {
+        self.watcher_error
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    pub fn take_directory_replaced(&self) -> bool {
+        self.directory_replaced
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    pub fn watcher_error_pending(&self) -> bool {
+        self.watcher_error
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl gpui_kit::Global for StyleSnippetReloadQueue {}
+
 #[derive(Clone)]
 pub struct StyleSnippetWatcher {
     watcher: Arc<std::sync::Mutex<notify::RecommendedWatcher>>,
     directory_watched: Arc<std::sync::atomic::AtomicBool>,
+    parent_watched: bool,
 }
 
 impl StyleSnippetWatcher {
-    pub fn new(watcher: notify::RecommendedWatcher, directory_watched: bool) -> Self {
+    pub fn new(
+        watcher: notify::RecommendedWatcher,
+        parent_watched: bool,
+        directory_watched: bool,
+    ) -> Self {
         Self {
             watcher: Arc::new(std::sync::Mutex::new(watcher)),
             directory_watched: Arc::new(std::sync::atomic::AtomicBool::new(directory_watched)),
+            parent_watched,
         }
     }
 
-    pub fn watch_directory(&self, directory: &Path) -> bool {
+    pub fn parent_watched(&self) -> bool {
+        self.parent_watched
+    }
+
+    pub fn watch_directory(&self, directory: &Path, rebind: bool) -> bool {
         use notify::Watcher;
         use std::sync::atomic::Ordering;
 
-        if !directory.is_dir() {
-            if self.directory_watched.swap(false, Ordering::Relaxed) {
-                if let Ok(mut watcher) = self.watcher.lock() {
+        if let Ok(mut watcher) = self.watcher.lock() {
+            let was_watched = self.directory_watched.load(Ordering::Acquire);
+            if rebind && was_watched {
+                let _ = watcher.unwatch(directory);
+                self.directory_watched.store(false, Ordering::Release);
+            }
+            if !directory.is_dir() {
+                if was_watched && !rebind {
                     let _ = watcher.unwatch(directory);
                 }
+                self.directory_watched.store(false, Ordering::Release);
+                return false;
             }
-            return false;
-        }
-        if self.directory_watched.load(Ordering::Relaxed) {
-            return true;
-        }
-        if let Ok(mut watcher) = self.watcher.lock() {
+            if self.directory_watched.load(Ordering::Acquire) {
+                return true;
+            }
             if watcher
                 .watch(directory, notify::RecursiveMode::NonRecursive)
                 .is_ok()
             {
-                self.directory_watched.store(true, Ordering::Relaxed);
+                self.directory_watched.store(true, Ordering::Release);
                 return true;
             }
         }
@@ -674,6 +779,48 @@ mod tests {
         assert_eq!(
             resolved.colors["foreground"],
             gpui_kit::component::try_parse_color("#222222").unwrap()
+        );
+    }
+
+    #[test]
+    fn sparse_heading_arrays_override_only_specified_class_values() {
+        let mut catalog = Catalog::default();
+        catalog.entries.insert(
+            "base".into(),
+            parse_file(
+                r#"{"typography":{"heading_sizes":[24,26,30,20,18,16],"heading_weights":[700,650,600,550,500,450]}}"#,
+            ),
+        );
+        catalog.entries.insert(
+            "paper".into(),
+            parse_file(
+                r#"{"typography":{"heading_sizes":[null,28,null,null,null,null],"heading_weights":[null,750,null,null,null,null]}}"#,
+            ),
+        );
+
+        let resolved = resolve(&catalog, &["base".into()], &["paper".into()], true);
+
+        assert_eq!(
+            resolved.typography.heading_sizes,
+            Some(vec![
+                Some(24.),
+                Some(28.),
+                Some(30.),
+                Some(20.),
+                Some(18.),
+                Some(16.)
+            ])
+        );
+        assert_eq!(
+            resolved.typography.heading_weights,
+            Some(vec![
+                Some(700),
+                Some(750),
+                Some(600),
+                Some(550),
+                Some(500),
+                Some(450)
+            ])
         );
     }
 
@@ -779,17 +926,25 @@ mod tests {
             std::env::temp_dir().join(format!("rista-style-snippet-limit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for index in 0..=MAX_ENTRIES {
-            std::fs::write(dir.join(format!("{index:03}.json")), br#"{"colors":{}}"#).unwrap();
+        for index in 0..=MAX_ENTRIES + 2000 {
+            std::fs::write(dir.join(format!("{index:04}.json")), br#"{"colors":{}}"#).unwrap();
         }
 
         let catalog = scan(&dir);
 
         assert_eq!(catalog.entries.len(), MAX_ENTRIES);
-        assert!(catalog.warnings.iter().any(|warning| {
-            warning.filename == format!("{:03}.json", MAX_ENTRIES)
-                && warning.reason == WarningReason::TooManyEntries
-        }));
+        assert!(catalog.entries.contains_key("0000"));
+        assert!(catalog.entries.contains_key("0127"));
+        assert!(!catalog.entries.contains_key("0128"));
+        assert_eq!(
+            catalog
+                .warnings
+                .iter()
+                .filter(|warning| warning.reason == WarningReason::TooManyEntries)
+                .count(),
+            1
+        );
+        assert_eq!(catalog.warnings[0].filename, "snippets");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

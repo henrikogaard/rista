@@ -64,7 +64,20 @@ fn resolved_color(ctx: &PreviewCtx, role: &str, fallback: Hsla) -> Hsla {
 
 pub fn text_style(ctx: &PreviewCtx, cx: &App) -> gpui_kit::base::TextViewStyle {
     let theme = cx.theme();
-    let mut style = gpui_kit::base::TextViewStyle::from_theme(&gpui_kit::base::Theme::global(cx))
+    let radius = theme.semantic_tokens().radius.md;
+    let mut table = StyleRefinement::default();
+    table.corner_radii.top_left = Some(radius.into());
+    table.corner_radii.top_right = Some(radius.into());
+    table.corner_radii.bottom_left = Some(radius.into());
+    table.corner_radii.bottom_right = Some(radius.into());
+    let code_block = StyleRefinement {
+        corner_radii: table.corner_radii.clone(),
+        ..Default::default()
+    };
+    let table_head_background = resolved_color(ctx, "table.head.background", theme.table_head);
+    let table_head_foreground =
+        resolved_color(ctx, "table.head.foreground", theme.table_head_foreground);
+    let mut style = gpui_kit::base::TextViewStyle::default()
         .with_foreground(resolved_color(ctx, "foreground", theme.foreground))
         .with_muted_foreground(resolved_color(
             ctx,
@@ -73,8 +86,19 @@ pub fn text_style(ctx: &PreviewCtx, cx: &App) -> gpui_kit::base::TextViewStyle {
         ))
         .with_link(resolved_color(ctx, "link", theme.link))
         .with_selection(resolved_color(ctx, "selection", theme.selection))
-        .with_code_background(resolved_color(ctx, "accent.background", theme.accent))
+        .with_code_background(resolved_color(ctx, "muted.background", theme.muted))
         .with_border(resolved_color(ctx, "border", theme.border))
+        .with_code_block(code_block.clone())
+        .with_table(table)
+        .with_table_head(
+            StyleRefinement::default()
+                .bg(table_head_background)
+                .text_color(table_head_foreground),
+        )
+        .with_inline_code(gpui_kit::HighlightStyle {
+            background_color: Some(resolved_color(ctx, "accent.background", theme.accent)),
+            ..Default::default()
+        })
         .with_dark(theme.is_dark());
 
     let typography = &ctx.style.typography;
@@ -107,7 +131,7 @@ pub fn text_style(ctx: &PreviewCtx, cx: &App) -> gpui_kit::base::TextViewStyle {
         });
     }
     if let Some(font) = typography.code_font.as_ref() {
-        style = style.with_code_block(StyleRefinement::default().font_family(font.clone()));
+        style = style.with_code_block(code_block.font_family(font.clone()));
     }
     style
 }
@@ -432,7 +456,8 @@ pub fn preprocess_mapped(
 #[cfg(test)]
 mod navigation_tests {
     use super::{
-        headings, match_navigation_blocks, navigation_blocks, preprocess_mapped, slice_section,
+        headings, match_navigation_blocks, navigation_blocks, parse_tag_link, preprocess_mapped,
+        slice_section,
     };
 
     #[test]
@@ -452,6 +477,18 @@ mod navigation_tests {
             Some("| a |\n|---|\n| 1 |")
         );
     }
+
+    #[test]
+    fn custom_tag_link_label_is_separate_from_search_target() {
+        let source = "[Important](tag:work)";
+        let ast = markdown::to_mdast(source, &markdown::ParseOptions::gfm()).unwrap();
+        let link = &ast.children().unwrap()[0].children().unwrap()[0];
+        let tag = parse_tag_link(link, 0).unwrap();
+
+        assert_eq!(tag.label, "Important");
+        assert_eq!(tag.tag, "work");
+    }
+
     use std::path::Path;
 
     #[test]
@@ -1869,6 +1906,8 @@ impl MarkdownPlugin for CalloutPlugin {
         let callout = node.data::<Callout>().expect("callout node data");
         let theme = cx.theme();
         let accent = callout_accent(&callout.kind, self.ctx.as_ref(), cx);
+        let callout_surface = semantic_color("accent.background", self.ctx.as_ref(), cx);
+        let foreground = semantic_color("foreground", self.ctx.as_ref(), cx);
         let folded = callout
             .foldable
             .is_some_and(|default| self.folds.is_folded(callout.key, default));
@@ -1917,7 +1956,7 @@ impl MarkdownPlugin for CalloutPlugin {
         v_flex()
             .w_full()
             .rounded(theme.radius)
-            .bg(theme.accent)
+            .bg(callout_surface)
             .overflow_hidden()
             .child(header)
             .when(!folded && !callout.body.trim().is_empty(), |this| {
@@ -1927,7 +1966,7 @@ impl MarkdownPlugin for CalloutPlugin {
                         .px_3()
                         .pb_2()
                         .text_sm()
-                        .text_color(theme.foreground)
+                        .text_color(foreground)
                         .child(
                             styled_text_view(
                                 "callout-body",
@@ -2822,6 +2861,13 @@ impl MarkdownPlugin for TablePlugin {
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let table = node.data::<EditableTable>().expect("editable-table data");
         let theme = cx.theme();
+        let table_head_background =
+            resolved_color(&self.ctx, "table.head.background", theme.table_head);
+        let table_head_foreground = resolved_color(
+            &self.ctx,
+            "table.head.foreground",
+            theme.table_head_foreground,
+        );
         let last = table.rows.len().saturating_sub(1);
         let mut tbl = v_flex()
             .w_full()
@@ -2833,7 +2879,7 @@ impl MarkdownPlugin for TablePlugin {
         for (rix, row) in table.rows.iter().enumerate() {
             let mut r = h_flex().w_full();
             if rix == 0 {
-                r = r.bg(theme.table_head);
+                r = r.bg(table_head_background);
             }
             if rix < last {
                 r = r.border_b_1().border_color(theme.border);
@@ -2864,19 +2910,25 @@ impl MarkdownPlugin for TablePlugin {
                                 ws.show_table_cell_dialog(line, col, window, cx)
                             });
                         })
-                        .child(
-                            styled_text_view(
+                        .child({
+                            let mut view = styled_text_view(
                                 SharedString::from(format!("table-cell-{rix}-{cix}")),
                                 display,
                                 Some(&self.ctx),
                                 cx,
-                            )
-                            .markdown_extensions(extensions(
+                            );
+                            if rix == 0 {
+                                view = view.style(
+                                    text_style(&self.ctx, cx)
+                                        .with_foreground(table_head_foreground),
+                                );
+                            }
+                            view.markdown_extensions(extensions(
                                 &self.folds,
                                 Some(&self.ctx),
                                 false,
-                            )),
-                        ),
+                            ))
+                        }),
                 );
             }
             if rix == 0 {
@@ -3204,6 +3256,12 @@ impl MarkdownPlugin for TranscludePlugin {
 // semantic role while routing to the existing project search.
 // ------------------------------------------------------------------
 
+struct TagLink {
+    tag: String,
+    label: String,
+    source_offset: usize,
+}
+
 struct TagLinkPlugin {
     ctx: PreviewCtx,
 }
@@ -3213,36 +3271,69 @@ impl MarkdownPlugin for TagLinkPlugin {
         "tag-link"
     }
 
-    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
-        let mdast::Node::Link(link) = node else {
+    fn parse(&self, node: &mdast::Node, parse: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        let link = parse_tag_link(node, parse.offset())?;
+        if link.tag.is_empty() {
             return None;
-        };
-        let tag = link.url.strip_prefix("tag:")?.to_string();
-        (!tag.is_empty())
-            .then(|| MarkdownNode::new("tag-link", tag.clone()).text(format!("#{tag}")))
+        }
+        let label = link.label.clone();
+        let mut markdown_node = MarkdownNode::new("tag-link", link)
+            .text(label.clone())
+            .accessibility_label(label);
+        if let Some(source) = parse.node_source(node) {
+            markdown_node = markdown_node.markdown(source.to_string());
+        }
+        Some(markdown_node)
     }
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let tag = node.data::<String>().expect("tag-link data");
+        let tag_link = node.data::<TagLink>().expect("tag-link data");
+        let tag = tag_link.tag.clone();
         let role = self.ctx.style.tag_token.as_deref().unwrap_or("link");
         let color = semantic_color(role, Some(&self.ctx), cx);
         let query = format!("#{tag}");
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&tag, &mut hasher);
-        let key = std::hash::Hasher::finish(&hasher) as usize;
+        let label = tag_link.label.clone();
+        let key = tag_link.source_offset;
         let workspace = self.ctx.workspace.clone();
         div()
             .id(("tag-link", key))
             .text_color(color)
             .cursor_pointer()
             .hover(|element| element.underline())
-            .child(query.clone())
+            .child(label)
             .on_click(move |_, window, cx| {
                 if let Some(workspace) = workspace.upgrade() {
                     crate::search::open_project_search_for(workspace, Some(&query), window, cx);
                 }
             })
     }
+}
+
+fn parse_tag_link(node: &mdast::Node, offset: usize) -> Option<TagLink> {
+    let mdast::Node::Link(link) = node else {
+        return None;
+    };
+    let tag = link.url.strip_prefix("tag:")?.to_string();
+    let label = link
+        .children
+        .iter()
+        .map(mdast_plain_text)
+        .collect::<String>();
+    let label = if label.is_empty() {
+        format!("#{tag}")
+    } else {
+        label
+    };
+    let source_offset = offset.saturating_add(
+        node.position()
+            .map(|position| position.start.offset)
+            .unwrap_or_default(),
+    );
+    Some(TagLink {
+        tag,
+        label,
+        source_offset,
+    })
 }
 
 // ------------------------------------------------------------------

@@ -40,6 +40,7 @@ pub struct SettingsView {
     dark_theme_select: Entity<SelectState<SearchableVec<String>>>,
     light_theme_select: Entity<SelectState<SearchableVec<String>>>,
     theme_write_failed: bool,
+    snippets_folder_failed: bool,
     attachments_input: Entity<InputState>,
     templates_input: Entity<InputState>,
     daily_dir_input: Entity<InputState>,
@@ -446,6 +447,7 @@ impl SettingsView {
             dark_theme_select,
             light_theme_select,
             theme_write_failed: false,
+            snippets_folder_failed: false,
             font_select,
             font_size_select,
             ui_size_select,
@@ -1125,23 +1127,69 @@ impl Render for SettingsView {
                     .child(
                         div()
                             .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text(
+                                "Create a copy of the active palette, edit its JSON colours, then reload and select it above.",
+                                "Lag en kopi av den aktive paletten, rediger JSON-fargene, last inn på nytt og velg den over.",
+                            )),
+                    )
+                    .when(self.theme_write_failed, |view| {
+                        view.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(settings.language.text(
+                                    "Could not create theme file. Check folder permissions.",
+                                    "Kunne ikke opprette temafilen. Sjekk mappetillatelser.",
+                                )),
+                        )
+                    })
+                    .when(
+                        !cx.global::<theme::ThemeCatalog>().errors.is_empty(),
+                        |view| {
+                            view.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(format!(
+                                        "{}: {}",
+                                        settings.language.text(
+                                            "Invalid or duplicate theme files",
+                                            "Ugyldige eller dupliserte temafiler",
+                                        ),
+                                        cx.global::<theme::ThemeCatalog>().errors.join(", ")
+                                    )),
+                            )
+                        },
+                    )
+                    .child(
+                        div()
+                            .text_xs()
                             .font_semibold()
                             .text_color(cx.theme().muted_foreground)
                             .child(settings.language.text("STYLE SNIPPETS", "STILUTDRAG")),
                     )
                     .child(
-                        h_flex()
-                            .gap_2()
+                        v_flex()
+                            .gap_1()
                             .child(
                                 Button::new("open-style-snippets")
                                     .small()
                                     .ghost()
                                     .label(settings.language.text(
-                                        "Open snippets folder",
-                                        "Åpne utdragsmappe",
+                                        "Open folder",
+                                        "Åpne mappe",
                                     ))
-                                    .on_click(cx.listener(|_, _, _, cx| {
-                                        cx.reveal_path(&crate::style_snippets::snippets_dir());
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let directory = crate::style_snippets::snippets_dir();
+                                        this.snippets_folder_failed =
+                                            std::fs::create_dir_all(&directory).is_err()
+                                                || !directory.is_dir()
+                                                || std::fs::read_dir(&directory).is_err();
+                                        if !this.snippets_folder_failed {
+                                            cx.reveal_path(&directory);
+                                        }
+                                        cx.notify();
                                     })),
                             )
                             .child(
@@ -1149,8 +1197,8 @@ impl Render for SettingsView {
                                     .small()
                                     .ghost()
                                     .label(settings.language.text(
-                                        "Reload snippets",
-                                        "Last inn utdrag på nytt",
+                                        "Reload",
+                                        "Last inn",
                                     ))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if let Some(ws) = this.workspace.upgrade() {
@@ -1158,6 +1206,20 @@ impl Render for SettingsView {
                                         }
                                     })),
                             ),
+                    )
+                    .when(
+                        self.snippets_folder_failed,
+                        |view| {
+                            view.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(settings.language.text(
+                                        "Could not open the snippets folder. Check folder permissions.",
+                                        "Kunne ikke åpne utdragsmappen. Sjekk mappetillatelser.",
+                                    )),
+                            )
+                        },
                     )
                     .child(
                         div()
@@ -1200,6 +1262,23 @@ impl Render for SettingsView {
                                         })),
                                 )
                             }),
+                    )
+                    .when(
+                        cx.global::<crate::style_snippets::StyleSnippetCatalog>()
+                            .snapshot
+                            .entries()
+                            .is_empty(),
+                        |view| {
+                            view.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(settings.language.text(
+                                        "No snippets yet. Add JSON files in this folder and see the Style snippets guide.",
+                                        "Ingen utdrag ennå. Legg til JSON-filer i mappen, og se veiledningen for stilutdrag.",
+                                    )),
+                            )
+                        },
                     )
                     .children(
                         cx.global::<crate::style_snippets::StyleSnippetCatalog>()
@@ -1245,44 +1324,6 @@ impl Render for SettingsView {
                                     .child(settings.language.text(
                                         "Live reload is unavailable; use Reload to refresh snippets.",
                                         "Direkte oppdatering er utilgjengelig; bruk Last inn på nytt for å oppdatere utdrag.",
-                                    )),
-                            )
-                        },
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(settings.language.text(
-                                "Create a copy of the active palette, edit its JSON colours, then reload and select it above.",
-                                "Lag en kopi av den aktive paletten, rediger JSON-fargene, last inn på nytt og velg den over.",
-                            )),
-                    )
-                    .when(self.theme_write_failed, |view| {
-                        view.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger)
-                                .child(settings.language.text(
-                                    "Could not create theme file. Check folder permissions.",
-                                    "Kunne ikke opprette temafilen. Sjekk mappetillatelser.",
-                                )),
-                        )
-                    })
-                    .when(
-                        !cx.global::<theme::ThemeCatalog>().errors.is_empty(),
-                        |view| {
-                            view.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().danger)
-                                    .child(format!(
-                                        "{}: {}",
-                                        settings.language.text(
-                                            "Invalid or duplicate theme files",
-                                            "Ugyldige eller dupliserte temafiler",
-                                        ),
-                                        cx.global::<theme::ThemeCatalog>().errors.join(", ")
                                     )),
                             )
                         },

@@ -4563,31 +4563,15 @@ impl Workspace {
     fn retheme_previews(&self, cx: &mut Context<Self>) {
         for doc in &self.docs {
             doc.entity.update(cx, |doc, cx| {
-                doc.refresh_style(cx);
-                doc.resync_preview(cx);
+                doc.refresh_preview_style(cx);
             });
         }
     }
 
     pub(crate) fn reload_style_snippets(&mut self, cx: &mut Context<Self>) {
-        let directory = crate::style_snippets::snippets_dir();
-        cx.spawn(async move |this: WeakEntity<Self>, cx| {
-            let snapshot = smol::unblock(move || crate::style_snippets::scan(&directory)).await;
-            let _ = this.update(&mut *cx, |_, cx| {
-                let current = cx.try_global::<crate::style_snippets::StyleSnippetCatalog>();
-                let watcher_warning = current.is_some_and(|catalog| catalog.watcher_warning);
-                if current.is_some_and(|catalog| catalog.snapshot.as_ref() == &snapshot) {
-                    return;
-                }
-                let catalog = crate::style_snippets::StyleSnippetCatalog::new(snapshot);
-                cx.set_global(if watcher_warning {
-                    catalog.with_watcher_warning()
-                } else {
-                    catalog
-                });
-            });
-        })
-        .detach();
+        if let Some(queue) = cx.try_global::<crate::style_snippets::StyleSnippetReloadQueue>() {
+            queue.request_manual();
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -5215,7 +5199,6 @@ impl Workspace {
             }
         }
         theme::apply(&settings, cx);
-        self.retheme_previews(cx);
         for tab in &self.terminals {
             tab.terminal
                 .update(cx, |terminal, cx| terminal.apply_settings(&settings, cx));
@@ -5229,6 +5212,7 @@ impl Workspace {
                 }
             });
         }
+        self.retheme_previews(cx);
         // The agent panel is a cached view that reads settings such as the
         // language, so it must be redrawn alongside the workspace.
         self.agent_panel.update(cx, |_, cx| cx.notify());
@@ -8916,6 +8900,10 @@ impl Workspace {
         v_flex()
             .size_full()
             .overflow_hidden()
+            .when_some(
+                base_ctx.style.colors.get("background").copied(),
+                |this, color| this.bg(color),
+            )
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
             .when(
                 !has_frontmatter
@@ -10014,10 +10002,15 @@ impl Workspace {
     /// key equivalent intercepts it on macOS).
     fn editor_container(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Div {
         let context_doc = doc.clone();
+        let note_style = doc.read(cx).resolved_style.clone();
         div()
             .size_full()
             .px_3()
             .py_4()
+            .when_some(
+                note_style.colors.get("background").copied(),
+                |this, color| this.bg(color),
+            )
             // Scoped key context — the auto-pair bindings only fire when the
             // document editor is focused, so dialog/search inputs keep the
             // plain characters.
@@ -10102,11 +10095,14 @@ impl Workspace {
                 // `appearance(false)` — the editor's bordered box would
                 // draw a second frame inside the pane card.
                 let language = self.settings.language;
-                let note_style = doc.read(cx).resolved_style.clone();
                 let spell_doc = doc.clone();
                 let editor = Editor::new(&doc.read(cx).editor)
                     .h_full()
                     .appearance(false)
+                    .when_some(
+                        note_style.colors.get("foreground").copied(),
+                        |this, color| this.text_color(color),
+                    )
                     .when_some(note_style.typography.editor_font.clone(), |this, font| {
                         this.font_family(font)
                     })

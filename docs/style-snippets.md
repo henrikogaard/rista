@@ -1,9 +1,11 @@
 # Style snippets
 
-Style snippets are small JSON files in `config_dir()/snippets`, using the
-application's normal platform-specific configuration directory. Create the
+Style snippets are small JSON files in `config_dir()/snippets`. On macOS, the
+folder is `~/Library/Application Support/no.ogard.rista/snippets`. Create the
 folder if it does not exist and keep one snippet per top-level `.json` file.
 Files contain data only; CSS, scripts, and network access are not supported.
+
+Save this JSON as `paper.json`:
 
 ```json
 {
@@ -31,6 +33,14 @@ Files contain data only; CSS, scripts, and network access are not supported.
 }
 ```
 
+Select it for one note with this frontmatter:
+
+```yaml
+---
+cssclasses: [paper]
+---
+```
+
 `colors` uses the known theme color names. `light_colors` and `dark_colors`
 override common colors for one mode. Color values are six- or eight-digit
 hexadecimal values. Typography accepts body, editor, code, and heading font
@@ -50,16 +60,22 @@ semantic names such as `foreground`, `muted.foreground`, `link`,
 The Settings switch enables a snippet globally. Matching `cssclasses` in a
 note's frontmatter also applies a valid snippet to that note, independently of
 the switch. Global snippets are applied in sorted filename order; note-local
-classes are then applied in their listed order, once each. Local colors and
-typography never alter the application's global theme. Local color maps affect
-note roles only; chrome-only theme tokens remain unchanged. `wide` disables the
-width cap; `narrow` and `readable` force it. A snippet `readable_width`
-replaces the normal 760 px cap.
+classes are then applied in their listed order, once each. Global colors apply
+to application chrome through the selected theme. Note-local colors are
+limited to note roles: body foreground, links, callouts and tags, preview and
+editor backgrounds, fenced-code background, inline-code background, and table
+header colors. Other note-local tokens do not affect workspace chrome. Source
+editor syntax colors remain unchanged. Local typography and readable width
+affect only the note. `wide` disables the width cap; `narrow` and `readable`
+force it. A snippet `readable_width` replaces the normal 760 px cap.
+
+For sparse heading size or weight arrays, `null` preserves the value from an
+earlier snippet or the built-in style.
 
 Files are reloaded while Rísta runs after changes settle. Invalid JSON, invalid
 values, unknown fields or color tokens, unreadable files, symbolic links,
 non-regular files, reserved names, oversized files, and entries beyond the
 catalog limit are skipped and shown with a localized warning. Each file is
-limited to 64 KiB; at most 128 `.json` files are loaded in sorted filename
-order.
+limited to 64 KiB; only the first 128 filenames in sorted order are loaded,
+with one aggregate warning for additional entries.
 Missing enabled files remain in Settings and become active again if restored.
