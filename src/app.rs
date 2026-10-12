@@ -2982,7 +2982,7 @@ impl Workspace {
                 self.recent.truncate(12);
                 self.persist_tabs(cx);
                 self.reveal_active_file(cx);
-                self.refocus(window, cx);
+                self.focus_active_pane_after_mount(window, cx);
                 cx.notify();
                 return;
             }
