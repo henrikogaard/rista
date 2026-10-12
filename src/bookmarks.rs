@@ -62,6 +62,22 @@ impl BookmarkKind {
     }
 }
 
+fn same_bookmark(first: &Bookmark, second: &Bookmark) -> bool {
+    if first.title != second.title {
+        return false;
+    }
+    match (&first.kind, &second.kind) {
+        (BookmarkKind::Group { items: first, .. }, BookmarkKind::Group { items: second, .. }) => {
+            first.len() == second.len()
+                && first
+                    .iter()
+                    .zip(second)
+                    .all(|(first, second)| same_bookmark(first, second))
+        }
+        (first, second) => first == second,
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Bookmarks {
@@ -311,6 +327,82 @@ impl Bookmarks {
         visit(&mut self.items, source, destination);
     }
 
+    pub(crate) fn merge_imported(&mut self, imported: Vec<Bookmark>) -> usize {
+        fn siblings(items: &[Bookmark], parent: Option<u64>) -> Vec<&Bookmark> {
+            match parent {
+                None => items.iter().collect(),
+                Some(parent) => match items.iter().find(|item| item.id == parent) {
+                    Some(Bookmark {
+                        kind: BookmarkKind::Group { items, .. },
+                        ..
+                    }) => items.iter().collect(),
+                    _ => Vec::new(),
+                },
+            }
+        }
+
+        fn merge_one(store: &mut Bookmarks, bookmark: Bookmark, parent: Option<u64>) -> usize {
+            let existing = siblings(&store.items, parent);
+            match bookmark.kind {
+                BookmarkKind::Group { items, .. } => {
+                    let existing_id = existing
+                        .iter()
+                        .find(|candidate| {
+                            matches!(&candidate.kind, BookmarkKind::Group { .. })
+                                && ((bookmark.title.is_some() && candidate.title == bookmark.title)
+                                    || (bookmark.title.is_none()
+                                        && same_bookmark(
+                                            candidate,
+                                            &Bookmark {
+                                                id: bookmark.id,
+                                                title: bookmark.title.clone(),
+                                                kind: BookmarkKind::Group {
+                                                    items: items.clone(),
+                                                    collapsed: false,
+                                                },
+                                            },
+                                        )))
+                        })
+                        .map(|group| group.id);
+                    let (group_id, new_group) = if let Some(id) = existing_id {
+                        (id, false)
+                    } else {
+                        let id = store.add(
+                            BookmarkKind::Group {
+                                items: Vec::new(),
+                                collapsed: false,
+                            },
+                            bookmark.title.clone(),
+                            parent,
+                        );
+                        let Some(id) = id else {
+                            return 0;
+                        };
+                        (id, true)
+                    };
+                    items
+                        .into_iter()
+                        .map(|child| merge_one(store, child, Some(group_id)))
+                        .sum::<usize>()
+                        + usize::from(new_group)
+                }
+                kind => {
+                    if existing.iter().any(|candidate| {
+                        candidate.title == bookmark.title && candidate.kind == kind
+                    }) {
+                        return 0;
+                    }
+                    usize::from(store.add(kind, bookmark.title, parent).is_some())
+                }
+            }
+        }
+
+        imported
+            .into_iter()
+            .map(|bookmark| merge_one(self, bookmark, None))
+            .sum()
+    }
+
     pub fn import_vault(
         &mut self,
         root: &Path,
@@ -503,6 +595,22 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
         restored.migrate_stars(&stars);
         assert_eq!(restored.starred_paths(), vec!["/vault/a.md"]);
+    }
+
+    #[test]
+    fn imported_bookmarks_merge_idempotently() {
+        let mut store = Bookmarks::default();
+        store.add(BookmarkKind::file("/vault/Notes/Å.md".into()), None, None);
+        let imported = vec![Bookmark {
+            id: 0,
+            title: None,
+            kind: BookmarkKind::file("/vault/Notes/Å.md".into()),
+        }];
+
+        assert_eq!(store.merge_imported(imported.clone()), 0);
+        assert_eq!(store.items.len(), 1);
+        assert_eq!(store.merge_imported(imported), 0);
+        assert_eq!(store.items.len(), 1);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::preview;
 use crate::properties;
 use crate::search;
 use crate::search_service::SearchService;
-use crate::settings::{Appearance, Period, Settings, TreeSort, ViewMode};
+use crate::settings::{Appearance, Language, Period, Settings, TreeSort, ViewMode};
 use crate::settings_panel::SettingsView;
 use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
@@ -39,6 +39,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -399,6 +400,7 @@ pub(crate) enum PaletteCmd {
     ExportHtml,
     ExportPdf,
     Settings,
+    ImportVaultSettings,
     ToggleTheme,
     Quit,
     Graph,
@@ -505,6 +507,7 @@ impl PaletteCmd {
         Self::ExportPdf,
         Self::ToggleTheme,
         Self::Settings,
+        Self::ImportVaultSettings,
         Self::CloseFolder,
         Self::Quit,
     ];
@@ -608,6 +611,7 @@ impl PaletteCmd {
             ExportPdf => "export_pdf",
             ToggleTheme => "toggle_theme",
             Settings => "open_settings",
+            ImportVaultSettings => "import_vault_settings",
             CloseFolder => "close_folder",
             Quit => "quit",
         }
@@ -716,6 +720,7 @@ impl PaletteCmd {
             ExportPdf => "Eksporter notat som PDF…",
             ToggleTheme => "Veksle tema",
             Settings => "Innstillinger",
+            ImportVaultSettings => "Importer hvelvinnstillinger…",
             CloseFolder => "Lukk mappe",
             Quit => "Avslutt",
         }
@@ -1175,6 +1180,11 @@ impl PaletteCmd {
                 "Settings…",
                 &["preferences", "theme"],
             ),
+            ImportVaultSettings => (
+                assets::IconName::FolderOpen,
+                "Import vault settings…",
+                &["vault", "settings", "import", "preferences"],
+            ),
             ToggleTheme => (assets::IconName::Moon, "Toggle theme", &["dark", "light"]),
             Quit => (assets::IconName::Close, "Quit Rísta", &["exit"]),
             Graph => (
@@ -1485,6 +1495,7 @@ impl Workspace {
         this.persist_tabs(cx);
         this.sync_graph_active(cx);
         this.focus_active_pane_after_mount(window, cx);
+        this.queue_vault_settings_offer(window, cx);
         if missing_saved_path {
             this.note_status(
                 this.tr(
@@ -1571,7 +1582,9 @@ impl Workspace {
         self.vault.update(cx, |vault, cx| {
             vault.tree_sort = self.settings.tree_sort;
             vault.show_other_files = self.settings.show_other_files;
+            vault.set_link_format(self.settings.link_format);
             vault.templates_dir = self.settings.templates_dir.clone();
+            vault.set_ignore_filters(&self.settings.user_ignore_filters);
             vault.open(
                 root.clone(),
                 self.settings
@@ -1589,6 +1602,9 @@ impl Workspace {
         self.persist_settings(cx);
         self.status_note = None;
         self.open_folder_page(root, window, cx);
+        if !self.restoring_session {
+            self.queue_vault_settings_offer(window, cx);
+        }
         cx.notify();
         true
     }
@@ -1897,12 +1913,14 @@ impl Workspace {
                 .icon(assets::IconName::Copy)
                 .on_click({
                     let path = path.clone();
+                    let view = view.clone();
                     move |_, _window, cx| {
-                        let stem = path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        cx.write_to_clipboard(ClipboardItem::new_string(format!("[[{stem}]]")));
+                        view.update(cx, |this, cx| {
+                            let target = this.vault_wikilink_target(&path, cx);
+                            cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                                "[[{target}]]"
+                            )));
+                        });
                     }
                 }),
         )
@@ -3583,7 +3601,23 @@ impl Workspace {
             .root
             .as_ref()
             .and_then(|root| {
-                std::fs::read_to_string(root.join(&self.settings.templates_dir).join(template)).ok()
+                let selected = self.settings.period_templates.get("daily");
+                let template_path = match selected {
+                    Some(selected) if selected.is_empty() => None,
+                    Some(selected) => {
+                        crate::vault_settings_import::checked_vault_path(root, selected)
+                    }
+                    None => {
+                        let folder = self.settings.templates_dir.trim_matches('/');
+                        let relative = if folder.is_empty() {
+                            template.to_string()
+                        } else {
+                            format!("{folder}/{template}")
+                        };
+                        crate::vault_settings_import::checked_vault_path(root, &relative)
+                    }
+                }?;
+                std::fs::read_to_string(template_path).ok()
             })
             .map(|template| {
                 let job = TemplateJob {
@@ -3593,7 +3627,12 @@ impl Workspace {
                     frontmatter: None,
                     selection: String::new(),
                 };
-                self.expand_template_for(&job, &[], cx).text
+                let expanded = self.expand_template_for(&job, &[], cx);
+                if expanded.overflowed {
+                    format!("# {}\n\n", title)
+                } else {
+                    expanded.text
+                }
             })
             .unwrap_or_else(|| format!("# {}\n\n", title))
     }
@@ -3626,9 +3665,21 @@ impl Workspace {
             return;
         }
         let when = date.and_time(chrono::Local::now().time());
-        let template = self.vault.read(cx).root.clone().map(|root| {
-            root.join(&self.settings.templates_dir)
-                .join(format!("{}.md", period.name()))
+        let template = self.vault.read(cx).root.clone().and_then(|root| {
+            match self.settings.period_templates.get(period.name()) {
+                Some(template) if template.is_empty() => None,
+                Some(template) => crate::vault_settings_import::checked_vault_path(&root, template),
+                None => {
+                    let folder = self.settings.templates_dir.trim_matches('/');
+                    let filename = format!("{}.md", period.name());
+                    let relative = if folder.is_empty() {
+                        filename
+                    } else {
+                        format!("{folder}/{filename}")
+                    };
+                    crate::vault_settings_import::checked_vault_path(&root, &relative)
+                }
+            }
         });
         self.create_note(path, template, when, window, cx);
     }
@@ -4024,12 +4075,14 @@ impl Workspace {
             self.note_status(format!("\u{201c}{name}\u{201d} already exists"), cx);
             return;
         }
+        let source = doc.read(cx).path.clone();
+        let link_target = self.wikilink_target(&path, &source, cx);
         if std::fs::write(&path, body).is_err() {
             self.note_status("Couldn't write the note", cx);
             return;
         }
         doc.update(cx, |doc, cx| {
-            doc.replace_range(range, format!("[[{name}]]"), window, cx);
+            doc.replace_range(range, format!("[[{link_target}]]"), window, cx);
         });
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
         self.note_status(format!("Extracted to {name}.md"), cx);
@@ -4102,6 +4155,39 @@ impl Workspace {
         self.note_status("Path copied", cx);
     }
 
+    fn wikilink_target(&self, target: &Path, source: &Path, cx: &App) -> String {
+        self.vault
+            .read(cx)
+            .link_target_for(target, source)
+            .or_else(|| {
+                target
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+            })
+            .unwrap_or_default()
+    }
+
+    fn vault_wikilink_target(&self, target: &Path, cx: &App) -> String {
+        self.vault
+            .read(cx)
+            .root
+            .as_deref()
+            .and_then(|root| target.strip_prefix(root).ok())
+            .map(|relative| {
+                relative
+                    .with_extension("")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .filter(|relative| !relative.is_empty())
+            .or_else(|| {
+                target
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+            })
+            .unwrap_or_default()
+    }
+
     /// ⌘⇧K — delete the line(s) under the selection.
     fn on_delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(doc) = self.active_doc().cloned() {
@@ -4158,17 +4244,14 @@ impl Workspace {
             self.note_status(self.tr("No note open", "Ingen notater er åpne"), cx);
             return;
         };
-        let Some(stem) = doc
-            .read(cx)
-            .path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-        else {
+        let path = doc.read(cx).path.clone();
+        let target = self.vault_wikilink_target(&path, cx);
+        if target.is_empty() {
             return;
-        };
+        }
         match doc.update(cx, |doc, cx| doc.ensure_block_id(window, cx)) {
             Some(id) => {
-                let link = format!("{}[[{stem}#^{id}]]", if embed { "!" } else { "" });
+                let link = format!("{}[[{target}#^{id}]]", if embed { "!" } else { "" });
                 cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
                 self.note_status(format!("{} {link}", self.tr("Copied", "Kopiert")), cx);
             }
@@ -4988,11 +5071,9 @@ impl Workspace {
                 }
             }
             PaletteCmd::CopyLink => {
-                let link = self.active_doc().and_then(|d| {
-                    d.read(cx)
-                        .path
-                        .file_stem()
-                        .map(|s| format!("[[{}]]", s.to_string_lossy()))
+                let link = self.active_doc().map(|d| {
+                    let path = d.read(cx).path.clone();
+                    format!("[[{}]]", self.vault_wikilink_target(&path, cx))
                 });
                 match link {
                     Some(link) => {
@@ -5009,9 +5090,10 @@ impl Workspace {
             PaletteCmd::CopyLinkHeading => {
                 // `[[stem#heading]]` for the nearest heading at or above
                 // the caret — the "copy link to heading".
-                let link = self.active_doc().and_then(|d| {
+                let link = self.active_doc().map(|d| {
                     let doc = d.read(cx);
-                    let stem = doc.path.file_stem()?.to_string_lossy().to_string();
+                    let path = doc.path.clone();
+                    let target = self.vault_wikilink_target(&path, cx);
                     let text = doc.editor.read(cx).value().to_string();
                     let cursor = doc.editor.read(cx).cursor().min(text.len());
                     let line_no = text[..cursor].matches('\n').count() + 1;
@@ -5034,10 +5116,10 @@ impl Workspace {
                             heading = Some(t[level + 1..].trim().to_string());
                         }
                     }
-                    Some(match heading {
-                        Some(h) => format!("[[{stem}#{h}]]"),
-                        None => format!("[[{stem}]]"),
-                    })
+                    match heading {
+                        Some(h) => format!("[[{target}#{h}]]"),
+                        None => format!("[[{target}]]"),
+                    }
                 });
                 match link {
                     Some(link) => {
@@ -5083,6 +5165,7 @@ impl Workspace {
                 window,
                 cx,
             ),
+            PaletteCmd::ImportVaultSettings => self.show_vault_settings_import(false, window, cx),
             PaletteCmd::ToggleTheme => self.on_toggle_theme(&ToggleTheme, window, cx),
             PaletteCmd::Quit => window.dispatch_action(Quit.boxed_clone(), cx),
         }
@@ -5105,6 +5188,521 @@ impl Workspace {
         let view = self.settings_view.clone();
         window.open_sheet_at(Placement::Right, cx, move |sheet, _window, _cx| {
             sheet.title("Settings").w(px(360.)).child(view.clone())
+        });
+    }
+
+    fn queue_vault_settings_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.restoring_session {
+            return;
+        }
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            return;
+        };
+        let Some(root_key) = root.canonicalize().ok() else {
+            return;
+        };
+        let view = cx.entity();
+        window.defer(cx, move |window, cx| {
+            view.update(cx, |this, cx| {
+                let current_root = this
+                    .vault
+                    .read(cx)
+                    .root
+                    .as_ref()
+                    .and_then(|root| root.canonicalize().ok());
+                if this.restoring_session
+                    || current_root.as_ref() != Some(&root_key)
+                    || this
+                        .settings
+                        .vault_settings_import_dismissed
+                        .iter()
+                        .any(|dismissed| dismissed == &root_key.to_string_lossy())
+                {
+                    return;
+                }
+                this.show_vault_settings_import(true, window, cx);
+            });
+        });
+    }
+
+    fn show_vault_settings_import(
+        &mut self,
+        first_offer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.vault.read(cx).root.clone() else {
+            self.note_status(
+                self.tr(
+                    "Open a vault before importing vault settings.",
+                    "Åpne et hvelv før du importerer hvelvinnstillinger.",
+                ),
+                cx,
+            );
+            return;
+        };
+        let plan = match crate::vault_settings_import::plan_import(&root, &self.settings) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.show_vault_import_report(
+                    self.tr(
+                        "Vault settings could not be inspected.",
+                        "Hvelvinnstillingene kunne ikke undersøkes.",
+                    ),
+                    vec![error],
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+        if first_offer && !plan.has_sources() {
+            return;
+        }
+        self.show_vault_import_preview(plan, first_offer, window, cx);
+    }
+
+    fn show_vault_import_preview(
+        &mut self,
+        plan: crate::vault_settings_import::ImportPlan,
+        first_offer: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let app_wide = language.text(
+            "Imported preferences and shortcuts apply to the whole app, not only this vault.",
+            "Importerte innstillinger og snarveier gjelder hele appen, ikke bare dette hvelvet.",
+        );
+        let mut rows = Vec::new();
+        if plan.preview.is_empty() {
+            rows.push(
+                language
+                    .text(
+                        "No supported changes were found.",
+                        "Fant ingen støttede endringer.",
+                    )
+                    .to_string(),
+            );
+        } else {
+            for change in &plan.preview {
+                rows.push(format!(
+                    "{} — {}: {}",
+                    Self::import_category_label(change.category, language),
+                    change.field,
+                    change.value
+                ));
+            }
+        }
+        if plan.bookmarks_skipped > 0 {
+            rows.push(format!(
+                "{} {}",
+                language.text("Bookmarks skipped:", "Bokmerker som hoppes over:",),
+                plan.bookmarks_skipped
+            ));
+        }
+        for warning in &plan.warnings {
+            rows.push(Self::import_warning_label(warning, language));
+        }
+        if !plan.unsupported_plugins.is_empty() {
+            rows.push(format!(
+                "{} {}",
+                language.text(
+                    "Enabled plugins are not imported:",
+                    "Aktiverte programtillegg importeres ikke:",
+                ),
+                plan.unsupported_plugins.join(", ")
+            ));
+        }
+        let scroll = ScrollHandle::new();
+        let view = cx.entity();
+        let root = plan.root.clone();
+        let plan = std::sync::Arc::new(plan);
+        let title = language.text("Import vault settings…", "Importer hvelvinnstillinger…");
+        let cancel = language.text("Cancel", "Avbryt");
+        let import = language.text("Import", "Importer");
+        let dismiss = {
+            let view = view.clone();
+            let root = root.clone();
+            std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+                let view = view.clone();
+                let root = root.clone();
+                if first_offer {
+                    window.defer(cx, move |window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.persist_vault_import_dismissal(&root, window, cx);
+                            this.refocus(window, cx);
+                        });
+                    });
+                } else {
+                    window.defer(cx, move |window, cx| {
+                        view.update(cx, |this, cx| this.refocus(window, cx));
+                    });
+                }
+            })
+        };
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let preview = div()
+                .id("vault-settings-import-preview")
+                .h(px(300.))
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .children(rows.iter().cloned().map(|row| div().flex_none().child(row))),
+                )
+                .vertical_scrollbar(&scroll);
+            dialog
+                .title(title)
+                .w(px(520.))
+                .description(app_wide)
+                .confirm()
+                .child(preview)
+                .footer(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(Button::new("cancel").label(cancel).on_click({
+                            let dismiss = dismiss.clone();
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                dismiss(window, cx);
+                            }
+                        }))
+                        .child(Button::new("import").label(import).primary().on_click({
+                            let view = view.clone();
+                            let plan = plan.clone();
+                            let root = root.clone();
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                window.defer(cx, {
+                                    let view = view.clone();
+                                    let plan = plan.clone();
+                                    let root = root.clone();
+                                    move |window, cx| {
+                                        view.update(cx, |this, cx| {
+                                            this.apply_vault_import_plan(&plan, &root, window, cx);
+                                            this.refocus(window, cx);
+                                        });
+                                    }
+                                });
+                            }
+                        })),
+                )
+                .on_ok({
+                    let dismiss = dismiss.clone();
+                    move |_, window, cx| {
+                        dismiss(window, cx);
+                        true
+                    }
+                })
+                .on_cancel({
+                    let dismiss = dismiss.clone();
+                    move |_, window, cx| {
+                        dismiss(window, cx);
+                        true
+                    }
+                })
+        });
+    }
+
+    fn import_category_label(
+        category: crate::vault_settings_import::ImportCategory,
+        language: Language,
+    ) -> &'static str {
+        use crate::vault_settings_import::ImportCategory::*;
+        match category {
+            DailyNotes => language.text("Daily notes", "Daglige notater"),
+            PeriodicNotes => language.text("Periodic notes", "Periodiske notater"),
+            Templates => language.text("Templates", "Maler"),
+            Attachments => language.text("Attachments", "Vedlegg"),
+            Links => language.text("Links", "Lenker"),
+            IgnoreFilters => language.text("Ignore filters", "Ignoreringsfiltre"),
+            Bookmarks => language.text("Bookmarks", "Bokmerker"),
+            Hotkeys => language.text("Shortcuts", "Snarveier"),
+            CommunityPlugins => language.text("Plugins", "Programtillegg"),
+        }
+    }
+
+    fn import_warning_label(
+        warning: &crate::vault_settings_import::ImportWarning,
+        language: Language,
+    ) -> String {
+        use crate::vault_settings_import::ImportProblem::*;
+        let message = match warning.problem {
+            ReadFailed => language.text("could not be read", "kunne ikke leses"),
+            InvalidJson => language.text("contains invalid JSON", "inneholder ugyldig JSON"),
+            TooLarge => language.text(
+                "exceeds the import size limit",
+                "overskrider størrelsesgrensen",
+            ),
+            UnsafePath => language.text("uses an unsafe source path", "har en utrygg kildebane"),
+            TooManyEntries => language.text(
+                "contains too many entries",
+                "inneholder for mange oppføringer",
+            ),
+            InvalidFieldType => {
+                language.text("has an invalid value type", "har en ugyldig verditype")
+            }
+            UnsupportedValue => language.text(
+                "contains an unsupported value",
+                "inneholder en verdi som ikke støttes",
+            ),
+            UnsafeConfiguredPath => language.text(
+                "contains a path outside the vault",
+                "inneholder en bane utenfor hvelvet",
+            ),
+            TemplateNotFound => language.text(
+                "references a template that could not be found",
+                "refererer til en mal som ikke ble funnet",
+            ),
+            InvalidRegex => language.text(
+                "contains an invalid filter expression",
+                "inneholder et ugyldig filteruttrykk",
+            ),
+            UnsupportedHotkey => language.text(
+                "contains a shortcut that cannot be imported",
+                "inneholder en snarvei som ikke kan importeres",
+            ),
+            UnsupportedCommand => language.text(
+                "contains an unsupported command",
+                "inneholder en handling som ikke støttes",
+            ),
+        };
+        let mut label = format!(
+            "{}: {} ({})",
+            warning.source,
+            message,
+            Self::import_category_label(warning.category, language)
+        );
+        if let Some(detail) = &warning.detail {
+            label.push_str(": ");
+            label.push_str(detail);
+        }
+        label
+    }
+
+    fn apply_vault_import_plan(
+        &mut self,
+        plan: &crate::vault_settings_import::ImportPlan,
+        expected_root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let current_root = self
+            .vault
+            .read(cx)
+            .root
+            .as_ref()
+            .and_then(|root| root.canonicalize().ok());
+        if current_root.as_deref() != Some(expected_root) || !plan.validate_targets() {
+            self.show_vault_import_report(
+                language.text(
+                    "The vault or an imported path changed after preview. Nothing was imported.",
+                    "Hvelvet eller en importert bane ble endret etter forhåndsvisningen. Ingenting ble importert.",
+                ),
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
+        let latest = cx
+            .global::<crate::windows::WindowManager>()
+            .settings
+            .clone();
+        let mut proposed = latest.clone();
+        if plan.apply_settings(&mut proposed).is_err() {
+            self.show_vault_import_report(
+                language.text(
+                    "Some settings changed after preview. Nothing was imported; review a new preview.",
+                    "Noen innstillinger ble endret etter forhåndsvisningen. Ingenting ble importert; gå gjennom en ny forhåndsvisning.",
+                ),
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
+        let bookmarks_added = proposed.bookmarks.merge_imported(plan.bookmarks.clone());
+        let root_key = expected_root.to_string_lossy().to_string();
+        let dismissed_offer_added = if proposed.vault_settings_import_dismissed.contains(&root_key)
+        {
+            false
+        } else {
+            proposed.vault_settings_import_dismissed.push(root_key);
+            true
+        };
+        let imported_settings_changed = plan.has_settings_changes() || bookmarks_added > 0;
+        let needs_settings_save = imported_settings_changed || dismissed_offer_added;
+        let mut successes: Vec<String> = Vec::new();
+        let mut warnings = plan
+            .warnings
+            .iter()
+            .map(|warning| Self::import_warning_label(warning, language))
+            .collect::<Vec<_>>();
+        if plan.bookmarks_skipped > 0 {
+            warnings.push(format!(
+                "{} {}",
+                language.text("Bookmarks skipped:", "Bokmerker som hoppes over:"),
+                plan.bookmarks_skipped
+            ));
+        }
+        if needs_settings_save {
+            match crate::windows::publish_checked(self.window_id, &latest, &proposed, cx) {
+                Ok(saved) => {
+                    self.apply_settings_inner(saved.clone(), window, cx, false);
+                    self.settings_baseline = saved;
+                    if imported_settings_changed {
+                        successes.push(
+                            language
+                                .text(
+                                    "Vault preferences and bookmarks were imported.",
+                                    "Hvelvinnstillinger og bokmerker ble importert.",
+                                )
+                                .to_string(),
+                        );
+                    }
+                    if bookmarks_added > 0 {
+                        successes.push(format!(
+                            "{} {}",
+                            language.text("Bookmarks added:", "Bokmerker lagt til:"),
+                            bookmarks_added
+                        ));
+                    }
+                }
+                Err(error) => {
+                    warnings.push(format!(
+                        "{}: {error}",
+                        language.text(
+                            "Settings could not be saved; shortcuts were not imported",
+                            "Innstillingene kunne ikke lagres; snarveier ble ikke importert",
+                        )
+                    ));
+                    self.show_vault_import_report(
+                        language.text(
+                            "The import did not complete.",
+                            "Importen ble ikke fullført.",
+                        ),
+                        warnings,
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+            }
+        }
+        if !plan.hotkeys.is_empty() {
+            match crate::hotkeys::apply_imported_bindings(cx, &plan.hotkeys) {
+                Ok(()) => successes.push(
+                    language
+                        .text("Shortcuts were imported.", "Snarveier ble importert.")
+                        .to_string(),
+                ),
+                Err(error) => warnings.push(format!(
+                    "{}: {}",
+                    language.text(
+                        "Shortcuts were not imported",
+                        "Snarveier ble ikke importert"
+                    ),
+                    error.message(language)
+                )),
+            }
+        }
+        if !plan.unsupported_plugins.is_empty() {
+            warnings.push(format!(
+                "{} {}",
+                language.text(
+                    "Enabled plugins are unsupported and were not imported:",
+                    "Aktiverte programtillegg støttes ikke og ble ikke importert:",
+                ),
+                plan.unsupported_plugins.join(", ")
+            ));
+        }
+        if successes.is_empty() && warnings.is_empty() {
+            successes.push(
+                language
+                    .text(
+                        "No settings needed to be changed.",
+                        "Ingen innstillinger trengte endring.",
+                    )
+                    .to_string(),
+            );
+        }
+        self.show_vault_import_report(
+            language.text(
+                "Vault settings import report",
+                "Rapport for import av hvelvinnstillinger",
+            ),
+            successes.into_iter().chain(warnings).collect(),
+            window,
+            cx,
+        );
+    }
+
+    fn persist_vault_import_dismissal(
+        &mut self,
+        root: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.vault.read(cx).root.as_deref() != Some(root) {
+            return;
+        }
+        let key = root.to_string_lossy().to_string();
+        if self.settings.vault_settings_import_dismissed.contains(&key) {
+            return;
+        }
+        let latest = cx
+            .global::<crate::windows::WindowManager>()
+            .settings
+            .clone();
+        let mut proposed = latest.clone();
+        proposed.vault_settings_import_dismissed.push(key);
+        match crate::windows::publish_checked(self.window_id, &latest, &proposed, cx) {
+            Ok(saved) => {
+                self.apply_settings_inner(saved.clone(), window, cx, false);
+                self.settings_baseline = saved;
+            }
+            Err(error) => self.note_status(
+                format!(
+                    "{}: {error}",
+                    self.tr(
+                        "Could not remember that import offer",
+                        "Kunne ikke huske dette importtilbudet",
+                    )
+                ),
+                cx,
+            ),
+        }
+    }
+
+    fn show_vault_import_report(
+        &mut self,
+        title: impl Into<SharedString>,
+        lines: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = self.settings.language;
+        let ok = language.text("OK", "OK");
+        let title = title.into();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let body = v_flex().gap_2().children(
+                lines
+                    .iter()
+                    .cloned()
+                    .map(|line| div().flex_none().child(line)),
+            );
+            dialog
+                .title(title.clone())
+                .w(px(520.))
+                .ok_text(ok)
+                .child(body)
         });
     }
 
@@ -5136,6 +5734,9 @@ impl Workspace {
         let files_changed = self.settings.show_other_files != settings.show_other_files;
         let tree_sort_changed = self.settings.tree_sort != settings.tree_sort;
         let templates_dir_changed = self.settings.templates_dir != settings.templates_dir;
+        let link_format_changed = self.settings.link_format != settings.link_format;
+        let ignore_filters_changed =
+            self.settings.user_ignore_filters != settings.user_ignore_filters;
         let focus_mode_changed = self.focus_mode != settings.focus_mode
             || self.settings.focus_mode != settings.focus_mode;
         let language_changed = self.settings.language != settings.language;
@@ -5168,13 +5769,18 @@ impl Workspace {
                 );
             });
         }
-        if files_changed || tree_sort_changed || templates_dir_changed {
+        if files_changed || tree_sort_changed || templates_dir_changed || ignore_filters_changed {
             self.vault.update(cx, |vault, cx| {
                 vault.tree_sort = settings.tree_sort;
                 vault.show_other_files = settings.show_other_files;
                 vault.templates_dir = settings.templates_dir.clone();
+                vault.set_ignore_filters(&settings.user_ignore_filters);
                 vault.refresh(cx);
             });
+        }
+        if link_format_changed {
+            self.vault
+                .update(cx, |vault, _cx| vault.set_link_format(settings.link_format));
         }
         if files_changed {
             if let Some(page) = &self.folder {
@@ -5343,7 +5949,7 @@ impl Workspace {
                     },
                 };
                 let mut edits: Vec<_> = vault
-                    .link_spans_to(&text, &path)
+                    .link_spans_to(&text, note, &path)
                     .into_iter()
                     .map(|range| {
                         (
@@ -6229,13 +6835,17 @@ impl Workspace {
     /// action on unlinked mentions. Splices through the editor when
     /// the note is open, writes the file otherwise.
     fn link_up_mention(&mut self, note: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(stem) = self
-            .active_doc()
-            .and_then(|d| d.read(cx).path.file_stem().and_then(|s| s.to_str()))
-            .map(|s| s.to_string())
+        let Some(target_path) = self.active_doc().map(|doc| doc.read(cx).path.clone()) else {
+            return;
+        };
+        let Some(stem) = target_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
         else {
             return;
         };
+        let target = self.wikilink_target(&target_path, &note, cx);
         let needle = stem.to_lowercase();
         if let Some(doc) = self
             .docs
@@ -6248,14 +6858,14 @@ impl Workspace {
                 if let Some(start) = crate::vault::plain_mention_offset(&text, &needle) {
                     doc.editor.update(cx, |editor, cx| {
                         editor.set_selected_range(start..start + stem.len(), cx);
-                        editor.replace(format!("[[{stem}]]"), window, cx);
+                        editor.replace(format!("[[{target}]]"), window, cx);
                     });
                 }
             });
         } else if let Ok(text) = std::fs::read_to_string(&note) {
             if let Some(start) = crate::vault::plain_mention_offset(&text, &needle) {
                 let mut text = text;
-                text.replace_range(start..start + stem.len(), &format!("[[{stem}]]"));
+                text.replace_range(start..start + stem.len(), &format!("[[{target}]]"));
                 if std::fs::write(&note, text).is_err() {
                     self.note_status("Couldn't update the mention", cx);
                     return;
@@ -6530,6 +7140,7 @@ impl Workspace {
                 text: format!("# {title}\n\n"),
                 cursor: None,
                 unsupported: 0,
+                overflowed: false,
             };
             self.write_new_note(path, heading, window, cx);
             return;
@@ -6578,6 +7189,16 @@ impl Workspace {
     }
 
     fn warn_unsupported(&mut self, expanded: &crate::templater::Expanded, cx: &mut Context<Self>) {
+        if expanded.overflowed {
+            self.note_status(
+                self.tr(
+                    "Template output exceeded the 4 MiB limit; the template was not applied.",
+                    "Malutdata overskred grensen på 4 MiB; malen ble ikke brukt.",
+                ),
+                cx,
+            );
+            return;
+        }
         if expanded.unsupported > 0 {
             self.note_status(
                 format!(
@@ -6635,10 +7256,18 @@ impl Workspace {
         let rel = vault_rel(&root, path);
         let abs = path.to_string_lossy().to_string();
         let clipboard = cx.read_from_clipboard().and_then(|c| c.text());
+        let canonical_root = root.canonicalize().ok();
         let include = |name: &str| {
-            find_vault_file(&root, &format!("{name}.md"))
-                .or_else(|| find_vault_file(&root, name))
-                .and_then(|p| std::fs::read_to_string(p).ok())
+            let root = canonical_root.as_ref()?;
+            let path = find_vault_markdown(root, name)?;
+            let file = std::fs::File::open(path).ok()?;
+            let mut file = file.take(crate::templater::MAX_EXPANSION_BYTES as u64 + 1);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).ok()?;
+            if bytes.len() > crate::templater::MAX_EXPANSION_BYTES {
+                return None;
+            }
+            String::from_utf8(bytes).ok()
         };
         let ctx = crate::templater::TemplateCtx {
             rel_path: &rel,
@@ -6650,7 +7279,13 @@ impl Workspace {
             answers,
             ..crate::templater::TemplateCtx::new(&title, *now)
         };
-        crate::templater::expand(template, &ctx)
+        crate::templater::expand_bounded(template, &ctx, crate::templater::MAX_EXPANSION_BYTES)
+            .unwrap_or(crate::templater::Expanded {
+                text: String::new(),
+                cursor: None,
+                unsupported: 0,
+                overflowed: true,
+            })
     }
 
     /// Ask template prompts one dialog at a time; `done` runs with the
@@ -6910,7 +7545,7 @@ impl Workspace {
     /// jumps the caret to the heading (Source view); `[[#heading]]`
     /// jumps within the open note.
     pub fn open_wikilink(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_wikilink_impl(target, false, window, cx);
+        self.open_wikilink_impl(target, false, None, window, cx);
     }
 
     /// ⌘+click: open the wikilink target in a new tab.
@@ -6920,19 +7555,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_wikilink_impl(target, true, window, cx);
+        self.open_wikilink_impl(target, true, None, window, cx);
+    }
+
+    pub(crate) fn open_wikilink_from(
+        &mut self,
+        target: &str,
+        source: Option<&Path>,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_wikilink_impl(target, new_tab, source, window, cx);
     }
 
     fn open_wikilink_impl(
         &mut self,
         target: &str,
         new_tab: bool,
+        source_path: Option<&Path>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(target) = crate::pdf::PdfTarget::parse(target) {
             let vault = self.vault.read(cx);
-            let doc_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+            let doc_path = source_path
+                .map(Path::to_path_buf)
+                .or_else(|| self.active_doc().map(|doc| doc.read(cx).path.clone()));
             let path = target
                 .resolve(
                     doc_path.as_deref(),
@@ -6971,11 +7620,17 @@ impl Workspace {
         // `|` aliases arrive via ⌥⏎ on the raw `[[inner]]` — the alias
         // is display text, never part of the target.
         let note = note.split('|').next().unwrap_or(note).trim();
+        let source_path = source_path
+            .map(Path::to_path_buf)
+            .or_else(|| self.active_doc().map(|doc| doc.read(cx).path.clone()));
         let resolved = if note.is_empty() {
             // `[[#heading]]` — an anchor inside the open note.
-            self.active_doc().map(|d| d.read(cx).path.clone())
+            source_path.clone()
         } else {
-            self.vault.read(cx).resolve_wikilink(note)
+            source_path
+                .as_deref()
+                .and_then(|source| self.vault.read(cx).resolve_wikilink_from(note, source))
+                .or_else(|| self.vault.read(cx).resolve_wikilink(note))
         };
         match resolved {
             Some(path) => {
@@ -7031,7 +7686,7 @@ impl Workspace {
             let target = if note.is_empty() {
                 Some(own_path.clone())
             } else {
-                self.vault.read(cx).resolve_wikilink(&note)
+                self.vault.read(cx).resolve_wikilink_from(&note, &own_path)
             };
             let Some(target) = target else {
                 continue;
@@ -10261,7 +10916,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(dir) = self.attachments_dir(cx) else {
+        let active_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+        let Some(dir) = self.attachments_dir(active_path.as_deref(), cx) else {
             return false;
         };
         let stamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -10290,13 +10946,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (Some(root), Some(dir)) = (self.vault.read(cx).root.clone(), self.attachments_dir(cx))
-        else {
+        let active_path = self.active_doc().map(|doc| doc.read(cx).path.clone());
+        let (Some(root), Some(dir)) = (
+            self.vault.read(cx).root.clone(),
+            self.attachments_dir(active_path.as_deref(), cx),
+        ) else {
             return false;
         };
-        let note_dir = self
-            .active_doc()
-            .and_then(|d| d.read(cx).path.parent().map(Path::to_path_buf));
+        let note_dir = active_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
         let mut links = Vec::new();
         for src in paths {
             if !src.is_file() {
@@ -10416,11 +11076,24 @@ impl Workspace {
         });
     }
 
-    /// The vault's attachment folder (`settings.attachments_dir`, relative to
-    /// the vault root unless absolute).
-    fn attachments_dir(&self, cx: &App) -> Option<PathBuf> {
-        let root = self.vault.read(cx).root.clone()?;
-        Some(root.join(&self.settings.attachments_dir))
+    fn attachments_dir(&self, note_path: Option<&Path>, cx: &App) -> Option<PathBuf> {
+        let root = self.vault.read(cx).root.as_ref()?.canonicalize().ok()?;
+        let configured = self.settings.attachments_dir.as_str();
+        if configured == "." || configured.is_empty() {
+            return Some(root);
+        }
+        let relative = if configured.starts_with("./") {
+            let note_dir = note_path?.parent()?;
+            let note_dir = note_dir.canonicalize().ok()?;
+            let note_relative = note_dir.strip_prefix(&root).ok()?;
+            note_relative.join(configured.trim_start_matches("./"))
+        } else {
+            PathBuf::from(configured)
+        };
+        crate::vault_settings_import::checked_vault_path(
+            &root,
+            &relative.to_string_lossy().replace('\\', "/"),
+        )
     }
 
     fn render_empty_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -11476,6 +12149,77 @@ fn find_vault_file(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+fn find_vault_markdown(root: &Path, name: &str) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let name_path = Path::new(name);
+    let target = match name_path.extension() {
+        Some(extension)
+            if !extension
+                .to_str()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md")) =>
+        {
+            return None;
+        }
+        Some(_) => name.to_string(),
+        None => format!("{name}.md"),
+    };
+    let exact = crate::vault_settings_import::checked_vault_path(&root, &target)?;
+    match exact.canonicalize() {
+        Ok(path) => {
+            return (path.starts_with(&root)
+                && path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md")))
+            .then_some(path);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+    if target.contains('/') {
+        return None;
+    }
+    let basename = Path::new(&target)
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
+    let mut stack = vec![root.clone()];
+    let mut found = None;
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file()
+                && entry.file_name().to_string_lossy().to_lowercase() == basename
+            {
+                let canonical = path.canonicalize().ok()?;
+                if canonical.starts_with(&root) && found.replace(canonical).is_some() {
+                    return None;
+                }
+            }
+        }
+    }
+    found
+}
+
 /// Copy `src` into `dir` under a free name and return where it went.
 /// A same-named file there with identical bytes is reused instead, so
 /// pasting the same image twice links one file.
@@ -11713,13 +12457,30 @@ mod preview_tab_tests {
 
 #[cfg(test)]
 mod import_tests {
-    use super::{copy_into, find_vault_file, free_path};
+    use super::{copy_into, find_vault_file, find_vault_markdown, free_path};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rista-import-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let dir = std::env::temp_dir().join(format!(
+                "rista-import-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("could not create test directory: {error}"),
+            }
+        }
     }
 
     #[test]
@@ -11765,5 +12526,34 @@ mod import_tests {
             Some(root.join("attachments/deep/Report.pdf"))
         );
         assert_eq!(find_vault_file(&root, "missing.pdf"), None);
+    }
+
+    #[test]
+    fn template_lookup_is_vault_contained_and_refuses_ambiguous_names() {
+        let root = unique_temp_dir("markdown");
+        let outside = unique_temp_dir("markdown-outside");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir_all(root.join("two")).unwrap();
+        std::fs::write(root.join("nested/Note.md"), b"nested").unwrap();
+        std::fs::write(root.join("one/Shared.md"), b"one").unwrap();
+        std::fs::write(root.join("two/Shared.md"), b"two").unwrap();
+        assert_eq!(
+            find_vault_markdown(&root, "nested/Note"),
+            Some(root.canonicalize().unwrap().join("nested/Note.md"))
+        );
+        assert_eq!(find_vault_markdown(&root, "Shared"), None);
+        assert_eq!(find_vault_markdown(&root, "nested/Note.txt"), None);
+
+        #[cfg(unix)]
+        {
+            std::fs::write(outside.join("Secret.md"), b"outside").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+            assert_eq!(find_vault_markdown(&root, "linked/Secret"), None);
+            assert_eq!(find_vault_markdown(&root, "Secret"), None);
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
     }
 }

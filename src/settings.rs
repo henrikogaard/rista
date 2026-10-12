@@ -131,6 +131,15 @@ pub enum TreeSort {
     Size,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkFormat {
+    #[default]
+    Shortest,
+    Relative,
+    Absolute,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -176,6 +185,10 @@ pub struct Settings {
     /// Vault-relative folder pasted/dropped images are copied into
     /// (the "attachment folder path").
     pub attachments_dir: String,
+    #[serde(default)]
+    pub link_format: LinkFormat,
+    #[serde(default)]
+    pub user_ignore_filters: Vec<String>,
     /// Vault-relative folder the template picker and the daily-note
     /// template live in (the template folder setting).
     #[serde(default = "default_templates_dir")]
@@ -213,10 +226,14 @@ pub struct Settings {
     pub yearly_dir: String,
     #[serde(default = "default_yearly_format")]
     pub yearly_format: String,
+    #[serde(default)]
+    pub period_templates: std::collections::BTreeMap<String, String>,
     /// Folder templates: vault-relative folder (`""` = root) → template
     /// path relative to the vault. New notes in that folder start from it.
     #[serde(default)]
     pub folder_templates: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub vault_settings_import_dismissed: Vec<String>,
     /// Starred notes — absolute paths, shown pinned at the sidebar top.
     pub starred: Vec<String>,
     pub bookmarks: crate::bookmarks::Bookmarks,
@@ -437,6 +454,8 @@ impl Default for Settings {
             focus_mode: false,
             last_vault: None,
             attachments_dir: "attachments".to_string(),
+            link_format: LinkFormat::Shortest,
+            user_ignore_filters: Vec::new(),
             templates_dir: default_templates_dir(),
             daily_dir: String::new(),
             daily_format: default_daily_format(),
@@ -450,7 +469,9 @@ impl Default for Settings {
             quarterly_format: default_quarterly_format(),
             yearly_dir: String::new(),
             yearly_format: default_yearly_format(),
+            period_templates: Default::default(),
             folder_templates: Default::default(),
+            vault_settings_import_dismissed: Vec::new(),
             starred: Vec::new(),
             bookmarks: crate::bookmarks::Bookmarks::default(),
             panes: SidebarPanes::default(),
@@ -515,6 +536,36 @@ impl Settings {
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(config_path(), json);
         }
+    }
+
+    pub(crate) fn save_checked(&self) -> std::io::Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static TEMP_ID: AtomicU64 = AtomicU64::new(0);
+        let path = config_path();
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(
+            ".settings.{}.{}.tmp",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let serialized = serde_json::to_vec_pretty(self)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| {
+            file.write_all(&serialized)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
     }
 
     /// Resolve the appearance pref into a concrete mode — `System`

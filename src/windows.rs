@@ -689,6 +689,40 @@ pub(crate) fn publish(
     settings
 }
 
+pub(crate) fn publish_checked(
+    id: u64,
+    baseline: &Settings,
+    current: &Settings,
+    cx: &mut Context<Workspace>,
+) -> std::io::Result<Settings> {
+    let manager = cx.global::<WindowManager>();
+    if manager.restoring || manager.quitting {
+        let settings = with_local_settings(manager.settings.clone(), current);
+        settings.save_checked()?;
+        return Ok(settings);
+    }
+    let (settings, shared_settings, changed) = {
+        let manager = cx.global::<WindowManager>();
+        let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
+        let mut merged = merged;
+        let mut session = WindowSession::from_settings(id, current);
+        session.geometry = manager.session(id).and_then(|session| session.geometry);
+        update_session(&mut merged, session);
+        sync_compatibility_facade(&mut merged);
+        (merged.clone(), merged, changed)
+    };
+    settings.save_checked()?;
+    cx.update_global::<WindowManager, _>(|manager, _cx| {
+        manager.settings = settings.clone();
+    });
+    if changed {
+        cx.update_global::<SharedPreferences, _>(|shared, _cx| {
+            shared.settings = shared_settings;
+        });
+    }
+    Ok(settings)
+}
+
 fn next_available_id(start: u64, sessions: &[WindowSession], records: &[WindowRecord]) -> u64 {
     let used = sessions
         .iter()
