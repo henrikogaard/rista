@@ -696,14 +696,15 @@ pub(crate) fn publish_checked(
 ) -> std::io::Result<Settings> {
     let manager = cx.global::<WindowManager>();
     if manager.restoring || manager.quitting {
-        let settings = with_local_settings(manager.settings.clone(), current);
-        settings.save_checked()?;
-        return Ok(settings);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "workspace lifecycle transition in progress",
+        ));
     }
     let (settings, shared_settings, changed) = {
         let manager = cx.global::<WindowManager>();
         let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
-        let mut merged = with_local_settings(merged, current);
+        let mut merged = merged;
         let mut session = WindowSession::from_settings(id, current);
         session.geometry = manager.session(id).and_then(|session| session.geometry);
         update_session(&mut merged, session);
@@ -719,7 +720,16 @@ pub(crate) fn publish_checked(
             shared.settings = shared_settings;
         });
     }
-    Ok(with_local_settings(settings, current))
+    Ok(with_caller_facade(settings, current))
+}
+
+fn with_caller_facade(settings: Settings, current: &Settings) -> Settings {
+    let sessions = settings.window_sessions.clone();
+    let active_window_id = settings.active_window_id;
+    let mut local = with_local_settings(settings, current);
+    local.window_sessions = sessions;
+    local.active_window_id = active_window_id;
+    local
 }
 
 fn next_available_id(start: u64, sessions: &[WindowSession], records: &[WindowRecord]) -> u64 {
@@ -1320,10 +1330,10 @@ mod tests {
         sync_compatibility_facade(&mut persisted);
         let persisted_sessions = persisted.window_sessions.clone();
         let mut current_window_b = window_b.clone();
-        current_window_b.window_sessions = persisted_sessions.clone();
+        current_window_b.window_sessions = vec![persisted_sessions[1].clone()];
         current_window_b.active_window_id = Some(2);
 
-        let caller_settings = with_local_settings(persisted.clone(), &current_window_b);
+        let caller_settings = super::with_caller_facade(persisted.clone(), &current_window_b);
         assert_eq!(caller_settings.last_vault, Some(PathBuf::from("/vault/b")));
         assert_eq!(caller_settings.open_tabs, vec!["/vault/b/note.md"]);
         assert_eq!(

@@ -862,16 +862,11 @@ fn replace_bindings(cx: &mut App, bindings: Vec<KeyBinding>) {
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
     // Native menu key equivalents are snapshots, not live keymap references.
-    if let Some(record) = cx
+    if let Some(language) = cx
         .try_global::<crate::windows::WindowManager>()
-        .and_then(crate::windows::WindowManager::active)
+        .map(|manager| manager.settings.language)
     {
-        if let Ok(language) = record
-            .workspace
-            .update(cx, |workspace, _cx| workspace.settings().language)
-        {
-            cx.set_menus(crate::menus(language));
-        }
+        cx.set_menus(crate::menus(language));
     }
 }
 
