@@ -4,6 +4,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+type CanvasPathResolver<'a> = dyn Fn(&str, bool) -> Option<PathBuf> + 'a;
+
 const MAX_SAFE_WORLD: i64 = 1_000_000_000;
 const MIN_NODE_SIZE: i64 = 40;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -215,6 +217,60 @@ impl CanvasDocument {
         if object.get(field) == Some(&value) {
             return Ok(false);
         }
+        if value.is_null() {
+            let changed = object.remove(field).is_some();
+            self.changed |= changed;
+            return Ok(changed);
+        }
+        object.insert(field.to_string(), value);
+        self.changed = true;
+        Ok(true)
+    }
+
+    pub(crate) fn set_edge_field(
+        &mut self,
+        id: &str,
+        field: &str,
+        value: Value,
+    ) -> Result<bool, String> {
+        if let Some(value) = value.as_str() {
+            match field {
+                "color"
+                    if !value.is_empty()
+                        && !matches!(value, "1" | "2" | "3" | "4" | "5" | "6")
+                        && !valid_custom_color(value) =>
+                {
+                    return Err("Canvas color must be a palette value or hexadecimal color".into());
+                }
+                "fromEnd" | "toEnd" if !matches!(value, "arrow" | "none") => {
+                    return Err("Canvas edge ends must be arrows or none".into());
+                }
+                "fromSide" | "toSide" if !matches!(value, "top" | "right" | "bottom" | "left") => {
+                    return Err("Canvas edge sides must name a card side".into());
+                }
+                "curve" if !matches!(value, "curved" | "straight") => {
+                    return Err("Canvas edge curve must be curved or straight".into());
+                }
+                "fromNode" | "toNode" if self.node(value).is_none() => {
+                    return Err("Canvas edge endpoints must be existing cards".into());
+                }
+                _ => {}
+            }
+        }
+        let edge = self
+            .edge_mut(id)
+            .ok_or_else(|| "Canvas edge no longer exists".to_string())?;
+        let object = edge
+            .as_object_mut()
+            .ok_or_else(|| "Canvas edge is malformed".to_string())?;
+        if object.get(field) == Some(&value) {
+            return Ok(false);
+        }
+        if value.is_null() {
+            let changed = object.remove(field).is_some();
+            self.changed |= changed;
+            return Ok(changed);
+        }
         object.insert(field.to_string(), value);
         self.changed = true;
         Ok(true)
@@ -296,6 +352,9 @@ impl CanvasDocument {
             return Err("Canvas edge id already exists".into());
         }
         object.insert("id".into(), Value::String(id.clone()));
+        object
+            .entry("toEnd")
+            .or_insert_with(|| Value::String("arrow".into()));
         self.array_mut("edges").push(edge);
         self.changed = true;
         Ok(id)
@@ -343,6 +402,24 @@ impl CanvasDocument {
         ))
     }
 
+    pub(crate) fn add_empty_group(
+        &mut self,
+        x: i64,
+        y: i64,
+        label: &str,
+    ) -> Result<String, String> {
+        self.add_node(node_value(
+            "group",
+            Geometry {
+                x,
+                y,
+                width: 480,
+                height: 320,
+            },
+            [("label", Value::String(label.into()))],
+        ))
+    }
+
     pub(crate) fn add_group(
         &mut self,
         selected: &[String],
@@ -383,7 +460,16 @@ impl CanvasDocument {
             .checked_sub(y)
             .and_then(|value| value.checked_add(margin))
             .ok_or_else(|| "Canvas group is out of range".to_string())?;
-        self.add_node(node_value(
+        let earliest_member = members
+            .iter()
+            .filter_map(|id| {
+                self.nodes()
+                    .iter()
+                    .position(|node| node["id"].as_str() == Some(id.as_str()))
+            })
+            .min()
+            .ok_or_else(|| "Select at least one supported Canvas card".to_string())?;
+        let id = self.add_node(node_value(
             "group",
             Geometry {
                 x,
@@ -392,7 +478,15 @@ impl CanvasDocument {
                 height,
             },
             [("label", Value::String(label.into()))],
-        ))
+        ))?;
+        let nodes = self.array_mut("nodes");
+        let group_index = nodes
+            .iter()
+            .position(|node| node["id"].as_str() == Some(id.as_str()))
+            .ok_or_else(|| "Canvas group could not be inserted".to_string())?;
+        let group = nodes.remove(group_index);
+        nodes.insert(earliest_member.min(nodes.len()), group);
+        Ok(id)
     }
 
     pub(crate) fn included_node_ids(&self, selected: &[String]) -> Vec<String> {
@@ -475,6 +569,193 @@ impl CanvasDocument {
             changed |= self.set_node_geometry(&id, geometry)?;
         }
         Ok(changed)
+    }
+
+    pub(crate) fn align_selection(
+        &mut self,
+        selected: &[String],
+        alignment: &str,
+    ) -> Result<bool, String> {
+        let ids = selected
+            .iter()
+            .filter(|id| {
+                self.node(id).is_some()
+                    && !selected.iter().any(|parent| {
+                        parent != *id
+                            && self
+                                .included_node_ids(std::slice::from_ref(parent))
+                                .contains(id)
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if ids.len() < 2 {
+            return Ok(false);
+        }
+        let geometries = ids
+            .iter()
+            .map(|id| {
+                self.node(id)
+                    .and_then(|node| self.node_geometry(node))
+                    .map(|geometry| (id.clone(), geometry))
+                    .ok_or_else(|| "This Canvas card has unsupported geometry".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let left = geometries
+            .iter()
+            .map(|(_, g)| g.x)
+            .min()
+            .unwrap_or_default();
+        let top = geometries
+            .iter()
+            .map(|(_, g)| g.y)
+            .min()
+            .unwrap_or_default();
+        let right = geometries
+            .iter()
+            .filter_map(|(_, g)| g.right())
+            .max()
+            .ok_or_else(|| "Canvas selection is outside the supported range".to_string())?;
+        let bottom = geometries
+            .iter()
+            .filter_map(|(_, g)| g.bottom())
+            .max()
+            .ok_or_else(|| "Canvas selection is outside the supported range".to_string())?;
+        let mut updates = Vec::with_capacity(geometries.len());
+        if matches!(alignment, "distribute-horizontal" | "distribute-vertical") {
+            let horizontal = alignment == "distribute-horizontal";
+            let mut sorted = geometries.clone();
+            sorted.sort_by_key(
+                |(_, geometry)| {
+                    if horizontal {
+                        geometry.x
+                    } else {
+                        geometry.y
+                    }
+                },
+            );
+            let first = sorted
+                .first()
+                .ok_or_else(|| "Canvas selection is outside the supported range".to_string())?
+                .1;
+            let last = sorted
+                .last()
+                .ok_or_else(|| "Canvas selection is outside the supported range".to_string())?
+                .1;
+            let (start, end) = if horizontal {
+                (
+                    first.x,
+                    last.right().ok_or_else(|| {
+                        "Canvas selection is outside the supported range".to_string()
+                    })?,
+                )
+            } else {
+                (
+                    first.y,
+                    last.bottom().ok_or_else(|| {
+                        "Canvas selection is outside the supported range".to_string()
+                    })?,
+                )
+            };
+            let total_size = sorted.iter().try_fold(0_i64, |sum, (_, geometry)| {
+                sum.checked_add(if horizontal {
+                    geometry.width
+                } else {
+                    geometry.height
+                })
+            });
+            let gap = end
+                .checked_sub(start)
+                .and_then(|span| span.checked_sub(total_size?))
+                .map(|free| free / (sorted.len() as i64 - 1))
+                .ok_or_else(|| "Canvas selection is outside the supported range".to_string())?;
+            let mut cursor = start;
+            for (id, mut geometry) in sorted {
+                if horizontal {
+                    geometry.x = cursor;
+                    cursor = cursor
+                        .checked_add(geometry.width)
+                        .and_then(|value| value.checked_add(gap))
+                        .ok_or_else(|| {
+                            "Canvas alignment is outside the supported range".to_string()
+                        })?;
+                } else {
+                    geometry.y = cursor;
+                    cursor = cursor
+                        .checked_add(geometry.height)
+                        .and_then(|value| value.checked_add(gap))
+                        .ok_or_else(|| {
+                            "Canvas alignment is outside the supported range".to_string()
+                        })?;
+                }
+                updates.push((id, geometry));
+            }
+        } else {
+            for (id, mut geometry) in geometries {
+                match alignment {
+                    "left" => geometry.x = left,
+                    "center" => geometry.x = left + (right - left - geometry.width) / 2,
+                    "right" => geometry.x = right - geometry.width,
+                    "top" => geometry.y = top,
+                    "middle" => geometry.y = top + (bottom - top - geometry.height) / 2,
+                    "bottom" => geometry.y = bottom - geometry.height,
+                    _ => return Err("Unknown Canvas alignment".into()),
+                }
+                updates.push((id, geometry));
+            }
+        }
+        let mut member_updates = HashMap::new();
+        for (id, geometry) in updates {
+            let original = self
+                .node(&id)
+                .and_then(|node| self.node_geometry(node))
+                .ok_or_else(|| "Canvas card no longer exists".to_string())?;
+            for member in self.included_node_ids(&[id]) {
+                let mut position = self
+                    .node(&member)
+                    .and_then(|node| self.node_geometry(node))
+                    .ok_or_else(|| "Canvas card has unsupported geometry".to_string())?;
+                position.x += geometry.x - original.x;
+                position.y += geometry.y - original.y;
+                if !position.is_safe() {
+                    return Err("Canvas alignment is outside the supported range".into());
+                }
+                member_updates.entry(member).or_insert(position);
+            }
+        }
+        let mut changed = false;
+        for (id, geometry) in member_updates {
+            changed |= self.set_node_geometry(&id, geometry)?;
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn reorder_selection(&mut self, selected: &[String], to_front: bool) -> bool {
+        let included = self
+            .included_node_ids(selected)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let nodes = self.array_mut("nodes");
+        let old = nodes.clone();
+        let mut moving = Vec::new();
+        let mut retained = Vec::with_capacity(nodes.len());
+        for node in nodes.drain(..) {
+            if node["id"].as_str().is_some_and(|id| included.contains(id)) {
+                moving.push(node);
+            } else {
+                retained.push(node);
+            }
+        }
+        if to_front {
+            retained.extend(moving);
+            *nodes = retained;
+        } else {
+            moving.extend(retained);
+            *nodes = moving;
+        }
+        let changed = *nodes != old;
+        self.changed |= changed;
+        changed
     }
 
     pub(crate) fn resize_node(
@@ -564,6 +845,54 @@ impl CanvasDocument {
         dx: i64,
         dy: i64,
     ) -> Result<Vec<String>, String> {
+        let mut fragment_ids = HashSet::new();
+        for node in &fragment.nodes {
+            let object = node
+                .as_object()
+                .ok_or_else(|| "Clipboard Canvas node is malformed".to_string())?;
+            let id = required_string(object, "id", "clipboard node")?;
+            if !fragment_ids.insert(id.to_string()) {
+                return Err("Clipboard Canvas contains duplicate ids".into());
+            }
+            validate_new_node(node)?;
+            let geometry = Geometry {
+                x: object["x"].as_i64().unwrap_or_default(),
+                y: object["y"].as_i64().unwrap_or_default(),
+                width: object["width"].as_i64().unwrap_or_default(),
+                height: object["height"].as_i64().unwrap_or_default(),
+            };
+            if !geometry.is_safe() {
+                return Err("Canvas paste is outside the supported range".into());
+            }
+            for field in ["file", "background"] {
+                if let Some(path) = object.get(field).and_then(Value::as_str) {
+                    let path = Path::new(path);
+                    if path.as_os_str().is_empty()
+                        || path.is_absolute()
+                        || path.components().any(|component| {
+                            matches!(component, Component::ParentDir | Component::Prefix(_))
+                        })
+                    {
+                        return Err("Canvas references must stay inside the vault".into());
+                    }
+                }
+            }
+        }
+        let node_ids = fragment_ids.clone();
+        for edge in &fragment.edges {
+            let object = edge
+                .as_object()
+                .ok_or_else(|| "Clipboard Canvas edge is malformed".to_string())?;
+            let id = required_string(object, "id", "clipboard edge")?;
+            let from = required_string(object, "fromNode", "clipboard edge")?;
+            let to = required_string(object, "toNode", "clipboard edge")?;
+            if !fragment_ids.insert(id.to_string()) {
+                return Err("Clipboard Canvas contains duplicate ids".into());
+            }
+            if !node_ids.contains(from) || !node_ids.contains(to) {
+                return Err("Clipboard Canvas edge refers to a missing node".into());
+            }
+        }
         let mut id_map = HashMap::new();
         for node in &fragment.nodes {
             let old = node["id"]
@@ -578,22 +907,24 @@ impl CanvasDocument {
                 .ok_or_else(|| "Clipboard Canvas node is malformed".to_string())?;
             let old = object["id"].as_str().unwrap_or_default().to_string();
             object.insert("id".into(), Value::String(id_map[&old].clone()));
-            if let Some(geometry) = self.node_geometry(&node) {
-                let moved =
-                    Geometry {
-                        x: geometry.x.checked_add(dx).ok_or_else(|| {
-                            "Canvas paste is outside the supported range".to_string()
-                        })?,
-                        y: geometry.y.checked_add(dy).ok_or_else(|| {
-                            "Canvas paste is outside the supported range".to_string()
-                        })?,
-                        ..geometry
-                    };
-                if !moved.is_safe() {
-                    return Err("Canvas paste is outside the supported range".into());
-                }
-                set_geometry_value(&mut node, moved)?;
+            let geometry = self
+                .node_geometry(&node)
+                .ok_or_else(|| "Clipboard Canvas node has unsupported geometry".to_string())?;
+            let moved = Geometry {
+                x: geometry
+                    .x
+                    .checked_add(dx)
+                    .ok_or_else(|| "Canvas paste is outside the supported range".to_string())?,
+                y: geometry
+                    .y
+                    .checked_add(dy)
+                    .ok_or_else(|| "Canvas paste is outside the supported range".to_string())?,
+                ..geometry
+            };
+            if !moved.is_safe() {
+                return Err("Canvas paste is outside the supported range".into());
             }
+            set_geometry_value(&mut node, moved)?;
             cloned_nodes.push(node);
         }
         let mut cloned_edges = Vec::new();
@@ -608,7 +939,7 @@ impl CanvasDocument {
                 .as_str()
                 .ok_or_else(|| "Clipboard Canvas edge has no target".to_string())?;
             let (Some(from), Some(to)) = (id_map.get(from), id_map.get(to)) else {
-                continue;
+                return Err("Clipboard Canvas edge refers to a missing node".into());
             };
             object.insert("id".into(), Value::String(self.unique_id()));
             object.insert("fromNode".into(), Value::String(from.clone()));
@@ -659,8 +990,15 @@ impl CanvasDocument {
             let Some(object) = node.as_object() else {
                 continue;
             };
-            for key in ["text", "label", "url", "file"] {
-                if let Some(value) = object.get(key).and_then(Value::as_str) {
+            let searchable_fields: &[&str] = match object.get("type").and_then(Value::as_str) {
+                Some("text") => &["text"],
+                Some("file") => &["file"],
+                Some("link") => &["url"],
+                Some("group") => &["label"],
+                _ => &[],
+            };
+            for key in searchable_fields {
+                if let Some(value) = object.get(*key).and_then(Value::as_str) {
                     fields.push(value.to_string());
                 }
             }
@@ -668,41 +1006,81 @@ impl CanvasDocument {
         fields.join("\n")
     }
 
-    pub(crate) fn outgoing_targets(&self) -> Vec<(String, bool)> {
-        let mut targets = Vec::new();
+    pub(crate) fn vault_file_references(&self) -> Vec<String> {
+        let mut references = Vec::new();
         for node in self.nodes() {
-            if let Some(path) = node["file"].as_str() {
-                targets.push((path.to_string(), true));
-            }
-            if let Some(background) = node["background"].as_str() {
-                targets.push((background.to_string(), true));
-            }
-            if node["type"].as_str() == Some("text") {
-                if let Some(text) = node["text"].as_str() {
-                    targets.extend(crate::vault::local_link_targets(text));
+            let fields: &[&str] = match node["type"].as_str() {
+                Some("file") => &["file"],
+                Some("group") => &["background"],
+                _ => &[],
+            };
+            for key in fields {
+                if let Some(path) = node.get(*key).and_then(Value::as_str) {
+                    if !references.contains(&path.to_string()) {
+                        references.push(path.to_string());
+                    }
                 }
             }
         }
-        targets
+        references
     }
 
-    pub(crate) fn retarget_paths(&mut self, source: &Path, destination: &Path) -> bool {
+    pub(crate) fn text_link_targets(&self) -> Vec<(String, bool)> {
+        self.nodes()
+            .iter()
+            .filter(|node| node["type"].as_str() == Some("text"))
+            .filter_map(|node| node["text"].as_str())
+            .flat_map(crate::vault::local_link_targets)
+            .collect()
+    }
+
+    pub(crate) fn retarget_paths(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        canvas_source: &Path,
+        canvas_destination: &Path,
+        resolve: Option<&CanvasPathResolver<'_>>,
+    ) -> bool {
         let source = source.to_string_lossy().replace('\\', "/");
         let destination = destination.to_string_lossy().replace('\\', "/");
+        let old_directory = canvas_source.parent().unwrap_or_else(|| Path::new(""));
+        let new_directory = canvas_destination.parent().unwrap_or_else(|| Path::new(""));
         let mut did_change = false;
         for node in self.array_mut("nodes") {
             let Some(object) = node.as_object_mut() else {
                 continue;
             };
-            for field in ["file", "background"] {
-                let Some(path) = object.get(field).and_then(Value::as_str) else {
+            let fields: &[&str] = match object.get("type").and_then(Value::as_str) {
+                Some("file") => &["file"],
+                Some("group") => &["background"],
+                _ => &[],
+            };
+            for field in fields {
+                let Some(path) = object.get(*field).and_then(Value::as_str) else {
                     continue;
                 };
                 let Some(next) = retarget_reference(path, &source, &destination) else {
                     continue;
                 };
-                object.insert(field.into(), Value::String(next));
+                object.insert((*field).into(), Value::String(next));
                 did_change = true;
+            }
+            if object.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(text) = object.get("text").and_then(Value::as_str) {
+                    let next = retarget_markdown_targets(
+                        text,
+                        &source,
+                        &destination,
+                        old_directory,
+                        new_directory,
+                        resolve,
+                    );
+                    if next != text {
+                        object.insert("text".into(), Value::String(next));
+                        did_change = true;
+                    }
+                }
             }
         }
         self.changed |= did_change;
@@ -736,6 +1114,14 @@ impl CanvasDocument {
             .as_array_mut()?
             .iter_mut()
             .find(|node| node["id"].as_str() == Some(id))
+    }
+
+    fn edge_mut(&mut self, id: &str) -> Option<&mut Value> {
+        self.value
+            .get_mut("edges")?
+            .as_array_mut()?
+            .iter_mut()
+            .find(|edge| edge["id"].as_str() == Some(id))
     }
 
     fn array_mut(&mut self, name: &str) -> &mut Vec<Value> {
@@ -896,9 +1282,242 @@ fn retarget_reference(path: &str, source: &str, destination: &str) -> Option<Str
     Some(format!("{next}{suffix}"))
 }
 
+fn normalize_vault_relative(path: &Path) -> Option<String> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(component) => {
+                components.push(component.to_string_lossy().to_string());
+            }
+            Component::ParentDir => {
+                components.pop()?;
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(components.join("/"))
+}
+
+fn relative_vault_path(from_directory: &Path, target: &str) -> Option<String> {
+    let from = normalize_vault_relative(from_directory)?;
+    let from_components = from
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let target_components = target
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let common = from_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = vec![".."; from_components.len().saturating_sub(common)];
+    relative.extend(target_components[common..].iter().copied());
+    Some(if relative.is_empty() {
+        ".".into()
+    } else {
+        relative.join("/")
+    })
+}
+
+fn retarget_markdown_targets(
+    text: &str,
+    source: &str,
+    destination: &str,
+    old_directory: &Path,
+    new_directory: &Path,
+    resolve: Option<&CanvasPathResolver<'_>>,
+) -> String {
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let Ok(ast) = markdown::to_mdast(text, &options) else {
+        return text.to_string();
+    };
+    let mut spans = Vec::new();
+    canvas_link_spans(&ast, text, &mut spans);
+    let mut edits = Vec::new();
+    for (range, wiki) in spans {
+        let raw = &text[range.clone()];
+        let target = raw.trim().trim_start_matches('<').trim_end_matches('>');
+        if target.is_empty()
+            || target.starts_with('#')
+            || target.starts_with("//")
+            || target.contains(':')
+        {
+            continue;
+        }
+        let bare = target.split(['#', '?', '^', '|']).next().unwrap_or(target);
+        let resolved = match resolve {
+            Some(resolve) => resolve(target, wiki).and_then(|path| normalize_vault_relative(&path)),
+            None => {
+                let decoded = crate::vault::percent_decode(bare);
+                normalize_vault_relative(&if wiki {
+                    PathBuf::from(decoded)
+                } else {
+                    old_directory.join(decoded)
+                })
+            }
+        };
+        let Some(old_target) = resolved else { continue };
+        let moved = retarget_reference(&old_target, source, destination);
+        if moved.is_none() && (wiki || old_directory == new_directory) {
+            continue;
+        }
+        let mapped = moved.as_deref().unwrap_or(&old_target);
+        let replacement = if wiki {
+            let mapped = if !bare.ends_with(".md") {
+                mapped.trim_end_matches(".md")
+            } else {
+                mapped
+            };
+            crate::vault::retarget_link_full(raw, mapped)
+        } else {
+            let Some(relative) = relative_vault_path(new_directory, mapped) else {
+                continue;
+            };
+            crate::vault::retarget_md_link_full(raw, &relative)
+        };
+        if replacement != raw {
+            edits.push((range, replacement));
+        }
+    }
+    let mut output = text.to_string();
+    edits.sort_by_key(|(range, _)| range.start);
+    for (range, replacement) in edits.into_iter().rev() {
+        output.replace_range(range, &replacement);
+    }
+    output
+}
+
+fn canvas_link_spans(
+    node: &markdown::mdast::Node,
+    source: &str,
+    spans: &mut Vec<(std::ops::Range<usize>, bool)>,
+) {
+    use markdown::mdast::Node;
+    if let Some(position) = node.position() {
+        let start = position.start.offset;
+        let raw = &source[start..position.end.offset];
+        match node {
+            Node::Link(_) | Node::Image(_) | Node::Definition(_) => {
+                let marker = if matches!(node, Node::Definition(_)) {
+                    "]:"
+                } else {
+                    "]("
+                };
+                let url = match node {
+                    Node::Link(link) => &link.url,
+                    Node::Image(image) => &image.url,
+                    Node::Definition(definition) => &definition.url,
+                    _ => unreachable!(),
+                };
+                for (at, _) in raw.match_indices(marker) {
+                    if let Some(range) = canvas_destination_span(raw, at + 2) {
+                        if raw[range.clone()]
+                            .trim_start_matches('<')
+                            .trim_end_matches('>')
+                            == url
+                        {
+                            spans.push((start + range.start..start + range.end, false));
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+            Node::Text(_) => {
+                let mut cursor = 0;
+                while let Some(at) = raw[cursor..].find("[[").map(|at| at + cursor) {
+                    let Some(end) = raw[at + 2..].find("]]").map(|end| end + at + 2) else {
+                        break;
+                    };
+                    if !raw[..at].ends_with('\\') {
+                        spans.push((start + at + 2..start + end, true));
+                    }
+                    cursor = end + 2;
+                }
+            }
+            _ => {}
+        }
+    }
+    for child in node.children().into_iter().flatten() {
+        canvas_link_spans(child, source, spans);
+    }
+}
+
+fn canvas_destination_span(raw: &str, from: usize) -> Option<std::ops::Range<usize>> {
+    let start = from + raw[from..].len() - raw[from..].trim_start().len();
+    if raw[start..].starts_with('<') {
+        let end = raw[start + 1..].find('>')? + start + 2;
+        return Some(start..end);
+    }
+    let mut depth = 0;
+    let mut escaped = false;
+    for (offset, character) in raw[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            ')' => return Some(start..start + offset),
+            value if value.is_whitespace() => return Some(start..start + offset),
+            _ => {}
+        }
+    }
+    Some(start..raw.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_unknown_fields_are_not_references_or_search_content() {
+        let mut canvas = CanvasDocument::parse(r#"{"nodes":[{"id":"future","type":"future","x":0,"y":0,"width":100,"height":100,"file":"folder/note.md","background":"folder/image.png","text":"private metadata"},{"id":"text","type":"text","x":0,"y":0,"width":100,"height":100,"text":"searchable","file":"folder/metadata.md"}]}"#).unwrap();
+        assert_eq!(canvas.search_projection(), "searchable");
+        assert!(canvas.vault_file_references().is_empty());
+        assert!(!canvas.retarget_paths(
+            Path::new("folder"),
+            Path::new("moved"),
+            Path::new("board.canvas"),
+            Path::new("board.canvas"),
+            None
+        ));
+        assert_eq!(canvas.node("future").unwrap()["file"], "folder/note.md");
+        assert_eq!(canvas.node("text").unwrap()["file"], "folder/metadata.md");
+    }
+
+    #[test]
+    fn canvas_retarget_preserves_markup_titles_code_and_unrelated_destinations() {
+        let text = "[local](<folder/a b.md#H> \"title\") [escaped](folder/a%20b.md) [[folder/a b#H|Alias]]\n\n`[code](folder/a b.md)`\n\n~~~\n[[folder/a b]]\n~~~\n\n[untouched](./other.md)";
+        let actual =
+            retarget_markdown_targets(text, "folder", "moved", Path::new(""), Path::new(""), None);
+        assert_eq!(actual, "[local](<moved/a b.md#H> \"title\") [escaped](moved/a%20b.md) [[moved/a b#H|Alias]]\n\n`[code](folder/a b.md)`\n\n~~~\n[[folder/a b]]\n~~~\n\n[untouched](./other.md)");
+    }
+
+    #[test]
+    fn canvas_alignment_moves_group_members_as_a_unit() {
+        let mut canvas = CanvasDocument::parse(
+            r#"{"nodes":[
+            {"id":"g","type":"group","x":100,"y":0,"width":200,"height":200},
+            {"id":"child","type":"text","x":120,"y":20,"width":80,"height":80,"text":"child"},
+            {"id":"other","type":"text","x":0,"y":300,"width":80,"height":80,"text":"other"}
+        ]}"#,
+        )
+        .unwrap();
+        canvas
+            .align_selection(&["g".into(), "other".into()], "left")
+            .unwrap();
+        assert_eq!(canvas.node("g").unwrap()["x"], 0);
+        assert_eq!(canvas.node("child").unwrap()["x"], 20);
+        assert_eq!(canvas.node("child").unwrap()["y"], 20);
+    }
 
     #[test]
     fn canvas_round_trip_preserves_optional_arrays_unknown_keys_and_large_numbers() {
@@ -1022,11 +1641,125 @@ mod tests {
             r##"{"nodes":[{"id":"f","type":"file","x":0,"y":0,"width":100,"height":100,"file":"folder/note.md#Heading"},{"id":"t","type":"text","x":120,"y":0,"width":100,"height":100,"text":"[Local](folder/note.md)"}],"edges":[]}"##,
         )
         .unwrap();
-        assert!(canvas.retarget_paths(Path::new("folder/note.md"), Path::new("new/note.md")));
+        assert!(canvas.retarget_paths(
+            Path::new("folder/note.md"),
+            Path::new("new/note.md"),
+            Path::new("board.canvas"),
+            Path::new("board.canvas"),
+            None,
+        ));
         assert_eq!(canvas.node("f").unwrap()["file"], "new/note.md#Heading");
-        assert!(canvas
-            .search_projection()
-            .contains("[Local](folder/note.md)"));
-        assert_eq!(canvas.outgoing_targets()[0].0, "new/note.md#Heading");
+        assert_eq!(canvas.node("t").unwrap()["text"], "[Local](new/note.md)");
+        assert!(canvas.search_projection().contains("[Local](new/note.md)"));
+        assert_eq!(canvas.vault_file_references()[0], "new/note.md#Heading");
+    }
+
+    #[test]
+    fn canvas_retarget_handles_directory_moves_and_document_relative_links() {
+        let mut canvas = CanvasDocument::parse(
+            r##"{"nodes":[{"id":"text","type":"text","x":0,"y":0,"width":200,"height":100,"text":"[Local](folder/sub/note.md#Part)"}],"edges":[]}"##,
+        )
+        .unwrap();
+        assert!(canvas.retarget_paths(
+            Path::new("folder"),
+            Path::new("moved"),
+            Path::new("board.canvas"),
+            Path::new("board.canvas"),
+            None,
+        ));
+        assert_eq!(
+            canvas.node("text").unwrap()["text"],
+            "[Local](moved/sub/note.md#Part)"
+        );
+
+        let mut canvas = CanvasDocument::parse(
+            r##"{"nodes":[{"id":"text","type":"text","x":0,"y":0,"width":200,"height":100,"text":"[Local](note.md)"}],"edges":[]}"##,
+        )
+        .unwrap();
+        assert!(canvas.retarget_paths(
+            Path::new("unrelated"),
+            Path::new("also-unrelated"),
+            Path::new("folder/board.canvas"),
+            Path::new("other/board.canvas"),
+            None,
+        ));
+        assert_eq!(
+            canvas.node("text").unwrap()["text"],
+            "[Local](../folder/note.md)"
+        );
+    }
+
+    #[test]
+    fn canvas_retarget_preserves_unknown_fields_across_reverse_directory_moves() {
+        let mut canvas = CanvasDocument::parse(
+            r##"{"nodes":[{"id":"f","type":"file","x":0,"y":0,"width":120,"height":90,"file":"moved/sub/note.md#^anchor","future":{"n":123456789012345678901234567890}},{"id":"g","type":"group","x":0,"y":0,"width":200,"height":120,"background":"moved/image.png","futureGroup":true},{"id":"t","type":"text","x":0,"y":0,"width":200,"height":100,"text":"[Local](sub/note.md#Part)"}],"edges":[],"futureRoot":987654321098765432109876543210}"##,
+        )
+        .unwrap();
+        assert!(canvas.retarget_paths(
+            Path::new("moved"),
+            Path::new("folder"),
+            Path::new("moved/board.canvas"),
+            Path::new("folder/board.canvas"),
+            None,
+        ));
+        assert_eq!(
+            canvas.node("f").unwrap()["file"],
+            "folder/sub/note.md#^anchor"
+        );
+        assert_eq!(canvas.node("g").unwrap()["background"], "folder/image.png");
+        assert_eq!(
+            canvas.node("t").unwrap()["text"],
+            "[Local](sub/note.md#Part)"
+        );
+        assert_eq!(
+            canvas.node("f").unwrap()["future"]["n"].to_string(),
+            "123456789012345678901234567890"
+        );
+        assert_eq!(
+            canvas.value["futureRoot"].to_string(),
+            "987654321098765432109876543210"
+        );
+
+        assert!(canvas.retarget_paths(
+            Path::new("folder"),
+            Path::new("moved"),
+            Path::new("folder/board.canvas"),
+            Path::new("moved/board.canvas"),
+            None,
+        ));
+        assert_eq!(
+            canvas.node("f").unwrap()["file"],
+            "moved/sub/note.md#^anchor"
+        );
+        assert_eq!(canvas.node("g").unwrap()["background"], "moved/image.png");
+        assert_eq!(
+            canvas.node("t").unwrap()["text"],
+            "[Local](sub/note.md#Part)"
+        );
+        assert_eq!(canvas.serialize().unwrap().matches("futureRoot").count(), 1);
+    }
+
+    #[test]
+    fn canvas_fragment_validation_is_atomic_and_preserves_unknown_numbers() {
+        let source = r#"{"nodes":[{"id":"a","type":"text","x":0,"y":0,"width":100,"height":80,"text":"A","future":123456789012345678901234567890123456789}],"edges":[]}"#;
+        let mut canvas = CanvasDocument::parse(source).unwrap();
+        let before = canvas.serialize().unwrap();
+        let invalid = CanvasFragment {
+            nodes: vec![serde_json::json!({
+                "id":"copy","type":"text","x":0,"y":0,"width":100,"height":80,"text":"copy"
+            })],
+            edges: vec![serde_json::json!({
+                "id":"edge","fromNode":"copy","toNode":"missing"
+            })],
+        };
+        assert!(canvas.paste_fragment(invalid, 20, 20).is_err());
+        assert_eq!(canvas.serialize().unwrap(), before);
+
+        let pasted = canvas
+            .paste_fragment(canvas.copy_selection(&["a".into()]), 20, 20)
+            .unwrap();
+        assert_eq!(pasted.len(), 1);
+        let output = canvas.serialize().unwrap();
+        assert!(output.contains("123456789012345678901234567890123456789"));
     }
 }

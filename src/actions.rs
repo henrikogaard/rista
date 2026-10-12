@@ -29,6 +29,7 @@ actions!(
         ToggleComment,
         CopyBlockLink,
         CopyBlockEmbed,
+        CanvasDelete,
         // Navigation
         NextTab,
         PrevTab,

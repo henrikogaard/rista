@@ -217,6 +217,7 @@ impl SearchService {
     ) -> SearchDocument {
         let modified = metadata.modified().ok();
         let len = metadata.len();
+        let is_canvas = crate::file_preview::extension(path) == "canvas";
         let cached = if modified.is_some() {
             self.cache
                 .lock()
@@ -232,7 +233,7 @@ impl SearchService {
             None
         };
         if let Some(mut cached) = cached {
-            let properties = if requirements.parse_properties {
+            let properties = if requirements.parse_properties && !is_canvas {
                 cached
                     .properties
                     .clone()
@@ -240,7 +241,7 @@ impl SearchService {
             } else {
                 Vec::new()
             };
-            let tags = if requirements.extract_tags {
+            let tags = if requirements.extract_tags && !is_canvas {
                 cached.tags.clone().unwrap_or_else(|| {
                     extract_tags(
                         &cached.content,
@@ -254,13 +255,13 @@ impl SearchService {
             } else {
                 Vec::new()
             };
-            if requirements.parse_properties && cached.properties.is_none() {
+            if requirements.parse_properties && !is_canvas && cached.properties.is_none() {
                 cached.properties = Some(properties.clone());
             }
-            if requirements.extract_tags && cached.tags.is_none() {
+            if requirements.extract_tags && !is_canvas && cached.tags.is_none() {
                 cached.tags = Some(tags.clone());
             }
-            if requirements.parse_properties || requirements.extract_tags {
+            if !is_canvas && (requirements.parse_properties || requirements.extract_tags) {
                 if let Ok(mut cache) = self.cache.lock() {
                     if let Some(entry) = (cache.generation == cache_generation)
                         .then(|| cache.entries.get_mut(path))
@@ -281,17 +282,17 @@ impl SearchService {
             return SearchDocument::path_only(path, relative_path)
                 .with_times(modified, metadata.created().ok());
         };
-        let content = if crate::file_preview::extension(path) == "canvas" {
+        let content = if is_canvas {
             canvas_search_projection(&content)
         } else {
             content
         };
-        let properties = if requirements.parse_properties {
+        let properties = if requirements.parse_properties && !is_canvas {
             Some(properties::properties(&content))
         } else {
             None
         };
-        let tags = if requirements.extract_tags {
+        let tags = if requirements.extract_tags && !is_canvas {
             Some(extract_tags(
                 &content,
                 properties.as_deref().unwrap_or_default(),
@@ -552,6 +553,40 @@ mod tests {
             .unwrap();
         assert!(response.results.is_empty());
         assert_eq!(response.total, 0);
+    }
+
+    #[test]
+    fn canvas_search_uses_card_text_and_omits_source_first_line() {
+        let root = test_root();
+        let path = root.join("board.canvas");
+        fs::write(
+            &path,
+            r#"{"unknown":"opaque-hidden-needle","nodes":[{"id":"t","type":"text","x":123456789,"y":-987654321,"width":400,"height":300,"text":"card-content-needle"}],"edges":[]}"#,
+        )
+        .unwrap();
+        let service = SearchService::new();
+        let paths = [path.clone()];
+        let response = service
+            .search(
+                &root,
+                &paths,
+                "card-content-needle",
+                SearchOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(response.total, 1);
+        assert_eq!(response.results[0].first_line, None);
+        for hidden in ["opaque-hidden-needle", "123456789", "987654321"] {
+            assert_eq!(
+                service
+                    .search(&root, &paths, hidden, SearchOptions::default())
+                    .unwrap()
+                    .total,
+                0,
+                "Canvas search must not index {hidden}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

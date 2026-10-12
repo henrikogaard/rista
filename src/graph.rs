@@ -95,7 +95,13 @@ fn warmup_steps(nodes: usize) -> u32 {
     STEPS_INIT.min((WARM_PAIRS / pairs) as u32).max(1)
 }
 
-type LinkCache = HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, Vec<(String, bool)>)>;
+#[derive(Default)]
+struct CachedLinks {
+    root_files: Vec<String>,
+    text_targets: Vec<(String, bool)>,
+}
+
+type LinkCache = HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, CachedLinks)>;
 
 /// `build()`'s product — nodes, the path → index map, edges, and the
 /// adjacency lists hover highlighting walks.
@@ -192,12 +198,32 @@ impl GraphView {
                     cache.remove(path);
                     continue;
                 };
-                let targets = crate::vault::local_link_targets(&text);
+                let targets = if crate::canvas::is_canvas(path) {
+                    crate::canvas::CanvasDocument::parse(&text)
+                        .map(|canvas| CachedLinks {
+                            root_files: canvas.vault_file_references(),
+                            text_targets: canvas.text_link_targets(),
+                        })
+                        .unwrap_or_default()
+                } else {
+                    CachedLinks {
+                        text_targets: crate::vault::local_link_targets(&text),
+                        ..Default::default()
+                    }
+                };
                 cache.insert(path.clone(), (stamp, targets));
             }
             let from = by_path[path];
             let from_dir = path.parent().unwrap_or(std::path::Path::new("/"));
-            let (resolved, unresolved) = vault.outgoing_targets(&cache[path].1, from_dir);
+            let (resolved, unresolved) = if crate::canvas::is_canvas(path) {
+                vault.canvas_outgoing_targets(
+                    &cache[path].1.root_files,
+                    &cache[path].1.text_targets,
+                    from_dir,
+                )
+            } else {
+                vault.outgoing_targets(&cache[path].1.text_targets, from_dir)
+            };
             let link = |from: usize,
                         to: usize,
                         edges: &mut Vec<(usize, usize)>,

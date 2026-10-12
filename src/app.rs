@@ -2528,6 +2528,7 @@ impl Workspace {
                     vault,
                     language,
                     properties_visibility,
+                    window,
                     cx,
                 )
             });
@@ -3393,7 +3394,64 @@ impl Workspace {
             self.on_open_folder(&OpenFolder, window, cx);
             return;
         };
-        self.new_file_in(root, window, cx);
+        let view = cx.entity().downgrade();
+        let language = self.settings.language;
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(language.text("New file", "Ny fil"))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("new-file-note")
+                                .label(language.text("Note", "Notat"))
+                                .on_click({
+                                    let view = view.clone();
+                                    let root = root.clone();
+                                    move |_, window, cx| {
+                                        let view = view.clone();
+                                        let root = root.clone();
+                                        window.close_dialog(cx);
+                                        window.defer(cx, move |window, cx| {
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.new_file_in(root, window, cx)
+                                            });
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("new-file-canvas")
+                                .label(language.text("Canvas", "Canvas"))
+                                .on_click({
+                                    let view = view.clone();
+                                    let root = root.clone();
+                                    move |_, window, cx| {
+                                        let view = view.clone();
+                                        let root = root.clone();
+                                        window.close_dialog(cx);
+                                        window.defer(cx, move |window, cx| {
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.new_canvas_in(root, window, cx)
+                                            });
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+                .on_ok({
+                    let view = view.clone();
+                    let root = root.clone();
+                    move |_, window, cx| {
+                        let view = view.clone();
+                        let root = root.clone();
+                        window.defer(cx, move |window, cx| {
+                            let _ = view.update(cx, |this, cx| this.new_file_in(root, window, cx));
+                        });
+                        true
+                    }
+                })
+        });
     }
 
     fn on_new_canvas(&mut self, _: &NewCanvas, window: &mut Window, cx: &mut Context<Self>) {
@@ -5435,6 +5493,24 @@ impl Workspace {
         if new_path == path || new_path.exists() {
             return;
         }
+        let canvas_rewrites = match self.vault.read(cx).root.clone() {
+            Some(root) if path.starts_with(&root) && new_path.starts_with(&root) => {
+                match self.prepare_canvas_move_rewrites(&path, &new_path, cx) {
+                    Ok(rewrites) => rewrites,
+                    Err(_) => {
+                        self.note_status(
+                            self.tr(
+                                "Cannot rename or move because Canvas references have a conflict.",
+                                "Kan ikke gi nytt navn eller flytte fordi Canvas-referanser har en konflikt.",
+                            ),
+                            cx,
+                        );
+                        return;
+                    }
+                }
+            }
+            _ => Vec::new(),
+        };
         if name.contains('/') {
             if let Some(parent) = new_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -5470,7 +5546,11 @@ impl Workspace {
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
             let wiki_rel = link_rel.trim_end_matches(".md").to_string();
-            for note in &vault.notes {
+            for note in vault
+                .notes
+                .iter()
+                .filter(|note| !crate::canvas::is_canvas(note))
+            {
                 let text = match self.docs.iter().find(|d| d.entity.read(cx).path == *note) {
                     Some(doc) => doc.entity.read(cx).editor.read(cx).value().to_string(),
                     None => match std::fs::read_to_string(note) {
@@ -5526,6 +5606,7 @@ impl Workspace {
                     }
                 });
             }
+            let canvas_complete = self.apply_canvas_move_rewrites(canvas_rewrites, window, cx);
             let mut updated = 0;
             for (note, edits) in rewrites {
                 updated += edits.len();
@@ -5574,7 +5655,13 @@ impl Workspace {
                 }
             }
             self.note_status(
-                if updated > 0 {
+                if !canvas_complete {
+                    self.tr(
+                        "Renamed, but some Canvas references were not updated.",
+                        "Fikk nytt navn, men noen Canvas-referanser ble ikke oppdatert.",
+                    )
+                    .to_string()
+                } else if updated > 0 {
                     format!(
                         "Renamed — {updated} link{} updated",
                         if updated == 1 { "" } else { "s" }
@@ -6071,7 +6158,13 @@ impl Workspace {
     /// No-ops on same-spot, self/descendant drops, and name clashes.
     /// Open docs under the moved path get repointed so their next save
     /// doesn't resurrect a file at the old location.
-    fn move_tree_entry(&mut self, src: PathBuf, dest_dir: PathBuf, cx: &mut Context<Self>) {
+    fn move_tree_entry(
+        &mut self,
+        src: PathBuf,
+        dest_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if src == dest_dir || src.parent() == Some(dest_dir.as_path()) || dest_dir.starts_with(&src)
         {
             return;
@@ -6090,14 +6183,36 @@ impl Workspace {
         let Some(root) = self.vault.read(cx).root.clone() else {
             return;
         };
+        let rewrites = match self.prepare_canvas_move_rewrites(&src, &dest, cx) {
+            Ok(rewrites) => rewrites,
+            Err(_) => {
+                self.note_status(
+                    self.tr(
+                        "Cannot move this path because Canvas references have a conflict.",
+                        "Kan ikke flytte stien fordi Canvas-referanser har en konflikt.",
+                    ),
+                    cx,
+                );
+                return;
+            }
+        };
         match crate::explorer::move_entry(&root, &src, &dest) {
             Ok(()) => {
                 self.repoint_moved_entry(&src, &dest, cx);
+                let complete = self.apply_canvas_move_rewrites(rewrites, window, cx);
                 self.move_undo.push((src, dest));
                 self.note_status(
                     self.tr(
-                        "Moved · Undo available in explorer",
-                        "Flyttet · Angre er tilgjengelig i filutforskeren",
+                        if complete {
+                            "Moved · Undo available in explorer"
+                        } else {
+                            "Moved, but some Canvas references were not updated."
+                        },
+                        if complete {
+                            "Flyttet · Angre er tilgjengelig i filutforskeren"
+                        } else {
+                            "Flyttet, men noen Canvas-referanser ble ikke oppdatert."
+                        },
                     ),
                     cx,
                 );
@@ -7349,6 +7464,41 @@ impl Workspace {
         self.open_document(path, window, cx);
     }
 
+    pub(crate) fn open_canvas_reference(
+        &mut self,
+        path: PathBuf,
+        subpath: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_document(path.clone(), window, cx);
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+            })
+        {
+            if let Some(anchor) = subpath {
+                self.jump_to_anchor(&anchor, window, cx);
+            }
+        } else if crate::file_preview::extension(&path) == "pdf" {
+            if let Some(target) = crate::pdf::PdfTarget::parse(&format!(
+                "{}#{}",
+                path.to_string_lossy(),
+                subpath.as_deref().unwrap_or("").trim_start_matches('#')
+            )) {
+                if let Some(pdf) = self
+                    .active_doc()
+                    .filter(|document| document.read(cx).path == path)
+                    .and_then(|document| document.read(cx).pdf.clone())
+                {
+                    pdf.update(cx, |pdf, cx| pdf.jump(target.page, cx));
+                }
+            }
+        }
+    }
+
     pub fn navigate_search_result(
         &mut self,
         path: PathBuf,
@@ -7429,10 +7579,6 @@ impl Workspace {
     }
 
     pub fn language(&self) -> crate::settings::Language {
-        self.settings.language
-    }
-
-    pub(crate) fn canvas_language(&self) -> crate::settings::Language {
         self.settings.language
     }
 
@@ -8636,13 +8782,13 @@ impl Workspace {
                     })
                     .on_drop::<PathBuf>({
                         let view = view.clone();
-                        move |src, _window, cx| {
+                        move |src, window, cx| {
                             let src = src.clone();
                             view.update(cx, |this, cx| {
                                 let Some(root) = this.vault.read(cx).root.clone() else {
                                     return;
                                 };
-                                this.move_tree_entry(src, root, cx);
+                                this.move_tree_entry(src, root, window, cx);
                             });
                         }
                     })
@@ -8889,11 +9035,11 @@ impl Workspace {
                                             .on_drop::<PathBuf>({
                                                 let view = render_view.clone();
                                                 let dest_dir = dest_dir.clone();
-                                                move |src, _window, cx| {
+                                                move |src, window, cx| {
                                                     let src = src.clone();
                                                     let dest_dir = dest_dir.clone();
                                                     view.update(cx, |this, cx| {
-                                                        this.move_tree_entry(src, dest_dir, cx);
+                                                        this.move_tree_entry(src, dest_dir, window, cx);
                                                     });
                                                 }
                                             })

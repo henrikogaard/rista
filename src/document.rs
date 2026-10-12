@@ -69,6 +69,7 @@ pub struct Document {
     reloading: bool,
     mtime: Option<SystemTime>,
     pub(crate) revision: u64,
+    pub(crate) content_revision: u64,
     pub(crate) canvas_history: CanvasHistory,
     /// Vault root — history snapshots live under `<root>/.rista/`.
     pub vault_root: Option<PathBuf>,
@@ -262,6 +263,7 @@ impl Document {
             reloading: false,
             mtime,
             revision: 0,
+            content_revision: 0,
             canvas_history: CanvasHistory::default(),
             vault_root,
             save_task: None,
@@ -382,6 +384,7 @@ impl Document {
         }
         self.dirty = true;
         self.revision += 1;
+        self.content_revision = self.content_revision.wrapping_add(1);
         if !self.is_canvas {
             self.spell_analysis = None;
             self.spell_request_key = None;
@@ -467,10 +470,14 @@ impl Document {
         let (links, unresolved) = {
             let raw = self.editor.read(cx).value().to_string();
             if self.is_canvas {
-                let targets = crate::canvas::CanvasDocument::parse(&raw)
-                    .map(|canvas| canvas.outgoing_targets())
-                    .unwrap_or_default();
-                vault.read(cx).outgoing_targets(&targets, &self.doc_dir())
+                match crate::canvas::CanvasDocument::parse(&raw) {
+                    Ok(canvas) => vault.read(cx).canvas_outgoing_targets(
+                        &canvas.vault_file_references(),
+                        &canvas.text_link_targets(),
+                        &self.doc_dir(),
+                    ),
+                    Err(_) => (Vec::new(), Vec::new()),
+                }
             } else {
                 vault.read(cx).outgoing_from(&raw, &self.doc_dir())
             }
@@ -1709,6 +1716,7 @@ impl Document {
         self.save_task.take();
         self.canvas_history.clear();
         self.revision += 1;
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.reloading = true;
         self.editor.update(cx, |editor, cx| {
             editor.set_value(content, window, cx);
@@ -1729,6 +1737,12 @@ impl Document {
 
     pub fn is_read_only(&self) -> bool {
         self.is_image || self.file_preview.is_some()
+    }
+
+    pub(crate) fn disk_matches_loaded(&self) -> bool {
+        self.disk_bytes.as_deref().is_some_and(|baseline| {
+            std::fs::read(&self.path).is_ok_and(|current| current == baseline)
+        })
     }
 
     pub(crate) fn apply_canvas_snapshot(
@@ -3110,6 +3124,11 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(canvas) = &self.canvas_view {
+            canvas.update(cx, |canvas, cx| {
+                canvas.refresh_settings(settings.language, settings.properties_visibility, cx)
+            });
+        }
         if let Some(pdf) = &self.pdf {
             pdf.update(cx, |pdf, cx| {
                 pdf.set_language(settings.language, window, cx)
@@ -3678,7 +3697,7 @@ fn disk_matches_baseline(path: &Path, baseline: &[u8]) -> io::Result<()> {
     }
 }
 
-fn guarded_write(path: &Path, baseline: &[u8], content: &[u8]) -> io::Result<()> {
+pub(crate) fn guarded_write(path: &Path, baseline: &[u8], content: &[u8]) -> io::Result<()> {
     disk_matches_baseline(path, baseline)?;
     std::fs::write(path, content)
 }
@@ -3767,6 +3786,26 @@ mod tests {
         assert!(guarded_write(&path, b"before", b"local!").is_err());
 
         assert_eq!(std::fs::read(&path).unwrap(), b"change");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn canvas_closed_retarget_guard_preserves_external_update() {
+        let path = test_path().with_extension("canvas");
+        let baseline = br#"{"nodes":[],"edges":[]}"#;
+        std::fs::write(&path, baseline).unwrap();
+        std::fs::write(&path, br#"{"nodes":[],"edges":[],"external":true}"#).unwrap();
+
+        assert!(guarded_write(
+            &path,
+            baseline,
+            br#"{"nodes":[],"edges":[],"updated":true}"#
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            br#"{"nodes":[],"edges":[],"external":true}"#
+        );
         std::fs::remove_file(path).unwrap();
     }
 

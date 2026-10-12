@@ -340,6 +340,13 @@ fn menus(language: settings::Language) -> Vec<Menu> {
                 disabled: false,
             },
             MenuItem::Action {
+                name: language.text("Delete", "Slett").into(),
+                action: Box::new(CanvasDelete),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
                 name: "Select All".into(),
                 action: Box::new(input::SelectAll),
                 os_action: None,

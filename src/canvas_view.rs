@@ -1,9 +1,9 @@
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::input::{self, Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_kit::component::text::{TextView, TextViewState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::cell::Cell;
@@ -53,6 +53,121 @@ enum Drag {
     },
 }
 
+enum FinishedDrag {
+    Pan,
+    Move {
+        ids: Vec<String>,
+        dx: f64,
+        dy: f64,
+    },
+    Resize {
+        id: String,
+        dx: f64,
+        dy: f64,
+    },
+    Edge {
+        from_id: String,
+    },
+    Marquee {
+        start: Point<Pixels>,
+        end: Point<Pixels>,
+        additive: bool,
+    },
+}
+
+fn take_finished_drag(drag: &mut Option<Drag>) -> Option<FinishedDrag> {
+    Some(match drag.take()? {
+        Drag::Pan { .. } => FinishedDrag::Pan,
+        Drag::Move { ids, dx, dy, .. } => FinishedDrag::Move { ids, dx, dy },
+        Drag::Resize { id, dx, dy, .. } => FinishedDrag::Resize { id, dx, dy },
+        Drag::Edge { from_id, .. } => FinishedDrag::Edge { from_id },
+        Drag::Marquee {
+            start,
+            end,
+            additive,
+        } => FinishedDrag::Marquee {
+            start,
+            end,
+            additive,
+        },
+    })
+}
+
+fn canvas_markdown_excerpt(source: &str, subpath: Option<&str>) -> String {
+    let selected = subpath.and_then(|subpath| {
+        let anchor = subpath.strip_prefix('^').unwrap_or(subpath);
+        if subpath.starts_with('^') {
+            let lines = source.split('\n').collect::<Vec<_>>();
+            let (start, end) = crate::preview::block_lines(&lines, anchor)?;
+            let mut block = lines[start..=end]
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>();
+            if let Some(last) = block.last_mut() {
+                let trimmed = last.trim_end();
+                if let Some(text) = trimmed.strip_suffix(&format!("^{anchor}")) {
+                    *last = text.trim_end().to_string();
+                }
+            }
+            return Some(block.join("\n"));
+        }
+        let lines = source.split('\n').collect::<Vec<_>>();
+        let mut in_fence = false;
+        let mut start = None;
+        let mut level = 0usize;
+        let mut end = lines.len();
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            let heading_level = trimmed
+                .chars()
+                .take_while(|character| *character == '#')
+                .count();
+            if !(1..=6).contains(&heading_level) || trimmed.chars().nth(heading_level) != Some(' ')
+            {
+                continue;
+            }
+            let title = trimmed[heading_level + 1..].trim();
+            if start.is_none() && title.eq_ignore_ascii_case(anchor.trim_start_matches('#')) {
+                start = Some(index);
+                level = heading_level;
+            } else if start.is_some() && heading_level <= level {
+                end = index;
+                break;
+            }
+        }
+        start.map(|start| {
+            lines[start..end]
+                .join("\n")
+                .trim_end_matches(['\r', '\n'])
+                .to_string()
+        })
+    });
+    let content = selected.unwrap_or_else(|| source.to_string());
+    if content.chars().count() <= 6_000 {
+        return content;
+    }
+    content.chars().take(6_000).collect()
+}
+
+fn canvas_file_reference(node: &serde_json::Value) -> Option<String> {
+    let file = node["file"].as_str()?;
+    let Some(subpath) = node["subpath"]
+        .as_str()
+        .filter(|subpath| !subpath.is_empty())
+        .filter(|_| !file.contains('#'))
+    else {
+        return Some(file.to_string());
+    };
+    Some(format!("{file}#{}", subpath.trim_start_matches('#')))
+}
+
 #[derive(Clone)]
 struct EdgePaint {
     id: String,
@@ -82,6 +197,29 @@ fn paint_edge_arrow(window: &mut Window, tip: Point<Pixels>, from: Point<Pixels>
     }
 }
 
+fn edge_curve_controls(from: Point<Pixels>, to: Point<Pixels>) -> (Point<Pixels>, Point<Pixels>) {
+    let dx = f32::from(to.x - from.x);
+    let sign = if dx < 0. { -1. } else { 1. };
+    let control = (dx.abs() * 0.5).max(24.);
+    (
+        point(from.x + px(control * sign), from.y),
+        point(to.x - px(control * sign), to.y),
+    )
+}
+
+fn segment_distance(point: Point<Pixels>, from: Point<Pixels>, to: Point<Pixels>) -> f32 {
+    let (px, py) = (f32::from(point.x), f32::from(point.y));
+    let (ax, ay) = (f32::from(from.x), f32::from(from.y));
+    let (dx, dy) = (f32::from(to.x - from.x), f32::from(to.y - from.y));
+    let length = dx * dx + dy * dy;
+    let t = if length <= f32::EPSILON {
+        0.
+    } else {
+        (((px - ax) * dx + (py - ay) * dy) / length).clamp(0., 1.)
+    };
+    ((px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2)).sqrt()
+}
+
 pub(crate) struct CanvasView {
     focus_handle: FocusHandle,
     document: WeakEntity<Document>,
@@ -89,23 +227,36 @@ pub(crate) struct CanvasView {
     language: Language,
     preview_context: crate::preview::PreviewCtx,
     source_revision: Option<u64>,
+    vault_root: Option<PathBuf>,
     source: String,
     model: Option<CanvasDocument>,
     error: Option<String>,
     text_views: HashMap<String, Entity<TextViewState>>,
+    text_sources: HashMap<String, String>,
     editing: Option<InlineEdit>,
     file_status: HashMap<String, bool>,
+    file_views: HashMap<String, Entity<TextViewState>>,
+    file_paths: HashMap<String, PathBuf>,
+    file_signatures: HashMap<String, (String, Option<(std::time::SystemTime, u64)>)>,
+    group_backgrounds: HashMap<String, PathBuf>,
+    background_signatures: HashMap<String, (String, Option<(std::time::SystemTime, u64)>)>,
     selected: HashSet<String>,
     viewport: Point<f64>,
     zoom: f64,
     bounds: std::rc::Rc<Cell<Bounds<Pixels>>>,
     drag: Option<Drag>,
+    snap_drag: bool,
     context_position: Option<(i64, i64)>,
     space_down: bool,
     status: Option<String>,
     search_query: Option<String>,
+    search_input: Entity<InputState>,
     search_results: Vec<String>,
     search_index: usize,
+    _document_subscription: Subscription,
+    _vault_subscription: Subscription,
+    _search_subscription: Subscription,
+    _focus_subscription: Subscription,
 }
 
 impl CanvasView {
@@ -115,51 +266,105 @@ impl CanvasView {
         vault: Entity<crate::vault::Vault>,
         language: Language,
         properties_visibility: crate::settings::PropertiesVisibility,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let doc = document.read(cx);
-        let preview_context = crate::preview::PreviewCtx {
-            properties_visibility,
-            language,
-            vault,
-            workspace: workspace.clone(),
-            views: doc.base_embeds.clone(),
-            query_views: doc.query_embeds.clone(),
-            pdf_views: doc.pdf_embeds.clone(),
-            doc_path: Some(doc.path.clone()),
-            depth: 0,
+        let (preview_context, vault_root) = {
+            let doc = document.read(cx);
+            (
+                crate::preview::PreviewCtx {
+                    properties_visibility,
+                    language,
+                    vault: vault.clone(),
+                    workspace: workspace.clone(),
+                    views: doc.base_embeds.clone(),
+                    query_views: doc.query_embeds.clone(),
+                    pdf_views: doc.pdf_embeds.clone(),
+                    doc_path: Some(doc.path.clone()),
+                    depth: 0,
+                },
+                doc.vault_root.clone(),
+            )
         };
-        Self {
-            focus_handle: cx.focus_handle(),
+        let focus_handle = cx.focus_handle();
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(language.text("Find cards", "Finn kort"))
+        });
+        let search_subscription =
+            cx.subscribe_in(&search_input, window, |this, input, event, window, cx| {
+                if matches!(event, InputEvent::Change) && this.search_query.is_some() {
+                    this.search_query = Some(input.read(cx).value().to_string());
+                    this.search_index = 0;
+                    this.refresh_search(0, window, cx);
+                }
+                if let InputEvent::PressEnter { shift, .. } = event {
+                    this.refresh_search(if *shift { -1 } else { 1 }, window, cx);
+                }
+            });
+        let focus_subscription = cx.on_focus_out(&focus_handle, window, |this, _, _, cx| {
+            this.drag = None;
+            this.space_down = false;
+            cx.notify();
+        });
+        let document_subscription = cx.observe(&document, |this, _, cx| {
+            this.sync_source(cx);
+            cx.notify();
+        });
+        let vault_subscription = cx.observe(&vault, |this, _, cx| {
+            this.refresh_file_previews_from_model(cx);
+            this.text_sources.clear();
+            this.source_revision = None;
+            this.sync_source(cx);
+            cx.notify();
+        });
+        let mut this = Self {
+            focus_handle,
             document: document.downgrade(),
             workspace,
             language,
             preview_context,
             source_revision: None,
+            vault_root,
             source: String::new(),
             model: None,
             error: None,
             text_views: HashMap::new(),
+            text_sources: HashMap::new(),
             editing: None,
             file_status: HashMap::new(),
+            file_views: HashMap::new(),
+            file_paths: HashMap::new(),
+            file_signatures: HashMap::new(),
+            group_backgrounds: HashMap::new(),
+            background_signatures: HashMap::new(),
             selected: HashSet::new(),
             viewport: point(80., 80.),
             zoom: 1.,
             bounds: std::rc::Rc::new(Cell::new(Bounds::default())),
             drag: None,
+            snap_drag: true,
             context_position: None,
             space_down: false,
             status: None,
             search_query: None,
+            search_input,
             search_results: Vec::new(),
             search_index: 0,
-        }
+            _document_subscription: document_subscription,
+            _vault_subscription: vault_subscription,
+            _search_subscription: search_subscription,
+            _focus_subscription: focus_subscription,
+        };
+        this.sync_source(cx);
+        this
     }
 
     pub(crate) fn begin_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_query = Some(String::new());
         self.search_results.clear();
         self.search_index = 0;
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.status = Some(
             self.language
                 .text(
@@ -168,7 +373,8 @@ impl CanvasView {
                 )
                 .to_string(),
         );
-        self.focus_handle.focus(window, cx);
+        self.search_input
+            .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
     }
 
@@ -231,26 +437,29 @@ impl CanvasView {
     }
 
     fn sync_source(&mut self, cx: &mut Context<Self>) {
-        if let Some(workspace) = self.workspace.upgrade() {
-            self.language = workspace.read(cx).canvas_language();
-        }
         let Some(document) = self.document.upgrade() else {
             return;
         };
-        let (revision, source, root, path) = {
+        let (revision, root, path) = {
             let document = document.read(cx);
             (
-                document.revision,
-                document.editor.read(cx).value().to_string(),
+                document.content_revision,
                 document.vault_root.clone(),
                 document.path.clone(),
             )
         };
-        self.preview_context.doc_path = Some(path);
-        self.preview_context.language = self.language;
-        if self.source_revision == Some(revision) {
+        let context_changed =
+            self.preview_context.doc_path.as_ref() != Some(&path) || self.vault_root != root;
+        if context_changed {
+            self.text_sources.clear();
+            self.file_signatures.clear();
+        }
+        if self.source_revision == Some(revision) && !context_changed {
             return;
         }
+        let source = document.read(cx).editor.read(cx).value().to_string();
+        self.preview_context.doc_path = Some(path);
+        self.preview_context.language = self.language;
         if self
             .editing
             .as_ref()
@@ -267,12 +476,14 @@ impl CanvasView {
             );
         }
         self.source_revision = Some(revision);
+        self.vault_root = root.clone();
         self.source = source.clone();
         match CanvasDocument::parse(&source) {
             Ok(model) => {
                 self.error = None;
                 let mut text_ids = HashSet::new();
-                let mut file_status = HashMap::new();
+                let mut file_references = Vec::new();
+                let mut background_references = Vec::new();
                 for node in model.nodes() {
                     let Some(id) = node["id"].as_str() else {
                         continue;
@@ -280,24 +491,47 @@ impl CanvasView {
                     if node["type"].as_str() == Some("text") {
                         if let Some(text) = node["text"].as_str() {
                             text_ids.insert(id.to_string());
+                            if self
+                                .text_sources
+                                .get(id)
+                                .is_some_and(|previous| previous == text)
+                                || self
+                                    .editing
+                                    .as_ref()
+                                    .is_some_and(|editing| editing.node_id == id)
+                            {
+                                continue;
+                            }
+                            let rendered = self.preprocess_card(
+                                text,
+                                self.preview_context
+                                    .doc_path
+                                    .as_deref()
+                                    .unwrap_or(Path::new("")),
+                                cx,
+                            );
                             if let Some(state) = self.text_views.get(id) {
-                                state.update(cx, |state, cx| state.set_text(text, cx));
+                                state.update(cx, |state, cx| state.set_text(&rendered, cx));
                             } else {
-                                let state = cx.new(|cx| TextViewState::markdown(text, cx));
+                                let state = cx.new(|cx| TextViewState::markdown(&rendered, cx));
                                 self.text_views.insert(id.to_string(), state);
                             }
+                            self.text_sources.insert(id.to_string(), text.to_string());
                         }
                     }
-                    if let Some(path) = node["file"].as_str() {
-                        let available = root
-                            .as_deref()
-                            .and_then(|root| crate::canvas::resolve_vault_path(root, path).ok())
-                            .is_some_and(|path| path.is_file());
-                        file_status.insert(id.to_string(), available);
+                    if let Some(path) = canvas_file_reference(node) {
+                        file_references.push((id.to_string(), path));
+                    }
+                    if node["type"].as_str() == Some("group") {
+                        if let Some(path) = node["background"].as_str() {
+                            background_references.push((id.to_string(), path.to_string()));
+                        }
                     }
                 }
                 self.text_views.retain(|id, _| text_ids.contains(id));
-                self.file_status = file_status;
+                self.text_sources.retain(|id, _| text_ids.contains(id));
+                self.refresh_file_previews(&file_references, root.as_deref(), false, cx);
+                self.refresh_group_backgrounds(&background_references, root.as_deref(), false, cx);
                 self.selected
                     .retain(|id| model.node(id).is_some() || model.edge(id).is_some());
                 self.model = Some(model);
@@ -306,10 +540,223 @@ impl CanvasView {
                 self.model = None;
                 self.error = Some(error);
                 self.text_views.clear();
+                self.text_sources.clear();
                 self.file_status.clear();
+                self.file_views.clear();
+                self.file_paths.clear();
+                self.file_signatures.clear();
+                self.group_backgrounds.clear();
+                self.background_signatures.clear();
                 self.selected.clear();
             }
         }
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_settings(
+        &mut self,
+        language: Language,
+        visibility: crate::settings::PropertiesVisibility,
+        cx: &mut Context<Self>,
+    ) {
+        self.language = language;
+        self.preview_context.language = language;
+        self.preview_context.properties_visibility = visibility;
+        self.text_sources.clear();
+        self.file_signatures.clear();
+        self.source_revision = None;
+        let view = cx.entity();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| this.sync_source(cx));
+        });
+    }
+
+    fn preprocess_card(&self, text: &str, path: &Path, cx: &App) -> String {
+        let resolver = self.preview_context.vault.read(cx).image_resolver();
+        crate::preview::preprocess(
+            text,
+            path,
+            self.vault_root.as_deref(),
+            &*resolver,
+            &crate::preview::MarkColors::from_theme(cx.theme()),
+        )
+    }
+
+    fn refresh_file_previews_from_model(&mut self, cx: &mut Context<Self>) {
+        let references = self
+            .model
+            .as_ref()
+            .map(|model| {
+                model
+                    .nodes()
+                    .iter()
+                    .filter_map(|node| {
+                        Some((
+                            node["id"].as_str()?.to_string(),
+                            canvas_file_reference(node)?,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let backgrounds = self
+            .model
+            .as_ref()
+            .map(|model| {
+                model
+                    .nodes()
+                    .iter()
+                    .filter(|node| node["type"].as_str() == Some("group"))
+                    .filter_map(|node| {
+                        Some((
+                            node["id"].as_str()?.to_string(),
+                            node["background"].as_str()?.to_string(),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let root = self.vault_root.clone();
+        self.refresh_file_previews(&references, root.as_deref(), true, cx);
+        self.refresh_group_backgrounds(&backgrounds, root.as_deref(), true, cx);
+    }
+
+    fn refresh_group_backgrounds(
+        &mut self,
+        references: &[(String, String)],
+        root: Option<&Path>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let mut backgrounds = HashMap::new();
+        let mut signatures = HashMap::new();
+        for (id, reference) in references {
+            let Some(path) =
+                root.and_then(|root| crate::canvas::resolve_vault_path(root, reference).ok())
+            else {
+                continue;
+            };
+            let metadata = std::fs::metadata(&path).ok();
+            let stamp = metadata
+                .as_ref()
+                .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
+            let unchanged =
+                self.background_signatures
+                    .get(id)
+                    .is_some_and(|(previous, previous_stamp)| {
+                        previous == reference && *previous_stamp == stamp
+                    });
+            if unchanged && !force {
+                if let Some(previous) = self.group_backgrounds.get(id) {
+                    backgrounds.insert(id.clone(), previous.clone());
+                }
+                signatures.insert(id.clone(), (reference.clone(), stamp));
+                continue;
+            }
+            if !unchanged && self.background_signatures.contains_key(id) {
+                let source: Resource = path.clone().into();
+                cx.remove_asset::<ImgResourceLoader>(&source);
+            }
+            let extension = crate::file_preview::extension(&path);
+            if metadata.is_some()
+                && matches!(
+                    extension.as_str(),
+                    "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
+                )
+                && path.is_file()
+            {
+                backgrounds.insert(id.clone(), path);
+            }
+            signatures.insert(id.clone(), (reference.clone(), stamp));
+        }
+        self.group_backgrounds = backgrounds;
+        self.background_signatures = signatures;
+    }
+
+    fn refresh_file_previews(
+        &mut self,
+        references: &[(String, String)],
+        root: Option<&Path>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let mut status = HashMap::new();
+        let mut retained = HashSet::new();
+        for (id, reference) in references {
+            retained.insert(id.clone());
+            let (file, subpath) = reference
+                .split_once('#')
+                .map_or((reference.as_str(), None), |(file, subpath)| {
+                    (file, Some(subpath))
+                });
+            let path = root.and_then(|root| crate::canvas::resolve_vault_path(root, file).ok());
+            let stamp = path.as_ref().and_then(|path| {
+                let metadata = std::fs::metadata(path).ok()?;
+                Some((metadata.modified().ok()?, metadata.len()))
+            });
+            let available = path.as_ref().is_some_and(|path| path.is_file());
+            status.insert(id.clone(), available);
+            if !force
+                && self
+                    .file_signatures
+                    .get(id)
+                    .is_some_and(|(previous, _)| previous == reference)
+            {
+                continue;
+            }
+            if force
+                && self
+                    .file_signatures
+                    .get(id)
+                    .is_some_and(|(previous, previous_stamp)| {
+                        previous == reference && *previous_stamp == stamp
+                    })
+            {
+                continue;
+            }
+            self.file_signatures
+                .insert(id.clone(), (reference.clone(), stamp));
+            let preview = path.as_ref().and_then(|path| {
+                let extension = crate::file_preview::extension(path);
+                if matches!(extension.as_str(), "md" | "markdown") {
+                    let source = std::fs::read_to_string(path).ok()?;
+                    Some(canvas_markdown_excerpt(&source, subpath))
+                } else if matches!(
+                    extension.as_str(),
+                    "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf"
+                ) {
+                    let name = path.to_string_lossy();
+                    let subpath = subpath
+                        .map(|subpath| format!("#{subpath}"))
+                        .unwrap_or_default();
+                    Some(format!("![[{name}{subpath}]]"))
+                } else {
+                    None
+                }
+            });
+            if let Some(preview) = preview {
+                let preview =
+                    self.preprocess_card(&preview, path.as_deref().unwrap_or(Path::new("")), cx);
+                if let Some(state) = self.file_views.get(id) {
+                    state.update(cx, |state, cx| state.set_text(&preview, cx));
+                } else {
+                    self.file_views.insert(
+                        id.clone(),
+                        cx.new(|cx| TextViewState::markdown(&preview, cx)),
+                    );
+                }
+                if let Some(path) = path {
+                    self.file_paths.insert(id.clone(), path);
+                }
+            } else {
+                self.file_views.remove(id);
+                self.file_paths.remove(id);
+            }
+        }
+        self.file_status = status;
+        self.file_views.retain(|id, _| retained.contains(id));
+        self.file_paths.retain(|id, _| retained.contains(id));
+        self.file_signatures.retain(|id, _| retained.contains(id));
     }
 
     fn apply_model(&mut self, next: CanvasDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -344,7 +791,7 @@ impl CanvasView {
         };
         let (applied, revision) = document.update(cx, |document, cx| {
             let applied = document.apply_canvas_snapshot(&before, &after, group, window, cx);
-            (applied, document.revision)
+            (applied, document.content_revision)
         });
         if applied {
             self.source = after;
@@ -354,6 +801,7 @@ impl CanvasView {
                 editing.last_revision = revision;
             }
             self.status = None;
+            self.sync_source(cx);
         } else {
             self.source_revision = None;
             self.status = Some(
@@ -407,6 +855,8 @@ impl CanvasView {
         let focus = state.read(cx).focus_handle(cx);
         let focus_subscription = cx.on_focus_out(&focus, window, |this, _, _, cx| {
             this.editing = None;
+            this.source_revision = None;
+            this.sync_source(cx);
             cx.notify();
         });
         self.editing = Some(InlineEdit {
@@ -425,10 +875,10 @@ impl CanvasView {
     }
 
     fn add_text_at(&mut self, position: (i64, i64), window: &mut Window, cx: &mut Context<Self>) {
-        let Some(model) = self.model.clone() else {
+        let Some(model) = self.model.as_ref() else {
             return;
         };
-        let mut next = model;
+        let mut next = model.clone();
         if let Ok(id) = next.add_text(position.0, position.1, "") {
             self.selected.clear();
             self.selected.insert(id);
@@ -441,15 +891,42 @@ impl CanvasView {
     }
 
     fn add_link_at(&mut self, position: (i64, i64), window: &mut Window, cx: &mut Context<Self>) {
-        let Some(model) = self.model.clone() else {
-            return;
-        };
-        let mut next = model;
-        if let Ok(id) = next.add_link(position.0, position.1, "https://example.invalid/") {
-            self.selected.clear();
-            self.selected.insert(id);
-            self.apply_model(next, window, cx);
-        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("https://"));
+        let view = cx.entity().downgrade();
+        let language = self.language;
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(language.text("Add link", "Legg til lenke"))
+                .child(Input::new(&input).appearance(true))
+                .on_ok({
+                    let input = input.clone();
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let url = input.read(cx).value().trim().to_string();
+                        let view = view.clone();
+                        window.defer(cx, move |window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                let Some(mut next) = this.model.clone() else {
+                                    return;
+                                };
+                                match next.add_link(position.0, position.1, &url) {
+                                    Ok(id) => {
+                                        this.selected.clear();
+                                        this.selected.insert(id);
+                                        this.apply_model(next, window, cx);
+                                    }
+                                    Err(_) => this.status_error(
+                                        "Enter an HTTP or HTTPS URL.",
+                                        "Skriv inn en HTTP- eller HTTPS-adresse.",
+                                        cx,
+                                    ),
+                                }
+                            });
+                        });
+                        true
+                    }
+                })
+        });
     }
 
     fn add_file_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
@@ -499,13 +976,362 @@ impl CanvasView {
         }
     }
 
+    fn pick_canvas_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(
+                self.language
+                    .text("Add Canvas file card", "Legg til Canvas-filkort")
+                    .into(),
+            ),
+        });
+        cx.spawn_in(window, async move |view, window| {
+            if let Ok(Ok(Some(paths))) = receiver.await {
+                if let Some(path) = paths.into_iter().next() {
+                    let _ = window.update(|window, cx| {
+                        let _ = view.update(cx, |this, cx| this.add_file_path(&path, window, cx));
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn align_selected(&mut self, alignment: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut model) = self.model.clone() else {
+            return;
+        };
+        match model.align_selection(
+            &self.selected.iter().cloned().collect::<Vec<_>>(),
+            alignment,
+        ) {
+            Ok(true) => self.apply_model(model, window, cx),
+            Ok(false) => {}
+            Err(error) => self.show_error(error, cx),
+        }
+    }
+
+    fn reorder_selected(&mut self, to_front: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut model) = self.model.clone() else {
+            return;
+        };
+        if model.reorder_selection(&self.selected.iter().cloned().collect::<Vec<_>>(), to_front) {
+            self.apply_model(model, window, cx);
+        }
+    }
+
+    fn open_inspector(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.iter().next().cloned() else {
+            return;
+        };
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let is_edge = model.edge(&id).is_some();
+        let data = if is_edge {
+            model.edge(&id)
+        } else {
+            model.node(&id)
+        };
+        let Some(data) = data else { return };
+        let fields: Vec<(&str, &str, &str)> = if is_edge {
+            vec![
+                ("fromNode", "From card", "Fra kort"),
+                ("toNode", "To card", "Til kort"),
+                ("fromSide", "From side", "Fra side"),
+                ("toSide", "To side", "Til side"),
+                ("fromEnd", "From end", "Fra ende"),
+                ("toEnd", "To end", "Til ende"),
+                ("label", "Label", "Etikett"),
+                ("color", "Color (1–6 or #hex)", "Farge (1–6 eller #hex)"),
+                ("curve", "Curve", "Kurve"),
+            ]
+        } else {
+            match data["type"].as_str().unwrap_or_default() {
+                "link" => vec![
+                    ("url", "URL", "URL"),
+                    ("color", "Color (1–6 or #hex)", "Farge (1–6 eller #hex)"),
+                ],
+                "file" => vec![
+                    ("file", "Vault file", "Hvelvfil"),
+                    (
+                        "subpath",
+                        "Heading, block or PDF page",
+                        "Overskrift, blokk eller PDF-side",
+                    ),
+                    ("color", "Color (1–6 or #hex)", "Farge (1–6 eller #hex)"),
+                ],
+                "group" => vec![
+                    ("label", "Label", "Etikett"),
+                    ("background", "Background file", "Bakgrunnsfil"),
+                    ("backgroundStyle", "Background style", "Bakgrunnstype"),
+                    ("color", "Color (1–6 or #hex)", "Farge (1–6 eller #hex)"),
+                ],
+                _ => vec![("color", "Color (1–6 or #hex)", "Farge (1–6 eller #hex)")],
+            }
+        };
+        let inputs = fields
+            .iter()
+            .map(|(field, _, _)| {
+                let input = cx.new(|cx| InputState::new(window, cx));
+                let value = data
+                    .get(*field)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                input.update(cx, |input, cx| input.set_value(value, window, cx));
+                (*field, input)
+            })
+            .collect::<Vec<_>>();
+        let input_entities = inputs
+            .iter()
+            .map(|(_, input)| input.clone())
+            .collect::<Vec<_>>();
+        let view = cx.entity().downgrade();
+        let language = self.language;
+        let choices = fields
+            .iter()
+            .map(|(field, _, _)| -> Vec<(String, String)> {
+                let options: &[(&str, &str, &str)] = match *field {
+                    "fromSide" | "toSide" => &[
+                        ("", "Automatic", "Automatisk"),
+                        ("top", "Top", "Topp"),
+                        ("right", "Right", "Høyre"),
+                        ("bottom", "Bottom", "Bunn"),
+                        ("left", "Left", "Venstre"),
+                    ],
+                    "fromEnd" => &[
+                        ("", "None (default)", "Ingen (standard)"),
+                        ("none", "None", "Ingen"),
+                        ("arrow", "Arrow", "Pil"),
+                    ],
+                    "toEnd" => &[
+                        ("", "Arrow (default)", "Pil (standard)"),
+                        ("none", "None", "Ingen"),
+                        ("arrow", "Arrow", "Pil"),
+                    ],
+                    "curve" => &[
+                        ("", "Curved (default)", "Buet (standard)"),
+                        ("curved", "Curved", "Buet"),
+                        ("straight", "Straight", "Rett"),
+                    ],
+                    "backgroundStyle" => &[
+                        ("", "Cover (default)", "Fyll (standard)"),
+                        ("cover", "Cover", "Fyll"),
+                        ("ratio", "Fit", "Tilpass"),
+                        ("repeat", "Repeat", "Gjenta"),
+                    ],
+                    _ => &[],
+                };
+                if matches!(*field, "fromNode" | "toNode") {
+                    return model
+                        .nodes()
+                        .iter()
+                        .filter_map(|node| {
+                            let id = node["id"].as_str()?;
+                            let title = ["text", "label", "file", "url"]
+                                .iter()
+                                .find_map(|field| node[*field].as_str())
+                                .unwrap_or(id)
+                                .lines()
+                                .next()
+                                .unwrap_or(id)
+                                .chars()
+                                .take(60)
+                                .collect::<String>();
+                            Some((id.to_string(), title))
+                        })
+                        .collect();
+                }
+                options
+                    .iter()
+                    .map(|(value, en, nb)| {
+                        (value.to_string(), self.language.text(en, nb).to_string())
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        let expected_source = self.source.clone();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let mut body = v_flex()
+                .id("canvas-inspector-fields")
+                .gap_2()
+                .max_h(px(360.))
+                .overflow_y_scroll();
+            for (index, ((_, en, nb), (_, input))) in fields.iter().zip(&inputs).enumerate() {
+                let options = &choices[index];
+                let control = if options.is_empty() {
+                    Input::new(input).appearance(true).into_any_element()
+                } else {
+                    let selected = input.read(cx).value().to_string();
+                    let label = options
+                        .iter()
+                        .find(|(value, _)| *value == selected)
+                        .map(|(_, label)| label.clone())
+                        .unwrap_or(selected);
+                    let input = input.clone();
+                    let options = options.clone();
+                    Button::new(("canvas-inspector-choice", index))
+                        .w_full()
+                        .label(label)
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for (value, label) in &options {
+                                let value = value.clone();
+                                let input = input.clone();
+                                menu = menu.item(PopupMenuItem::new(label.clone()).on_click(
+                                    move |_, window, cx| {
+                                        input.update(cx, |input, cx| {
+                                            input.set_value(value.clone(), window, cx)
+                                        });
+                                        window.refresh();
+                                    },
+                                ));
+                            }
+                            menu
+                        })
+                        .into_any_element()
+                };
+                body = body.child(
+                    v_flex()
+                        .gap_1()
+                        .child(div().text_xs().child(language.text(en, nb).to_string()))
+                        .child(control),
+                );
+            }
+            dialog
+                .title(language.text("Canvas selection", "Canvas-utvalg"))
+                .w(px(420.))
+                .child(body)
+                .on_ok({
+                    let view = view.clone();
+                    let id = id.clone();
+                    let fields = fields
+                        .iter()
+                        .map(|(field, _, _)| *field)
+                        .collect::<Vec<_>>();
+                    let input_entities = input_entities.clone();
+                    let expected_source = expected_source.clone();
+                    move |_, window, cx| {
+                        let values = fields
+                            .iter()
+                            .zip(input_entities.iter())
+                            .map(|(field, input)| (*field, input.read(cx).value().to_string()))
+                            .collect::<Vec<_>>();
+                        let view = view.clone();
+                        let id = id.clone();
+                        let expected_source = expected_source.clone();
+                        window.defer(cx, move |window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                if this.source != expected_source {
+                                    this.status_error(
+                                        "Canvas changed; reopen the inspector.",
+                                        "Canvas er endret; åpne inspektøren på nytt.",
+                                        cx,
+                                    );
+                                    return false;
+                                }
+                                let Some(mut next) = this.model.clone() else {
+                                    return false;
+                                };
+                                let mut changed = false;
+                                for (field, value) in values {
+                                    let current = if is_edge {
+                                        next.edge(&id)
+                                    } else {
+                                        next.node(&id)
+                                    }
+                                    .and_then(|data| data.get(field))
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default();
+                                    if current == value {
+                                        continue;
+                                    }
+                                    if field == "backgroundStyle"
+                                        && !value.is_empty()
+                                        && !matches!(value.as_str(), "cover" | "ratio" | "repeat")
+                                    {
+                                        this.status_error(
+                                            "Choose cover, ratio or repeat.",
+                                            "Velg cover, ratio eller repeat.",
+                                            cx,
+                                        );
+                                        return false;
+                                    }
+                                    if field == "url" && !crate::canvas::valid_external_url(&value)
+                                    {
+                                        this.status_error(
+                                            "Enter an HTTP or HTTPS URL.",
+                                            "Skriv inn en HTTP- eller HTTPS-adresse.",
+                                            cx,
+                                        );
+                                        return false;
+                                    }
+                                    if matches!(field, "background" | "file")
+                                        && (value.is_empty() && field == "file"
+                                            || !value.is_empty()
+                                                && !this.vault_root.as_deref().is_some_and(
+                                                    |root| {
+                                                        crate::canvas::resolve_vault_path(
+                                                            root, &value,
+                                                        )
+                                                        .is_ok()
+                                                    },
+                                                ))
+                                    {
+                                        this.status_error(
+                                            "Choose a file inside the vault.",
+                                            "Velg en fil i hvelvet.",
+                                            cx,
+                                        );
+                                        return false;
+                                    }
+                                    let value = if value.is_empty()
+                                        && !matches!(field, "url" | "fromNode" | "toNode")
+                                    {
+                                        serde_json::Value::Null
+                                    } else {
+                                        serde_json::Value::String(value)
+                                    };
+                                    let result = if is_edge {
+                                        next.set_edge_field(&id, field, value)
+                                    } else {
+                                        next.set_node_field(&id, field, value)
+                                    };
+                                    match result {
+                                        Ok(value) => changed |= value,
+                                        Err(error) => {
+                                            this.show_error(error, cx);
+                                            return false;
+                                        }
+                                    }
+                                }
+                                if changed {
+                                    this.apply_model(next, window, cx);
+                                }
+                                true
+                            });
+                        });
+                        true
+                    }
+                })
+        });
+    }
+
     fn add_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(model) = self.model.clone() else {
             return;
         };
         let selected = self.selected.iter().cloned().collect::<Vec<_>>();
         let mut next = model;
-        match next.add_group(&selected, "Group", 24) {
+        let label = self.language.text("Group", "Gruppe");
+        let result = if selected.is_empty() {
+            let (x, y) = self.center_world(window);
+            next.add_empty_group(x, y, label)
+        } else {
+            next.add_group(&selected, label, 24)
+        };
+        match result {
             Ok(id) => {
                 self.selected.clear();
                 self.selected.insert(id);
@@ -810,8 +1636,26 @@ impl CanvasView {
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        if self.editing.is_some() && (key == "escape" || (modifiers.platform && key == "enter")) {
+        if key == "escape" {
+            self.drag = None;
+            self.space_down = false;
             self.editing = None;
+            self.source_revision = None;
+            self.sync_source(cx);
+            if self.search_query.is_some() {
+                self.search_query = None;
+                self.search_results.clear();
+                self.status = None;
+            }
+            self.focus_handle.focus(window, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.editing.is_some() && modifiers.platform && matches!(key, "enter" | "return") {
+            self.editing = None;
+            self.source_revision = None;
+            self.sync_source(cx);
             self.focus_handle.focus(window, cx);
             cx.stop_propagation();
             cx.notify();
@@ -820,43 +1664,13 @@ impl CanvasView {
         if self.editing.is_some() {
             return;
         }
-        if let Some(mut query) = self.search_query.clone() {
-            match key {
-                "escape" => {
-                    self.search_query = None;
-                    self.search_results.clear();
-                    self.status = None;
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                "enter" => {
-                    self.refresh_search(if modifiers.shift { -1 } else { 1 }, window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                "backspace" => {
-                    query.pop();
-                    self.search_query = Some(query);
-                    self.search_index = 0;
-                    self.refresh_search(0, window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                _ => {}
-            }
-            if !modifiers.platform && !modifiers.control {
-                if let Some(character) = event.keystroke.key_char.as_deref() {
-                    if !character.chars().any(char::is_control) {
-                        query.push_str(character);
-                        self.search_query = Some(query);
-                        self.search_index = 0;
-                        self.refresh_search(0, window, cx);
-                        cx.stop_propagation();
-                        return;
-                    }
-                }
-            }
+        if self.search_query.is_some()
+            && self
+                .search_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
             return;
         }
         if !modifiers.platform && !self.selected.is_empty() {
@@ -907,6 +1721,12 @@ impl CanvasView {
         }
         if modifiers.platform && key.eq_ignore_ascii_case("c") {
             self.copy_selected(cx);
+            cx.stop_propagation();
+            return;
+        }
+        if modifiers.platform && key.eq_ignore_ascii_case("x") {
+            self.copy_selected(cx);
+            self.delete_selected(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -1023,21 +1843,42 @@ impl CanvasView {
             let to_geometry = model.node_geometry(to)?;
             let a = self.edge_anchor(from_geometry, edge["fromSide"].as_str(), to_geometry);
             let b = self.edge_anchor(to_geometry, edge["toSide"].as_str(), from_geometry);
-            let (ax, ay) = (self.world_to_screen(a.x), self.world_to_screen_y(a.y));
-            let (bx, by) = (self.world_to_screen(b.x), self.world_to_screen_y(b.y));
-            let (px, py) = (f64::from(screen.x), f64::from(screen.y));
-            let (dx, dy) = (f64::from(bx - ax), f64::from(by - ay));
-            let length_squared = dx * dx + dy * dy;
-            let t = if length_squared <= f64::EPSILON {
-                0.
+            let from = point(
+                px(self.world_to_screen(a.x)),
+                px(self.world_to_screen_y(a.y)),
+            );
+            let to = point(
+                px(self.world_to_screen(b.x)),
+                px(self.world_to_screen_y(b.y)),
+            );
+            let selected = if edge["curve"].as_str() == Some("straight") {
+                segment_distance(screen, from, to) <= 7.
             } else {
-                (((px - f64::from(ax)) * dx + (py - f64::from(ay)) * dy) / length_squared)
-                    .clamp(0., 1.)
+                let (control1, control2) = edge_curve_controls(from, to);
+                let mut previous = from;
+                let mut hit = false;
+                for step in 1..=24 {
+                    let t = step as f32 / 24.;
+                    let inverse = 1. - t;
+                    let next = point(
+                        px(inverse.powi(3) * f32::from(from.x)
+                            + 3. * inverse.powi(2) * t * f32::from(control1.x)
+                            + 3. * inverse * t.powi(2) * f32::from(control2.x)
+                            + t.powi(3) * f32::from(to.x)),
+                        px(inverse.powi(3) * f32::from(from.y)
+                            + 3. * inverse.powi(2) * t * f32::from(control1.y)
+                            + 3. * inverse * t.powi(2) * f32::from(control2.y)
+                            + t.powi(3) * f32::from(to.y)),
+                    );
+                    if segment_distance(screen, previous, next) <= 7. {
+                        hit = true;
+                        break;
+                    }
+                    previous = next;
+                }
+                hit
             };
-            let distance = ((px - f64::from(ax) - t * dx).powi(2)
-                + (py - f64::from(ay) - t * dy).powi(2))
-            .sqrt();
-            (distance <= 7.).then(|| id.to_string())
+            selected.then(|| id.to_string())
         })
     }
 
@@ -1085,7 +1926,7 @@ impl CanvasView {
             let document = document.read(cx);
             (
                 document.vault_root.clone(),
-                node["file"].as_str().unwrap_or_default().to_string(),
+                canvas_file_reference(node).unwrap_or_default(),
             )
         };
         let Some(root) = root else {
@@ -1096,7 +1937,11 @@ impl CanvasView {
             );
             return;
         };
-        let relative = relative.split('#').next().unwrap_or_default();
+        let (relative, subpath) = relative
+            .split_once('#')
+            .map_or((relative.as_str(), None), |(path, subpath)| {
+                (path, (!subpath.is_empty()).then(|| subpath.to_string()))
+            });
         let Ok(path) = crate::canvas::resolve_vault_path(&root, relative) else {
             self.status_error(
                 "This file reference is outside the vault or unavailable.",
@@ -1109,11 +1954,14 @@ impl CanvasView {
             self.status_error("File not found.", "Filen ble ikke funnet.", cx);
             return;
         }
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                workspace.open_document_pub(path, window, cx);
-            });
-        }
+        let workspace = self.workspace.clone();
+        cx.on_next_frame(window, move |_, window, cx| {
+            if let Some(workspace) = workspace.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.open_canvas_reference(path, subpath, window, cx);
+                });
+            }
+        });
     }
 
     fn open_link_card(&mut self, node: &serde_json::Value, cx: &mut Context<Self>) {
@@ -1189,6 +2037,131 @@ impl CanvasView {
         cx.notify();
     }
 
+    fn frame(&self, cx: &mut Context<Self>) -> Div {
+        v_flex()
+            .size_full()
+            .track_focus(&self.focus_handle)
+            .key_context("CanvasBoard")
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    || (this.editing.is_some()
+                        && event.keystroke.modifiers.platform
+                        && matches!(event.keystroke.key.as_str(), "enter" | "return"))
+                {
+                    this.on_key_down(event, window, cx);
+                }
+            }))
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(|this, _: &input::Undo, window, cx| {
+                if !this.focus_handle.is_focused(window) {
+                    cx.propagate();
+                    return;
+                }
+                this.apply_document_history(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &input::Redo, window, cx| {
+                if !this.focus_handle.is_focused(window) {
+                    cx.propagate();
+                    return;
+                }
+                this.apply_document_history(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &input::Copy, window, cx| {
+                if this.focus_handle.is_focused(window) {
+                    this.copy_selected(cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &input::Cut, window, cx| {
+                if !this.focus_handle.is_focused(window) {
+                    cx.propagate();
+                    return;
+                }
+                if !this.selected.is_empty() {
+                    this.copy_selected(cx);
+                    this.delete_selected(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &input::Paste, window, cx| {
+                if this.focus_handle.is_focused(window) {
+                    this.paste(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &input::SelectAll, window, cx| {
+                if !this.focus_handle.is_focused(window) {
+                    cx.propagate();
+                    return;
+                }
+                if let Some(model) = &this.model {
+                    this.selected = model
+                        .nodes()
+                        .iter()
+                        .chain(model.edges())
+                        .filter_map(|value| value["id"].as_str().map(str::to_string))
+                        .collect();
+                    cx.notify();
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::CanvasDelete, window, cx| {
+                    if !this.focus_handle.is_focused(window) {
+                        cx.propagate();
+                        return;
+                    }
+                    this.delete_selected(window, cx)
+                }),
+            )
+    }
+    fn move_delta(&self, ids: &[String], dx: f64, dy: f64) -> (i64, i64) {
+        if !self.snap_drag || (dx == 0. && dy == 0.) {
+            return (dx.round() as i64, dy.round() as i64);
+        }
+        let anchor = ids
+            .first()
+            .and_then(|id| self.model.as_ref()?.node(id))
+            .and_then(|node| self.model.as_ref()?.node_geometry(node));
+        match anchor {
+            Some(anchor) => (
+                (((anchor.x as f64 + dx) / 10.).round() * 10.) as i64 - anchor.x,
+                (((anchor.y as f64 + dy) / 10.).round() * 10.) as i64 - anchor.y,
+            ),
+            None => (dx.round() as i64, dy.round() as i64),
+        }
+    }
+
+    fn resized_geometry(&self, mut geometry: Geometry, dx: f64, dy: f64) -> Geometry {
+        if dx == 0. && dy == 0. {
+            return geometry;
+        }
+        let grid = if self.snap_drag { 10. } else { 1. };
+        geometry.width = (((geometry.width as f64 + dx / self.zoom) / grid).round() * grid)
+            .clamp(40., 1_000_000_000.) as i64;
+        geometry.height = (((geometry.height as f64 + dy / self.zoom) / grid).round() * grid)
+            .clamp(40., 1_000_000_000.) as i64;
+        geometry
+    }
+
+    fn staged_geometry(&self, id: &str, mut geometry: Geometry) -> Geometry {
+        match &self.drag {
+            Some(Drag::Move { ids, dx, dy, .. }) if ids.iter().any(|selected| selected == id) => {
+                let (dx, dy) = self.move_delta(ids, *dx, *dy);
+                geometry.x += dx;
+                geometry.y += dy;
+                geometry
+            }
+            Some(Drag::Resize {
+                id: selected,
+                dx,
+                dy,
+                ..
+            }) if selected == id => self.resized_geometry(geometry, *dx, *dy),
+            _ => geometry,
+        }
+    }
+
     fn render_card(
         &self,
         id: &str,
@@ -1197,44 +2170,32 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let theme = cx.theme().clone();
-        let color = match node["color"].as_str().unwrap_or_default() {
-            "1" => theme.info,
-            "2" => theme.success,
-            "3" => theme.warning,
-            "4" => theme.danger,
-            "5" => theme.primary,
-            "6" => theme.muted_foreground,
-            _ => theme.border,
-        };
-        let width = (geometry.width as f32 * self.zoom as f32).max(24.);
-        let height = (geometry.height as f32 * self.zoom as f32).max(24.);
+        let mut palette = crate::preview::highlight_palette(&theme);
+        palette[4] = theme.cyan;
+        let color = node["color"]
+            .as_str()
+            .and_then(|value| {
+                value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|index| (1..=6).contains(index))
+                    .map(|index| palette[index - 1])
+                    .or_else(|| gpui_kit::component::theme::try_parse_color(value).ok())
+            })
+            .unwrap_or(theme.border);
+        let width = (geometry.width as f32 * self.zoom as f32).max(1.);
+        let height = (geometry.height as f32 * self.zoom as f32).max(1.);
         let selected = self.selected.contains(id);
-        let (dx, dy, resize_dx, resize_dy) = match &self.drag {
-            Some(Drag::Move { ids, dx, dy, .. }) if ids.iter().any(|node_id| node_id == id) => {
-                (*dx, *dy, 0., 0.)
-            }
-            Some(Drag::Resize {
-                id: resize_id,
-                dx,
-                dy,
-                ..
-            }) if resize_id == id => (0., 0., *dx, *dy),
-            _ => (0., 0., 0., 0.),
-        };
         let mut card = div()
             .id(id.to_string())
             .absolute()
-            .left(px(self.world_to_screen(geometry.x as f64 + dx)))
-            .top(px(self.world_to_screen_y(geometry.y as f64 + dy)))
-            .w(px((width + resize_dx as f32).max(64.)))
-            .h(px((height + resize_dy as f32).max(48.)))
+            .left(px(self.world_to_screen(geometry.x as f64)))
+            .top(px(self.world_to_screen_y(geometry.y as f64)))
+            .w(px(width))
+            .h(px(height))
             .rounded(theme.radius)
             .border_1()
-            .border_color(if selected {
-                theme.primary
-            } else {
-                theme.border
-            })
+            .border_color(if selected { theme.primary } else { color })
             .bg(theme.group_box)
             .p_2()
             .overflow_hidden();
@@ -1282,9 +2243,28 @@ impl CanvasView {
                                 .text("File unavailable", "Filen er utilgjengelig")
                         }),
                 );
+            if let Some(state) = self.file_views.get(id) {
+                let mut preview_context = self.preview_context.clone();
+                preview_context.doc_path = self.file_paths.get(id).cloned();
+                card = card.child(
+                    TextView::new(state)
+                        .markdown_extensions(crate::preview::extensions(
+                            &crate::preview::CalloutFolds::default(),
+                            Some(&preview_context),
+                            false,
+                        ))
+                        .selectable(true)
+                        .scrollable(true),
+                );
+            }
         } else if node["type"].as_str() == Some("link") {
             card = card
-                .child(div().text_sm().font_semibold().child("Link"))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .child(self.language.text("Link", "Lenke")),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -1292,11 +2272,101 @@ impl CanvasView {
                         .child(node["url"].as_str().unwrap_or_default().to_string()),
                 );
         } else if node["type"].as_str() == Some("group") {
-            card = card.bg(theme.group_box).border_color(color).child(
+            card = card.bg(theme.group_box).border_color(color);
+            if let Some(path) = self.group_backgrounds.get(id) {
+                let source = ImageSource::from(path.clone());
+                let fit = if node["backgroundStyle"].as_str() == Some("ratio") {
+                    ObjectFit::Contain
+                } else {
+                    ObjectFit::Cover
+                };
+                let image = if node["backgroundStyle"].as_str() == Some("repeat") {
+                    let zoom = self.zoom as f32;
+                    let board_bounds = self.bounds.clone();
+                    gpui::canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, cx| {
+                            let ImageSource::Resource(resource) = &source else {
+                                return;
+                            };
+                            let Some(Ok(image)) =
+                                window.use_asset::<ImgResourceLoader>(resource, cx)
+                            else {
+                                return;
+                            };
+                            let native = image.size(0);
+                            let scale = window.scale_factor();
+                            let tile = size(
+                                px((native.width.0 as f32 / scale * zoom).max(1.)),
+                                px((native.height.0 as f32 / scale * zoom).max(1.)),
+                            );
+                            let clip = bounds.intersect(&board_bounds.get());
+                            if clip.size.width <= px(0.) || clip.size.height <= px(0.) {
+                                return;
+                            }
+                            let first_x = ((clip.origin.x - bounds.origin.x) / tile.width).floor();
+                            let first_y = ((clip.origin.y - bounds.origin.y) / tile.height).floor();
+                            let columns = (clip.size.width / tile.width).ceil() as usize + 1;
+                            let rows = (clip.size.height / tile.height).ceil() as usize + 1;
+                            if columns.saturating_mul(rows) > 4096 {
+                                let image_bounds =
+                                    ObjectFit::Cover.get_bounds(bounds, image.size(0));
+                                let _ = window.paint_image(
+                                    clip,
+                                    image_bounds,
+                                    Corners::default(),
+                                    image,
+                                    0,
+                                    false,
+                                );
+                                return;
+                            }
+                            for row in 0..rows {
+                                for column in 0..columns {
+                                    let origin = point(
+                                        bounds.origin.x + tile.width * (first_x + column as f32),
+                                        bounds.origin.y + tile.height * (first_y + row as f32),
+                                    );
+                                    let _ = window.paint_image(
+                                        clip,
+                                        Bounds::new(origin, tile),
+                                        Corners::default(),
+                                        image.clone(),
+                                        0,
+                                        false,
+                                    );
+                                }
+                            }
+                        },
+                    )
+                    .size_full()
+                    .into_any_element()
+                } else {
+                    img(source).size_full().object_fit(fit).into_any_element()
+                };
+                card = card.child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(0.))
+                        .w_full()
+                        .h_full()
+                        .child(image),
+                );
+            }
+            card = card.child(
                 div()
+                    .absolute()
+                    .left(px(8.))
+                    .top(px(8.))
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(node["label"].as_str().unwrap_or("Group").to_string()),
+                    .child(
+                        node["label"]
+                            .as_str()
+                            .unwrap_or(self.language.text("Group", "Gruppe"))
+                            .to_string(),
+                    ),
             );
         } else {
             card = card.child(
@@ -1304,8 +2374,12 @@ impl CanvasView {
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(format!(
-                        "Unsupported Canvas node: {}",
-                        node["type"].as_str().unwrap_or("unknown")
+                        "{}: {}",
+                        self.language
+                            .text("Unsupported card", "Korttypen støttes ikke"),
+                        node["type"]
+                            .as_str()
+                            .unwrap_or(self.language.text("unknown", "ukjent"))
                     )),
             );
         }
@@ -1368,7 +2442,6 @@ impl Focusable for CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_source(cx);
         let theme = cx.theme().clone();
         let language = self.language;
         let document = self.document.upgrade();
@@ -1379,19 +2452,227 @@ impl Render for CanvasView {
             .as_ref()
             .map(|document| document.read(cx).canvas_history_state())
             .unwrap_or_default();
+        let view = cx.entity();
+        let add_view = view.clone();
+        let overflow_view = view;
+        let has_selection = !self.selected.is_empty();
+        let selection_count = self.selected.len();
+        let can_convert = self.selected_text_node().is_some();
+        let add_menu = Button::new("canvas-add-menu")
+            .ghost()
+            .xsmall()
+            .label(language.text("Add", "Legg til"))
+            .disabled(read_only || self.model.is_none())
+            .dropdown_menu(move |menu, _, _| {
+                let view = add_view.clone();
+                menu.item(
+                    PopupMenuItem::new(language.text("Text card", "Tekstkort")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.add_text(window, cx));
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("File card…", "Filkort…")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.pick_canvas_file(window, cx));
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Link card", "Lenkekort")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.add_link(window, cx));
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(if has_selection {
+                        language.text("Group selection", "Grupper utvalg")
+                    } else {
+                        language.text("Group", "Gruppe")
+                    })
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.add_group(window, cx));
+                        }
+                    }),
+                )
+            });
+        let overflow = Button::new("canvas-commands")
+            .ghost()
+            .xsmall()
+            .label(language.text("More", "Mer"))
+            .disabled(!has_selection)
+            .dropdown_menu(move |menu, _, _| {
+                let view = overflow_view.clone();
+                menu.item(
+                    PopupMenuItem::new(language.text("Edit selection…", "Rediger utvalg…"))
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| this.open_inspector(window, cx));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Duplicate", "Dupliser")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.duplicate_selected(window, cx));
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(
+                        language.text("Convert text to note", "Gjør tekst om til notat"),
+                    )
+                    .disabled(!can_convert)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.convert_selected_text_to_file(window, cx)
+                            });
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Align left", "Juster til venstre"))
+                        .disabled(selection_count < 2)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| this.align_selected("left", window, cx));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Align center", "Juster midtstilt"))
+                        .disabled(selection_count < 2)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.align_selected("center", window, cx)
+                                });
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Distribute horizontally", "Fordel vannrett"))
+                        .disabled(selection_count < 3)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.align_selected("distribute-horizontal", window, cx)
+                                });
+                            }
+                        }),
+                )
+                .map(|mut menu| {
+                    for (action, en, nb) in [
+                        ("right", "Align right", "Juster til høyre"),
+                        ("top", "Align top", "Juster øverst"),
+                        ("middle", "Align middle", "Juster midten"),
+                        ("bottom", "Align bottom", "Juster nederst"),
+                        (
+                            "distribute-vertical",
+                            "Distribute vertically",
+                            "Fordel loddrett",
+                        ),
+                    ] {
+                        let view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(language.text(en, nb))
+                                .disabled(selection_count < 2)
+                                .on_click(move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.align_selected(action, window, cx)
+                                    });
+                                }),
+                        );
+                    }
+                    let view = view.clone();
+                    menu.item(
+                        PopupMenuItem::new(language.text("Fit selection", "Tilpass utvalg"))
+                            .on_click(move |_, window, cx| {
+                                view.update(cx, |this, cx| this.fit_selection(true, window, cx));
+                            }),
+                    )
+                })
+                .item(
+                    PopupMenuItem::new(language.text("Bring to front", "Flytt fremst")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.reorder_selected(true, window, cx));
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Send to back", "Flytt bakerst")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.reorder_selected(false, window, cx));
+                        }
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new(language.text("Delete", "Slett")).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.delete_selected(window, cx));
+                        }
+                    }),
+                )
+            });
         let toolbar = h_flex()
             .w_full()
-            .h(px(36.))
+            .h(px(34.))
             .px_2()
             .gap_1()
             .items_center()
             .border_b_1()
             .border_color(theme.border)
+            .child(add_menu)
+            .child(
+                Button::new("canvas-fit")
+                    .ghost()
+                    .xsmall()
+                    .label(language.text("Fit", "Tilpass"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.fit_selection(false, window, cx);
+                    })),
+            )
+            .child(overflow)
+            .when_some(self.search_query.as_ref(), |bar, _| {
+                bar.child(
+                    div()
+                        .w(px(160.))
+                        .min_w(px(80.))
+                        .child(Input::new(&self.search_input).appearance(true)),
+                )
+            })
+            .child(
+                Button::new("canvas-find")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Search)
+                    .tooltip(language.text("Find", "Finn"))
+                    .on_click(cx.listener(|this, _, window, cx| this.begin_search(window, cx))),
+            )
+            .child(div().flex_1())
             .child(
                 Button::new("canvas-undo")
                     .ghost()
                     .xsmall()
-                    .label(language.text("Undo", "Angre"))
+                    .icon(assets::IconName::Undo)
+                    .tooltip(language.text("Undo", "Angre"))
                     .disabled(read_only || !can_undo)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.apply_document_history(false, window, cx)
@@ -1401,84 +2682,13 @@ impl Render for CanvasView {
                 Button::new("canvas-redo")
                     .ghost()
                     .xsmall()
-                    .label(language.text("Redo", "Gjør om"))
+                    .icon(assets::IconName::Redo)
+                    .tooltip(language.text("Redo", "Gjør om"))
                     .disabled(read_only || !can_redo)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.apply_document_history(true, window, cx)
                     })),
             )
-            .child(
-                Button::new("canvas-add-text")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Text", "Tekst"))
-                    .disabled(read_only || self.model.is_none())
-                    .on_click(cx.listener(|this, _, window, cx| this.add_text(window, cx))),
-            )
-            .child(
-                Button::new("canvas-convert-to-file")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("To note", "Til notat"))
-                    .disabled(read_only || self.selected_text_node().is_none())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.convert_selected_text_to_file(window, cx)
-                    })),
-            )
-            .child(
-                Button::new("canvas-add-link")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Link", "Lenke"))
-                    .disabled(read_only || self.model.is_none())
-                    .on_click(cx.listener(|this, _, window, cx| this.add_link(window, cx))),
-            )
-            .child(
-                Button::new("canvas-group")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Group", "Gruppe"))
-                    .disabled(read_only || self.selected.is_empty())
-                    .on_click(cx.listener(|this, _, window, cx| this.add_group(window, cx))),
-            )
-            .child(
-                Button::new("canvas-duplicate")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Duplicate", "Dupliser"))
-                    .disabled(read_only || self.selected.is_empty())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.duplicate_selected(window, cx)),
-                    ),
-            )
-            .child(
-                Button::new("canvas-fit")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Fit all", "Tilpass alle"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.fit_selection(false, window, cx);
-                    })),
-            )
-            .child(
-                Button::new("canvas-fit-selection")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Fit selection", "Tilpass utvalg"))
-                    .disabled(self.selected.is_empty())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.fit_selection(true, window, cx);
-                    })),
-            )
-            .child(
-                Button::new("canvas-delete")
-                    .ghost()
-                    .xsmall()
-                    .label(language.text("Delete", "Slett"))
-                    .disabled(read_only || self.selected.is_empty())
-                    .on_click(cx.listener(|this, _, window, cx| this.delete_selected(window, cx))),
-            )
-            .child(div().flex_1())
             .when(
                 self.model.as_ref().is_some_and(|model| {
                     model
@@ -1499,12 +2709,19 @@ impl Render for CanvasView {
                 },
             )
             .when_some(self.status.clone(), |bar, status| {
-                bar.child(div().text_xs().text_color(theme.warning).child(status))
+                bar.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .overflow_hidden()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child(status),
+                )
             });
 
         if self.error.is_some() {
-            let body = v_flex()
-                .size_full()
+            let body = self.frame(cx)
                 .child(toolbar)
                 .child(
                     div()
@@ -1520,8 +2737,8 @@ impl Render for CanvasView {
             return body.into_any_element();
         }
 
-        let Some(model) = self.model.clone() else {
-            return v_flex().size_full().child(toolbar).into_any_element();
+        let Some(model) = self.model.as_ref() else {
+            return self.frame(cx).child(toolbar).into_any_element();
         };
         let board_bounds = self.bounds.get();
         let viewport = if board_bounds.size.width > px(0.) && board_bounds.size.height > px(0.) {
@@ -1539,10 +2756,19 @@ impl Render for CanvasView {
             .filter_map(|edge| {
                 let from_node = model.node(edge["fromNode"].as_str()?)?;
                 let to_node = model.node(edge["toNode"].as_str()?)?;
-                let from_geometry = model.node_geometry(from_node)?;
-                let to_geometry = model.node_geometry(to_node)?;
+                let from_geometry = self
+                    .staged_geometry(from_node["id"].as_str()?, model.node_geometry(from_node)?);
+                let to_geometry =
+                    self.staged_geometry(to_node["id"].as_str()?, model.node_geometry(to_node)?);
                 let from = self.edge_anchor(from_geometry, edge["fromSide"].as_str(), to_geometry);
                 let to = self.edge_anchor(to_geometry, edge["toSide"].as_str(), from_geometry);
+                if from.x.max(to.x) < visible_left
+                    || from.x.min(to.x) > visible_right
+                    || from.y.max(to.y) < visible_top
+                    || from.y.min(to.y) > visible_bottom
+                {
+                    return None;
+                }
                 Some(EdgePaint {
                     id: edge["id"].as_str()?.to_string(),
                     from: point(
@@ -1555,7 +2781,7 @@ impl Render for CanvasView {
                     ),
                     curved: edge["curve"].as_str() != Some("straight"),
                     from_arrow: edge["fromEnd"].as_str() == Some("arrow"),
-                    to_arrow: edge["toEnd"].as_str() == Some("arrow"),
+                    to_arrow: edge["toEnd"].as_str().unwrap_or("arrow") == "arrow",
                     color: edge["color"].as_str().unwrap_or_default().to_string(),
                     label: edge["label"]
                         .as_str()
@@ -1576,19 +2802,13 @@ impl Render for CanvasView {
                         f64::from(self.world_to_screen(from.x)),
                         f64::from(self.world_to_screen_y(from.y)),
                     ),
-                    *last,
+                    point(f64::from(last.x), f64::from(last.y)),
                 ))
             }),
             _ => None,
         };
-        let edge_palette = [
-            theme.info,
-            theme.success,
-            theme.warning,
-            theme.danger,
-            theme.primary,
-            theme.muted_foreground,
-        ];
+        let mut edge_palette = crate::preview::highlight_palette(&theme);
+        edge_palette[4] = theme.cyan;
         let edge_default = theme.border;
         let bounds_slot = self.bounds.clone();
         let edge_canvas = gpui::canvas(
@@ -1625,31 +2845,40 @@ impl Render for CanvasView {
                         }));
                     path.move_to(from);
                     if edge.curved {
-                        let dx = f32::from(to.x - from.x);
-                        let sign = if dx < 0. { -1. } else { 1. };
-                        let control = (dx.abs() * 0.5).max(24.);
-                        path.cubic_bezier_to(
-                            to,
-                            point(from.x + px(control * sign), from.y),
-                            point(to.x - px(control * sign), to.y),
-                        );
+                        let (control1, control2) = edge_curve_controls(from, to);
+                        path.cubic_bezier_to(to, control1, control2);
                     } else {
                         path.line_to(to);
                     }
                     if let Ok(path) = path.build() {
                         window.paint_path(path, color);
                     }
+                    let (control1, control2) = edge_curve_controls(from, to);
                     if edge.from_arrow {
-                        paint_edge_arrow(window, from, to, color);
+                        paint_edge_arrow(
+                            window,
+                            from,
+                            if edge.curved { control1 } else { to },
+                            color,
+                        );
                     }
                     if edge.to_arrow {
-                        paint_edge_arrow(window, to, from, color);
+                        paint_edge_arrow(
+                            window,
+                            to,
+                            if edge.curved { control2 } else { from },
+                            color,
+                        );
                     }
                 }
                 if let Some((from, to)) = pending_edge {
                     let from = point(
                         bounds.origin.x + px(from.x as f32),
                         bounds.origin.y + px(from.y as f32),
+                    );
+                    let to = point(
+                        bounds.origin.x + px(to.x as f32),
+                        bounds.origin.y + px(to.y as f32),
                     );
                     let mut path = gpui::PathBuilder::stroke(px(1.));
                     path.move_to(from);
@@ -1681,7 +2910,7 @@ impl Render for CanvasView {
             .iter()
             .filter_map(|node| {
                 let id = node["id"].as_str()?.to_string();
-                let geometry = model.node_geometry(node)?;
+                let geometry = self.staged_geometry(&id, model.node_geometry(node)?);
                 let x = geometry.x as f64;
                 let y = geometry.y as f64;
                 let right = x + geometry.width as f64;
@@ -1697,9 +2926,22 @@ impl Render for CanvasView {
                 let node = node.clone();
                 let file_node = node.clone();
                 let link_node = node.clone();
-                Some(self.render_card(&id, &node, geometry, cx).on_mouse_down(
+                let context_node = node.clone();
+                let context_id = id.clone();
+                let context_type = node_type.clone();
+                let view = cx.entity();
+                let language = self.language;
+                let card = self.render_card(&id, &node, geometry, cx).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        if this
+                            .editing
+                            .as_ref()
+                            .is_some_and(|editing| editing.node_id == id)
+                        {
+                            return;
+                        }
                         if event.click_count >= 2 {
                             this.selected.clear();
                             this.selected.insert(id.clone());
@@ -1739,7 +2981,70 @@ impl Render for CanvasView {
                         this.focus_handle.focus(window, cx);
                         cx.notify();
                     }),
-                ))
+                );
+                Some(card.context_menu(move |menu, _, _| {
+                    menu.item(
+                        PopupMenuItem::new(language.text("Edit", "Rediger")).on_click({
+                            let view = view.clone();
+                            let id = context_id.clone();
+                            let node_type = context_type.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.selected.clear();
+                                    this.selected.insert(id.clone());
+                                    match node_type.as_str() {
+                                        "text" => this.begin_inline_edit(&id, window, cx),
+                                        "link" | "group" | "file" => {
+                                            this.open_inspector(window, cx)
+                                        }
+                                        _ => this.fit_selection(true, window, cx),
+                                    }
+                                });
+                            }
+                        }),
+                    )
+                    .item(
+                        PopupMenuItem::new(language.text("Open", "Åpne"))
+                            .disabled(!matches!(context_type.as_str(), "file" | "link"))
+                            .on_click({
+                                let view = view.clone();
+                                let node = context_node.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| match node["type"].as_str() {
+                                        Some("file") => this.open_file_card(&node, window, cx),
+                                        Some("link") => this.open_link_card(&node, cx),
+                                        _ => this.fit_selection(true, window, cx),
+                                    });
+                                }
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(language.text("Duplicate", "Dupliser")).on_click({
+                            let view = view.clone();
+                            let id = context_id.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.selected.clear();
+                                    this.selected.insert(id.clone());
+                                    this.duplicate_selected(window, cx);
+                                });
+                            }
+                        }),
+                    )
+                    .item(
+                        PopupMenuItem::new(language.text("Delete", "Slett")).on_click({
+                            let view = view.clone();
+                            let id = context_id.clone();
+                            move |_, window, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.selected.clear();
+                                    this.selected.insert(id.clone());
+                                    this.delete_selected(window, cx);
+                                });
+                            }
+                        }),
+                    )
+                }))
             })
             .collect::<Vec<_>>();
         let board = div()
@@ -1749,9 +3054,6 @@ impl Render for CanvasView {
             .relative()
             .overflow_hidden()
             .bg(theme.background)
-            .track_focus(&self.focus_handle)
-            .key_context("CanvasBoard")
-            .on_key_down(cx.listener(Self::on_key_down))
             .can_drop(|value, _, _| value.is::<PathBuf>())
             .on_drop::<PathBuf>(cx.listener(|this, path: &PathBuf, window, cx| {
                 this.add_file_path(path, window, cx);
@@ -1808,6 +3110,7 @@ impl Render for CanvasView {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.snap_drag = !event.modifiers.alt;
                 let Some(drag) = this.drag.clone() else {
                     return;
                 };
@@ -1860,92 +3163,100 @@ impl Render for CanvasView {
                 cx.notify();
             }))
             .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if matches!(this.drag, Some(Drag::Pan { .. })) {
+                        this.drag = None;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                    if let Some(Drag::Edge { from_id, .. }) = this.drag.take() {
-                        if let Some(to_id) = this.hit_node(this.window_to_board(event.position)) {
-                            if to_id != from_id {
-                                if let Some(mut next) = this.model.clone() {
-                                    let edge = serde_json::json!({
-                                        "fromNode": from_id,
-                                        "toNode": to_id,
-                                        "fromEnd": "none",
-                                        "toEnd": "arrow"
-                                    });
-                                    if let Ok(id) = next.add_edge(edge) {
-                                        this.selected.clear();
-                                        this.selected.insert(id);
+                    this.snap_drag = !event.modifiers.alt;
+                    match take_finished_drag(&mut this.drag) {
+                        Some(FinishedDrag::Edge { from_id }) => {
+                            if let Some(to_id) = this.hit_node(this.window_to_board(event.position))
+                            {
+                                if to_id != from_id {
+                                    if let Some(mut next) = this.model.clone() {
+                                        let edge = serde_json::json!({
+                                            "fromNode": from_id,
+                                            "toNode": to_id,
+                                            "fromEnd": "none",
+                                            "toEnd": "arrow"
+                                        });
+                                        if let Ok(id) = next.add_edge(edge) {
+                                            this.selected.clear();
+                                            this.selected.insert(id);
+                                            this.apply_model(next, window, cx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Some(FinishedDrag::Move { ids, dx, dy }) => {
+                            let (dx, dy) = this.move_delta(&ids, dx, dy);
+                            if let Some(mut next) = this.model.clone() {
+                                if next.move_selection(&ids, dx, dy).is_ok() {
+                                    this.apply_model(next, window, cx);
+                                }
+                            }
+                        }
+                        Some(FinishedDrag::Resize { id, dx, dy }) => {
+                            if let Some(mut next) = this.model.clone() {
+                                if let Some(geometry) =
+                                    next.node(&id).and_then(|node| next.node_geometry(node))
+                                {
+                                    let geometry = this.resized_geometry(geometry, dx, dy);
+                                    if next
+                                        .resize_node(&id, geometry.width, geometry.height)
+                                        .is_ok()
+                                    {
                                         this.apply_model(next, window, cx);
                                     }
                                 }
                             }
                         }
-                    } else if let Some(Drag::Move { ids, dx, dy, .. }) = this.drag.take() {
-                        if let Some(model) = this.model.clone() {
-                            let mut next = model;
-                            if next
-                                .move_selection(&ids, dx.round() as i64, dy.round() as i64)
-                                .is_ok()
-                            {
-                                this.apply_model(next, window, cx);
+                        Some(FinishedDrag::Marquee {
+                            start,
+                            end,
+                            additive,
+                        }) => {
+                            if !additive {
+                                this.selected.clear();
                             }
-                        }
-                    } else if let Some(Drag::Resize { id, dx, dy, .. }) = this.drag.take() {
-                        if let Some(model) = this.model.clone() {
-                            let mut next = model;
-                            if let Some(geometry) =
-                                next.node(&id).and_then(|node| next.node_geometry(node))
-                            {
-                                if next
-                                    .resize_node(
-                                        &id,
-                                        geometry.width + (dx / this.zoom).round() as i64,
-                                        geometry.height + (dy / this.zoom).round() as i64,
-                                    )
-                                    .is_ok()
-                                {
-                                    this.apply_model(next, window, cx);
+                            if let Some(model) = &this.model {
+                                let left = f64::from(start.x.min(end.x));
+                                let right = f64::from(start.x.max(end.x));
+                                let top = f64::from(start.y.min(end.y));
+                                let bottom = f64::from(start.y.max(end.y));
+                                for node in model.nodes() {
+                                    let (Some(id), Some(geometry)) =
+                                        (node["id"].as_str(), model.node_geometry(node))
+                                    else {
+                                        continue;
+                                    };
+                                    let x = this.world_to_screen(geometry.x as f64);
+                                    let y = this.world_to_screen_y(geometry.y as f64);
+                                    let card_right = this
+                                        .world_to_screen(geometry.x as f64 + geometry.width as f64);
+                                    let card_bottom = this.world_to_screen_y(
+                                        geometry.y as f64 + geometry.height as f64,
+                                    );
+                                    if f64::from(card_right) >= left
+                                        && f64::from(x) <= right
+                                        && f64::from(card_bottom) >= top
+                                        && f64::from(y) <= bottom
+                                    {
+                                        this.selected.insert(id.to_string());
+                                    }
                                 }
                             }
+                            cx.notify();
                         }
-                    } else if let Some(Drag::Marquee {
-                        start,
-                        end,
-                        additive,
-                    }) = this.drag.take()
-                    {
-                        if !additive {
-                            this.selected.clear();
-                        }
-                        if let Some(model) = &this.model {
-                            let left = f64::from(start.x.min(end.x));
-                            let right = f64::from(start.x.max(end.x));
-                            let top = f64::from(start.y.min(end.y));
-                            let bottom = f64::from(start.y.max(end.y));
-                            for node in model.nodes() {
-                                let (Some(id), Some(geometry)) =
-                                    (node["id"].as_str(), model.node_geometry(node))
-                                else {
-                                    continue;
-                                };
-                                let x = this.world_to_screen(geometry.x as f64);
-                                let y = this.world_to_screen_y(geometry.y as f64);
-                                let card_right =
-                                    this.world_to_screen(geometry.x as f64 + geometry.width as f64);
-                                let card_bottom = this
-                                    .world_to_screen_y(geometry.y as f64 + geometry.height as f64);
-                                if f64::from(card_right) >= left
-                                    && f64::from(x) <= right
-                                    && f64::from(card_bottom) >= top
-                                    && f64::from(y) <= bottom
-                                {
-                                    this.selected.insert(id.to_string());
-                                }
-                            }
-                        }
-                        cx.notify();
-                    } else {
-                        this.drag = None;
+                        Some(FinishedDrag::Pan) | None => {}
                     }
                 }),
             )
@@ -2003,7 +3314,7 @@ impl Render for CanvasView {
                     }
                 }),
             )
-            .child(edge_canvas)
+            .child(edge_canvas.absolute().size_full())
             .children(edge_labels)
             .children(cards)
             .when_some(
@@ -2032,7 +3343,6 @@ impl Render for CanvasView {
             .context_menu({
                 let view = cx.entity();
                 let language = self.language;
-                let can_group = !self.selected.is_empty();
                 move |menu, _, _| {
                     menu.item(
                         PopupMenuItem::new(language.text("Add text card", "Legg til tekstkort"))
@@ -2064,9 +3374,18 @@ impl Render for CanvasView {
                                 }
                             }),
                     )
-                    .when(can_group, |menu| {
+                    .item(
+                        PopupMenuItem::new(language.text("Add file card", "Legg til filkort"))
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| this.pick_canvas_file(window, cx));
+                                }
+                            }),
+                    )
+                    .map(|menu| {
                         menu.item(
-                            PopupMenuItem::new(language.text("Group selection", "Grupper utvalg"))
+                            PopupMenuItem::new(language.text("Add group", "Legg til gruppe"))
                                 .on_click({
                                     let view = view.clone();
                                     move |_, window, cx| {
@@ -2077,8 +3396,7 @@ impl Render for CanvasView {
                     })
                 }
             });
-        v_flex()
-            .size_full()
+        self.frame(cx)
             .child(toolbar)
             .child(board)
             .into_any_element()
@@ -2088,5 +3406,78 @@ impl Render for CanvasView {
 impl Drop for CanvasView {
     fn drop(&mut self) {
         self.drag = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        canvas_file_reference, canvas_markdown_excerpt, take_finished_drag, Drag, FinishedDrag,
+    };
+    use gpui_kit::{point, px};
+
+    #[test]
+    fn canvas_completed_move_resize_and_marquee_drags_are_consumed_once() {
+        let mut drag = Some(Drag::Move {
+            ids: vec!["node".into()],
+            last: point(px(0.), px(0.)),
+            dx: 1.,
+            dy: 2.,
+        });
+        let first = take_finished_drag(&mut drag).expect("move completion");
+        assert!(match first {
+            FinishedDrag::Move { ids, dx, dy } => ids == ["node"] && dx == 1. && dy == 2.,
+            _ => false,
+        });
+        assert!(drag.is_none());
+
+        drag = Some(Drag::Resize {
+            id: "node".into(),
+            last: point(px(0.), px(0.)),
+            dx: 3.,
+            dy: 4.,
+        });
+        let second = take_finished_drag(&mut drag).expect("resize completion");
+        assert!(match second {
+            FinishedDrag::Resize { id, dx, dy } => id == "node" && dx == 3. && dy == 4.,
+            _ => false,
+        });
+        assert!(drag.is_none());
+
+        drag = Some(Drag::Marquee {
+            start: point(px(0.), px(0.)),
+            end: point(px(12.), px(16.)),
+            additive: false,
+        });
+        let third = take_finished_drag(&mut drag).expect("marquee completion");
+        assert!(matches!(third, FinishedDrag::Marquee { .. }));
+        assert!(drag.is_none());
+    }
+
+    #[test]
+    fn canvas_file_card_uses_separate_subpath_and_excerpt() {
+        let node = serde_json::json!({
+            "type": "file",
+            "file": "notes/guide.md",
+            "subpath": "#Usage"
+        });
+        assert_eq!(
+            canvas_file_reference(&node).as_deref(),
+            Some("notes/guide.md#Usage")
+        );
+        assert_eq!(
+            canvas_markdown_excerpt(
+                "# Intro\n\nText.\n\n# Usage\n\nDetails.\n\n# End\nDone.",
+                Some("Usage")
+            ),
+            "# Usage\n\nDetails."
+        );
+        assert_eq!(
+            canvas_markdown_excerpt(
+                "First block ^block-a\n\nSecond paragraph.",
+                Some("^block-a")
+            ),
+            "First block"
+        );
     }
 }
