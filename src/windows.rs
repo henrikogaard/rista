@@ -95,10 +95,7 @@ pub(crate) fn move_tab_to_new_window(id: u64, token: Option<TabToken>, cx: &mut 
                 return;
             }
             workspace.note_status(
-                workspace.tr(
-                    "The note could not be moved safely. The original tab was kept.",
-                    "Notatet kunne ikke flyttes trygt. Den opprinnelige fanen ble beholdt.",
-                ),
+                workspace.tr("Move failed; tab kept.", "Flytting feilet; fane beholdt."),
                 cx,
             );
         });

@@ -2123,10 +2123,7 @@ impl Workspace {
         let doc = self.docs[index].entity.clone();
         if doc.update(cx, |doc, cx| doc.flush_and_save(cx)).is_err() {
             self.note_status(
-                self.tr(
-                    "Could not save this note. The original tab was kept.",
-                    "Kunne ikke lagre notatet. Den opprinnelige fanen ble beholdt.",
-                ),
+                self.tr("Save failed; tab kept.", "Lagring feilet; fane beholdt."),
                 cx,
             );
             return None;
@@ -2140,8 +2137,8 @@ impl Workspace {
         else {
             self.note_status(
                 self.tr(
-                    "The file is unavailable. The original tab was kept.",
-                    "Filen er utilgjengelig. Den opprinnelige fanen ble beholdt.",
+                    "File unavailable; tab kept.",
+                    "Fil utilgjengelig; fane beholdt.",
                 ),
                 cx,
             );
@@ -9812,13 +9809,16 @@ impl Workspace {
         let banner = h_flex()
             .w_full()
             .min_h(px(36.))
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap_2()
             .px_3()
+            .py_1()
             .bg(cx.theme().warning.opacity(0.12))
             .child(
                 div()
+                    .max_w_full()
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().warning)
@@ -9829,6 +9829,8 @@ impl Workspace {
             )
             .child(
                 h_flex()
+                    .max_w_full()
+                    .flex_wrap()
                     .items_center()
                     .gap_1()
                     .child(
