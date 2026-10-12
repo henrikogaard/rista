@@ -13758,6 +13758,19 @@ impl Workspace {
                 h_flex()
                     .gap_3()
                     .items_center()
+                    .children(
+                        doc.and_then(|doc| doc.read(cx).vim_status(self.settings.language))
+                            .map(|status| {
+                                div()
+                                    .text_xs()
+                                    .flex_shrink_0()
+                                    .max_w(px(220.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(status)
+                            }),
+                    )
                     .child(
                         div()
                             .text_xs()

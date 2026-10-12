@@ -52,6 +52,7 @@ mod theme;
 mod updater;
 mod vault;
 mod vault_settings_import;
+mod vim;
 mod windows;
 
 use crate::actions::*;

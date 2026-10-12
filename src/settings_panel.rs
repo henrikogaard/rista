@@ -1412,6 +1412,16 @@ impl Render for SettingsView {
                                 this.update_setting(cx, |s| s.soft_wrap = checked, window);
                             })),
                     ))
+                    .child(Self::row(
+                        cx,
+                        settings.language.text("Vim mode", "Vim-modus"),
+                        Switch::new("vim-mode")
+                            .checked(settings.vim_mode)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                let checked = *checked;
+                                this.update_setting(cx, |s| s.vim_mode = checked, window);
+                            })),
+                    ))
                     .child(Self::row(cx, settings.language.text("Show non-Markdown files", "Vis andre filer enn Markdown"),
                         Switch::new("show-other-files")
                             .checked(settings.show_other_files)
