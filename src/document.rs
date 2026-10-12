@@ -60,6 +60,7 @@ pub struct Document {
     pub pdf_embeds: preview::PdfEmbedViews,
     pub(crate) image_preview: crate::image_resize::ImagePreview,
     pub preview: Entity<TextViewState>,
+    pub(crate) preview_focus: FocusHandle,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
     pub conflict: bool,
@@ -247,6 +248,7 @@ impl Document {
                 image_spans,
             ),
             preview,
+            preview_focus: cx.focus_handle(),
             dirty: false,
             conflict: false,
             disk_bytes,

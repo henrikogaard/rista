@@ -137,8 +137,8 @@ impl ResizeImage {
                 .workspace
                 .update(cx, |workspace, cx| workspace.note_status(message, cx));
         }
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(document) = self.document.upgrade() {
+            document.read(cx).preview_focus.clone().focus(window, cx);
         }
         cx.notify();
     }

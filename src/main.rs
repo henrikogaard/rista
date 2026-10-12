@@ -155,6 +155,24 @@ fn apply_ui_settings(settings: &settings::Settings, cx: &mut App) {
 
 pub(crate) fn internal_keymap() -> Vec<KeyBinding> {
     vec![
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-z"
+            } else {
+                "ctrl-z"
+            },
+            input::Undo,
+            Some("RistaPreview"),
+        ),
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-shift-z"
+            } else {
+                "ctrl-y"
+            },
+            input::Redo,
+            Some("RistaPreview"),
+        ),
         // Auto-pairs — "RistaEditor" scopes them to the document
         // editor so search/dialog inputs still type the plain characters.
         KeyBinding::new("(", PairInsert { pair: "()" }, Some("RistaEditor")),
