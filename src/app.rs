@@ -6194,47 +6194,33 @@ impl Workspace {
                 ));
             }
         }
-        let affected_paths = additional_changes
+        let buffer_changes = additional_changes
             .iter()
-            .map(|(path, _, _)| path.clone())
-            .collect::<std::collections::HashSet<_>>();
-        if self.docs.iter().any(|open| {
-            let path = open
-                .entity
-                .read(cx)
-                .path
-                .canonicalize()
-                .unwrap_or_else(|_| open.entity.read(cx).path.clone());
-            affected_paths.contains(&path)
-        }) {
+            .filter_map(|(path, before, after)| {
+                Some((path.clone(), before.clone()?, after.clone()?))
+            })
+            .collect::<Vec<_>>();
+        if self.composer_change_conflicts(&buffer_changes, cx) {
             self.note_status(
                 self.tr(
-                    "A linked note that needs updating is open in another tab; close it before extracting.",
-                    "Et lenket notat som må oppdateres er åpent i en annen fane; lukk det før uttrekk.",
+                    "A related note changed while preparing the extraction.",
+                    "Et beslektet notat ble endret under klargjøring av uttrekket.",
                 ),
                 cx,
             );
             return false;
         }
         for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
-            let open = peer.window.update(cx, |_, _window, cx| {
+            let conflict = peer.window.update(cx, |_, _window, cx| {
                 peer.workspace.update(cx, |workspace, cx| {
-                    workspace.docs.iter().any(|open| {
-                        let path = open
-                            .entity
-                            .read(cx)
-                            .path
-                            .canonicalize()
-                            .unwrap_or_else(|_| open.entity.read(cx).path.clone());
-                        affected_paths.contains(&path)
-                    })
+                    workspace.composer_change_conflicts(&buffer_changes, cx)
                 })
             });
-            if !matches!(open, Ok(Ok(false))) {
+            if !matches!(conflict, Ok(Ok(false))) {
                 self.note_status(
                     self.tr(
-                        "A linked note that needs updating is open in another window; close it before extracting.",
-                        "Et lenket notat som må oppdateres er åpent i et annet vindu; lukk det før uttrekk.",
+                        "A related note is open in another window and cannot be synchronized safely.",
+                        "Et beslektet notat er åpent i et annet vindu og kan ikke synkroniseres trygt.",
                     ),
                     cx,
                 );
@@ -6291,6 +6277,15 @@ impl Workspace {
                         crate::document::ComposerPathReferenceDelta::default(),
                     );
                 }
+            });
+        }
+        self.apply_composer_changes(&buffer_changes, window, cx);
+        for peer in peers.iter().filter(|peer| peer.id != self.window_id) {
+            let _ = peer.window.update(cx, |_, window, cx| {
+                peer.workspace.update(cx, |workspace, cx| {
+                    workspace.apply_composer_changes(&buffer_changes, window, cx);
+                    workspace.vault.update(cx, |vault, cx| vault.refresh(cx));
+                })
             });
         }
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
