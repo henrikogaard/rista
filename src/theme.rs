@@ -491,6 +491,31 @@ pub fn apply(settings: &crate::settings::Settings, cx: &mut App) {
     let catalog = cx.global::<ThemeCatalog>();
     let dark = selected_theme(catalog, &settings.dark_theme, ThemeMode::Dark);
     let light = selected_theme(catalog, &settings.light_theme, ThemeMode::Light);
+    let style_catalog = cx
+        .try_global::<crate::style_snippets::StyleSnippetCatalog>()
+        .map(|catalog| catalog.snapshot.clone());
+    let dark = style_catalog
+        .as_deref()
+        .map(|catalog| {
+            std::rc::Rc::new(crate::style_snippets::patch_theme(
+                dark.as_ref(),
+                catalog,
+                &settings.enabled_style_snippets,
+                true,
+            ))
+        })
+        .unwrap_or(dark);
+    let light = style_catalog
+        .as_deref()
+        .map(|catalog| {
+            std::rc::Rc::new(crate::style_snippets::patch_theme(
+                light.as_ref(),
+                catalog,
+                &settings.enabled_style_snippets,
+                false,
+            ))
+        })
+        .unwrap_or(light);
     Theme::update(cx, |theme| {
         theme.dark_theme = dark;
         theme.light_theme = light;

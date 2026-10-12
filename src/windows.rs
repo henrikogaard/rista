@@ -1,10 +1,11 @@
 use crate::app::Workspace;
+use crate::editor_layout::{PaneMode, TabToken};
 use crate::settings::{Settings, WindowSession};
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const MAX_RESTORED_WINDOWS: usize = 64;
 
@@ -34,6 +35,74 @@ pub(crate) struct WindowRecord {
     pub(crate) id: u64,
     pub(crate) window: AnyWindowHandle,
     pub(crate) workspace: WeakEntity<Workspace>,
+}
+
+pub(crate) struct TabWindowMove {
+    pub(crate) token: TabToken,
+    pub(crate) path: PathBuf,
+    pub(crate) text: String,
+    pub(crate) cursor: usize,
+    pub(crate) pinned: bool,
+    pub(crate) mode: PaneMode,
+}
+
+impl TabWindowMove {
+    pub(crate) fn matches(&self, path: &std::path::Path, text: &str, conflict: bool) -> bool {
+        !conflict && path == self.path && text == self.text
+    }
+}
+
+pub(crate) fn move_active_document_to_new_window(cx: &mut App) {
+    if let Some(record) = cx.global::<WindowManager>().active() {
+        move_tab_to_new_window(record.id, None, cx);
+    }
+}
+
+pub(crate) fn move_tab_to_new_window(id: u64, token: Option<TabToken>, cx: &mut App) {
+    let Some(source) = cx
+        .global::<WindowManager>()
+        .records
+        .iter()
+        .find(|record| record.id == id)
+        .cloned()
+    else {
+        return;
+    };
+    let snapshot = source.window.update(cx, |_, window, cx| {
+        source.workspace.update(cx, |workspace, cx| {
+            workspace.prepare_tab_window_move(token, window, cx)
+        })
+    });
+    let Ok(Ok(Some(snapshot))) = snapshot else {
+        return;
+    };
+    // The source remains mounted until the new window has loaded matching bytes.
+    let Some(destination) =
+        open_new_window_from_source(vec![snapshot.path.clone()], Some(source.clone()), cx)
+    else {
+        return;
+    };
+    let accepted = destination.window.update(cx, |_, window, cx| {
+        destination.workspace.update(cx, |workspace, cx| {
+            workspace.accept_tab_window_move(&snapshot, window, cx)
+        })
+    });
+    let _ = source.window.update(cx, |_, window, cx| {
+        let _ = source.workspace.update(cx, |workspace, cx| {
+            if matches!(accepted, Ok(Ok(true)))
+                && workspace.finish_tab_window_move(&snapshot, window, cx)
+            {
+                return;
+            }
+            workspace.note_status(
+                workspace.tr("Move failed; tab kept.", "Flytting feilet; fane beholdt."),
+                cx,
+            );
+        });
+    });
+    let _ = destination
+        .window
+        .update(cx, |_, window, _cx| window.activate_window());
 }
 
 pub(crate) struct WindowManager {
@@ -169,6 +238,329 @@ pub(crate) fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
     }
 }
 
+pub(crate) fn open_paths_checked(
+    paths: Vec<PathBuf>,
+    cx: &mut App,
+) -> Result<(), crate::cli::CliError> {
+    if paths.is_empty() {
+        open_paths(paths, cx);
+        return Ok(());
+    }
+    let record = {
+        let manager = cx.global::<WindowManager>();
+        manager.active().or_else(|| manager.records.last().cloned())
+    };
+    let Some(record) = record else {
+        let mut valid = Vec::new();
+        let mut first_error = None;
+        for path in paths {
+            match crate::cli::validate_open_path(&path) {
+                Ok(path) => valid.push(path),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        if !valid.is_empty() {
+            open_paths(valid, cx);
+        }
+        return first_error.map_or(Ok(()), Err);
+    };
+    let mut first_error = None;
+    for path in paths {
+        let result = record.window.update(cx, |_, window, cx| {
+            record.workspace.update(cx, |workspace, cx| {
+                workspace.cli_open_path(path, window, cx)
+            })
+        });
+        match result {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                first_error.get_or_insert(error);
+            }
+            _ => {
+                first_error.get_or_insert_with(cli_window_unavailable);
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        record
+            .window
+            .update(cx, |_, window, _| window.activate_window())
+            .map_err(|_| cli_window_unavailable())
+    }
+}
+
+pub(crate) fn open_cli_vault(
+    vault: &Path,
+    note: Option<&Path>,
+    cx: &mut App,
+) -> Result<(), crate::cli::CliError> {
+    let (root, note) = crate::cli::resolve_open_target(vault, note)?;
+    let record = cli_vault_record(&root, cx)?;
+    let opened = record.window.update(cx, |_, window, cx| {
+        record.workspace.update(cx, |workspace, cx| {
+            if let Some(note) = note {
+                workspace.cli_open_path(note, window, cx)?;
+            }
+            window.activate_window();
+            Ok(())
+        })
+    });
+    match opened {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(error),
+        Ok(Err(_)) | Err(_) => Err(cli_window_unavailable()),
+    }
+}
+
+pub(crate) fn open_cli_search(
+    vault: &Path,
+    query: &str,
+    cx: &mut App,
+) -> Result<(), crate::cli::CliError> {
+    let root = crate::cli::canonical_vault(vault)?;
+    let record = cli_vault_record(&root, cx)?;
+    let Some(workspace) = record.workspace.upgrade() else {
+        return Err(cli_window_unavailable());
+    };
+    let query = query.to_owned();
+    if record
+        .window
+        .update(cx, |_, window, cx| {
+            crate::search::open_project_search_for(workspace.clone(), Some(&query), window, cx);
+            window.activate_window();
+        })
+        .is_ok()
+    {
+        Ok(())
+    } else {
+        Err(cli_window_unavailable())
+    }
+}
+
+pub(crate) fn show_cli_results(
+    vault: Option<&Path>,
+    title: String,
+    lines: Vec<String>,
+    cx: &mut App,
+) -> Result<(), crate::cli::CliError> {
+    let root = match vault {
+        Some(vault) => crate::cli::canonical_vault(vault)?,
+        None => crate::cli::canonical_vault(Path::new("."))?,
+    };
+    let record = cli_vault_record(&root, cx)?;
+    let shown = record.window.update(cx, |_, window, cx| {
+        let result = record.workspace.update(cx, |workspace, cx| {
+            workspace.show_cli_results(title, lines, window, cx);
+        });
+        result.is_ok()
+    });
+    if matches!(shown, Ok(true)) {
+        Ok(())
+    } else {
+        Err(cli_window_unavailable())
+    }
+}
+
+pub(crate) fn show_cli_error(error: &crate::cli::CliError, cx: &mut App) {
+    let (language, record) = {
+        let manager = cx.global::<WindowManager>();
+        (
+            manager.settings.language,
+            manager.active().or_else(|| manager.records.last().cloned()),
+        )
+    };
+    if record.is_none() {
+        restore_startup(cx);
+    }
+    let record = record.or_else(|| {
+        let manager = cx.global::<WindowManager>();
+        manager.active().or_else(|| manager.records.last().cloned())
+    });
+    if let Some(record) = record {
+        let message = error.message(language).to_owned();
+        let _ = record.window.update(cx, |_, _window, cx| {
+            let _ = record
+                .workspace
+                .update(cx, |workspace, cx| workspace.note_status(message, cx));
+        });
+    } else {
+        eprintln!("{}", error.message(language));
+    }
+}
+
+pub(crate) fn confirm_cli_write(
+    request: crate::cli::CliRequest,
+    cx: &mut App,
+) -> Result<(), crate::cli::CliError> {
+    let settings = cx.global::<WindowManager>().settings.clone();
+    let now = chrono::Local::now().naive_local();
+    let (root, destination) = crate::cli::write_destination(&request.command, &settings, now)?;
+    let record = cli_vault_record(&root, cx)?;
+    let opened = record.window.update(cx, |_, window, cx| {
+        record.workspace.update(cx, |workspace, cx| {
+            workspace.confirm_cli_write(request, settings, now, destination, window, cx);
+        })
+    });
+    if matches!(opened, Ok(Ok(()))) {
+        Ok(())
+    } else {
+        Err(cli_window_unavailable())
+    }
+}
+
+pub(crate) fn execute_cli_write(
+    request: crate::cli::CliRequest,
+    cx: &mut App,
+) -> Result<Vec<String>, crate::cli::CliError> {
+    let settings = cx.global::<WindowManager>().settings.clone();
+    let now = chrono::Local::now().naive_local();
+    execute_cli_write_with_settings(request, settings, now, cx)
+}
+
+fn execute_cli_write_with_settings(
+    request: crate::cli::CliRequest,
+    settings: Settings,
+    now: chrono::NaiveDateTime,
+    cx: &mut App,
+) -> Result<Vec<String>, crate::cli::CliError> {
+    let (root, destination) = crate::cli::write_destination(&request.command, &settings, now)?;
+    let records = cx.global::<WindowManager>().records.clone();
+    let mut open = false;
+    for record in &records {
+        let guarded = record.workspace.update(cx, |workspace, cx| {
+            workspace.cli_guard_destination(&destination, cx)
+        });
+        match guarded {
+            Ok(Ok(found)) => open |= found,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(cli_window_unavailable()),
+        }
+    }
+
+    if let crate::cli::Command::Append {
+        text: Some(text), ..
+    } = &request.command
+    {
+        if open {
+            for record in &records {
+                let appended = record.window.update(cx, |_, window, cx| {
+                    record.workspace.update(cx, |workspace, cx| {
+                        workspace.cli_append_open_document(&root, &destination, text, window, cx)
+                    })
+                });
+                match appended {
+                    Ok(Ok(Ok(true))) => {
+                        for peer in &records {
+                            let _ = peer.window.update(cx, |_, window, cx| {
+                                let _ = peer.workspace.update(cx, |workspace, cx| {
+                                    workspace.cli_refresh_open_document(&destination, window, cx);
+                                });
+                            });
+                        }
+                        refresh_cli_vaults(&records, &root, cx);
+                        if request.origin == crate::cli::RequestOrigin::Url {
+                            focus_cli_vault(&records, &root, cx);
+                        }
+                        return Ok(vec![destination.display().to_string()]);
+                    }
+                    Ok(Ok(Ok(false))) => {}
+                    Ok(Ok(Err(error))) => return Err(error),
+                    _ => return Err(cli_window_unavailable()),
+                }
+            }
+        }
+    }
+    if matches!(
+        &request.command,
+        crate::cli::Command::Append { text: None, .. }
+    ) {
+        return Err(crate::cli::CliError::new(
+            "Append text was not provided to the running instance",
+            "Teksten som skal legges til ble ikke sendt til appen",
+        ));
+    }
+    if open && matches!(&request.command, crate::cli::Command::New { .. }) {
+        return Err(crate::cli::CliError::new(
+            "The new-note destination is already open in Rísta",
+            "Målet for det nye notatet er allerede åpent i Rísta",
+        ));
+    }
+    let path = crate::cli::execute_write(&request.command, &settings, now, &mut std::io::empty())?;
+    refresh_cli_vaults(&records, &root, cx);
+    if request.origin == crate::cli::RequestOrigin::Url {
+        focus_cli_vault(&records, &root, cx);
+    }
+    Ok(vec![path.display().to_string()])
+}
+
+pub(crate) fn execute_cli_write_confirmed(
+    request: crate::cli::CliRequest,
+    frozen_destination: PathBuf,
+    settings: Settings,
+    now: chrono::NaiveDateTime,
+    cx: &mut App,
+) -> Result<Vec<String>, crate::cli::CliError> {
+    let (_, destination) = crate::cli::write_destination(&request.command, &settings, now)?;
+    if destination != frozen_destination {
+        return Err(crate::cli::CliError::new(
+            "The destination changed while confirmation was open; request the action again",
+            "Målet ble endret mens bekreftelsen var åpen; be om handlingen på nytt",
+        ));
+    }
+    execute_cli_write_with_settings(request, settings, now, cx)
+}
+
+fn focus_cli_vault(records: &[WindowRecord], root: &Path, cx: &mut App) {
+    for record in records {
+        let _ = record.window.update(cx, |_, window, cx| {
+            let _ = record.workspace.update(cx, |workspace, cx| {
+                if workspace.cli_is_showing_vault(root, cx) {
+                    workspace.cli_focus_after_mount(window, cx);
+                }
+            });
+        });
+    }
+}
+
+fn cli_vault_record(root: &Path, cx: &mut App) -> Result<WindowRecord, crate::cli::CliError> {
+    let find = |cx: &mut App| {
+        let records = cx.global::<WindowManager>().records.clone();
+        records
+            .iter()
+            .find(|record| {
+                record
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.cli_is_showing_vault(root, cx))
+                    .unwrap_or(false)
+            })
+            .cloned()
+    };
+    if let Some(record) = find(cx) {
+        return Ok(record);
+    }
+    open_workspace(vec![root.to_path_buf()], false, cx);
+    find(cx).ok_or_else(cli_window_unavailable)
+}
+
+fn refresh_cli_vaults(records: &[WindowRecord], root: &Path, cx: &mut App) {
+    for record in records {
+        let _ = record.workspace.update(cx, |workspace, cx| {
+            workspace.cli_refresh_vault(root, cx);
+        });
+    }
+}
+
+fn cli_window_unavailable() -> crate::cli::CliError {
+    crate::cli::CliError::new(
+        "The requested Rísta window is unavailable",
+        "Det forespurte Rísta-vinduet er ikke tilgjengelig",
+    )
+}
+
 fn prepare_explicit_startup(settings: &mut Settings) {
     let view_mode = settings.view_mode;
     settings.window_sessions.clear();
@@ -195,7 +587,15 @@ pub(crate) fn open_workspace(initial_paths: Vec<PathBuf>, restore_session: bool,
     create_workspace(id, session, initial_paths, restore_session, reserved, cx);
 }
 
-pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
+pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) -> Option<WindowRecord> {
+    open_new_window_from_source(paths, None, cx)
+}
+
+fn open_new_window_from_source(
+    paths: Vec<PathBuf>,
+    source: Option<WindowRecord>,
+    cx: &mut App,
+) -> Option<WindowRecord> {
     if let Some(path) = paths.first() {
         let path = path.canonicalize().unwrap_or_else(|_| path.clone());
         let records = cx.global::<WindowManager>().records.clone();
@@ -218,7 +618,7 @@ pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
                         );
                     });
                 });
-                return;
+                return None;
             }
         }
     }
@@ -227,10 +627,11 @@ pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
         &mut cx.global_mut::<WindowManager>().settings,
         has_live_windows,
     );
-    let active_record = cx
-        .global::<WindowManager>()
-        .active()
-        .or_else(|| cx.global::<WindowManager>().records.last().cloned());
+    let active_record = source.or_else(|| {
+        cx.global::<WindowManager>()
+            .active()
+            .or_else(|| cx.global::<WindowManager>().records.last().cloned())
+    });
     let active_session = active_record.and_then(|record| {
         record
             .workspace
@@ -241,7 +642,7 @@ pub(crate) fn open_new_window(paths: Vec<PathBuf>, cx: &mut App) {
     });
     let id = cx.global_mut::<WindowManager>().reserve_id();
     let session = active_session.map(|session| prepare_new_window_session(session, &paths));
-    create_workspace(id, session, paths, false, true, cx);
+    create_workspace(id, session, paths, false, true, cx)
 }
 
 fn prepare_new_window_session(mut session: WindowSession, paths: &[PathBuf]) -> WindowSession {
@@ -348,7 +749,7 @@ fn create_workspace(
     restore_session: bool,
     reserved: bool,
     cx: &mut App,
-) {
+) -> Option<WindowRecord> {
     let initial_geometry = session
         .as_ref()
         .and_then(|session| session.geometry.clone());
@@ -438,7 +839,7 @@ fn create_workspace(
                 );
             });
         }
-        return;
+        return None;
     };
     let initial_session = workspace.update(cx, |workspace, _cx| {
         WindowSession::from_settings(id, workspace.settings())
@@ -467,6 +868,11 @@ fn create_workspace(
         }
     });
     cx.activate(true);
+    Some(WindowRecord {
+        id,
+        window,
+        workspace: workspace.downgrade(),
+    })
 }
 
 pub(crate) fn save_geometry(
@@ -669,8 +1075,7 @@ pub(crate) fn publish(
     }
     let (settings, shared_settings, changed) = {
         let manager = cx.global::<WindowManager>();
-        let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
-        let mut merged = merged;
+        let (mut merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
         let mut session = WindowSession::from_settings(id, current);
         session.geometry = manager.session(id).and_then(|session| session.geometry);
         update_session(&mut merged, session);
@@ -687,6 +1092,50 @@ pub(crate) fn publish(
     }
     settings.save();
     settings
+}
+
+pub(crate) fn publish_checked(
+    id: u64,
+    baseline: &Settings,
+    current: &Settings,
+    cx: &mut Context<Workspace>,
+) -> std::io::Result<Settings> {
+    let manager = cx.global::<WindowManager>();
+    if manager.restoring || manager.quitting {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "workspace lifecycle transition in progress",
+        ));
+    }
+    let (settings, shared_settings, changed) = {
+        let manager = cx.global::<WindowManager>();
+        let (merged, changed) = merge_shared_settings(baseline, current, &manager.settings);
+        let mut merged = merged;
+        let mut session = WindowSession::from_settings(id, current);
+        session.geometry = manager.session(id).and_then(|session| session.geometry);
+        update_session(&mut merged, session);
+        sync_compatibility_facade(&mut merged);
+        (merged.clone(), merged, changed)
+    };
+    settings.save_checked()?;
+    cx.update_global::<WindowManager, _>(|manager, _cx| {
+        manager.settings = settings.clone();
+    });
+    if changed {
+        cx.update_global::<SharedPreferences, _>(|shared, _cx| {
+            shared.settings = shared_settings;
+        });
+    }
+    Ok(with_caller_facade(settings, current))
+}
+
+fn with_caller_facade(settings: Settings, current: &Settings) -> Settings {
+    let sessions = settings.window_sessions.clone();
+    let active_window_id = settings.active_window_id;
+    let mut local = with_local_settings(settings, current);
+    local.window_sessions = sessions;
+    local.active_window_id = active_window_id;
+    local
 }
 
 fn next_available_id(start: u64, sessions: &[WindowSession], records: &[WindowRecord]) -> u64 {
@@ -1222,6 +1671,22 @@ mod tests {
     }
 
     #[test]
+    fn window_move_requires_matching_path_text_and_no_conflict() {
+        let snapshot = super::TabWindowMove {
+            token: Default::default(),
+            path: PathBuf::from("/vault/Ø.md"),
+            text: "# Hei 🌊\n".into(),
+            cursor: 2,
+            pinned: true,
+            mode: crate::editor_layout::PaneMode::Source,
+        };
+        assert!(snapshot.matches(&snapshot.path, &snapshot.text, false));
+        assert!(!snapshot.matches(&PathBuf::from("/vault/other.md"), &snapshot.text, false));
+        assert!(!snapshot.matches(&snapshot.path, "# Hei\n", false));
+        assert!(!snapshot.matches(&snapshot.path, &snapshot.text, true));
+    }
+
+    #[test]
     fn new_window_inherits_vault_but_never_inherits_tabs_or_layout() {
         let mut settings = Settings::default();
         settings.last_vault = Some(PathBuf::from("/vault"));
@@ -1264,5 +1729,59 @@ mod tests {
         assert_eq!(restored.open_tabs, vec!["/workspace.md"]);
         assert_eq!(restored.view_mode, ViewMode::Preview);
         assert!(authoritative.open_tabs.is_empty());
+    }
+
+    #[test]
+    fn checked_publication_result_keeps_caller_local_state_and_shared_sessions() {
+        let mut window_a = Settings::default();
+        window_a.last_vault = Some(PathBuf::from("/vault/a"));
+        window_a.open_tabs = vec!["/vault/a/note.md".into()];
+        window_a.active_tab = Some("/vault/a/note.md".into());
+        let mut window_b = Settings::default();
+        window_b.last_vault = Some(PathBuf::from("/vault/b"));
+        window_b.open_tabs = vec!["/vault/b/note.md".into()];
+        window_b.active_tab = Some("/vault/b/note.md".into());
+        window_b.view_mode = ViewMode::Preview;
+
+        let mut persisted = Settings::default();
+        persisted.window_sessions = vec![
+            WindowSession::from_settings(1, &window_a),
+            WindowSession::from_settings(2, &window_b),
+        ];
+        persisted.active_window_id = Some(1);
+        sync_compatibility_facade(&mut persisted);
+        let persisted_sessions = persisted.window_sessions.clone();
+        let mut current_window_b = window_b.clone();
+        current_window_b.window_sessions = vec![persisted_sessions[1].clone()];
+        current_window_b.active_window_id = Some(2);
+
+        let caller_settings = super::with_caller_facade(persisted.clone(), &current_window_b);
+        assert_eq!(caller_settings.last_vault, Some(PathBuf::from("/vault/b")));
+        assert_eq!(caller_settings.open_tabs, vec!["/vault/b/note.md"]);
+        assert_eq!(
+            caller_settings.active_tab.as_deref(),
+            Some("/vault/b/note.md")
+        );
+        assert_eq!(caller_settings.view_mode, ViewMode::Preview);
+        assert_eq!(caller_settings.window_sessions.len(), 2);
+        assert_eq!(
+            caller_settings.window_sessions[0].last_vault,
+            Some(PathBuf::from("/vault/a"))
+        );
+        assert_eq!(
+            caller_settings.window_sessions[1].last_vault,
+            Some(PathBuf::from("/vault/b"))
+        );
+        assert_eq!(persisted.last_vault, Some(PathBuf::from("/vault/a")));
+        assert_eq!(persisted.open_tabs, vec!["/vault/a/note.md"]);
+        assert_eq!(persisted.window_sessions.len(), 2);
+        assert_eq!(
+            persisted.window_sessions[0].last_vault,
+            Some(PathBuf::from("/vault/a"))
+        );
+        assert_eq!(
+            persisted.window_sessions[1].last_vault,
+            Some(PathBuf::from("/vault/b"))
+        );
     }
 }

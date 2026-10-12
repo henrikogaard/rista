@@ -402,6 +402,20 @@ impl Workspace {
             );
         if let Some(intro) = &page.introduction {
             let view = cx.entity();
+            let catalog = cx
+                .try_global::<crate::style_snippets::StyleSnippetCatalog>()
+                .map(|catalog| catalog.snapshot.clone());
+            let style = catalog
+                .as_ref()
+                .map(|catalog| {
+                    crate::style_snippets::resolve(
+                        catalog,
+                        &self.settings.enabled_style_snippets,
+                        &[],
+                        cx.theme().is_dark(),
+                    )
+                })
+                .unwrap_or_default();
             let context = preview::PreviewCtx {
                 properties_visibility: self.settings.properties_visibility,
                 language: self.settings.language,
@@ -410,12 +424,16 @@ impl Workspace {
                 views: page.embeds.clone(),
                 query_views: page.query_embeds.clone(),
                 pdf_views: page.pdf_embeds.clone(),
+                images: None,
                 doc_path: page
                     .contents
                     .as_ref()
                     .ok()
                     .and_then(|c| c.introduction.clone()),
                 depth: 0,
+                style: std::sync::Arc::new(style),
+                catalog,
+                enabled_style_snippets: self.settings.enabled_style_snippets.clone(),
             };
             content = content.child(
                 TextView::new(intro)
