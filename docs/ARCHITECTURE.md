@@ -59,6 +59,23 @@ The destination inherits the source vault, pane mode, pin state and caret. Other
 
 The preview pipeline supports headings, local images, cover/banner content, callouts, wiki-note transclusion, base embeds, and a subset of math notation. Math support is not full TeX. `.base` views provide query/formula-backed structured collections and can relate or roll up note properties.
 
+### Image sizing
+
+Rendered images in a document's Preview or Split pane have a corner handle.
+Dragging preserves the displayed aspect ratio; hold Shift to change width and
+height independently. Double-click the handle to remove explicit dimensions;
+Escape cancels a drag. A completed drag writes one `|widthxheight` suffix in the
+original wiki embed or Markdown image label, preserving its target and title.
+For example, `![[photo.png]]` becomes `![[photo.png|320x180]]`, and
+`![Caption](photo.png)` becomes `![Caption|320x180](photo.png)`.
+
+The drag updates only the rendered preview until release, then uses one normal
+editor replacement for Undo/Redo, autosave and conflict protection. Exact source
+spans distinguish repeated images. A changed document revision or conflict
+cancels the edit instead of applying stale offsets. Generated, nested and
+transcluded previews remain read-only; source syntax can still size those
+images. Image files themselves are never modified.
+
 ## Platform and release scope
 
 The v0.1.0 package was tested on Apple Silicon macOS. Its declared minimum is macOS 13; not every OS version has been tested. Linux and Windows are intended targets, but their builds, packages, and keyboard mappings are not verified. See the [release checklist](RELEASE-CHECKLIST.md) and [test cases](TEST-CASES.md) for validation work.

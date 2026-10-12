@@ -410,6 +410,7 @@ impl Workspace {
                 views: page.embeds.clone(),
                 query_views: page.query_embeds.clone(),
                 pdf_views: page.pdf_embeds.clone(),
+                images: None,
                 doc_path: page
                     .contents
                     .as_ref()

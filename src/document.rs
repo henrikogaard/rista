@@ -170,7 +170,9 @@ pub struct Document {
     pub base_embeds: preview::EmbedViews,
     pub query_embeds: preview::QueryEmbedViews,
     pub pdf_embeds: preview::PdfEmbedViews,
+    pub(crate) image_preview: crate::image_resize::ImagePreview,
     pub preview: Entity<TextViewState>,
+    pub(crate) preview_focus: FocusHandle,
     pub dirty: bool,
     /// The file on disk changed while we hold unsaved edits.
     pub conflict: bool,
@@ -333,7 +335,7 @@ impl Document {
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let (preview_text, preview_line_offsets) = preview::preprocess_mapped(
+        let (preview_text, preview_line_offsets, image_spans) = preview::preprocess_with_images(
             &content,
             &path,
             vault_root.as_deref(),
@@ -363,7 +365,14 @@ impl Document {
             base_embeds: preview::EmbedViews::default(),
             query_embeds: preview::QueryEmbedViews::default(),
             pdf_embeds: preview::PdfEmbedViews::default(),
+            image_preview: crate::image_resize::ImagePreview::new(
+                cx.weak_entity(),
+                &content,
+                0,
+                image_spans,
+            ),
             preview,
+            preview_focus: cx.focus_handle(),
             dirty: false,
             conflict: false,
             disk_bytes,
@@ -745,7 +754,7 @@ impl Document {
             let raw = self.editor.read(cx).value();
             (raw, self.image_resolver.clone(), self.doc_dir())
         };
-        let (text, offsets) = preview::preprocess_mapped(
+        let (text, offsets, image_spans) = preview::preprocess_with_images(
             &raw,
             &self.path,
             self.vault_root.as_deref(),
@@ -753,6 +762,7 @@ impl Document {
             &preview::MarkColors::from_theme(cx.theme()),
         );
         self.preview_line_offsets = offsets;
+        self.image_preview.refresh(&raw, self.revision, image_spans);
         self.preview_blocks = preview::navigation_blocks(&text);
         self.mapped_preview = None;
         self.banner = preview::banner_spec(&raw, &doc_dir, &*resolver);
@@ -2922,6 +2932,26 @@ impl Document {
             return None;
         }
         Some((text[sel.clone()].to_string(), sel))
+    }
+
+    pub(crate) fn resize_image(
+        &mut self,
+        anchor: &crate::image_resize::ResizeAnchor,
+        size: Option<(u32, u32)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let current = self.editor.read(cx).value();
+        if self.is_read_only() || self.conflict {
+            return false;
+        }
+        let Some(replacement) = anchor.replacement(&current, self.revision, size) else {
+            return false;
+        };
+        if replacement != anchor.original {
+            self.replace_range(anchor.source.clone(), replacement, window, cx);
+        }
+        true
     }
 
     pub(crate) fn composer_source(&self, cx: &App) -> String {

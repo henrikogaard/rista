@@ -16,6 +16,7 @@ use crate::theme;
 use crate::vault::{Vault, VaultEvent, IMAGE_EXTS};
 use chrono::NaiveDate;
 use gpui_kit::assets;
+use gpui_kit::base::ElementExt;
 use gpui_kit::base::Placement;
 use gpui_kit::base::Selectable;
 use gpui_kit::base::StyledExt;
@@ -250,6 +251,8 @@ pub struct Workspace {
     standalone_fs_task: Option<Task<()>>,
     focus_fallback_pending: bool,
     pending_editor_focus: Option<(Entity<Document>, Option<usize>)>,
+    pending_preview_history: Vec<(Entity<Document>, Box<dyn Action>)>,
+    preview_history_scheduled: bool,
     hotkey_warning: Option<crate::hotkeys::HotkeyNotice>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -1444,6 +1447,8 @@ impl Workspace {
             standalone_fs_task: None,
             focus_fallback_pending: false,
             pending_editor_focus: None,
+            pending_preview_history: Vec::new(),
+            preview_history_scheduled: false,
             hotkey_warning: crate::hotkeys::warning(cx),
             focus_handle,
             settings_baseline: settings.clone(),
@@ -11783,6 +11788,9 @@ impl Workspace {
 
     fn render_preview(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
+        let undo_doc = doc.clone();
+        let redo_doc = doc.clone();
+        let images = doc.read(cx).image_preview.clone();
         let (
             state,
             banner,
@@ -11815,12 +11823,25 @@ impl Workspace {
             views: embeds,
             query_views: query_embeds,
             pdf_views: doc.read(cx).pdf_embeds.clone(),
+            images: Some(images.clone()),
             doc_path: Some(doc_path),
             depth: 0,
         };
         let theme = cx.theme();
         let footer_colors = (theme.foreground, theme.muted_foreground);
         v_flex()
+            .track_focus(&doc.read(cx).preview_focus)
+            .key_context("RistaPreview")
+            .on_action(cx.listener(move |this, _: &input::Undo, _, cx| {
+                this.pending_preview_history
+                    .push((undo_doc.clone(), Box::new(input::Undo)));
+                cx.notify();
+            }))
+            .on_action(cx.listener(move |this, _: &input::Redo, _, cx| {
+                this.pending_preview_history
+                    .push((redo_doc.clone(), Box::new(input::Redo)));
+                cx.notify();
+            }))
             .size_full()
             .overflow_hidden()
             .when_some(banner, |this, banner| this.child(render_banner(&banner)))
@@ -11902,6 +11923,14 @@ impl Workspace {
                     self.vault.read(cx).root.clone().unwrap_or_default(),
                     view.clone(),
                 ))
+            })
+            .on_prepaint(move |_, _, cx| {
+                // Inline plugins are measured at max-content, so percentages
+                // cannot constrain an image to the actual text column.
+                let width = state.read(cx).bounds().size.width;
+                if images.constrain_width(width, cx) {
+                    state.update(cx, |state, cx| state.invalidate_inline_layout(cx));
+                }
             })
     }
 
@@ -13886,6 +13915,40 @@ impl Render for Workspace {
         }
 
         let vault_open = self.vault.read(cx).is_open();
+        let preview_history_host = (self.settings.view_mode == ViewMode::Preview)
+            .then(|| {
+                self.pending_preview_history
+                    .first()
+                    .map(|(doc, _)| doc.clone())
+            })
+            .flatten()
+            .filter(|doc| self.active_doc() == Some(doc));
+        if !self.pending_preview_history.is_empty() && !self.preview_history_scheduled {
+            self.preview_history_scheduled = true;
+            let workspace = cx.weak_entity();
+            window.on_next_frame(move |window, cx| {
+                let pending = workspace
+                    .update(cx, |this, cx| {
+                        this.preview_history_scheduled = false;
+                        cx.notify();
+                        std::mem::take(&mut this.pending_preview_history)
+                    })
+                    .unwrap_or_default();
+                for (document, action) in pending {
+                    let valid = workspace
+                        .read_with(cx, |workspace, _| {
+                            workspace.active_doc() == Some(&document)
+                                && workspace.folder.is_none()
+                                && workspace.graph.is_none()
+                        })
+                        .unwrap_or(false);
+                    if valid && !window.has_active_dialog(cx) {
+                        let focus = document.read(cx).editor.read(cx).focus_handle(cx);
+                        focus.dispatch_action(action.as_ref(), window, cx);
+                    }
+                }
+            });
+        }
         let has_workspace = vault_open || !self.docs.is_empty();
         let sidebar_visible = vault_open && !self.settings.sidebar_collapsed && !self.zen;
         let dock_visible = !self.zen
@@ -13897,6 +13960,20 @@ impl Render for Workspace {
         let root = v_flex()
             .size_full()
             .relative()
+            // Editor history is action-only. Mount its normal handlers for one
+            // frame in Preview, without moving focus or showing a source pane.
+            .when_some(preview_history_host, |root, document| {
+                root.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h_0()
+                        .overflow_hidden()
+                        .child(self.editor_container(&document, cx)),
+                )
+            })
             .bg(background)
             .key_context("Rista")
             .track_focus(&self.focus_handle)
