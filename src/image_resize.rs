@@ -137,24 +137,33 @@ impl ResizeImage {
                 .workspace
                 .update(cx, |workspace, cx| workspace.note_status(message, cx));
         }
+        self.focus_preview(window, cx);
+        cx.notify();
+    }
+
+    fn focus_preview(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(document) = self.document.upgrade() {
             document.read(cx).preview_focus.clone().focus(window, cx);
         }
-        cx.notify();
     }
 
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(drag) = self.drag.take() {
             if drag.moved {
                 self.commit(self.local_size, window, cx);
+            } else {
+                self.focus_preview(window, cx);
             }
             cx.notify();
         }
     }
 
-    fn cancel(&mut self, cx: &mut Context<Self>) {
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.drag = None;
         self.local_size = None;
+        if self.focus.is_focused(window) {
+            self.focus_preview(window, cx);
+        }
         cx.notify();
     }
 }
@@ -186,9 +195,9 @@ impl Render for ResizeImage {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.finish(window, cx)),
             )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.drag.is_some() {
-                    this.cancel(cx);
+                    this.cancel(window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -210,7 +219,7 @@ impl Render for ResizeImage {
                     },
                     move |_, _, window, _| {
                         let view = view.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                             if phase != DispatchPhase::Capture {
                                 return;
                             }
@@ -219,7 +228,7 @@ impl Render for ResizeImage {
                                     return;
                                 };
                                 if !event.dragging() {
-                                    this.cancel(cx);
+                                    this.cancel(window, cx);
                                     return;
                                 }
                                 let dx = f32::from(event.position.x - drag.origin.x);
