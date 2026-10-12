@@ -1282,6 +1282,36 @@ impl Render for SettingsView {
                         "Tab size",
                         Select::new(&self.tab_size_select).w(px(90.)),
                     ))
+                    .child(
+                        v_flex().w_full().gap_1()
+                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                            .child(settings.language.text("After extracting text", "Etter uttrekk av tekst")))
+                        .child(TabBar::new("extract-behavior")
+                            .segmented()
+                            .selected_index(match settings.extract_behavior {
+                                crate::note_composer::ExtractBehavior::Link => 0,
+                                crate::note_composer::ExtractBehavior::Embed => 1,
+                                crate::note_composer::ExtractBehavior::Nothing => 2,
+                            })
+                            .children([
+                                Tab::new().label(settings.language.text("Link", "Lenke")),
+                                Tab::new().label(settings.language.text("Embed", "Bygg inn")),
+                                Tab::new().label(settings.language.text("Nothing", "Ingenting")),
+                            ])
+                            .on_click(cx.listener(|this, &index, window, cx| {
+                                this.update_setting(
+                                    cx,
+                                    |settings| {
+                                        settings.extract_behavior = match index {
+                                            1 => crate::note_composer::ExtractBehavior::Embed,
+                                            2 => crate::note_composer::ExtractBehavior::Nothing,
+                                            _ => crate::note_composer::ExtractBehavior::Link,
+                                        }
+                                    },
+                                    window,
+                                );
+                            })),
+                    ))
                     .child(Self::row(
                         cx,
                         settings.language.text("Spell checking", "Stavekontroll"),

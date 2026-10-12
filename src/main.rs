@@ -25,6 +25,7 @@ mod hotkeys;
 mod http;
 mod math;
 mod mermaid;
+mod note_composer;
 mod note_icons;
 mod pdf;
 mod pdf_backend;
