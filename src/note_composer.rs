@@ -45,6 +45,7 @@ pub enum MergeOrder {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposeError {
     InvalidMarkdown,
+    InvalidCanvas,
     InvalidFrontmatter,
     PropertyConflict,
     AnchorConflict,
@@ -64,6 +65,8 @@ impl ComposeError {
         match (self, norwegian) {
             (Self::InvalidMarkdown, false) => "The note contains invalid Markdown.",
             (Self::InvalidMarkdown, true) => "Notatet inneholder ugyldig Markdown.",
+            (Self::InvalidCanvas, false) => "The board contains invalid Canvas data.",
+            (Self::InvalidCanvas, true) => "Tavlen inneholder ugyldige Canvas-data.",
             (Self::InvalidFrontmatter, false) => "The note properties are invalid.",
             (Self::InvalidFrontmatter, true) => "Notatets egenskaper er ugyldige.",
             (Self::PropertyConflict, false) => "The notes contain conflicting properties.",
@@ -103,6 +106,11 @@ impl ComposeError {
 pub const MAX_NOTE_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const COMPOSER_DIRECTORY: &str = ".rista/composer";
+
+pub(crate) fn is_composer_reference_document(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "md" || extension == "canvas")
+}
 
 #[derive(Clone)]
 struct TransactionChange {
@@ -1321,5 +1329,51 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"target-after");
         assert_eq!(fs::read(&backlink).unwrap(), b"external");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn canvas_composer_transaction_restores_exact_bytes_and_rejects_external_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "rista-compose-canvas-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let board = root.join("board.canvas");
+        let before = b"{\n  \"nodes\" : [], \"edges\" : []\n}\n";
+        let after = b"{ \"nodes\":[], \"edges\":[] }\n";
+        fs::write(&board, before).unwrap();
+        let changes = vec![(board.clone(), Some(before.to_vec()), Some(after.to_vec()))];
+        merge_transaction_changes(&root, &changes).unwrap();
+        assert_eq!(fs::read(&board).unwrap(), after);
+
+        let undo = changes
+            .iter()
+            .map(|(path, before, after)| (path.clone(), after.clone(), before.clone()))
+            .collect::<Vec<_>>();
+        merge_transaction_changes(&root, &undo).unwrap();
+        assert_eq!(fs::read(&board).unwrap(), before);
+        merge_transaction_changes(&root, &changes).unwrap();
+        assert_eq!(fs::read(&board).unwrap(), after);
+
+        let external = b"{\"nodes\":[],\"edges\":[],\"external\":true}";
+        fs::write(&board, external).unwrap();
+        assert_eq!(
+            merge_transaction_changes(&root, &undo),
+            Err(ComposeError::ExternalChange)
+        );
+        assert_eq!(fs::read(&board).unwrap(), external);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composer_reference_documents_include_canvas_but_exclude_other_files() {
+        assert!(is_composer_reference_document(Path::new("note.md")));
+        assert!(is_composer_reference_document(Path::new("board.canvas")));
+        assert!(!is_composer_reference_document(Path::new("view.base")));
+        assert!(!is_composer_reference_document(Path::new("image.png")));
     }
 }

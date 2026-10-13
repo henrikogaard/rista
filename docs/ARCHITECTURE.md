@@ -9,6 +9,7 @@ Rísta v0.1.0 is a Rust 2021 single-binary desktop application built with GPUI t
 | `src/main.rs` | Bootstraps the app, themes, menus, key bindings, application-level file URLs, and workspace recreation after the last window closes. |
 | `src/app.rs` | Workspace, tabs, vault UI, dialogs, and application interactions. |
 | `src/document.rs` | Editor state, dirty baseline, save/conflict handling, autosave, and preview synchronization. |
+| `src/canvas.rs`, `src/canvas_view.rs`, `src/canvas_history.rs` | Loss-preserving JSON Canvas model, native board interaction, and per-document Canvas history. |
 | `src/vault.rs` | Vault indexing and the 250 ms filesystem watcher; note and image indexes include cached wikilink aliases. |
 | `src/folder.rs`, `src/folder_dashboard.rs` | Direct-child filesystem snapshots, folder introductions, dashboard rendering, breadcrumbs, and right inspector. |
 | `src/extensions.rs`, `src/tools_panel.rs` | Bounded declarative JSON manifests, command registration, and per-launch process confirmation. |

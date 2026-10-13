@@ -14,6 +14,7 @@ This index covers the native Rust/GPUI application shipped as Rísta v0.1.0. The
 - [Advanced search](advanced-search.md) — query operators, scopes, and embedded query blocks.
 - [Vim mode](vim-mode.md) — the optional modal editing command subset and limitations.
 - [Command-line interface](cli.md) — local commands, URL actions, and installation.
+- [JSON Canvas](canvas.md) — native boards, supported controls, preservation, and current limitations.
 - [Folder pages](folder-pages.md) — portable dashboard metadata, layouts, pins, and filters.
 - [Vault settings import](vault-settings-import.md) — read-only preview and explicit import of compatible vault preferences.
 - [Extensions and terminal](extensions.md) — JSON API v1, local tool launchers, and process permissions.

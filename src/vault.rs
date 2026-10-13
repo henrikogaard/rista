@@ -27,7 +27,7 @@ impl EventEmitter<VaultEvent> for Vault {}
 pub struct Vault {
     pub root: Option<PathBuf>,
     pub tree: Entity<TreeState>,
-    /// Flattened list of every `.md` and `.base` file in the vault,
+    /// Flattened list of every `.md`, `.base`, and `.canvas` file in the vault,
     /// sorted.
     pub notes: Vec<PathBuf>,
     /// Image files indexed by lowercase file name — the reference editor resolves
@@ -246,7 +246,13 @@ impl Vault {
         let tpl_root = root.join(&self.templates_dir);
         let content: Vec<PathBuf> = notes
             .iter()
-            .filter(|p| !p.starts_with(&tpl_root))
+            .filter(|p| {
+                !p.starts_with(&tpl_root)
+                    && matches!(
+                        crate::file_preview::extension(p).as_str(),
+                        "md" | "markdown"
+                    )
+            })
             .cloned()
             .collect();
         self.tags = crate::properties::vault_tags(&content);
@@ -466,12 +472,29 @@ impl Vault {
     pub fn backlinks_to(&self, target: &Path) -> Vec<PathBuf> {
         let mut links = Vec::new();
         for note in &self.notes {
-            if *note == target || note.extension().and_then(|e| e.to_str()) != Some("md") {
+            if *note == target {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(note) else {
                 continue;
             };
+            if crate::canvas::is_canvas(note) {
+                let Some(canvas) = crate::canvas::CanvasDocument::parse(&text).ok() else {
+                    continue;
+                };
+                let (resolved, _) = self.canvas_outgoing_targets(
+                    &canvas.vault_file_references(),
+                    &canvas.text_link_targets(),
+                    note.parent().unwrap_or(Path::new("")),
+                );
+                if resolved.contains(&target.to_path_buf()) {
+                    links.push(note.clone());
+                }
+                continue;
+            }
+            if note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
             if local_link_targets(&text).iter().any(|(link, wiki)| {
                 *wiki && self.resolve_wikilink_from(link, note).as_deref() == Some(target)
             }) {
@@ -485,6 +508,50 @@ impl Vault {
     /// `target` — the context snippet shown beside a backlink row.
     pub fn backlink_context(&self, note: &Path, target: &Path) -> Option<String> {
         let text = std::fs::read_to_string(note).ok()?;
+        if crate::canvas::is_canvas(note) {
+            let canvas = crate::canvas::CanvasDocument::parse(&text).ok()?;
+            let from_dir = note.parent().unwrap_or(Path::new(""));
+            for node in canvas.nodes() {
+                if let Some(reference) = node["file"].as_str() {
+                    if self.root.as_deref().is_some_and(|root| {
+                        reference
+                            .split(['#', '^'])
+                            .next()
+                            .and_then(|path| crate::canvas::resolve_vault_path(root, path).ok())
+                            .as_deref()
+                            == Some(target)
+                    }) {
+                        return Some(node["title"].as_str().unwrap_or(reference).to_string());
+                    }
+                }
+                if let Some(background) = node["background"].as_str() {
+                    if self.root.as_deref().is_some_and(|root| {
+                        crate::canvas::resolve_vault_path(root, background)
+                            .ok()
+                            .as_deref()
+                            == Some(target)
+                    }) {
+                        return Some(background.to_string());
+                    }
+                }
+                if node["type"].as_str() == Some("text") {
+                    if let Some(content) = node["text"].as_str() {
+                        let (resolved, _) =
+                            self.outgoing_targets(&local_link_targets(content), from_dir);
+                        if resolved.contains(&target.to_path_buf()) {
+                            let excerpt = content
+                                .lines()
+                                .find(|line| !line.trim().is_empty())
+                                .unwrap_or(content)
+                                .trim();
+                            let excerpt = excerpt.chars().take(96).collect::<String>();
+                            return Some(excerpt);
+                        }
+                    }
+                }
+            }
+            return None;
+        }
         for line in text.lines() {
             let mut cursor = 0;
             while let Some(at) = line[cursor..].find("[[") {
@@ -612,11 +679,55 @@ impl Vault {
         (resolved, unresolved)
     }
 
+    pub(crate) fn canvas_outgoing_targets(
+        &self,
+        file_references: &[String],
+        text_targets: &[(String, bool)],
+        from_dir: &Path,
+    ) -> (Vec<PathBuf>, Vec<String>) {
+        let mut resolved = Vec::new();
+        let mut unresolved = Vec::new();
+        if let Some(root) = &self.root {
+            for reference in file_references {
+                let target = reference
+                    .split('#')
+                    .next()
+                    .unwrap_or(reference)
+                    .split('^')
+                    .next()
+                    .unwrap_or(reference);
+                match crate::canvas::resolve_vault_path(root, target) {
+                    Ok(path) if path.is_file() => {
+                        if !resolved.contains(&path) {
+                            resolved.push(path);
+                        }
+                    }
+                    _ if !unresolved.contains(reference) => unresolved.push(reference.clone()),
+                    _ => {}
+                }
+            }
+        } else {
+            unresolved.extend(file_references.iter().cloned());
+        }
+        let (text_resolved, text_unresolved) = self.outgoing_targets(text_targets, from_dir);
+        for path in text_resolved {
+            if !resolved.contains(&path) {
+                resolved.push(path);
+            }
+        }
+        for target in text_unresolved {
+            if !unresolved.contains(&target) {
+                unresolved.push(target);
+            }
+        }
+        (resolved, unresolved)
+    }
+
     /// Where a markdown link's inner `target` points: `<>`-unwrap,
     /// `%`-decode, drop `#anchor`/`?query`; relative to `from_dir`
     /// first, then the vault root. External URLs and pure anchors
     /// return `None`.
-    fn md_link_path(&self, inner: &str, from_dir: &Path) -> Option<PathBuf> {
+    pub(crate) fn md_link_path(&self, inner: &str, from_dir: &Path) -> Option<PathBuf> {
         let inner = inner.trim();
         let inner = inner
             .strip_prefix('<')
@@ -645,7 +756,7 @@ impl Vault {
     }
 
     /// Note links and attachments, including files hidden from the sidebar.
-    fn resolve_link_target(&self, target: &str) -> Option<PathBuf> {
+    pub(crate) fn resolve_link_target(&self, target: &str) -> Option<PathBuf> {
         self.resolve_wikilink(target).or_else(|| {
             let name = target
                 .split(['#', '|'])
@@ -1141,7 +1252,7 @@ fn resolve_relative_note(root: &Path, from_dir: &Path, target: &str) -> Option<P
     .then_some(candidate)
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -1652,7 +1763,7 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase());
             match ext.as_deref() {
-                Some("md") | Some("base") => files.notes.push(path),
+                Some("md") | Some("base") | Some("canvas") => files.notes.push(path),
                 _ => {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         files

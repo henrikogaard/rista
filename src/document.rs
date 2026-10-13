@@ -1,6 +1,7 @@
 //! Document: one open note — editor, preview state, autosave, disk sync.
 
 use crate::actions::{SpellCorrection, SpellIgnore, SpellLearn};
+use crate::canvas_history::CanvasHistory;
 use crate::history;
 use crate::preview;
 use crate::settings::Settings;
@@ -155,6 +156,7 @@ impl EventEmitter<DocumentEvent> for Document {}
 
 pub struct Document {
     pub path: PathBuf,
+    pub(crate) is_canvas: bool,
     /// The note's title, shared with its `/` completions so template
     /// items expand `{{title}}` — kept in step by `set_path`.
     completion_title: Rc<std::cell::RefCell<String>>,
@@ -164,6 +166,7 @@ pub struct Document {
     pub is_image: bool,
     pub file_preview: Option<crate::file_preview::Preview>,
     pub pdf: Option<Entity<crate::pdf::PdfView>>,
+    pub(crate) canvas_view: Option<Entity<crate::canvas_view::CanvasView>>,
     pub editor: Entity<EditorState>,
     /// Collapsible-callout fold state, keyed by callout source offset.
     pub callout_folds: preview::CalloutFolds,
@@ -180,7 +183,9 @@ pub struct Document {
     disk_bytes: Option<Vec<u8>>,
     reloading: bool,
     mtime: Option<SystemTime>,
-    revision: u64,
+    pub(crate) revision: u64,
+    pub(crate) content_revision: u64,
+    pub(crate) canvas_history: CanvasHistory,
     /// Vault root — history snapshots live under `<root>/.rista/`.
     pub vault_root: Option<PathBuf>,
     save_task: Option<Task<()>>,
@@ -262,6 +267,7 @@ pub(crate) struct InitialDocument {
 impl Document {
     pub(crate) fn load_initial(path: &Path) -> io::Result<InitialDocument> {
         let is_image = crate::vault::is_image_file(path);
+        let is_canvas = crate::canvas::is_canvas(path);
         let mtime = std::fs::metadata(path)
             .and_then(|meta| meta.modified())
             .ok();
@@ -271,7 +277,7 @@ impl Document {
                 "Not a regular file",
             ));
         }
-        if is_image || !crate::file_preview::is_document(path) {
+        if is_image || (!crate::file_preview::is_document(path) && !is_canvas) {
             return Ok(InitialDocument {
                 path: path.to_path_buf(),
                 content: String::new(),
@@ -316,6 +322,7 @@ impl Document {
             file_preview,
         } = initial;
 
+        let is_canvas = crate::canvas::is_canvas(&path);
         let completions_vault = vault.clone();
         let completion_title = Rc::new(std::cell::RefCell::new(note_title(&path)));
         let completions_title = completion_title.clone();
@@ -323,7 +330,7 @@ impl Document {
         let completions_path = completion_path.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
-                .language("markdown")
+                .language(if is_canvas { "json" } else { "markdown" })
                 .line_number(settings.show_line_numbers)
                 .soft_wrap(settings.soft_wrap)
                 .folding(true)
@@ -331,27 +338,35 @@ impl Document {
                     tab_size: settings.tab_size,
                     hard_tabs: false,
                 })
-                .searchable(true);
-            state.lsp_mut().completion_provider =
-                Some(Rc::new(crate::slash::VaultCompletions::new(
-                    completions_vault,
-                    completions_title,
-                    completions_path,
-                )));
+                .searchable(!is_canvas);
+            if !is_canvas {
+                state.lsp_mut().completion_provider =
+                    Some(Rc::new(crate::slash::VaultCompletions::new(
+                        completions_vault,
+                        completions_title,
+                        completions_path,
+                    )));
+            }
             state.set_value(content.clone(), window, cx);
             state
         });
 
         let doc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let (preview_text, preview_line_offsets, image_spans) = preview::preprocess_with_images(
-            &content,
-            &path,
-            vault_root.as_deref(),
-            &*image_resolver,
-            &preview::MarkColors::from_theme(cx.theme()),
-        );
+        let (preview_text, preview_line_offsets, image_spans) = if is_canvas {
+            (String::new(), Vec::new(), Vec::new())
+        } else {
+            preview::preprocess_with_images(
+                &content,
+                &path,
+                vault_root.as_deref(),
+                &*image_resolver,
+                &preview::MarkColors::from_theme(cx.theme()),
+            )
+        };
         let preview = cx.new(|cx| TextViewState::markdown(&preview_text, cx));
-        let banner = preview::banner_spec(&content, &doc_dir, &*image_resolver);
+        let banner = (!is_canvas)
+            .then(|| preview::banner_spec(&content, &doc_dir, &*image_resolver))
+            .flatten();
         let spell_checker = spellcheck::create_checker(cx);
         let pdf = (crate::file_preview::extension(&path) == "pdf").then(|| {
             cx.new(|cx| crate::pdf::PdfView::new(path.clone(), 0, settings.language, window, cx))
@@ -362,9 +377,11 @@ impl Document {
             preview_locations: Vec::new(),
             mapped_preview: None,
             preview_line_offsets,
+            is_canvas,
             is_image,
             file_preview,
             pdf,
+            canvas_view: None,
             path,
             completion_title,
             completion_path,
@@ -387,6 +404,8 @@ impl Document {
             reloading: false,
             mtime,
             revision: 0,
+            content_revision: 0,
+            canvas_history: CanvasHistory::default(),
             vault_root,
             save_task: None,
             preview_task: None,
@@ -425,7 +444,7 @@ impl Document {
             mentions_open: false,
             _subscriptions: Vec::new(),
             vim: VimState::new(),
-            vim_enabled: settings.vim_mode,
+            vim_enabled: settings.vim_mode && !is_canvas,
             vim_internal_text: None,
             vim_insert_keystroke_pending: false,
         };
@@ -570,7 +589,7 @@ impl Document {
                 });
                 // Focus mode follows the caret — arrow keys notify too.
                 // Skipping unchanged positions breaks the set→notify loop.
-                if this.focus_mode && this.focus_cursor != Some(cursor) {
+                if this.focus_mode && !this.is_canvas && this.focus_cursor != Some(cursor) {
                     this.focus_cursor = Some(cursor);
                     this.refresh_decorations(cx);
                 }
@@ -578,7 +597,9 @@ impl Document {
                     this.status_cursor = Some(cursor);
                     cx.emit(DocumentEvent::Selection);
                 }
-                this.schedule_spellcheck(cx);
+                if !this.is_canvas {
+                    this.schedule_spellcheck(cx);
+                }
             }),
             cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
                 this.refresh_decorations(cx);
@@ -589,7 +610,9 @@ impl Document {
         ];
 
         this.refresh_style(cx);
-        this.schedule_spellcheck(cx);
+        if !this.is_canvas {
+            this.schedule_spellcheck(cx);
+        }
         this
     }
 
@@ -694,6 +717,7 @@ impl Document {
     /// Point the document at a renamed/moved/saved-as file.
     pub fn set_path(&mut self, path: PathBuf) {
         *self.completion_title.borrow_mut() = note_title(&path);
+        self.is_canvas = crate::canvas::is_canvas(&path);
         *self.completion_path.borrow_mut() = path.clone();
         self.path = path;
     }
@@ -738,10 +762,13 @@ impl Document {
         }
         self.dirty = true;
         self.revision += 1;
-        self.spell_analysis = None;
-        self.spell_request_key = None;
-        self.clear_spellcheck(cx);
-        self.schedule_spellcheck(cx);
+        self.content_revision = self.content_revision.wrapping_add(1);
+        if !self.is_canvas {
+            self.spell_analysis = None;
+            self.spell_request_key = None;
+            self.clear_spellcheck(cx);
+            self.schedule_spellcheck(cx);
+        }
         let revision = self.revision;
         cx.emit(DocumentEvent::Changed);
 
@@ -961,6 +988,17 @@ impl Document {
     }
 
     fn sync_preview(&mut self, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            self.banner = None;
+            self.stats = (0, 0);
+            self.css_classes.clear();
+            self.preview_line_offsets.clear();
+            self.preview_blocks.clear();
+            self.preview_locations.clear();
+            self.mapped_preview = None;
+            self.refresh_outgoing(cx);
+            return;
+        }
         if let Ok(mut views) = self.pdf_embeds.lock() {
             views.clear();
         }
@@ -1004,7 +1042,18 @@ impl Document {
         };
         let (links, unresolved) = {
             let raw = self.editor.read(cx).value().to_string();
-            vault.read(cx).outgoing_from(&raw, &self.doc_dir())
+            if self.is_canvas {
+                match crate::canvas::CanvasDocument::parse(&raw) {
+                    Ok(canvas) => vault.read(cx).canvas_outgoing_targets(
+                        &canvas.vault_file_references(),
+                        &canvas.text_link_targets(),
+                        &self.doc_dir(),
+                    ),
+                    Err(_) => (Vec::new(), Vec::new()),
+                }
+            } else {
+                vault.read(cx).outgoing_from(&raw, &self.doc_dir())
+            }
         };
         if self.outgoing_links != links || self.outgoing_unresolved != unresolved {
             self.outgoing_links = links;
@@ -1023,6 +1072,9 @@ impl Document {
     }
 
     fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         let focus = self.focus_mode;
         let items = self.editor.update(cx, |state, cx| {
             let text = state.value().to_string();
@@ -1085,7 +1137,11 @@ impl Document {
     }
 
     fn schedule_spellcheck(&mut self, cx: &mut Context<Self>) {
-        if self.is_read_only() || !self.spell_enabled || !spellcheck::is_supported() {
+        if self.is_canvas
+            || self.is_read_only()
+            || !self.spell_enabled
+            || !spellcheck::is_supported()
+        {
             self.clear_spellcheck(cx);
             return;
         }
@@ -1324,6 +1380,9 @@ impl Document {
     /// when the file doesn't end with one). The caret lands after the
     /// inserted line; autosave persists it.
     pub fn append_line(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value();
             let len = text.len();
@@ -1346,6 +1405,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut start = 0usize;
@@ -1373,6 +1435,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut spans = Vec::new();
@@ -1403,6 +1468,9 @@ impl Document {
     /// (Advanced Tables style). Returns false when the caret isn't in
     /// a table.
     pub fn format_table(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let caret = editor.selected_range().start.min(text.len());
@@ -1522,6 +1590,12 @@ impl Document {
                 "Read-only files cannot be saved as text",
             ));
         }
+        if crate::canvas::rejects_canvas_kind_change(&self.path, &path, false) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Save As cannot convert between Canvas and text documents",
+            ));
+        }
         if same_existing_path(&self.path, &path) {
             return self.save(cx);
         }
@@ -1579,6 +1653,11 @@ impl Document {
         if self.is_read_only() {
             return;
         }
+        if self.is_canvas {
+            let current = self.editor.read(cx).value().to_string();
+            self.apply_canvas_snapshot(&current, &text, None, window, cx);
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             editor.replace_all(text, window, cx);
         });
@@ -1595,6 +1674,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let doc = editor.value().to_string();
             let (frontmatter, body) = crate::templater::merge_into(&doc, expanded);
@@ -1627,6 +1709,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         let text = self.editor.read(cx).value().to_string();
         let span = crate::properties::frontmatter_span(&text);
         self.editor.update(cx, |editor, cx| match (span, body) {
@@ -2026,6 +2111,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut start = 0usize;
@@ -2268,7 +2356,9 @@ impl Document {
         let content = String::from_utf8(bytes.clone())
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
         self.save_task.take();
+        self.canvas_history.clear();
         self.revision += 1;
+        self.content_revision = self.content_revision.wrapping_add(1);
         self.reloading = true;
         self.vim_internal_text = None;
         self.vim_insert_keystroke_pending = false;
@@ -2295,10 +2385,89 @@ impl Document {
         self.is_image || self.file_preview.is_some()
     }
 
+    pub(crate) fn enabled_style_snippets(&self) -> &[String] {
+        &self.enabled_style_snippets
+    }
+
+    pub(crate) fn disk_matches_loaded(&self) -> bool {
+        self.disk_bytes.as_deref().is_some_and(|baseline| {
+            std::fs::read(&self.path).is_ok_and(|current| current == baseline)
+        })
+    }
+
+    pub(crate) fn apply_canvas_snapshot(
+        &mut self,
+        expected_before: &str,
+        new_after: &str,
+        group: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.is_canvas || self.is_read_only() {
+            return false;
+        }
+        let current = self.editor.read(cx).value().to_string();
+        if current != expected_before {
+            self.canvas_history.clear();
+            return false;
+        }
+        if current == new_after {
+            return true;
+        }
+        self.canvas_history.record(
+            Arc::<str>::from(current.as_str()),
+            Arc::<str>::from(new_after),
+            group,
+        );
+        self.replace_canvas_source(new_after, window, cx);
+        true
+    }
+
+    pub(crate) fn undo_canvas(
+        &mut self,
+        redo: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.is_canvas || self.is_read_only() {
+            return false;
+        }
+        let current = self.editor.read(cx).value().to_string();
+        let target = if redo {
+            self.canvas_history.redo(&current)
+        } else {
+            self.canvas_history.undo(&current)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        self.replace_canvas_source(&target, window, cx);
+        true
+    }
+
+    pub(crate) fn canvas_history_state(&self) -> (bool, bool) {
+        (
+            self.canvas_history.has_undo(),
+            self.canvas_history.has_redo(),
+        )
+    }
+
+    fn replace_canvas_source(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.reloading = true;
+        self.editor.update(cx, |editor, cx| {
+            editor.set_value(text.to_string(), window, cx);
+        });
+        self.reloading = false;
+        self.on_edited(window, cx);
+    }
+
     /// Move the lines covered by the selection up or down by one line,
     /// rich (⌥↑/⌥↓). Selection is expanded to whole lines and
     /// follows the moved block.
     pub fn move_block(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2371,6 +2540,9 @@ impl Document {
     /// strips the marker, ending the list. Returns false outside
     /// lists so the default newline proceeds.
     pub fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             if !sel.is_empty() {
@@ -2476,6 +2648,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let shift = |b: usize| if b > at { b + text.len() } else { b };
@@ -2494,6 +2669,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self.is_canvas {
+            return None;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let cursor = editor.cursor().min(text.len());
@@ -2518,6 +2696,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let (range, new_text, caret) =
@@ -2537,6 +2718,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             if sel.is_empty() {
@@ -2554,6 +2738,9 @@ impl Document {
     /// label (`[sel](url)`). `url` comes from the clipboard; when it
     /// is empty the caret lands inside `()` ready to type the target.
     pub fn insert_link(&mut self, url: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2577,6 +2764,9 @@ impl Document {
     /// caret, separated by blank lines (it starts its own line when
     /// the caret is mid-line).
     pub fn insert_hr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2597,6 +2787,9 @@ impl Document {
     /// separator, one body row. The caret lands in the first header
     /// cell so a header name can be typed right away (the "Insert table").
     pub fn insert_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2618,6 +2811,9 @@ impl Document {
     /// caret after the definition marker so the text can be typed
     /// right away — the "Insert footnote".
     pub fn insert_footnote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let mut n = 1usize;
@@ -2644,6 +2840,9 @@ impl Document {
     /// `kind` word stays selected so typing replaces it (`note` →
     /// `warning`, `tip`, …).
     pub fn toggle_callout(&mut self, kind: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2719,6 +2918,9 @@ impl Document {
     /// Duplicate the line(s) covered by the selection (⌘D). The copy
     /// lands right below and the selection follows it.
     pub fn duplicate_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2754,6 +2956,9 @@ impl Document {
     /// Toggle `%%` around the selection — the ⌘/ comment. With
     /// no selection it toggles the current line's trimmed span.
     pub fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2807,6 +3012,9 @@ impl Document {
     /// the inline formatting toggle. With no selection it wraps
     /// the word under the caret; already-wrapped text unwraps.
     pub fn toggle_wrap(&mut self, marker: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let text = editor.value().to_string();
             let sel = editor.selected_range();
@@ -2866,6 +3074,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2908,6 +3119,9 @@ impl Document {
     /// "Code block" command. Unwraps when the selection already sits
     /// between a ``` pair; otherwise wraps whole lines.
     pub fn toggle_fence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -2977,6 +3191,9 @@ impl Document {
     /// `style`: `- `, `- [ ] ` or `1. `; existing markers are
     /// stripped first so list styles convert rather than nest.
     pub fn toggle_list(&mut self, style: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -3064,6 +3281,9 @@ impl Document {
     /// so `# a` → level 2 becomes `## a`; toggles off (plain text)
     /// when every non-empty line is already that level.
     pub fn toggle_heading(&mut self, level: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -3121,6 +3341,9 @@ impl Document {
     /// newline included; the caret lands on the next line (or the
     /// previous one at EOF).
     pub fn delete_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -3171,7 +3394,7 @@ impl Document {
         cx: &mut Context<Self>,
     ) -> bool {
         let current = self.editor.read(cx).value();
-        if self.is_read_only() || self.conflict {
+        if self.is_read_only() || self.conflict || self.is_canvas {
             return false;
         }
         let Some(replacement) = anchor.replacement(&current, self.revision, size) else {
@@ -3221,6 +3444,34 @@ impl Document {
         cx.notify();
     }
 
+    pub(crate) fn apply_composer_canvas_snapshot(
+        &mut self,
+        expected: &[u8],
+        bytes: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.is_canvas
+            || self.is_read_only()
+            || self.dirty
+            || self.conflict
+            || self.disk_bytes.as_deref() != Some(expected)
+            || self.editor.read(cx).value().as_bytes() != expected
+            || std::fs::read(&self.path).ok().as_deref() != Some(bytes.as_slice())
+        {
+            return false;
+        }
+        let Ok(text) = String::from_utf8(bytes.clone()) else {
+            return false;
+        };
+        self.save_task.take();
+        self.canvas_history.clear();
+        self.replace_canvas_source(&text, window, cx);
+        self.canvas_history.clear();
+        self.mark_composer_written(bytes, cx);
+        true
+    }
+
     /// Replace a byte range with new text, leaving the caret at its end.
     pub fn replace_range(
         &mut self,
@@ -3229,6 +3480,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             let end = range.start + text.len();
             editor.set_selected_range(range, cx);
@@ -3338,12 +3592,18 @@ impl Document {
     /// `=`/`%`/`$` don't pair after a letter/digit (apostrophes, `a=b`) —
     /// the rules.
     pub fn insert_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.pair_edit(pair, true, window, cx);
     }
 
     /// Closer key (`)`, `]`, `}`): selection → wrap in the pair; caret against
     /// the closer → step over it; otherwise insert the closer alone.
     pub fn close_pair(&mut self, pair: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_canvas {
+            return;
+        }
         self.pair_edit(pair, false, window, cx);
     }
 
@@ -3351,6 +3611,9 @@ impl Document {
     /// both chars — the pair-delete. Returns false when the caret
     /// isn't between a pair so the editor's own Backspace runs.
     pub fn delete_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             if sel.start != sel.end {
@@ -3435,6 +3698,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.is_canvas {
+            return false;
+        }
         self.editor.update(cx, |editor, cx| {
             let sel = editor.selected_range();
             let text = editor.value().to_string();
@@ -3506,6 +3772,9 @@ impl Document {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_canvas {
+            return;
+        }
         self.editor.update(cx, |editor, cx| {
             for (range, text) in edits.into_iter().rev() {
                 editor.set_selected_range(range, cx);
@@ -3670,6 +3939,19 @@ impl Document {
             self.enabled_style_snippets = settings.enabled_style_snippets.clone();
             self.refresh_style(cx);
         }
+        if let Some(canvas) = &self.canvas_view {
+            let style = self.resolved_style.clone();
+            let enabled_style_snippets = self.enabled_style_snippets.clone();
+            canvas.update(cx, |canvas, cx| {
+                canvas.refresh_settings(
+                    settings.language,
+                    settings.properties_visibility,
+                    style,
+                    enabled_style_snippets,
+                    cx,
+                )
+            });
+        }
         if let Some(pdf) = &self.pdf {
             pdf.update(cx, |pdf, cx| {
                 pdf.set_language(settings.language, window, cx)
@@ -3679,8 +3961,9 @@ impl Document {
             || self.spell_languages != settings.spellcheck_languages;
         self.spell_enabled = settings.spellcheck_enabled;
         self.spell_languages = settings.spellcheck_languages.clone();
-        if self.vim_enabled != settings.vim_mode {
-            self.vim_enabled = settings.vim_mode;
+        let vim_enabled = settings.vim_mode && !self.is_canvas;
+        if self.vim_enabled != vim_enabled {
+            self.vim_enabled = vim_enabled;
             self.vim.reset(self.editor.read(cx).cursor());
             self.vim_internal_text = None;
             self.vim_insert_keystroke_pending = false;
@@ -4283,7 +4566,7 @@ fn disk_matches_baseline(path: &Path, baseline: &[u8]) -> io::Result<()> {
     }
 }
 
-fn guarded_write(path: &Path, baseline: &[u8], content: &[u8]) -> io::Result<()> {
+pub(crate) fn guarded_write(path: &Path, baseline: &[u8], content: &[u8]) -> io::Result<()> {
     disk_matches_baseline(path, baseline)?;
     std::fs::write(path, content)
 }
@@ -4464,6 +4747,26 @@ mod tests {
         assert!(guarded_write(&path, b"before", b"local!").is_err());
 
         assert_eq!(std::fs::read(&path).unwrap(), b"change");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn canvas_closed_retarget_guard_preserves_external_update() {
+        let path = test_path().with_extension("canvas");
+        let baseline = br#"{"nodes":[],"edges":[]}"#;
+        std::fs::write(&path, baseline).unwrap();
+        std::fs::write(&path, br#"{"nodes":[],"edges":[],"external":true}"#).unwrap();
+
+        assert!(guarded_write(
+            &path,
+            baseline,
+            br#"{"nodes":[],"edges":[],"updated":true}"#
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            br#"{"nodes":[],"edges":[],"external":true}"#
+        );
         std::fs::remove_file(path).unwrap();
     }
 

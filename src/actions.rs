@@ -7,6 +7,7 @@ actions!(
     [
         // File
         NewFile,
+        NewCanvas,
         NewWindow,
         OpenInNewWindow,
         MoveToNewWindow,
@@ -29,6 +30,7 @@ actions!(
         ToggleComment,
         CopyBlockLink,
         CopyBlockEmbed,
+        CanvasDelete,
         // Navigation
         NextTab,
         PrevTab,

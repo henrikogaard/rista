@@ -655,7 +655,7 @@ impl LinkSnapshot {
         let mut total = 0usize;
         for note in notes
             .iter()
-            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .filter(|path| crate::note_composer::is_composer_reference_document(path))
         {
             let canonical = note
                 .canonicalize()
@@ -676,28 +676,30 @@ impl LinkSnapshot {
                 return Err(ComposeError::FileTooLarge);
             }
             let text = String::from_utf8(bytes).map_err(|_| ComposeError::UnreadableNote)?;
-            if let Some(stem) = canonical.file_stem().and_then(|stem| stem.to_str()) {
-                index
-                    .by_stem
-                    .entry(note_key(stem))
-                    .or_default()
-                    .push(canonical.clone());
-            }
-            let relative = canonical
-                .strip_prefix(&root)
-                .map_err(|_| ComposeError::InvalidPath)?
-                .to_string_lossy()
-                .replace('\\', "/");
-            index.by_relative.insert(
-                note_key(relative.trim_end_matches(".md")),
-                canonical.clone(),
-            );
-            for alias in crate::properties::frontmatter_aliases(&text) {
-                index
-                    .by_alias
-                    .entry(note_key(&alias))
-                    .or_default()
-                    .push(canonical.clone());
+            if note.extension().is_some_and(|extension| extension == "md") {
+                if let Some(stem) = canonical.file_stem().and_then(|stem| stem.to_str()) {
+                    index
+                        .by_stem
+                        .entry(note_key(stem))
+                        .or_default()
+                        .push(canonical.clone());
+                }
+                let relative = canonical
+                    .strip_prefix(&root)
+                    .map_err(|_| ComposeError::InvalidPath)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                index.by_relative.insert(
+                    note_key(relative.trim_end_matches(".md")),
+                    canonical.clone(),
+                );
+                for alias in crate::properties::frontmatter_aliases(&text) {
+                    index
+                        .by_alias
+                        .entry(note_key(&alias))
+                        .or_default()
+                        .push(canonical.clone());
+                }
             }
             paths.push(canonical.clone());
             texts.insert(canonical.clone(), text);
@@ -726,6 +728,27 @@ impl LinkSnapshot {
         old_target: &Path,
         new_target: &Path,
     ) -> Result<String, ComposeError> {
+        if is_canvas_path(referring_note) {
+            self.rewrite_canvas(
+                text,
+                referring_note,
+                CanvasRewrite::Inbound {
+                    old_target,
+                    new_target,
+                },
+            )
+        } else {
+            self.rewrite_inbound_markdown(text, referring_note, old_target, new_target)
+        }
+    }
+
+    fn rewrite_inbound_markdown(
+        &self,
+        text: &str,
+        referring_note: &Path,
+        old_target: &Path,
+        new_target: &Path,
+    ) -> Result<String, ComposeError> {
         rewrite_inbound_with_index(
             text,
             referring_note,
@@ -737,6 +760,36 @@ impl LinkSnapshot {
     }
 
     pub fn rewrite_extraction_links(
+        &self,
+        text: &str,
+        referring_note: &Path,
+        source_note: &Path,
+        destination: &Path,
+        anchors: &ExtractionAnchors,
+        moved_body: bool,
+    ) -> Result<String, ComposeError> {
+        if is_canvas_path(referring_note) {
+            return self.rewrite_canvas(
+                text,
+                referring_note,
+                CanvasRewrite::Extraction {
+                    source_note,
+                    destination,
+                    anchors,
+                },
+            );
+        }
+        self.rewrite_extraction_markdown(
+            text,
+            referring_note,
+            source_note,
+            destination,
+            anchors,
+            moved_body,
+        )
+    }
+
+    fn rewrite_extraction_markdown(
         &self,
         text: &str,
         referring_note: &Path,
@@ -836,6 +889,212 @@ impl LinkSnapshot {
             cursor = end + 2;
         }
         apply_edits(text, edits)
+    }
+
+    fn rewrite_canvas(
+        &self,
+        text: &str,
+        referring_note: &Path,
+        rewrite: CanvasRewrite<'_>,
+    ) -> Result<String, ComposeError> {
+        let (source_note, destination, anchors) = match &rewrite {
+            CanvasRewrite::Inbound {
+                old_target,
+                new_target,
+            } => (old_target, new_target, None),
+            CanvasRewrite::Extraction {
+                source_note,
+                destination,
+                anchors,
+            } => (source_note, destination, Some(*anchors)),
+        };
+        let source_note = source_note
+            .canonicalize()
+            .map_err(|_| ComposeError::InvalidPath)?;
+        if !source_note.starts_with(&self.root) {
+            return Err(ComposeError::InvalidPath);
+        }
+        let destination = canonical_or_new_vault_path(destination, &self.root)?;
+        let destination_relative = destination
+            .strip_prefix(&self.root)
+            .map_err(|_| ComposeError::InvalidPath)?
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let mut canvas =
+            crate::canvas::CanvasDocument::parse(text).map_err(|_| ComposeError::InvalidCanvas)?;
+        let mut edits = Vec::new();
+
+        for node in canvas.nodes() {
+            let id = node["id"].as_str().ok_or(ComposeError::InvalidCanvas)?;
+            match node["type"].as_str() {
+                Some("text") => {
+                    let Some(body) = node["text"].as_str() else {
+                        continue;
+                    };
+                    let rewritten = match &rewrite {
+                        CanvasRewrite::Inbound {
+                            old_target,
+                            new_target,
+                        } => self.rewrite_inbound_markdown(
+                            body,
+                            referring_note,
+                            old_target,
+                            new_target,
+                        )?,
+                        CanvasRewrite::Extraction {
+                            source_note,
+                            destination,
+                            anchors,
+                        } => self.rewrite_extraction_markdown(
+                            body,
+                            referring_note,
+                            source_note,
+                            destination,
+                            anchors,
+                            false,
+                        )?,
+                    };
+                    if rewritten != body {
+                        edits.push((id.to_string(), "text", rewritten));
+                    }
+                }
+                Some("file") => {
+                    let Some(file) = node["file"].as_str() else {
+                        continue;
+                    };
+                    let subpath = node["subpath"].as_str();
+                    if let Some(rewritten) = self.rewrite_canvas_file_reference(
+                        file,
+                        subpath,
+                        &source_note,
+                        &destination_relative,
+                        anchors,
+                    )? {
+                        edits.push((id.to_string(), "file", rewritten));
+                    }
+                }
+                Some("group") if anchors.is_none() => {
+                    let Some(background) = node["background"].as_str() else {
+                        continue;
+                    };
+                    if let Some(rewritten) = self.rewrite_canvas_file_path(
+                        background,
+                        &source_note,
+                        &destination_relative,
+                    ) {
+                        edits.push((id.to_string(), "background", rewritten));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for (id, field, value) in edits {
+            canvas
+                .set_node_field(&id, field, serde_json::Value::String(value))
+                .map_err(|_| ComposeError::InvalidCanvas)?;
+        }
+        canvas.serialize().map_err(|_| ComposeError::InvalidCanvas)
+    }
+
+    fn rewrite_canvas_file_reference(
+        &self,
+        file: &str,
+        subpath: Option<&str>,
+        source_note: &Path,
+        destination: &str,
+        anchors: Option<&ExtractionAnchors>,
+    ) -> Result<Option<String>, ComposeError> {
+        let Some((resolved, suffix)) = self.resolve_canvas_file_path(file) else {
+            return Ok(None);
+        };
+        if resolved != source_note {
+            return Ok(None);
+        }
+        let inline_anchor = canvas_anchor(suffix);
+        let separate_anchor = subpath.and_then(canvas_anchor);
+        if let (Some(inline), Some(separate)) = (inline_anchor, separate_anchor) {
+            if !same_canvas_anchor(inline, separate) {
+                if let Some(anchors) = anchors {
+                    let inline_moved = anchors.moved(inline)?;
+                    let separate_moved = anchors.moved(separate)?;
+                    if inline_moved == Some(true) || separate_moved == Some(true) {
+                        return Err(ComposeError::AmbiguousLink);
+                    }
+                    return Ok(None);
+                }
+                return Err(ComposeError::AmbiguousLink);
+            }
+        }
+
+        if let Some(anchors) = anchors {
+            let moved = match (inline_anchor, separate_anchor) {
+                (Some(inline), _) => anchors.moved(inline)? == Some(true),
+                (None, Some(separate)) => anchors.moved(separate)? == Some(true),
+                (None, None) => false,
+            };
+            if !moved {
+                return Ok(None);
+            }
+        }
+        Ok(Some(format!("{destination}{suffix}")))
+    }
+
+    fn rewrite_canvas_file_path(
+        &self,
+        file: &str,
+        source_note: &Path,
+        destination: &str,
+    ) -> Option<String> {
+        let (resolved, suffix) = self.resolve_canvas_file_path(file)?;
+        (resolved == source_note).then(|| format!("{destination}{suffix}"))
+    }
+
+    fn resolve_canvas_file_path<'a>(&self, file: &'a str) -> Option<(PathBuf, &'a str)> {
+        let split = file.find(['#', '^']).unwrap_or(file.len());
+        let (path, suffix) = file.split_at(split);
+        if path.is_empty() || Path::new(path).is_absolute() {
+            return None;
+        }
+        let candidate = self.root.join(path).canonicalize().ok()?;
+        (candidate.starts_with(&self.root) && candidate.is_file()).then_some((candidate, suffix))
+    }
+}
+
+enum CanvasRewrite<'a> {
+    Inbound {
+        old_target: &'a Path,
+        new_target: &'a Path,
+    },
+    Extraction {
+        source_note: &'a Path,
+        destination: &'a Path,
+        anchors: &'a ExtractionAnchors,
+    },
+}
+
+fn is_canvas_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "canvas")
+}
+
+fn canvas_anchor(value: &str) -> Option<&str> {
+    let anchor = value
+        .strip_prefix('#')
+        .unwrap_or(value)
+        .split(['|', '?'])
+        .next()
+        .unwrap_or_default();
+    (!anchor.is_empty()).then_some(anchor)
+}
+
+fn same_canvas_anchor(left: &str, right: &str) -> bool {
+    let left = decode_percent(left).unwrap_or_else(|| left.to_string());
+    let right = decode_percent(right).unwrap_or_else(|| right.to_string());
+    match (left.strip_prefix('^'), right.strip_prefix('^')) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => note_key(left.trim()) == note_key(right.trim()),
+        _ => false,
     }
 }
 
@@ -1318,6 +1577,222 @@ mod tests {
             .unwrap();
         assert!(moved.contains("[[notes/old#Stay]]"));
         assert!(moved.contains("[[#Move]]"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composer_rewrites_canvas_file_and_text_references_losslessly() {
+        let root = test_root();
+        fs::create_dir_all(root.join("boards/nested")).unwrap();
+        fs::create_dir_all(root.join("archive")).unwrap();
+        let old = root.join("notes/Årsnotat.md");
+        let new = root.join("archive/新しい ノート.md");
+        let same_name = root.join("notes/sub/Årsnotat.md");
+        let collision = root.join("notes/Årsnotat.canvas");
+        let board = root.join("boards/nested/board.canvas");
+        let unaffected = root.join("boards/unaffected.canvas");
+        let base = root.join("boards/view.base");
+        let image = root.join("assets/cover.png");
+        fs::write(&old, "# Heading\n").unwrap();
+        fs::write(&same_name, "# Different note\n").unwrap();
+        fs::write(&collision, r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let original = concat!(
+            "{\n",
+            "  \"futureRoot\": {\"number\": 12345678901234567890.000500, \"text\": \"[[Årsnotat]]\"},\n",
+            "  \"nodes\": [\n",
+            "    {\"id\":\"text\",\"type\":\"text\",\"x\":0,\"y\":0,\"width\":300,\"height\":120,",
+            "\"text\":\"[[Årsnotat#Heading|label]] [nested](../../notes/%C3%85rsnotat.md#Heading)\\n`[[Årsnotat]]`\\n[external](https://example.test/path)\",",
+            "\"future\":{\"number\":1.2300,\"text\":\"[[Årsnotat]]\"}},\n",
+            "    {\"id\":\"inline\",\"type\":\"file\",\"x\":0,\"y\":0,\"width\":200,\"height\":100,",
+            "\"file\":\"notes/Årsnotat.md#Heading\",\"subpath\":\"#Heading\",\"future\":\"keep\"},\n",
+            "    {\"id\":\"separate\",\"type\":\"file\",\"x\":0,\"y\":0,\"width\":200,\"height\":100,",
+            "\"file\":\"notes/Årsnotat.md\",\"subpath\":\"^block-1\"},\n",
+            "    {\"id\":\"group\",\"type\":\"group\",\"x\":0,\"y\":0,\"width\":200,\"height\":100,",
+            "\"background\":\"notes/Årsnotat.md\",\"label\":\"[[Årsnotat]]\"},\n",
+            "    {\"id\":\"link\",\"type\":\"link\",\"x\":0,\"y\":0,\"width\":200,\"height\":100,",
+            "\"url\":\"https://example.test/[[Årsnotat]]\",\"future\":\"[[Årsnotat]]\"},\n",
+            "    {\"id\":\"future\",\"type\":\"future\",\"x\":0,\"y\":0,\"width\":200,\"height\":100,",
+            "\"file\":\"notes/Årsnotat.md\",\"text\":\"[[Årsnotat]]\"},\n",
+            "    {\"id\":\"same-name\",\"type\":\"file\",\"x\":0,\"y\":0,\"width\":200,\"height\":100,",
+            "\"file\":\"notes/sub/Årsnotat.md\"}\n",
+            "  ],\n",
+            "  \"edges\": [{\"id\":\"edge\",\"fromNode\":\"text\",\"toNode\":\"inline\",",
+            "\"futureNumber\":9.9900,\"label\":\"[[Årsnotat]]\"}],\n",
+            "  \"futureNumber\":9007199254740993.000500,\n",
+            "  \"rootLast\":\"keep\"\n",
+            "}\n"
+        );
+        let untouched = "{\n  \"meta\" : \"same bytes\", \"nodes\" : [], \"edges\" : []\n}\n";
+        fs::write(&board, original).unwrap();
+        fs::write(&unaffected, untouched).unwrap();
+        fs::write(&base, "{}").unwrap();
+        fs::write(&image, b"image").unwrap();
+
+        let snapshot = LinkSnapshot::new(
+            &root,
+            &[
+                old.clone(),
+                collision,
+                board.clone(),
+                unaffected.clone(),
+                base.clone(),
+                image.clone(),
+            ],
+        )
+        .unwrap();
+        assert!(snapshot.notes().contains(&board.canonicalize().unwrap()));
+        assert!(snapshot.text(&board).is_some());
+        assert!(!snapshot.notes().contains(&base.canonicalize().unwrap()));
+        assert!(!snapshot.notes().contains(&image.canonicalize().unwrap()));
+
+        let rewritten = snapshot
+            .rewrite_inbound(original, &board, &old, &new)
+            .unwrap();
+        let changed: serde_json::Value = serde_json::from_str(&rewritten).unwrap();
+        let nodes = changed["nodes"].as_array().unwrap();
+        let text = nodes[0]["text"].as_str().unwrap();
+        assert!(text.contains("[[archive/新しい ノート#Heading|label]]"));
+        assert!(
+            text.contains("../../archive/%E6%96%B0%E3%81%97%E3%81%84%20%E3%83%8E%E3%83%BC%E3%83%88.md#Heading"),
+            "{text}"
+        );
+        assert!(text.contains("`[[Årsnotat]]`"));
+        assert!(text.contains("https://example.test/path"));
+        assert_eq!(nodes[1]["file"], "archive/新しい ノート.md#Heading");
+        assert_eq!(nodes[1]["subpath"], "#Heading");
+        assert_eq!(nodes[1]["future"], "keep");
+        assert_eq!(nodes[2]["file"], "archive/新しい ノート.md");
+        assert_eq!(nodes[2]["subpath"], "^block-1");
+        assert_eq!(nodes[3]["background"], "archive/新しい ノート.md");
+        assert_eq!(nodes[3]["label"], "[[Årsnotat]]");
+        assert_eq!(nodes[4]["url"], "https://example.test/[[Årsnotat]]");
+        assert_eq!(nodes[4]["future"], "[[Årsnotat]]");
+        assert_eq!(nodes[5]["file"], "notes/Årsnotat.md");
+        assert_eq!(nodes[5]["text"], "[[Årsnotat]]");
+        assert_eq!(nodes[6]["file"], "notes/sub/Årsnotat.md");
+        assert_eq!(changed["edges"][0]["label"], "[[Årsnotat]]");
+        assert_eq!(changed["rootLast"], "keep");
+        assert!(rewritten.contains("12345678901234567890.000500"));
+        assert!(rewritten.contains("1.2300"));
+        assert!(rewritten.contains("9.9900"));
+        assert!(
+            rewritten.find("\"id\":\"text\"").unwrap()
+                < rewritten.find("\"id\":\"inline\"").unwrap()
+        );
+        assert!(rewritten.find("\"futureRoot\"").unwrap() < rewritten.find("\"nodes\"").unwrap());
+        assert_eq!(
+            snapshot
+                .rewrite_inbound(untouched, &unaffected, &old, &new)
+                .unwrap(),
+            untouched
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extraction_retargets_canvas_file_and_text_anchors_only_when_moved() {
+        let root = test_root();
+        fs::create_dir_all(root.join("boards")).unwrap();
+        let source_path = root.join("notes/Årsnotat.md");
+        let destination = root.join("notes/new note.md");
+        let board_path = root.join("boards/board.canvas");
+        let source = "# Stay\n\nstaying text ^stay-id\n\n# Move\n\nmoved text ^move-id\n";
+        fs::write(&source_path, source).unwrap();
+        let board = serde_json::json!({
+            "nodes": [
+                {"id":"heading","type":"file","x":0,"y":0,"width":200,"height":100,
+                 "file":"notes/Årsnotat.md#Move"},
+                {"id":"block","type":"file","x":0,"y":0,"width":200,"height":100,
+                 "file":"notes/Årsnotat.md#^move-id"},
+                {"id":"subpath","type":"file","x":0,"y":0,"width":200,"height":100,
+                 "file":"notes/Årsnotat.md","subpath":"Move"},
+                {"id":"whole","type":"file","x":0,"y":0,"width":200,"height":100,
+                 "file":"notes/Årsnotat.md"},
+                {"id":"staying","type":"file","x":0,"y":0,"width":200,"height":100,
+                 "file":"notes/Årsnotat.md#Stay"},
+                {"id":"unknown","type":"file","x":0,"y":0,"width":200,"height":100,
+                 "file":"notes/Årsnotat.md#Unknown"},
+                {"id":"group","type":"group","x":0,"y":0,"width":200,"height":100,
+                 "background":"notes/Årsnotat.md"},
+                {"id":"text","type":"text","x":0,"y":0,"width":300,"height":100,
+                 "text":"[[Årsnotat#Move]] [[#Move]]"}
+            ],
+            "edges": []
+        })
+        .to_string();
+        fs::write(&board_path, &board).unwrap();
+        let snapshot =
+            LinkSnapshot::new(&root, &[source_path.clone(), board_path.clone()]).unwrap();
+        let start = source.find("# Move").unwrap();
+        let anchors = ExtractionAnchors::new(source, start..source.len()).unwrap();
+        let rewritten = snapshot
+            .rewrite_extraction_links(
+                &board,
+                &board_path,
+                &source_path,
+                &destination,
+                &anchors,
+                false,
+            )
+            .unwrap();
+        let changed: serde_json::Value = serde_json::from_str(&rewritten).unwrap();
+        let nodes = changed["nodes"].as_array().unwrap();
+        assert_eq!(nodes[0]["file"], "notes/new note.md#Move");
+        assert_eq!(nodes[1]["file"], "notes/new note.md#^move-id");
+        assert_eq!(nodes[2]["file"], "notes/new note.md");
+        assert_eq!(nodes[2]["subpath"], "Move");
+        assert_eq!(nodes[3]["file"], "notes/Årsnotat.md");
+        assert_eq!(nodes[4]["file"], "notes/Årsnotat.md#Stay");
+        assert_eq!(nodes[5]["file"], "notes/Årsnotat.md#Unknown");
+        assert_eq!(nodes[6]["background"], "notes/Årsnotat.md");
+        assert_eq!(nodes[7]["text"], "[[notes/new note#Move]] [[#Move]]");
+
+        let conflict = serde_json::json!({
+            "nodes": [{
+                "id":"conflict","type":"file","x":0,"y":0,"width":200,"height":100,
+                "file":"notes/Årsnotat.md#Move","subpath":"Stay"
+            }],
+            "edges": []
+        })
+        .to_string();
+        assert_eq!(
+            snapshot
+                .rewrite_extraction_links(
+                    &conflict,
+                    &board_path,
+                    &source_path,
+                    &destination,
+                    &anchors,
+                    false,
+                )
+                .unwrap_err(),
+            ComposeError::AmbiguousLink
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_canvas_fails_with_localized_safe_error() {
+        let root = test_root();
+        let old = root.join("notes/old.md");
+        let new = root.join("notes/new name.md");
+        let bad = root.join("notes/bad.canvas");
+        fs::write(&bad, "{ not valid Canvas").unwrap();
+        let snapshot = LinkSnapshot::new(&root, &[old.clone(), bad.clone()]).unwrap();
+        assert_eq!(
+            snapshot
+                .rewrite_inbound(snapshot.text(&bad).unwrap(), &bad, &old, &new)
+                .unwrap_err(),
+            ComposeError::InvalidCanvas
+        );
+        assert_eq!(
+            ComposeError::InvalidCanvas.message(false),
+            "The board contains invalid Canvas data."
+        );
+        assert_eq!(
+            ComposeError::InvalidCanvas.message(true),
+            "Tavlen inneholder ugyldige Canvas-data."
+        );
         let _ = fs::remove_dir_all(root);
     }
 

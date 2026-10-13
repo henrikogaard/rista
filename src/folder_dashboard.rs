@@ -869,8 +869,13 @@ impl Workspace {
                     .when(folder, |row| {
                         row.drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().muted))
                             .on_drop::<PathBuf>(cx.listener(
-                                move |this, source: &PathBuf, _, cx| {
-                                    this.move_tree_entry(source.clone(), drag_path.clone(), cx)
+                                move |this, source: &PathBuf, window, cx| {
+                                    this.move_tree_entry(
+                                        source.clone(),
+                                        drag_path.clone(),
+                                        window,
+                                        cx,
+                                    )
                                 },
                             ))
                     }),

@@ -1,7 +1,157 @@
 use super::*;
 use crate::explorer::FileFilter;
 
+pub(super) struct CanvasMoveRewrite {
+    destination: PathBuf,
+    before: String,
+    after: String,
+    disk_before: Option<Vec<u8>>,
+    document: Option<Entity<crate::document::Document>>,
+}
+
 impl Workspace {
+    pub(super) fn prepare_canvas_move_rewrites(
+        &self,
+        source: &Path,
+        destination: &Path,
+        cx: &App,
+    ) -> Result<Vec<CanvasMoveRewrite>, String> {
+        let root = self
+            .vault
+            .read(cx)
+            .root
+            .clone()
+            .ok_or_else(|| "Open a vault before moving Canvas references.".to_string())?;
+        let source_relative = source
+            .strip_prefix(&root)
+            .map_err(|_| "The moved path is outside the open vault.".to_string())?;
+        let destination_relative = destination
+            .strip_prefix(&root)
+            .map_err(|_| "The destination is outside the open vault.".to_string())?;
+        let source_relative = source_relative.to_path_buf();
+        let destination_relative = destination_relative.to_path_buf();
+        let canvas_paths = self
+            .vault
+            .read(cx)
+            .notes
+            .iter()
+            .filter(|path| crate::canvas::is_canvas(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rewrites = Vec::new();
+        for path in canvas_paths {
+            let mut next_path = path.clone();
+            crate::explorer::repoint_path(&mut next_path, source, destination);
+            let open_document = self
+                .docs
+                .iter()
+                .find(|open| open.entity.read(cx).path == path)
+                .map(|open| open.entity.clone());
+            let (before, disk_before) = if let Some(document) = &open_document {
+                let document = document.read(cx);
+                if document.conflict || !document.disk_matches_loaded() {
+                    return Err(format!(
+                        "Canvas references were not updated because {} has an unresolved disk conflict.",
+                        path.display()
+                    ));
+                }
+                (document.editor.read(cx).value().to_string(), None)
+            } else {
+                let bytes = std::fs::read(&path).map_err(|error| {
+                    format!(
+                        "Canvas references were not updated because {} could not be read: {error}",
+                        path.display()
+                    )
+                })?;
+                let text = String::from_utf8(bytes.clone()).map_err(|_| {
+                    format!(
+                        "Canvas references were not updated because {} is not UTF-8.",
+                        path.display()
+                    )
+                })?;
+                (text, Some(bytes))
+            };
+            let Ok(mut canvas) = crate::canvas::CanvasDocument::parse(&before) else {
+                continue;
+            };
+            if !canvas.retarget_paths(
+                &source_relative,
+                &destination_relative,
+                path.strip_prefix(&root).unwrap_or(&path),
+                next_path.strip_prefix(&root).unwrap_or(&next_path),
+                Some(&|target, wiki| {
+                    let vault = self.vault.read(cx);
+                    let resolved = if wiki {
+                        vault.resolve_link_target(target)
+                    } else {
+                        vault.md_link_path(target, path.parent().unwrap_or(&root))
+                    }?;
+                    resolved.strip_prefix(&root).ok().map(Path::to_path_buf)
+                }),
+            ) {
+                continue;
+            }
+            let after = canvas.serialize().map_err(|error| {
+                format!(
+                    "Canvas references in {} could not be serialized: {error}",
+                    path.display()
+                )
+            })?;
+            if after != before {
+                rewrites.push(CanvasMoveRewrite {
+                    destination: next_path,
+                    before,
+                    after,
+                    disk_before,
+                    document: open_document,
+                });
+            }
+        }
+        Ok(rewrites)
+    }
+
+    pub(super) fn apply_canvas_move_rewrites(
+        &mut self,
+        rewrites: Vec<CanvasMoveRewrite>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut complete = true;
+        for rewrite in rewrites {
+            if let Some(document) = rewrite.document {
+                let applied = document.update(cx, |document, cx| {
+                    document.apply_canvas_snapshot(
+                        &rewrite.before,
+                        &rewrite.after,
+                        None,
+                        window,
+                        cx,
+                    )
+                });
+                complete &= applied;
+            } else if let Some(baseline) = rewrite.disk_before {
+                if let Some(root) = self.vault.read(cx).root.as_deref() {
+                    if std::fs::read(&rewrite.destination).ok().as_deref()
+                        == Some(baseline.as_slice())
+                    {
+                        crate::history::snapshot_before_write(
+                            root,
+                            &rewrite.destination,
+                            &rewrite.after,
+                        );
+                    }
+                }
+                complete &= crate::document::guarded_write(
+                    &rewrite.destination,
+                    &baseline,
+                    rewrite.after.as_bytes(),
+                )
+                .is_ok();
+            }
+        }
+        complete
+    }
+
     pub(super) fn render_explorer_controls(&self, cx: &mut Context<Self>) -> Div {
         let selected = self.vault.read(cx).explorer_filter;
         let mut filters = h_flex().gap_0p5();
@@ -95,7 +245,9 @@ impl Workspace {
                         .ghost()
                         .xsmall()
                         .label(self.tr("Undo last move", "Angre siste flytting"))
-                        .on_click(cx.listener(|this, _, _, cx| this.undo_file_move(cx))),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.undo_file_move(window, cx)),
+                        ),
                 )
             })
     }
@@ -110,7 +262,15 @@ impl Workspace {
             crate::explorer::repoint_path(path, source, destination);
         };
         for doc in &self.docs {
-            doc.entity.update(cx, |doc, _| repoint(&mut doc.path));
+            doc.entity.update(cx, |doc, cx| {
+                let mut path = doc.path.clone();
+                repoint(&mut path);
+                if path != doc.path {
+                    doc.set_path(path);
+                    doc.resync_preview(cx);
+                    cx.notify();
+                }
+            });
         }
         for path in self
             .recent
@@ -141,17 +301,45 @@ impl Workspace {
         self.persist_tabs(cx);
     }
 
-    fn undo_file_move(&mut self, cx: &mut Context<Self>) {
+    fn undo_file_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((source, destination)) = self.move_undo.last().cloned() else {
             return;
         };
         let Some(root) = self.vault.read(cx).root.clone() else {
             return;
         };
+        let rewrites = match self.prepare_canvas_move_rewrites(&destination, &source, cx) {
+            Ok(rewrites) => rewrites,
+            Err(_) => {
+                self.note_status(
+                    self.tr(
+                        "Cannot undo this move because Canvas references have a conflict.",
+                        "Kan ikke angre flyttingen fordi Canvas-referanser har en konflikt.",
+                    ),
+                    cx,
+                );
+                return;
+            }
+        };
         if crate::explorer::move_entry(&root, &destination, &source).is_ok() {
             self.move_undo.pop();
             self.repoint_moved_entry(&destination, &source, cx);
-            self.note_status(self.tr("Move undone", "Flytting angret"), cx);
+            let complete = self.apply_canvas_move_rewrites(rewrites, window, cx);
+            self.note_status(
+                self.tr(
+                    if complete {
+                        "Move undone"
+                    } else {
+                        "Move undone, but some Canvas references were not updated."
+                    },
+                    if complete {
+                        "Flytting angret"
+                    } else {
+                        "Flytting angret, men noen Canvas-referanser ble ikke oppdatert."
+                    },
+                ),
+                cx,
+            );
         } else {
             self.note_status(self.tr("Cannot undo: a path changed or the original location is occupied.", "Kan ikke angre: en sti er endret eller den opprinnelige plasseringen er opptatt."), cx);
         }

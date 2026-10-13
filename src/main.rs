@@ -10,6 +10,9 @@ mod agent;
 mod app;
 mod bases;
 mod bookmarks;
+mod canvas;
+mod canvas_history;
+mod canvas_view;
 mod cli;
 mod cli_install;
 mod cli_ipc;
@@ -583,6 +586,13 @@ fn menus(language: settings::Language) -> Vec<Menu> {
                 disabled: false,
             },
             MenuItem::Action {
+                name: language.text("New Canvas", "Nytt lerret").into(),
+                action: Box::new(NewCanvas),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
                 name: "New Folder".into(),
                 action: Box::new(NewFolder),
                 os_action: None,
@@ -675,6 +685,13 @@ fn menus(language: settings::Language) -> Vec<Menu> {
             MenuItem::Action {
                 name: "Paste".into(),
                 action: Box::new(input::Paste),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
+            MenuItem::Action {
+                name: language.text("Delete", "Slett").into(),
+                action: Box::new(CanvasDelete),
                 os_action: None,
                 checked: false,
                 disabled: false,

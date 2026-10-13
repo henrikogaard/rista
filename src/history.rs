@@ -40,13 +40,15 @@ pub fn epoch() -> u64 {
 }
 
 /// Directory holding a document's snapshots: mirrors its vault-relative
-/// path with the `.md` extension stripped.
+/// path with ordinary document extensions stripped.
 fn snapshot_dir(root: &Path, path: &Path) -> Option<PathBuf> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let rel = path.strip_prefix(&root).ok()?;
     let mut dir = rel.to_path_buf();
-    dir.set_extension("");
+    if !crate::canvas::is_canvas(&path) {
+        dir.set_extension("");
+    }
     Some(history_dir(&root).join(dir))
 }
 
