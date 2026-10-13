@@ -33,7 +33,6 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
@@ -12403,6 +12402,7 @@ impl Workspace {
                 .into_any_element()
         };
         let tab_bar = TabBar::new(("pane-tabs", group.value()))
+            .segmented()
             .small()
             .bg(cx.theme().transparent)
             .selected_index(selected_index)
@@ -12477,7 +12477,7 @@ impl Workspace {
                         }
                     })
                     .drag_over::<DraggedTab>(|style, _, _, cx| {
-                        style.bg(cx.theme().muted.opacity(0.24))
+                        style.bg(cx.theme().accent.opacity(0.15))
                     })
                     .on_drop::<DraggedTab>({
                         let view = view.clone();
@@ -12863,22 +12863,11 @@ impl Workspace {
                 PaneMode::Split => 1,
                 PaneMode::Preview => 2,
             })
-            .children(
-                [
-                    (assets::IconName::SquarePen, self.tr("Source", "Kilde")),
-                    (
-                        assets::IconName::SquareSplitHorizontal,
-                        self.tr("Split", "Delt"),
-                    ),
-                    (assets::IconName::Eye, self.tr("Preview", "Forhåndsvisning")),
-                ]
-                .map(|(icon, label)| {
-                    Tab::new()
-                        .icon(icon)
-                        .aria_label(label)
-                        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
-                }),
-            )
+            .children([
+                Tab::new().label(self.tr("Source", "Kilde")),
+                Tab::new().label(self.tr("Split", "Delt")),
+                Tab::new().label(self.tr("Preview", "Forhåndsvisning")),
+            ])
             .on_click(cx.listener(move |this, &index, window, cx| {
                 let mode = match index {
                     0 => PaneMode::Source,
