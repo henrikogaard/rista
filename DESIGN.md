@@ -87,7 +87,14 @@ Syntax colours live under `highlight.syntax`; retain that nested object.
 
 - UI: system font (SF on macOS), 11–13px. Section labels uppercase, semibold, muted.
 - Editor: monospace stack (SF Mono default), 14px default, configurable 12–22.
-- Preview: headings weight 600+, tight leading; body matches UI font size.
+  An uninstalled family falls back to Menlo; on macOS SF Mono is only
+  available to apps that install it.
+- Preview: headings weight 600+, tight leading; body text is the UI size
+  plus 3px (16px by default) at the golden-ratio line height (about 1.6).
+- Readable line length is on by default: editor and preview text sit in a
+  centred 720px column. The `wide` cssclass lifts it for one note.
+- Wikilinks keep the surrounding text size and carry a faint underline that
+  strengthens on hover, so they read as links in monochrome palettes too.
 - Style snippets can supply a shared theme-color overlay and note-scoped
   typography/layout via JSON; note-local styles resolve from frontmatter
   classes and never mutate the application theme. See

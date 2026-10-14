@@ -66,6 +66,13 @@ mod tools_panel;
 /// instead of labels, so a narrow split pane keeps room for its tabs.
 const PANE_MODE_LABELS_MIN_WIDTH: Pixels = px(420.);
 
+/// Text column width when readable line length is on (editor and preview).
+const READABLE_WIDTH: f32 = 720.;
+
+/// Preview body text sits this many points above the UI size: chrome stays
+/// compact while notes read at a comfortable size (16 pt by default).
+const PREVIEW_BODY_STEP: f32 = 3.;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
     modified: Option<SystemTime>,
@@ -12187,7 +12194,7 @@ impl Workspace {
         } else {
             self.settings.readable_width
         };
-        let readable_width = base_ctx.style.readable_width.unwrap_or(760.);
+        let readable_width = base_ctx.style.readable_width.unwrap_or(READABLE_WIDTH);
         v_flex()
             .track_focus(&doc.read(cx).preview_focus)
             .key_context("RistaPreview")
@@ -12241,9 +12248,11 @@ impl Workspace {
                     .when_some(base_ctx.style.typography.body_font.clone(), |this, font| {
                         this.font_family(font)
                     })
-                    .when_some(base_ctx.style.typography.body_size, |this, size| {
-                        this.text_size(px(size))
-                    })
+                    .text_size(px(base_ctx
+                        .style
+                        .typography
+                        .body_size
+                        .unwrap_or(self.settings.ui_font_size + PREVIEW_BODY_STEP)))
                     .when_some(base_ctx.style.typography.line_height, |this, height| {
                         this.line_height(relative(height))
                     })
@@ -13747,7 +13756,7 @@ impl Workspace {
                 } else {
                     self.settings.readable_width
                 };
-                let readable_width = note_style.readable_width.unwrap_or(760.);
+                let readable_width = note_style.readable_width.unwrap_or(READABLE_WIDTH);
                 if readable {
                     // Readable line length: cap the text column and
                     // center it (the editor setting).
