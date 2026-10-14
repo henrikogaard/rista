@@ -33,6 +33,7 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
@@ -60,6 +61,10 @@ mod pdf_export_ui;
 mod saved_workspaces;
 #[path = "tools_panel.rs"]
 mod tools_panel;
+
+/// Below this pane tab-strip width the view-mode control shows icons
+/// instead of labels, so a narrow split pane keeps room for its tabs.
+const PANE_MODE_LABELS_MIN_WIDTH: Pixels = px(420.);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
@@ -208,6 +213,9 @@ pub struct Workspace {
     /// Right mouse-down handler (the strip-level context menu reads it
     /// when it builds its items on the next frame).
     tab_menu_token: Option<TabToken>,
+    /// Panes whose tab strip is too narrow for the labelled view-mode
+    /// control — they show icons instead. Measured on prepaint.
+    compact_mode_panes: HashSet<GroupId>,
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
@@ -1430,6 +1438,7 @@ impl Workspace {
             recent: Vec::new(),
             closed_tabs: Vec::new(),
             tab_menu_token: None,
+            compact_mode_panes: HashSet::new(),
             focus_mode: settings.focus_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
@@ -12398,7 +12407,8 @@ impl Workspace {
         {
             div().into_any_element()
         } else {
-            self.render_pane_view_mode_tabs(group, mode, cx)
+            let compact = self.compact_mode_panes.contains(&group);
+            self.render_pane_view_mode_tabs(group, mode, compact, cx)
                 .into_any_element()
         };
         let tab_bar = TabBar::new(("pane-tabs", group.value()))
@@ -12559,6 +12569,24 @@ impl Workspace {
             )
             .child(div().flex_1().min_w_0().child(tab_bar))
             .child(div().flex_shrink_0().pr_3().child(group_mode_control))
+            .on_prepaint({
+                let view = view.clone();
+                move |bounds, _, cx| {
+                    // Labels need room beside the tabs; narrow split panes
+                    // fall back to icons so the tabs stay visible.
+                    let compact = bounds.size.width < PANE_MODE_LABELS_MIN_WIDTH;
+                    view.update(cx, |this, cx| {
+                        let changed = if compact {
+                            this.compact_mode_panes.insert(group)
+                        } else {
+                            this.compact_mode_panes.remove(&group)
+                        };
+                        if changed {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
             .on_drop::<PathBuf>({
                 let view = view.clone();
@@ -12852,6 +12880,7 @@ impl Workspace {
         &self,
         group: GroupId,
         mode: PaneMode,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         TabBar::new(("pane-mode", group.value()))
@@ -12863,11 +12892,26 @@ impl Workspace {
                 PaneMode::Split => 1,
                 PaneMode::Preview => 2,
             })
-            .children([
-                Tab::new().label(self.tr("Source", "Kilde")),
-                Tab::new().label(self.tr("Split", "Delt")),
-                Tab::new().label(self.tr("Preview", "Forhåndsvisning")),
-            ])
+            .children(
+                [
+                    (assets::IconName::SquarePen, self.tr("Source", "Kilde")),
+                    (
+                        assets::IconName::SquareSplitHorizontal,
+                        self.tr("Split", "Delt"),
+                    ),
+                    (assets::IconName::Eye, self.tr("Preview", "Forhåndsvisning")),
+                ]
+                .map(|(icon, label)| {
+                    if compact {
+                        Tab::new()
+                            .icon(icon)
+                            .aria_label(label)
+                            .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                    } else {
+                        Tab::new().label(label)
+                    }
+                }),
+            )
             .on_click(cx.listener(move |this, &index, window, cx| {
                 let mode = match index {
                     0 => PaneMode::Source,
