@@ -747,24 +747,28 @@ mod tests {
             .pid
             .expect("shell should expose its process id") as libc::pid_t;
 
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !marker.exists() && Instant::now() < deadline {
+        // The redirect creates the marker before `echo` writes to it, so wait
+        // for a complete pid line rather than for the file to exist.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let job_pid = loop {
+            let pid = std::fs::read_to_string(&marker)
+                .ok()
+                .filter(|text| text.ends_with('\n'))
+                .and_then(|text| text.trim().parse::<libc::pid_t>().ok());
+            if let Some(pid) = pid {
+                break pid;
+            }
+            if Instant::now() >= deadline {
+                drop(session);
+                let _ = std::fs::remove_file(&marker);
+                panic!("shell did not report its foreground child pid");
+            }
             thread::sleep(Duration::from_millis(10));
-        }
-        if !marker.exists() {
-            drop(session);
-            let _ = std::fs::remove_file(&marker);
-            panic!("shell did not report its foreground child pid");
-        }
-        let job_pid = std::fs::read_to_string(&marker)
-            .expect("read foreground child pid")
-            .trim()
-            .parse::<libc::pid_t>()
-            .expect("parse foreground child pid");
+        };
         assert!(process_exists(job_pid));
 
         drop(session);
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while (process_exists(shell_pid) || process_exists(job_pid)) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
