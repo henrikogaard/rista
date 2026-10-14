@@ -62,6 +62,10 @@ mod saved_workspaces;
 #[path = "tools_panel.rs"]
 mod tools_panel;
 
+/// Below this pane tab-strip width the view-mode control shows icons
+/// instead of labels, so a narrow split pane keeps room for its tabs.
+const PANE_MODE_LABELS_MIN_WIDTH: Pixels = px(420.);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
     modified: Option<SystemTime>,
@@ -209,6 +213,9 @@ pub struct Workspace {
     /// Right mouse-down handler (the strip-level context menu reads it
     /// when it builds its items on the next frame).
     tab_menu_token: Option<TabToken>,
+    /// Panes whose tab strip is too narrow for the labelled view-mode
+    /// control — they show icons instead. Measured on prepaint.
+    compact_mode_panes: HashSet<GroupId>,
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
@@ -1431,6 +1438,7 @@ impl Workspace {
             recent: Vec::new(),
             closed_tabs: Vec::new(),
             tab_menu_token: None,
+            compact_mode_panes: HashSet::new(),
             focus_mode: settings.focus_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
@@ -12399,10 +12407,12 @@ impl Workspace {
         {
             div().into_any_element()
         } else {
-            self.render_pane_view_mode_tabs(group, mode, cx)
+            let compact = self.compact_mode_panes.contains(&group);
+            self.render_pane_view_mode_tabs(group, mode, compact, cx)
                 .into_any_element()
         };
         let tab_bar = TabBar::new(("pane-tabs", group.value()))
+            .segmented()
             .small()
             .bg(cx.theme().transparent)
             .selected_index(selected_index)
@@ -12477,7 +12487,7 @@ impl Workspace {
                         }
                     })
                     .drag_over::<DraggedTab>(|style, _, _, cx| {
-                        style.bg(cx.theme().muted.opacity(0.24))
+                        style.bg(cx.theme().accent.opacity(0.15))
                     })
                     .on_drop::<DraggedTab>({
                         let view = view.clone();
@@ -12520,7 +12530,6 @@ impl Workspace {
                     });
                 tab
             }))
-            .suffix(group_mode_control)
             .on_click(cx.listener(move |this, &index, window, cx| {
                 if let Some(token) = group_tokens.get(index).copied() {
                     this.activate_pane(group, token, window, cx);
@@ -12559,6 +12568,25 @@ impl Workspace {
                     ),
             )
             .child(div().flex_1().min_w_0().child(tab_bar))
+            .child(div().flex_shrink_0().pr_3().child(group_mode_control))
+            .on_prepaint({
+                let view = view.clone();
+                move |bounds, _, cx| {
+                    // Labels need room beside the tabs; narrow split panes
+                    // fall back to icons so the tabs stay visible.
+                    let compact = bounds.size.width < PANE_MODE_LABELS_MIN_WIDTH;
+                    view.update(cx, |this, cx| {
+                        let changed = if compact {
+                            this.compact_mode_panes.insert(group)
+                        } else {
+                            this.compact_mode_panes.remove(&group)
+                        };
+                        if changed {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
             .on_drop::<PathBuf>({
                 let view = view.clone();
@@ -12852,6 +12880,7 @@ impl Workspace {
         &self,
         group: GroupId,
         mode: PaneMode,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         TabBar::new(("pane-mode", group.value()))
@@ -12873,10 +12902,14 @@ impl Workspace {
                     (assets::IconName::Eye, self.tr("Preview", "Forhåndsvisning")),
                 ]
                 .map(|(icon, label)| {
-                    Tab::new()
-                        .icon(icon)
-                        .aria_label(label)
-                        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                    if compact {
+                        Tab::new()
+                            .icon(icon)
+                            .aria_label(label)
+                            .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                    } else {
+                        Tab::new().label(label)
+                    }
                 }),
             )
             .on_click(cx.listener(move |this, &index, window, cx| {
@@ -14112,7 +14145,6 @@ impl Workspace {
     }
 
     fn render_status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().width < px(960.);
         let doc = self.active_doc();
         let (rel_path, words, dirty, conflict, cursor, selected) = doc
             .map(|doc| {
@@ -14138,6 +14170,8 @@ impl Workspace {
                 )
             })
             .unwrap_or_default();
+        let compact =
+            window.viewport_size().width < px(960.) && (self.status_note.is_some() || conflict);
 
         let mode_label = match self.settings.view_mode {
             ViewMode::Source => "Source",
