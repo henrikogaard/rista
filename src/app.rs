@@ -12400,11 +12400,15 @@ impl Workspace {
             .position(|(token, _)| Some(*token) == selected)
             .unwrap_or(0);
         let group_tokens = tabs.iter().map(|(token, _)| *token).collect::<Vec<_>>();
-        let group_mode_control = if selected
-            .and_then(|token| self.doc_tokens.iter().position(|item| *item == token))
-            .and_then(|ix| self.docs.get(ix))
-            .is_some_and(|doc| doc.entity.read(cx).is_read_only())
-        {
+        // Source/Split/Preview only means something for a text document.
+        let group_mode_control = if self.folder.is_some()
+            || selected
+                .and_then(|token| self.doc_tokens.iter().position(|item| *item == token))
+                .and_then(|ix| self.docs.get(ix))
+                .is_none_or(|doc| {
+                    let doc = doc.entity.read(cx);
+                    doc.is_read_only() || doc.canvas_view.is_some()
+                }) {
             div().into_any_element()
         } else {
             let compact = self.compact_mode_panes.contains(&group);
@@ -14146,6 +14150,12 @@ impl Workspace {
 
     fn render_status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let doc = self.active_doc();
+        // Boards, images and folder pages have no caret, words or view mode.
+        let text_doc = self.folder.is_none()
+            && doc.is_some_and(|doc| {
+                let doc = doc.read(cx);
+                !doc.is_read_only() && doc.canvas_view.is_none()
+            });
         let (rel_path, words, dirty, conflict, cursor, selected) = doc
             .map(|doc| {
                 let doc = doc.read(cx);
@@ -14231,7 +14241,7 @@ impl Workspace {
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .when_some(cursor, |this, (line, col)| {
+                    .when_some(cursor.filter(|_| text_doc), |this, (line, col)| {
                         this.child(
                             div()
                                 .text_xs()
@@ -14247,22 +14257,22 @@ impl Workspace {
                                 .child(format!("({n} selected)")),
                         )
                     })
-                    .when(doc.is_some(), |this| {
+                    .when(text_doc, |this| {
                         this.child(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(format!("{} words", words)),
                         )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(mode_label),
+                        )
                     })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(mode_label),
-                    )
                     .when(
-                        self.settings.view_mode == ViewMode::Split && !self.active_doc_is_image(cx),
+                        self.settings.view_mode == ViewMode::Split && text_doc,
                         |bar| {
                             bar.child(
                                 Button::new("preview-follow-source")

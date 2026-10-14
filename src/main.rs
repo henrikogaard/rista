@@ -456,7 +456,10 @@ fn dispatch_cli_requests(requests: Vec<cli::CliRequest>, cx: &mut App) -> cli::C
 
 /// Font-size globals live on the Theme; the editor reads `mono_*` tokens.
 fn apply_ui_settings(settings: &settings::Settings, cx: &mut App) {
-    let mono_family = SharedString::from(settings.editor_font_family.clone());
+    let installed = cx.text_system().all_font_names();
+    let mono_family = SharedString::from(
+        settings::resolve_editor_font(&settings.editor_font_family, &installed).to_string(),
+    );
     let mono_size = px(settings.editor_font_size);
     let ui_size = px(settings.ui_font_size);
     Theme::update(cx, move |theme| {

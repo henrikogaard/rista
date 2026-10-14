@@ -248,6 +248,8 @@ pub(crate) struct CanvasView {
     selected: HashSet<String>,
     viewport: Point<f64>,
     zoom: f64,
+    /// Fit the board to the pane on first layout, so nothing opens clipped.
+    fit_on_open: std::rc::Rc<Cell<bool>>,
     bounds: std::rc::Rc<Cell<Bounds<Pixels>>>,
     pinch_hitbox: std::rc::Rc<Cell<Option<gpui::HitboxId>>>,
     drag: Option<Drag>,
@@ -353,6 +355,7 @@ impl CanvasView {
             selected: HashSet::new(),
             viewport: point(80., 80.),
             zoom: 1.,
+            fit_on_open: std::rc::Rc::new(Cell::new(true)),
             bounds: std::rc::Rc::new(Cell::new(Bounds::default())),
             pinch_hitbox: std::rc::Rc::new(Cell::new(None)),
             drag: None,
@@ -2080,6 +2083,22 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Fit every card, but never zoom in past 100%: a small board stays
+    /// at its natural size, centred.
+    fn fit_whole_board(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.fit_selection(false, window, cx);
+        if self.zoom > 1. {
+            let size = self.bounds.get().size;
+            let (half_w, half_h) = (f64::from(size.width) * 0.5, f64::from(size.height) * 0.5);
+            let center = (
+                (half_w - self.viewport.x) / self.zoom,
+                (half_h - self.viewport.y) / self.zoom,
+            );
+            self.zoom = 1.;
+            self.viewport = point(half_w - center.0, half_h - center.1);
+        }
+    }
+
     fn frame(&self, cx: &mut Context<Self>) -> Div {
         v_flex()
             .size_full()
@@ -2527,6 +2546,10 @@ impl Focusable for CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.fit_on_open.get() && self.model.is_some() && self.bounds.get().size.width > px(0.) {
+            self.fit_on_open.set(false);
+            self.fit_whole_board(window, cx);
+        }
         let theme = cx.theme().clone();
         let language = self.language;
         let document = self.document.upgrade();
@@ -2897,9 +2920,13 @@ impl Render for CanvasView {
         let edge_default = theme.border;
         let bounds_slot = self.bounds.clone();
         let pinch_slot = self.pinch_hitbox.clone();
+        let fit_on_open = self.fit_on_open.clone();
         let edge_canvas = gpui::canvas(
             move |bounds, window, _cx| {
                 bounds_slot.set(bounds);
+                if fit_on_open.get() && bounds.size.width > px(0.) {
+                    window.refresh();
+                }
                 let hitbox = window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal);
                 pinch_slot.set(Some(hitbox.id));
             },
@@ -3012,6 +3039,7 @@ impl Render for CanvasView {
                     return None;
                 }
                 let node_type = node["type"].as_str().unwrap_or_default().to_string();
+                let is_group = node_type == "group";
                 let node = node.clone();
                 let file_node = node.clone();
                 let link_node = node.clone();
@@ -3071,71 +3099,79 @@ impl Render for CanvasView {
                         cx.notify();
                     }),
                 );
-                Some(card.context_menu(move |menu, _, _| {
-                    menu.item(
-                        PopupMenuItem::new(language.text("Edit", "Rediger")).on_click({
-                            let view = view.clone();
-                            let id = context_id.clone();
-                            let node_type = context_type.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.selected.clear();
-                                    this.selected.insert(id.clone());
-                                    match node_type.as_str() {
-                                        "text" => this.begin_inline_edit(&id, window, cx),
-                                        "link" | "group" | "file" => {
-                                            this.open_inspector(window, cx)
-                                        }
-                                        _ => this.fit_selection(true, window, cx),
-                                    }
-                                });
-                            }
-                        }),
-                    )
-                    .item(
-                        PopupMenuItem::new(language.text("Open", "Åpne"))
-                            .disabled(!matches!(context_type.as_str(), "file" | "link"))
-                            .on_click({
+                Some((
+                    is_group,
+                    card.context_menu(move |menu, _, _| {
+                        menu.item(
+                            PopupMenuItem::new(language.text("Edit", "Rediger")).on_click({
                                 let view = view.clone();
-                                let node = context_node.clone();
+                                let id = context_id.clone();
+                                let node_type = context_type.clone();
                                 move |_, window, cx| {
-                                    view.update(cx, |this, cx| match node["type"].as_str() {
-                                        Some("file") => this.open_file_card(&node, window, cx),
-                                        Some("link") => this.open_link_card(&node, cx),
-                                        _ => this.fit_selection(true, window, cx),
+                                    view.update(cx, |this, cx| {
+                                        this.selected.clear();
+                                        this.selected.insert(id.clone());
+                                        match node_type.as_str() {
+                                            "text" => this.begin_inline_edit(&id, window, cx),
+                                            "link" | "group" | "file" => {
+                                                this.open_inspector(window, cx)
+                                            }
+                                            _ => this.fit_selection(true, window, cx),
+                                        }
                                     });
                                 }
                             }),
-                    )
-                    .item(
-                        PopupMenuItem::new(language.text("Duplicate", "Dupliser")).on_click({
-                            let view = view.clone();
-                            let id = context_id.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.selected.clear();
-                                    this.selected.insert(id.clone());
-                                    this.duplicate_selected(window, cx);
-                                });
-                            }
-                        }),
-                    )
-                    .item(
-                        PopupMenuItem::new(language.text("Delete", "Slett")).on_click({
-                            let view = view.clone();
-                            let id = context_id.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.selected.clear();
-                                    this.selected.insert(id.clone());
-                                    this.delete_selected(window, cx);
-                                });
-                            }
-                        }),
-                    )
-                }))
+                        )
+                        .item(
+                            PopupMenuItem::new(language.text("Open", "Åpne"))
+                                .disabled(!matches!(context_type.as_str(), "file" | "link"))
+                                .on_click({
+                                    let view = view.clone();
+                                    let node = context_node.clone();
+                                    move |_, window, cx| {
+                                        view.update(cx, |this, cx| match node["type"].as_str() {
+                                            Some("file") => this.open_file_card(&node, window, cx),
+                                            Some("link") => this.open_link_card(&node, cx),
+                                            _ => this.fit_selection(true, window, cx),
+                                        });
+                                    }
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(language.text("Duplicate", "Dupliser")).on_click({
+                                let view = view.clone();
+                                let id = context_id.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.selected.clear();
+                                        this.selected.insert(id.clone());
+                                        this.duplicate_selected(window, cx);
+                                    });
+                                }
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new(language.text("Delete", "Slett")).on_click({
+                                let view = view.clone();
+                                let id = context_id.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.selected.clear();
+                                        this.selected.insert(id.clone());
+                                        this.delete_selected(window, cx);
+                                    });
+                                }
+                            }),
+                        )
+                    }),
+                ))
             })
             .collect::<Vec<_>>();
+        // Group frames sit under the edges; every other card sits above them.
+        let group_count = cards.iter().take_while(|(is_group, _)| *is_group).count();
+        let mut cards = cards.into_iter().map(|(_, card)| card);
+        let group_cards = cards.by_ref().take(group_count).collect::<Vec<_>>();
+        let cards = cards.collect::<Vec<_>>();
         let board = div()
             .id("canvas-board")
             .flex_1()
@@ -3410,6 +3446,7 @@ impl Render for CanvasView {
                     }
                 }),
             )
+            .children(group_cards)
             .child(edge_canvas.absolute().size_full())
             .children(edge_labels)
             .children(cards)

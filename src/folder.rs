@@ -124,20 +124,44 @@ impl Metadata {
     }
 }
 
-fn excerpt(body: &str) -> String {
-    fn plain(node: &markdown::mdast::Node, out: &mut String) {
-        match node {
-            markdown::mdast::Node::Text(text) => out.push_str(&text.value),
-            markdown::mdast::Node::InlineCode(code) => out.push_str(&code.value),
-            _ => {
-                if let Some(children) = node.children() {
-                    for child in children {
-                        plain(child, out);
-                    }
+fn plain(node: &markdown::mdast::Node, out: &mut String) {
+    match node {
+        markdown::mdast::Node::Text(text) => out.push_str(&text.value),
+        markdown::mdast::Node::InlineCode(code) => out.push_str(&code.value),
+        _ => {
+            if let Some(children) = node.children() {
+                for child in children {
+                    plain(child, out);
                 }
             }
         }
     }
+}
+
+/// One line of inline Markdown as the words a reader sees: emphasis and
+/// code marks dropped, `[label](url)` and `[[note|alias]]` shown by label.
+pub fn inline_plain_text(line: &str) -> String {
+    let mut unwrapped = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("[[") {
+        let Some(len) = rest[start + 2..].find("]]") else {
+            break;
+        };
+        let inner = &rest[start + 2..start + 2 + len];
+        unwrapped.push_str(&rest[..start]);
+        unwrapped.push_str(inner.rsplit_once('|').map_or(inner, |(_, alias)| alias));
+        rest = &rest[start + 2 + len + 2..];
+    }
+    unwrapped.push_str(rest);
+    let Ok(root) = markdown::to_mdast(&unwrapped, &markdown::ParseOptions::default()) else {
+        return unwrapped;
+    };
+    let mut text = String::new();
+    plain(&root, &mut text);
+    text
+}
+
+fn excerpt(body: &str) -> String {
     let Ok(root) = markdown::to_mdast(body, &markdown::ParseOptions::default()) else {
         return String::new();
     };
@@ -282,6 +306,23 @@ pub fn read(dir: &Path) -> io::Result<Contents> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_plain_text_shows_what_the_reader_sees() {
+        assert_eq!(
+            inline_plain_text("Re-clad with **heartwood pine**"),
+            "Re-clad with heartwood pine"
+        );
+        assert_eq!(
+            inline_plain_text("Call [[Kari|Kari N.]] about [[Budget]] and `frames`"),
+            "Call Kari N. about Budget and frames"
+        );
+        assert_eq!(
+            inline_plain_text("See [docs](https://x.y) *now*"),
+            "See docs now"
+        );
+        assert_eq!(inline_plain_text("[[unclosed"), "[[unclosed");
+    }
 
     #[test]
     fn folder_pages_cover_every_entry_and_clamp_after_filtering() {

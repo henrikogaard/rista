@@ -592,6 +592,19 @@ impl Settings {
     }
 }
 
+/// The editor font the text system can load: `requested` when it is
+/// installed, otherwise Menlo where available. "SF Mono" ships inside
+/// Apple's apps but is not a family other apps can select, so without this
+/// the editor silently falls back to the proportional system font.
+pub fn resolve_editor_font<'a>(requested: &'a str, installed: &[String]) -> &'a str {
+    let has = |name: &str| installed.iter().any(|family| family == name);
+    if !has(requested) && has("Menlo") {
+        "Menlo"
+    } else {
+        requested
+    }
+}
+
 /// Editor font candidates for the settings picker.
 pub const EDITOR_FONTS: &[&str] = &[
     "SF Mono",
@@ -605,6 +618,15 @@ pub const EDITOR_FONTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_font_falls_back_to_menlo_only_when_missing() {
+        let installed = ["Helvetica".to_string(), "Menlo".to_string()];
+        assert_eq!(resolve_editor_font("SF Mono", &installed), "Menlo");
+        assert_eq!(resolve_editor_font("Helvetica", &installed), "Helvetica");
+        let without_menlo = ["Helvetica".to_string()];
+        assert_eq!(resolve_editor_font("SF Mono", &without_menlo), "SF Mono");
+    }
 
     #[test]
     fn older_settings_keep_defaults_and_new_preferences_roundtrip() {
