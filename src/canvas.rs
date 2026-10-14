@@ -140,6 +140,17 @@ impl CanvasDocument {
             .unwrap_or_default()
     }
 
+    /// Nodes back to front: groups behind every other card, each kind in
+    /// file order, so a group added after its cards does not cover them.
+    pub(crate) fn nodes_in_paint_order(&self) -> impl DoubleEndedIterator<Item = &Value> {
+        let is_group = |node: &&Value| node["type"].as_str() == Some("group");
+        let nodes = self.nodes().iter();
+        nodes
+            .clone()
+            .filter(is_group)
+            .chain(nodes.filter(move |node| !is_group(node)))
+    }
+
     pub(crate) fn edges(&self) -> &[Value] {
         self.value
             .get("edges")
@@ -1483,6 +1494,16 @@ fn canvas_destination_span(raw: &str, from: usize) -> Option<std::ops::Range<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_groups_paint_behind_cards_listed_before_them() {
+        let canvas = CanvasDocument::parse(r#"{"nodes":[{"id":"inner","type":"future-widget","x":40,"y":300,"width":240,"height":140},{"id":"outer","type":"group","x":0,"y":260,"width":380,"height":260},{"id":"text","type":"text","x":420,"y":40,"width":280,"height":160,"text":"t"},{"id":"late","type":"group","x":400,"y":0,"width":400,"height":300}]}"#).unwrap();
+        let order = canvas
+            .nodes_in_paint_order()
+            .map(|node| node["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["outer", "late", "inner", "text"]);
+    }
 
     #[test]
     fn canvas_unknown_fields_are_not_references_or_search_content() {
