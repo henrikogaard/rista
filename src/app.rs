@@ -12520,7 +12520,6 @@ impl Workspace {
                     });
                 tab
             }))
-            .suffix(group_mode_control)
             .on_click(cx.listener(move |this, &index, window, cx| {
                 if let Some(token) = group_tokens.get(index).copied() {
                     this.activate_pane(group, token, window, cx);
@@ -12559,6 +12558,7 @@ impl Workspace {
                     ),
             )
             .child(div().flex_1().min_w_0().child(tab_bar))
+            .child(div().flex_shrink_0().pr_3().child(group_mode_control))
             .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
             .on_drop::<PathBuf>({
                 let view = view.clone();
