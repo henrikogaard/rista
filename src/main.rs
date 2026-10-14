@@ -14,6 +14,7 @@ mod canvas;
 mod canvas_history;
 mod canvas_view;
 mod cli;
+#[cfg(target_os = "macos")]
 mod cli_install;
 mod cli_ipc;
 mod decorations;
