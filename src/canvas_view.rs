@@ -1860,7 +1860,7 @@ impl CanvasView {
 
     fn hit_node(&self, screen: Point<Pixels>) -> Option<String> {
         let model = self.model.as_ref()?;
-        model.nodes().iter().rev().find_map(|node| {
+        model.nodes_in_paint_order().rev().find_map(|node| {
             let id = node["id"].as_str()?;
             let geometry = model.node_geometry(node)?;
             let left = self.world_to_screen(geometry.x as f64);
@@ -2996,8 +2996,7 @@ impl Render for CanvasView {
             })
             .collect::<Vec<_>>();
         let cards = model
-            .nodes()
-            .iter()
+            .nodes_in_paint_order()
             .filter_map(|node| {
                 let id = node["id"].as_str()?.to_string();
                 let geometry = self.staged_geometry(&id, model.node_geometry(node)?);
