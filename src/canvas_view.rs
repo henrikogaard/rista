@@ -249,6 +249,7 @@ pub(crate) struct CanvasView {
     viewport: Point<f64>,
     zoom: f64,
     bounds: std::rc::Rc<Cell<Bounds<Pixels>>>,
+    pinch_hitbox: std::rc::Rc<Cell<Option<gpui::HitboxId>>>,
     drag: Option<Drag>,
     snap_drag: bool,
     context_position: Option<(i64, i64)>,
@@ -353,6 +354,7 @@ impl CanvasView {
             viewport: point(80., 80.),
             zoom: 1.,
             bounds: std::rc::Rc::new(Cell::new(Bounds::default())),
+            pinch_hitbox: std::rc::Rc::new(Cell::new(None)),
             drag: None,
             snap_drag: true,
             context_position: None,
@@ -2894,8 +2896,13 @@ impl Render for CanvasView {
         edge_palette[4] = theme.cyan;
         let edge_default = theme.border;
         let bounds_slot = self.bounds.clone();
+        let pinch_slot = self.pinch_hitbox.clone();
         let edge_canvas = gpui::canvas(
-            move |bounds, _window, _cx| bounds_slot.set(bounds),
+            move |bounds, window, _cx| {
+                bounds_slot.set(bounds);
+                let hitbox = window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal);
+                pinch_slot.set(Some(hitbox.id));
+            },
             move |bounds, _, window, _cx| {
                 for edge in &edge_specs_for_paint {
                     let from = point(
@@ -3370,7 +3377,14 @@ impl Render for CanvasView {
                 this.viewport.y += f64::from(delta.y);
                 cx.notify();
             }))
-            .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
+            .capture_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
+                if !this
+                    .pinch_hitbox
+                    .get()
+                    .is_some_and(|id| id.should_handle_scroll(window))
+                {
+                    return;
+                }
                 let old = this.zoom;
                 let new_zoom = (old * (1. + f64::from(event.delta))).clamp(0.05, 4.);
                 let position = this.window_to_board(event.position);
