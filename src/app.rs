@@ -14101,7 +14101,6 @@ impl Workspace {
     }
 
     fn render_status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().width < px(960.);
         let doc = self.active_doc();
         let (rel_path, words, dirty, conflict, cursor, selected) = doc
             .map(|doc| {
@@ -14127,6 +14126,8 @@ impl Workspace {
                 )
             })
             .unwrap_or_default();
+        let compact =
+            window.viewport_size().width < px(960.) && (self.status_note.is_some() || conflict);
 
         let mode_label = match self.settings.view_mode {
             ViewMode::Source => "Source",
