@@ -21,6 +21,7 @@ pub enum Paper {
 }
 
 impl Paper {
+    #[cfg(any(target_os = "macos", test))]
     pub fn points(self) -> (f64, f64) {
         match self {
             Self::A4 => (595.276, 841.89),

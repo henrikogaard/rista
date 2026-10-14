@@ -25,30 +25,20 @@ impl InstallError {
 }
 
 pub(crate) fn install_current() -> Result<(), InstallError> {
-    #[cfg(target_os = "macos")]
-    {
-        let executable = std::env::current_exe().map_err(io_error)?;
-        let target = packaged_executable(&executable)?;
-        let install_path = PathBuf::from(INSTALL_PATH);
-        match install_symlink(&install_path, &target) {
-            Ok(()) => Ok(()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
-                ) =>
-            {
-                install_with_authorization(&install_path, &target)
-            }
-            Err(error) => Err(io_error(error)),
+    let executable = std::env::current_exe().map_err(io_error)?;
+    let target = packaged_executable(&executable)?;
+    let install_path = PathBuf::from(INSTALL_PATH);
+    match install_symlink(&install_path, &target) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            install_with_authorization(&install_path, &target)
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err(InstallError::new(
-            "The command-line tool can only be installed from the packaged macOS app",
-            "Kommandolinjeverktøyet kan bare installeres fra den pakkede macOS-appen",
-        ))
+        Err(error) => Err(io_error(error)),
     }
 }
 

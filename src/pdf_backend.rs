@@ -45,10 +45,15 @@ pub struct SearchResults {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PdfError {
     Unavailable,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Invalid,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Locked,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     TooLarge,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     PageMissing,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     CopyDenied,
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     Unsupported,

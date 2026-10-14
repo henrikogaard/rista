@@ -15,6 +15,7 @@ pub(crate) type SpellCheckReceiver = smol::channel::Receiver<Result<SpellResults
 pub(crate) enum SpellError {
     #[cfg(not(target_os = "macos"))]
     Unavailable,
+    #[cfg(target_os = "macos")]
     InvalidLanguages(Vec<String>),
 }
 
@@ -250,6 +251,7 @@ impl Projection {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn utf16_range_to_utf8(text: &str, range: Range<usize>) -> Option<Range<usize>> {
     if range.start > range.end {
         return None;
