@@ -140,6 +140,15 @@ notarized by Apple, and include signed automatic updates.
 macOS is the primary, tested platform. Linux and Windows are planned but not yet
 verified. See the [roadmap and limitations](docs/PRODUCT-ROADMAP.md).
 
+On Linux, a desktop entry lets GNOME and other desktops show Rísta's name and
+icon. With `rista` on your `PATH` (desktops read `PATH` at login), install it
+for your user:
+
+```bash
+install -Dm644 linux/no.ogard.rista.desktop ~/.local/share/applications/no.ogard.rista.desktop
+install -Dm644 public/icon.svg ~/.local/share/icons/hicolor/scalable/apps/no.ogard.rista.svg
+```
+
 **Updating from v0.1.0–v0.1.2:** quit Rísta and rename the app to `Rista.app` in
 Finder before updating, or install the latest DMG and remove the old copy.
 Later versions do not need this step.
