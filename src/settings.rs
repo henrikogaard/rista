@@ -592,17 +592,33 @@ impl Settings {
     }
 }
 
+/// Monospace families tried, in order, when the chosen editor font is not
+/// installed: macOS, then common Linux, then Windows defaults.
+const MONOSPACE_FALLBACKS: &[&str] = &[
+    "Menlo",
+    "DejaVu Sans Mono",
+    "Ubuntu Mono",
+    "Noto Sans Mono",
+    "Liberation Mono",
+    "Cascadia Mono",
+    "Consolas",
+];
+
 /// The editor font the text system can load: `requested` when it is
-/// installed, otherwise Menlo where available. "SF Mono" ships inside
-/// Apple's apps but is not a family other apps can select, so without this
-/// the editor silently falls back to the proportional system font.
+/// installed, otherwise the first installed monospace fallback. "SF Mono"
+/// ships inside Apple's apps but is not a family other apps can select, and
+/// no Linux or Windows system has it, so without this the editor silently
+/// falls back to a proportional font.
 pub fn resolve_editor_font<'a>(requested: &'a str, installed: &[String]) -> &'a str {
     let has = |name: &str| installed.iter().any(|family| family == name);
-    if !has(requested) && has("Menlo") {
-        "Menlo"
-    } else {
-        requested
+    if has(requested) {
+        return requested;
     }
+    MONOSPACE_FALLBACKS
+        .iter()
+        .copied()
+        .find(|family| has(family))
+        .unwrap_or(requested)
 }
 
 /// Editor font candidates for the settings picker.
@@ -620,12 +636,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn editor_font_falls_back_to_menlo_only_when_missing() {
+    fn editor_font_falls_back_to_an_installed_monospace_family() {
         let installed = ["Helvetica".to_string(), "Menlo".to_string()];
         assert_eq!(resolve_editor_font("SF Mono", &installed), "Menlo");
         assert_eq!(resolve_editor_font("Helvetica", &installed), "Helvetica");
-        let without_menlo = ["Helvetica".to_string()];
-        assert_eq!(resolve_editor_font("SF Mono", &without_menlo), "SF Mono");
+        let linux = ["DejaVu Sans".to_string(), "DejaVu Sans Mono".to_string()];
+        assert_eq!(resolve_editor_font("SF Mono", &linux), "DejaVu Sans Mono");
+        let without_mono = ["Helvetica".to_string()];
+        assert_eq!(resolve_editor_font("SF Mono", &without_mono), "SF Mono");
     }
 
     #[test]

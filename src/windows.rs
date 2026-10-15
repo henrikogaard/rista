@@ -789,10 +789,21 @@ fn create_workspace(
             }
         })
         .unwrap_or(WindowBounds::Windowed(bounds));
+    let linux = cfg!(any(target_os = "linux", target_os = "freebsd"));
     let options = WindowOptions {
         window_bounds: Some(window_bounds),
         window_min_size: Some(size(px(720.), px(480.))),
         kind: WindowKind::Normal,
+        // Linux window managers name and group windows by title and app id
+        // (WM_CLASS / xdg app_id); macOS takes both from the bundle.
+        app_id: Some("no.ogard.rista".to_string()),
+        titlebar: Some(TitlebarOptions {
+            title: linux.then(|| "Rísta".into()),
+            ..TitleBar::title_bar_options()
+        }),
+        // Rísta draws its own title bar with window controls; without this
+        // GNOME adds an empty server-side bar above it.
+        window_decorations: linux.then_some(WindowDecorations::Client),
         ..TitleBar::window_options()
     };
     let result = gpui_kit::open_window(options, cx, move |window, cx| {

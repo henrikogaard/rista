@@ -66,6 +66,13 @@ mod tools_panel;
 /// instead of labels, so a narrow split pane keeps room for its tabs.
 const PANE_MODE_LABELS_MIN_WIDTH: Pixels = px(420.);
 
+/// The command palette's default shortcut as shown in the title bar.
+const PALETTE_SHORTCUT: &str = if cfg!(target_os = "macos") {
+    "⌘K"
+} else {
+    "Ctrl+K"
+};
+
 /// Text column width when readable line length is on (editor and preview).
 const READABLE_WIDTH: f32 = 720.;
 
@@ -10699,7 +10706,7 @@ impl Workspace {
                                 self.tr("Search commands and notes", "Søk i kommandoer og notater"),
                             )
                             .icon(assets::IconName::Search)
-                            .label("⌘K")
+                            .label(PALETTE_SHORTCUT)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_palette(window, cx);
                             })),
@@ -14036,7 +14043,11 @@ impl Workspace {
     fn render_empty_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let vault_open = self.vault.read(cx).is_open();
         let message = if vault_open {
-            "Open a note — ⌘K to search."
+            if cfg!(target_os = "macos") {
+                "Open a note — ⌘K to search."
+            } else {
+                "Open a note — Ctrl+K to search."
+            }
         } else {
             ""
         };
