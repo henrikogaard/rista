@@ -736,7 +736,12 @@ impl CanvasView {
                 let extension = crate::file_preview::extension(path);
                 if matches!(extension.as_str(), "md" | "markdown") {
                     let source = std::fs::read_to_string(path).ok()?;
-                    Some(canvas_markdown_excerpt(&source, subpath))
+                    // Frontmatter would render as a full properties table
+                    // inside the card; the excerpt shows the note itself.
+                    Some(canvas_markdown_excerpt(
+                        crate::folder::body(&source),
+                        subpath,
+                    ))
                 } else if matches!(
                     extension.as_str(),
                     "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf"
@@ -2276,17 +2281,19 @@ impl CanvasView {
         let theme = cx.theme().clone();
         let mut palette = crate::preview::highlight_palette(&theme);
         palette[4] = theme.cyan;
-        let color = node["color"]
-            .as_str()
-            .and_then(|value| {
-                value
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|index| (1..=6).contains(index))
-                    .map(|index| palette[index - 1])
-                    .or_else(|| gpui_kit::component::theme::try_parse_color(value).ok())
-            })
-            .unwrap_or(theme.border);
+        let card_color = node["color"].as_str().and_then(|value| {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|index| (1..=6).contains(index))
+                .map(|index| palette[index - 1])
+                .or_else(|| gpui_kit::component::theme::try_parse_color(value).ok())
+        });
+        let color = card_color.unwrap_or(theme.border);
+        // A coloured card gets a faint wash of its colour, not just an outline.
+        let fill = card_color.map_or(theme.group_box, |color| {
+            theme.group_box.blend(color.opacity(0.12))
+        });
         let width = (geometry.width as f32 * self.zoom as f32).max(1.);
         let height = (geometry.height as f32 * self.zoom as f32).max(1.);
         let selected = self.selected.contains(id);
@@ -2300,7 +2307,7 @@ impl CanvasView {
             .rounded(theme.radius)
             .border_1()
             .border_color(if selected { theme.primary } else { color })
-            .bg(theme.group_box)
+            .bg(fill)
             .p_2()
             .overflow_hidden();
         if self.zoom < 0.25 {
@@ -2330,23 +2337,23 @@ impl CanvasView {
         } else if node["type"].as_str() == Some("file") {
             let file = node["file"].as_str().unwrap_or_default();
             let available = self.file_status.get(id).copied().unwrap_or(false);
-            card = card
-                .child(div().text_sm().font_semibold().child(file.to_string()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(if available {
-                            theme.muted_foreground
-                        } else {
-                            theme.warning
-                        })
-                        .child(if available {
-                            self.language.text("Open file", "Åpne filen")
-                        } else {
-                            self.language
-                                .text("File unavailable", "Filen er utilgjengelig")
-                        }),
+            // The note's own heading is the card title; the path stays as a
+            // quiet caption, and only a missing file earns a warning.
+            card = card.child(
+                div()
+                    .text_xs()
+                    .truncate()
+                    .text_color(theme.muted_foreground)
+                    .child(file.to_string()),
+            );
+            if !available {
+                card = card.child(
+                    div().text_xs().text_color(theme.warning).child(
+                        self.language
+                            .text("File unavailable", "Filen er utilgjengelig"),
+                    ),
                 );
+            }
             if let Some(state) = self.file_views.get(id) {
                 let mut preview_context = self.preview_context.clone();
                 preview_context.doc_path = self.file_paths.get(id).cloned();
@@ -2376,7 +2383,7 @@ impl CanvasView {
                         .child(node["url"].as_str().unwrap_or_default().to_string()),
                 );
         } else if node["type"].as_str() == Some("group") {
-            card = card.bg(theme.group_box).border_color(color);
+            card = card.bg(fill).border_color(color);
             if let Some(path) = self.group_backgrounds.get(id) {
                 let source = ImageSource::from(path.clone());
                 let fit = if node["backgroundStyle"].as_str() == Some("ratio") {
@@ -2918,6 +2925,36 @@ impl Render for CanvasView {
         let mut edge_palette = crate::preview::highlight_palette(&theme);
         edge_palette[4] = theme.cyan;
         let edge_default = theme.border;
+        // A quiet dot grid every 24 board units, so position and motion read
+        // while panning; hidden when zoomed out far enough to turn into noise.
+        let grid_step = 24. * self.zoom as f32;
+        let grid_offset = (self.viewport.x as f32, self.viewport.y as f32);
+        let grid_color = theme.border.opacity(0.7);
+        let grid_canvas = gpui::canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _cx| {
+                if grid_step < 16. {
+                    return;
+                }
+                let dot = px(1.5);
+                let mut y = grid_offset.1.rem_euclid(grid_step);
+                while y < f32::from(bounds.size.height) {
+                    let mut x = grid_offset.0.rem_euclid(grid_step);
+                    while x < f32::from(bounds.size.width) {
+                        let origin = point(
+                            bounds.origin.x + px(x) - dot / 2.,
+                            bounds.origin.y + px(y) - dot / 2.,
+                        );
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(origin, size(dot, dot)),
+                            grid_color,
+                        ));
+                        x += grid_step;
+                    }
+                    y += grid_step;
+                }
+            },
+        );
         let bounds_slot = self.bounds.clone();
         let pinch_slot = self.pinch_hitbox.clone();
         let fit_on_open = self.fit_on_open.clone();
@@ -3446,6 +3483,7 @@ impl Render for CanvasView {
                     }
                 }),
             )
+            .child(grid_canvas.absolute().size_full())
             .children(group_cards)
             .child(edge_canvas.absolute().size_full())
             .children(edge_labels)
