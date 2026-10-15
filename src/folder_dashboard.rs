@@ -613,7 +613,11 @@ impl Workspace {
         v_flex()
             .size_full()
             .child(self.folder_view_picker(cx))
-            .child(div().px_4().py_1().child(self.folder_breadcrumb(&path, cx)))
+            // At the vault root the breadcrumb would only repeat the title.
+            .when(
+                self.vault.read(cx).root.as_deref() != Some(path.as_path()),
+                |this| this.child(div().px_4().py_1().child(self.folder_breadcrumb(&path, cx))),
+            )
             .child(
                 div()
                     .id("folder-page-scroll")

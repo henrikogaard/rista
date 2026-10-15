@@ -205,39 +205,41 @@ impl Workspace {
                             .min_w_0(),
                     ),
             )
-            .child(filters)
+            // Filters left, sort and reveal right, on one row; it wraps
+            // only when the sidebar is too narrow for both.
             .child(
-                h_flex()
-                    .justify_between()
-                    .child(
-                        Button::new("explorer-sort-label")
-                            .ghost()
-                            .xsmall()
-                            .label(match self.settings.tree_sort {
-                                TreeSort::Name => self.tr("Name ↑", "Navn ↑"),
-                                TreeSort::Modified => self.tr("Modified ↓", "Endret ↓"),
-                                TreeSort::Type => self.tr("Type ↑", "Type ↑"),
-                                TreeSort::Size => self.tr("Size ↓", "Størrelse ↓"),
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_tree_sort(cx))),
-                    )
-                    .child(
-                        Button::new("explorer-reveal")
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::Locate)
-                            .tooltip(self.tr("Reveal active file", "Vis aktiv fil"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.explorer_search
-                                    .update(cx, |input, cx| input.set_value("", window, cx));
-                                this.vault.update(cx, |vault, cx| {
-                                    vault.explorer_filter = FileFilter::All;
-                                    vault.explorer_query.clear();
-                                    vault.filter_tree(cx);
-                                });
-                                this.reveal_active_file(cx);
-                            })),
-                    ),
+                h_flex().flex_wrap().justify_between().child(filters).child(
+                    h_flex()
+                        .child(
+                            Button::new("explorer-sort-label")
+                                .ghost()
+                                .xsmall()
+                                .label(match self.settings.tree_sort {
+                                    TreeSort::Name => self.tr("Name ↑", "Navn ↑"),
+                                    TreeSort::Modified => self.tr("Modified ↓", "Endret ↓"),
+                                    TreeSort::Type => self.tr("Type ↑", "Type ↑"),
+                                    TreeSort::Size => self.tr("Size ↓", "Størrelse ↓"),
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_tree_sort(cx))),
+                        )
+                        .child(
+                            Button::new("explorer-reveal")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::Locate)
+                                .tooltip(self.tr("Reveal active file", "Vis aktiv fil"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.explorer_search
+                                        .update(cx, |input, cx| input.set_value("", window, cx));
+                                    this.vault.update(cx, |vault, cx| {
+                                        vault.explorer_filter = FileFilter::All;
+                                        vault.explorer_query.clear();
+                                        vault.filter_tree(cx);
+                                    });
+                                    this.reveal_active_file(cx);
+                                })),
+                        ),
+                ),
             )
             .when(!self.move_undo.is_empty(), |d| {
                 d.child(
