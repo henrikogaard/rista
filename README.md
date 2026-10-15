@@ -140,7 +140,11 @@ notarized by Apple, and include signed automatic updates.
 macOS is the primary, tested platform. Linux and Windows are planned but not yet
 verified. See the [roadmap and limitations](docs/PRODUCT-ROADMAP.md).
 
-On Linux, a desktop entry lets GNOME and other desktops show Rísta's name and
+On Linux, Rísta draws with Vulkan. Without a Vulkan driver it starts but never
+opens a window. Most desktops have one; on Debian and Ubuntu, `mesa-vulkan-drivers`
+provides it (including a software renderer for machines without a GPU).
+
+A desktop entry lets GNOME and other desktops show Rísta's name and
 icon. With `rista` on your `PATH` (desktops read `PATH` at login), install it
 for your user:
 
