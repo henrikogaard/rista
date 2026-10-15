@@ -490,7 +490,7 @@ impl Default for Settings {
             base_views: std::collections::HashMap::new(),
             base_sorts: std::collections::HashMap::new(),
             pinned_tabs: Vec::new(),
-            readable_width: false,
+            readable_width: true,
             tree_sort: TreeSort::default(),
             window_sessions: Vec::new(),
             active_window_id: None,

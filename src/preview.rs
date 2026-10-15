@@ -2137,7 +2137,6 @@ impl MarkdownPlugin for CalloutPlugin {
             )
             .child(
                 div()
-                    .text_sm()
                     .font_semibold()
                     .text_color(accent)
                     .child(callout.title.clone()),
@@ -2151,25 +2150,19 @@ impl MarkdownPlugin for CalloutPlugin {
             .child(header)
             .when(!folded && !callout.body.trim().is_empty(), |this| {
                 this.child(
-                    div()
-                        .w_full()
-                        .px_3()
-                        .pb_2()
-                        .text_sm()
-                        .text_color(foreground)
-                        .child(
-                            styled_text_view(
-                                "callout-body",
-                                callout.body.clone(),
-                                self.ctx.as_ref(),
-                                cx,
-                            )
-                            .markdown_extensions(extensions(
-                                &self.folds,
-                                self.ctx.as_ref(),
-                                false,
-                            )),
-                        ),
+                    div().w_full().px_3().pb_2().text_color(foreground).child(
+                        styled_text_view(
+                            "callout-body",
+                            callout.body.clone(),
+                            self.ctx.as_ref(),
+                            cx,
+                        )
+                        .markdown_extensions(extensions(
+                            &self.folds,
+                            self.ctx.as_ref(),
+                            false,
+                        )),
+                    ),
                 )
             })
     }
