@@ -2975,6 +2975,8 @@ struct EditableTable {
     end: usize,
     /// Column count (header cells).
     cols: usize,
+    /// GFM column alignment from the `---` separator row.
+    align: Vec<mdast::AlignKind>,
 }
 
 struct TablePlugin {
@@ -3044,6 +3046,7 @@ impl MarkdownPlugin for TablePlugin {
                 start,
                 end,
                 cols,
+                align: table.align.clone(),
             },
         ))
     }
@@ -3093,6 +3096,11 @@ impl MarkdownPlugin for TablePlugin {
                         .px_2()
                         .py_1()
                         .text_sm()
+                        .map(|cell| match table.align.get(cix) {
+                            Some(mdast::AlignKind::Right) => cell.text_right(),
+                            Some(mdast::AlignKind::Center) => cell.text_center(),
+                            _ => cell,
+                        })
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.muted.opacity(0.4)))
                         .on_click(move |_, window, cx| {
@@ -3144,6 +3152,9 @@ impl MarkdownPlugin for TablePlugin {
                                 .update(cx, |ws, cx| ws.add_table_col(start, end, window, cx));
                         }),
                 );
+            } else {
+                // Matches the header's "+" cell so columns line up.
+                r = r.child(div().w(px(26.)).flex_none());
             }
             tbl = tbl.child(r);
         }
@@ -3643,16 +3654,17 @@ impl MarkdownPlugin for WikiLinkPlugin {
         std::hash::Hash::hash(&link.target, &mut hasher);
         let key = std::hash::Hasher::finish(&hasher) as usize;
 
+        // Same size as the surrounding text so the link keeps its line's
+        // baseline; a faint underline marks it even in monochrome palettes.
+        let color = semantic_color("info.background", Some(&self.ctx), cx);
+        let color = if resolved { color } else { color.opacity(0.45) };
         let mut el = div()
             .id(("wiki-link", key))
-            .text_sm()
-            .text_color(if resolved {
-                semantic_color("info.background", Some(&self.ctx), cx)
-            } else {
-                semantic_color("info.background", Some(&self.ctx), cx).opacity(0.45)
-            })
+            .text_color(color)
+            .underline()
+            .text_decoration_color(color.opacity(0.35))
             .cursor_pointer()
-            .hover(|d| d.underline())
+            .hover(move |d| d.text_decoration_color(color))
             .child(link.label.clone())
             .on_click(move |ev, window, cx| {
                 let target = target.clone();

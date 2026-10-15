@@ -601,7 +601,7 @@ impl Workspace {
                                     .ghost()
                                     .small()
                                     .icon(assets::IconName::Square)
-                                    .label(task.text)
+                                    .label(folder::inline_plain_text(&task.text))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_document(target.clone(), window, cx)
                                     }))

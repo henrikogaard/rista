@@ -564,9 +564,9 @@ impl GraphView {
             filter_input,
             _filter_sub,
             hovered: None,
-            // Slightly zoomed in — the neighbourhood is what matters.
-            scale: 1.4,
-            auto_fit: false,
+            // Fit the whole neighbourhood until the user pans or zooms.
+            scale: 1.0,
+            auto_fit: true,
             offset: point(0., 0.),
             drag: None,
             steps: STEPS_LIVE,
@@ -628,6 +628,7 @@ impl GraphView {
         self.dist = self.local.map(|center| bfs_dist(center, &self.adjacent));
         if self.docked {
             self.offset = point(0., 0.);
+            self.auto_fit = true;
         }
         cx.notify();
     }
