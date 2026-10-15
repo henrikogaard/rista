@@ -1626,35 +1626,43 @@ impl Workspace {
             if cx.global::<crate::windows::WindowManager>().quitting {
                 return true;
             }
-            workspace.update(cx, |this, cx| match this.save_all(cx) {
-                Ok(()) => {
-                    this.persist_tabs(cx);
-                    let bounds = window.window_bounds().get_bounds();
-                    crate::windows::save_geometry(
-                        this.window_id,
-                        crate::settings::WindowGeometry {
-                            x: bounds.origin.x.as_f32(),
-                            y: bounds.origin.y.as_f32(),
-                            width: bounds.size.width.as_f32(),
-                            height: bounds.size.height.as_f32(),
-                            maximized: window.is_maximized(),
-                        },
-                        cx,
-                    );
-                    this.stop_agent_process(cx);
-                    true
-                }
-                Err(_) => {
-                    let message = this.tr(
-                        "Could not save before closing. Your changes are still open.",
-                        "Kunne ikke lagre før lukking. Endringene dine er fortsatt åpne.",
-                    );
-                    this.note_status(message, cx);
-                    false
-                }
-            })
+            workspace.update(cx, |this, cx| this.prepare_to_close(window, cx))
         });
         this
+    }
+
+    /// Save every document, persist tabs and geometry, and stop the agent
+    /// before the window goes away. False (with a status note) keeps the
+    /// window open when a save fails. Shared by the window manager's close
+    /// and the Linux title bar's own close button, which bypasses it.
+    fn prepare_to_close(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        match self.save_all(cx) {
+            Ok(()) => {
+                self.persist_tabs(cx);
+                let bounds = window.window_bounds().get_bounds();
+                crate::windows::save_geometry(
+                    self.window_id,
+                    crate::settings::WindowGeometry {
+                        x: bounds.origin.x.as_f32(),
+                        y: bounds.origin.y.as_f32(),
+                        width: bounds.size.width.as_f32(),
+                        height: bounds.size.height.as_f32(),
+                        maximized: window.is_maximized(),
+                    },
+                    cx,
+                );
+                self.stop_agent_process(cx);
+                true
+            }
+            Err(_) => {
+                let message = self.tr(
+                    "Could not save before closing. Your changes are still open.",
+                    "Kunne ikke lagre før lukking. Endringene dine er fortsatt åpne.",
+                );
+                self.note_status(message, cx);
+                false
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -10646,8 +10654,16 @@ impl Workspace {
         let collapsed = self.settings.sidebar_collapsed;
         let dark = matches!(self.settings.appearance, Appearance::Dark);
 
+        let workspace = cx.entity();
         TitleBar::new()
             .border_0()
+            // Linux client-side decorations: the title bar's close button would
+            // otherwise remove the window without saving (see prepare_to_close).
+            .on_close_window(move |_, window, cx| {
+                if workspace.update(cx, |this, cx| this.prepare_to_close(window, cx)) {
+                    window.remove_window();
+                }
+            })
             .child(
                 h_flex()
                     .gap_1()
