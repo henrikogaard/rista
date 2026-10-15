@@ -405,19 +405,6 @@ impl Workspace {
                         }),
                 )
             })
-            .when(
-                self.starred_open && self.settings.bookmarks.items.is_empty(),
-                |this| {
-                    this.child(
-                        div()
-                            .px_2()
-                            .pb_1()
-                            .text_xs()
-                            .text_color(muted_foreground)
-                            .child(self.tr("No bookmarks yet", "Ingen bokmerker ennå")),
-                    )
-                },
-            )
     }
 
     fn show_bookmark_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {

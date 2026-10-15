@@ -11855,11 +11855,9 @@ impl Workspace {
                     ),
             )
             .child(self.render_explorer_controls(cx))
-            // An empty Bookmarks section is chrome without content; the file
-            // context menu's "Bookmark" brings it back.
-            .children(
-                (!self.settings.bookmarks.items.is_empty()).then(|| self.render_starred(cx)),
-            )
+            // The header stays even when empty: its "+" menu is the only way to
+            // bookmark a heading or view, make a group, or import bookmarks.
+            .child(self.render_starred(cx))
             .child(
                 div()
                     .relative()
