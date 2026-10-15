@@ -1045,7 +1045,6 @@ impl Render for SettingsView {
             .overflow_y_scroll()
             .p_4()
             .gap_5()
-            .child(hotkeys)
             .child(
                 v_flex()
                     .gap_2()
@@ -1719,6 +1718,8 @@ impl Render for SettingsView {
                         )
                     })),
             )
+            // Hotkeys are the longest and least-visited section, so they come last.
+            .child(hotkeys)
             .child(
                 v_flex()
                     .gap_2()

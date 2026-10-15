@@ -7029,14 +7029,19 @@ impl Workspace {
             .map(PaletteEntry::File)
             .collect();
 
-        self.palette_sections = vec![commands
-            .iter()
-            .cloned()
-            .map(PaletteEntry::Command)
-            .collect()];
+        // Section order must match the dialog's group order below: recent
+        // notes lead, since reopening a note is the most common use.
+        self.palette_sections = Vec::new();
         if !recent.is_empty() {
             self.palette_sections.push(recent.clone());
         }
+        self.palette_sections.push(
+            commands
+                .iter()
+                .cloned()
+                .map(PaletteEntry::Command)
+                .collect(),
+        );
         self.palette_sections.push(notes);
 
         let file_item = |path: &std::path::Path| {
@@ -7109,29 +7114,37 @@ impl Workspace {
         self.palette_sections
             .push(tools.into_iter().map(PaletteEntry::Tool).collect());
         let tools_label = self.tr("Tools", "Verktøy");
+        let commands_label = self.tr("Commands", "Kommandoer");
+        let recent_label = self.tr("Recent", "Nylige");
+        let notes_label = self.tr("Notes", "Notater");
+        let placeholder = self.tr("Notes and commands…", "Notater og kommandoer…");
 
         let state = self.palette_state.clone();
         let view = cx.entity();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let mut palette = Command::new(&state)
-                .placeholder("Notes and commands…")
+                .placeholder(placeholder)
                 .searchable(true)
-                .filterable(true)
-                .group(
-                    CommandGroup::new()
-                        .label("Commands")
-                        .items(command_items.clone()),
-                );
+                .filterable(true);
             if !recent_items.is_empty() {
                 palette = palette.group(
                     CommandGroup::new()
-                        .label("Recent")
+                        .label(recent_label)
                         .items(recent_items.clone()),
                 );
             }
             palette = palette
-                .group(CommandGroup::new().label("Notes").items(note_items.clone()))
+                .group(
+                    CommandGroup::new()
+                        .label(commands_label)
+                        .items(command_items.clone()),
+                )
+                .group(
+                    CommandGroup::new()
+                        .label(notes_label)
+                        .items(note_items.clone()),
+                )
                 .group(
                     CommandGroup::new()
                         .label(tools_label)
@@ -10636,7 +10649,7 @@ impl Workspace {
                         Button::new("toggle-sidebar")
                             .ghost()
                             .small()
-                            .tooltip("Toggle sidebar")
+                            .tooltip(self.tr("Toggle sidebar", "Vis/skjul sidepanel"))
                             .icon(if collapsed {
                                 assets::IconName::PanelLeftOpen
                             } else {
@@ -10665,34 +10678,7 @@ impl Workspace {
                     // pads the left (traffic lights), so icons here sat
                     // flush against the window corner.
                     .pr_3()
-                    .child(
-                        Button::new("toggle-local-graph-panel")
-                            .ghost()
-                            .small()
-                            .tooltip(
-                                self.tr("Toggle local graph panel", "Vis/skjul lokalt grafpanel"),
-                            )
-                            .icon(assets::IconName::Waypoints)
-                            .selected(self.settings.graph_dock_open)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_toggle_local_graph_panel(
-                                    &ToggleLocalGraphPanel,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        Button::new("toggle-agent-panel")
-                            .ghost()
-                            .small()
-                            .tooltip(self.tr("Toggle agent panel", "Vis/skjul agentpanel"))
-                            .icon(assets::IconName::MessageSquareQuote)
-                            .selected(self.settings.agent_open)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_toggle_agent_panel(&ToggleAgentPanel, window, cx);
-                            })),
-                    )
+                    // The local graph and agent toggles live in the status bar.
                     .child(
                         Button::new("toggle-inspector")
                             .ghost()
@@ -10709,7 +10695,9 @@ impl Workspace {
                         Button::new("palette")
                             .ghost()
                             .small()
-                            .tooltip("Search commands and notes")
+                            .tooltip(
+                                self.tr("Search commands and notes", "Søk i kommandoer og notater"),
+                            )
                             .icon(assets::IconName::Search)
                             .label("⌘K")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -10720,7 +10708,8 @@ impl Workspace {
                         Button::new("workspace-layouts")
                             .ghost()
                             .small()
-                            .label(self.tr("Layouts…", "Oppsett…"))
+                            .tooltip(self.tr("Workspace layouts", "Arbeidsområdeoppsett"))
+                            .icon(assets::IconName::LayoutDashboard)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.show_workspace_picker(PaletteCmd::LoadWorkspace, window, cx);
                             })),
@@ -10729,7 +10718,7 @@ impl Workspace {
                         Button::new("theme")
                             .ghost()
                             .small()
-                            .tooltip("Toggle appearance")
+                            .tooltip(self.tr("Toggle appearance", "Bytt utseende"))
                             .icon(if dark {
                                 assets::IconName::Sun
                             } else {
@@ -10743,7 +10732,7 @@ impl Workspace {
                         Button::new("settings")
                             .ghost()
                             .small()
-                            .tooltip("Settings")
+                            .tooltip(self.tr("Settings", "Innstillinger"))
                             .icon(assets::IconName::Settings)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.on_open_settings(&OpenSettings, window, cx);
@@ -11848,7 +11837,7 @@ impl Workspace {
                                     .ghost()
                                     .xsmall()
                                     .icon(assets::IconName::FilePlus)
-                                    .tooltip("New file")
+                                    .tooltip(self.tr("New file", "Ny fil"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.on_new_file(&NewFile, window, cx);
                                     })),
@@ -11858,34 +11847,16 @@ impl Workspace {
                                     .ghost()
                                     .xsmall()
                                     .icon(assets::IconName::FolderPlus)
-                                    .tooltip("New folder")
+                                    .tooltip(self.tr("New folder", "Ny mappe"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.on_new_folder(&NewFolder, window, cx);
                                     })),
                             )
-                            .child(
-                                Button::new("sort-files")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(match self.settings.tree_sort {
-                                        TreeSort::Name => assets::IconName::ListOrdered,
-                                        TreeSort::Modified => assets::IconName::FileClock,
-                                        TreeSort::Type => assets::IconName::File,
-                                        TreeSort::Size => assets::IconName::ListOrdered,
-                                    })
-                                    .tooltip(match self.settings.tree_sort {
-                                        TreeSort::Name => self.tr("Sorted by name", "Sortert etter navn"),
-                                        TreeSort::Modified => self.tr("Sorted by modified", "Sortert etter endring"),
-                                        TreeSort::Type => self.tr("Sorted by type", "Sortert etter filtype"),
-                                        TreeSort::Size => self.tr("Sorted by size", "Sortert etter størrelse"),
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_tree_sort(cx);
-                                    })),
-                            ),
                     ),
             )
             .child(self.render_explorer_controls(cx))
+            // The header stays even when empty: its "+" menu is the only way to
+            // bookmark a heading or view, make a group, or import bookmarks.
             .child(self.render_starred(cx))
             .child(
                 div()
