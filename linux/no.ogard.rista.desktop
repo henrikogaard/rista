@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Rísta
+GenericName=Markdown Editor
+Comment=Local-first Markdown editor
+Exec=rista %F
+Icon=no.ogard.rista
+Terminal=false
+Categories=Office;Utility;TextEditor;
+MimeType=text/markdown;text/x-markdown;
+Keywords=markdown;notes;vault;canvas;
+StartupWMClass=no.ogard.rista
+StartupNotify=true

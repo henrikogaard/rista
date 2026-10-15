@@ -1545,7 +1545,9 @@ fn format_shortcut(value: &Value) -> Option<String> {
     for modifier in modifiers {
         let modifier = modifier.as_str()?;
         let mapped = match modifier {
-            "Mod" | "Cmd" => "cmd",
+            // Obsidian's "Mod" is Cmd on macOS and Ctrl elsewhere, like GPUI's "secondary".
+            "Mod" => "secondary",
+            "Cmd" => "cmd",
             "Ctrl" => "ctrl",
             "Alt" => "alt",
             "Shift" => "shift",
@@ -2087,16 +2089,16 @@ mod tests {
         let plan = plan_import(&root, &Settings::default()).unwrap();
         assert_eq!(
             plan.hotkeys.get("save"),
-            Some(&Some("cmd-shift-s".to_string()))
+            Some(&Some("secondary-shift-s".to_string()))
         );
         assert_eq!(plan.hotkeys.get("open_daily_note"), Some(&None));
         assert_eq!(
             plan.hotkeys.get("quick_open"),
-            Some(&Some("cmd-o".to_string()))
+            Some(&Some("secondary-o".to_string()))
         );
         assert_eq!(
             plan.hotkeys.get("close_tab"),
-            Some(&Some("cmd-w".to_string()))
+            Some(&Some("secondary-w".to_string()))
         );
         assert!(plan.warnings.iter().any(|warning| {
             warning.problem == ImportProblem::UnsupportedCommand

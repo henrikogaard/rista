@@ -118,7 +118,11 @@ impl PdfTarget {
 }
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-c", input::Copy, Some("PdfViewer"))]);
+    cx.bind_keys([KeyBinding::new(
+        "secondary-c",
+        input::Copy,
+        Some("PdfViewer"),
+    )]);
 }
 
 pub struct PdfView {

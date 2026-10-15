@@ -76,7 +76,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "new_file",
         "New file",
         "Ny fil",
-        Some("cmd-n"),
+        Some("secondary-n"),
         None,
         NewFile
     ),
@@ -84,7 +84,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "new_folder",
         "New folder",
         "Ny mappe",
-        Some("cmd-shift-n"),
+        Some("secondary-shift-n"),
         None,
         NewFolder
     ),
@@ -92,7 +92,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_file",
         "Open file",
         "Åpne fil",
-        Some("cmd-o"),
+        Some("secondary-o"),
         None,
         OpenFile
     ),
@@ -100,7 +100,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_folder",
         "Open folder",
         "Åpne mappe",
-        Some("cmd-shift-o"),
+        Some("secondary-shift-o"),
         None,
         OpenFolder
     ),
@@ -108,7 +108,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_daily_note",
         "Open daily note",
         "Åpne dagsnotat",
-        Some("cmd-shift-d"),
+        Some("secondary-shift-d"),
         None,
         OpenDailyNote
     ),
@@ -120,12 +120,12 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         None,
         CloseFolder
     ),
-    action_command!("save", "Save", "Lagre", Some("cmd-s"), None, SaveFile),
+    action_command!("save", "Save", "Lagre", Some("secondary-s"), None, SaveFile),
     action_command!(
         "save_as",
         "Save as",
         "Lagre som",
-        Some("cmd-shift-s"),
+        Some("secondary-shift-s"),
         None,
         SaveFileAs
     ),
@@ -133,7 +133,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "close_tab",
         "Close tab",
         "Lukk fane",
-        Some("cmd-w"),
+        Some("secondary-w"),
         None,
         CloseTab
     ),
@@ -141,7 +141,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "reopen_tab",
         "Reopen closed tab",
         "Gjenåpne lukket fane",
-        Some("cmd-shift-t"),
+        Some("secondary-shift-t"),
         None,
         ReopenTab
     ),
@@ -165,7 +165,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_checkbox",
         "Toggle checkbox",
         "Veksle avkryssing",
-        Some("cmd-enter"),
+        Some("secondary-enter"),
         None,
         ToggleCheckbox
     ),
@@ -173,7 +173,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_italic",
         "Toggle italic",
         "Veksle kursiv",
-        Some("cmd-i"),
+        Some("secondary-i"),
         None,
         ToggleItalic
     ),
@@ -181,7 +181,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "duplicate_block",
         "Duplicate block",
         "Dupliser blokk",
-        Some("cmd-d"),
+        Some("secondary-d"),
         None,
         DuplicateBlock
     ),
@@ -189,7 +189,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "delete_line",
         "Delete line",
         "Slett linje",
-        Some("cmd-shift-k"),
+        Some("secondary-shift-k"),
         None,
         DeleteLine
     ),
@@ -197,7 +197,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_comment",
         "Toggle comment",
         "Veksle kommentar",
-        Some("cmd-/"),
+        Some("secondary-/"),
         None,
         ToggleComment
     ),
@@ -253,7 +253,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "next_pane",
         "Next pane",
         "Neste redigeringsfelt",
-        Some("cmd-alt-right"),
+        Some("secondary-alt-right"),
         None,
         NextPane
     ),
@@ -261,7 +261,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "previous_pane",
         "Previous pane",
         "Forrige redigeringsfelt",
-        Some("cmd-alt-left"),
+        Some("secondary-alt-left"),
         None,
         PrevPane
     ),
@@ -285,7 +285,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "navigate_back",
         "Navigate back",
         "Gå tilbake",
-        Some("cmd-["),
+        Some("secondary-["),
         None,
         NavigateBack
     ),
@@ -293,7 +293,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "navigate_forward",
         "Navigate forward",
         "Gå frem",
-        Some("cmd-]"),
+        Some("secondary-]"),
         None,
         NavigateForward
     ),
@@ -309,7 +309,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_sidebar",
         "Toggle sidebar",
         "Veksle sidepanel",
-        Some("cmd-b"),
+        Some("secondary-b"),
         None,
         ToggleSidebar
     ),
@@ -317,7 +317,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_zen",
         "Toggle focus mode",
         "Veksle fokusmodus",
-        Some("cmd-shift-enter"),
+        Some("secondary-shift-enter"),
         None,
         ToggleZen
     ),
@@ -325,7 +325,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "view_source",
         "Source mode",
         "Kildemodus",
-        Some("cmd-1"),
+        Some("secondary-1"),
         None,
         ViewSource
     ),
@@ -333,7 +333,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "view_split",
         "Split mode",
         "Delt visning",
-        Some("cmd-2"),
+        Some("secondary-2"),
         None,
         ViewSplit
     ),
@@ -341,7 +341,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "view_preview",
         "Preview mode",
         "Forhåndsvisning",
-        Some("cmd-3"),
+        Some("secondary-3"),
         None,
         ViewPreview
     ),
@@ -349,7 +349,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_edit_preview",
         "Toggle edit preview",
         "Veksle redigeringsforhåndsvisning",
-        Some("cmd-e"),
+        Some("secondary-e"),
         None,
         ToggleEditPreview
     ),
@@ -357,7 +357,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "zoom_in",
         "Zoom in",
         "Zoom inn",
-        Some("cmd-="),
+        Some("secondary-="),
         None,
         ZoomIn
     ),
@@ -365,7 +365,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "zoom_out",
         "Zoom out",
         "Zoom ut",
-        Some("cmd-minus"),
+        Some("secondary-minus"),
         None,
         ZoomOut
     ),
@@ -373,7 +373,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "zoom_reset",
         "Reset zoom",
         "Tilbakestill zoom",
-        Some("cmd-0"),
+        Some("secondary-0"),
         None,
         ZoomReset
     ),
@@ -381,7 +381,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_graph",
         "Open graph",
         "Åpne graf",
-        Some("cmd-g"),
+        Some("secondary-g"),
         None,
         OpenGraph
     ),
@@ -421,7 +421,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_command_palette",
         "Open command palette",
         "Åpne kommandopalett",
-        Some("cmd-k"),
+        Some("secondary-k"),
         None,
         OpenCommandPalette
     ),
@@ -429,7 +429,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "quick_open",
         "Quick open",
         "Åpne raskt",
-        Some("cmd-p"),
+        Some("secondary-p"),
         None,
         QuickOpen
     ),
@@ -437,7 +437,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_project_search",
         "Search project",
         "Søk i prosjektet",
-        Some("cmd-shift-f"),
+        Some("secondary-shift-f"),
         None,
         OpenProjectSearch
     ),
@@ -445,7 +445,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "open_settings",
         "Open settings",
         "Åpne innstillinger",
-        Some("cmd-,"),
+        Some("secondary-,"),
         None,
         OpenSettings
     ),
@@ -453,7 +453,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "toggle_terminal",
         "Toggle terminal",
         "Veksle terminal",
-        Some("cmd-j"),
+        Some("secondary-j"),
         None,
         ToggleTerminal
     ),
@@ -481,13 +481,13 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         None,
         CheckForUpdates
     ),
-    action_command!("quit", "Quit", "Avslutt", Some("cmd-q"), None, Quit),
+    action_command!("quit", "Quit", "Avslutt", Some("secondary-q"), None, Quit),
     action_command!("about", "About", "Om", None, None, About),
     action_command!(
         "find_in_note",
         "Find in note",
         "Finn i notat",
-        Some("cmd-f"),
+        Some("secondary-f"),
         None,
         input::Search
     ),
@@ -1116,23 +1116,23 @@ mod tests {
         let mut existing = KeymapConfig::default();
         existing
             .bindings
-            .insert("new_file".into(), Some("cmd-shift-n".into()));
+            .insert("new_file".into(), Some("secondary-shift-n".into()));
         existing
             .bindings
-            .insert("save".into(), Some("cmd-alt-s".into()));
+            .insert("save".into(), Some("secondary-alt-s".into()));
         let imported = BTreeMap::from([
-            ("save".to_string(), Some("cmd-s".to_string())),
+            ("save".to_string(), Some("secondary-s".to_string())),
             ("open_daily_note".to_string(), None),
         ]);
 
         let merged = merge_imported_config(existing, &imported).unwrap();
         assert_eq!(
             merged.bindings.get("new_file"),
-            Some(&Some("cmd-shift-n".to_string()))
+            Some(&Some("secondary-shift-n".to_string()))
         );
         assert_eq!(
             merged.bindings.get("save"),
-            Some(&Some("cmd-s".to_string()))
+            Some(&Some("secondary-s".to_string()))
         );
         assert_eq!(merged.bindings.get("open_daily_note"), Some(&None));
     }
@@ -1155,7 +1155,7 @@ mod tests {
         assert_eq!(effective_shortcut(&config, "save"), None);
         assert_eq!(
             effective_shortcut(&KeymapConfig::default(), "save").as_deref(),
-            Some("cmd-s")
+            Some("secondary-s")
         );
     }
 
@@ -1208,11 +1208,11 @@ mod tests {
         let defaults = test_bindings();
         for (source, expected) in [
             (
-                r#"{"version":1,"bindings":{"new_file":"cmd-alt-n"}}"#,
-                Some("cmd-alt-n"),
+                r#"{"version":1,"bindings":{"new_file":"secondary-alt-n"}}"#,
+                Some("secondary-alt-n"),
             ),
             (r#"{"version":1,"bindings":{"new_file":null}}"#, None),
-            (r#"{"version":1,"bindings":{}}"#, Some("cmd-n")),
+            (r#"{"version":1,"bindings":{}}"#, Some("secondary-n")),
         ] {
             let config = parse_config(source).unwrap();
             let bindings = resolve_bindings(&[], &defaults, &[], &config, &mapper()).unwrap();
@@ -1236,7 +1236,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(
             effective_shortcut(&KeymapConfig::default(), "new_file").as_deref(),
-            Some("cmd-n")
+            Some("secondary-n")
         );
         let _ = fs::remove_file(path);
     }
@@ -1316,13 +1316,17 @@ mod tests {
             resolve_bindings(&[], &defaults, &[], &unchanged_default, &mapper),
             Err(HotkeyNotice::Conflict(_))
         ));
-        let equal = parse_config(r#"{"version":1,"bindings":{"new_file":"cmd-shift-n"}}"#).unwrap();
+        // `secondary` resolves like the defaults on every platform (Cmd on
+        // macOS, Ctrl elsewhere), so these collide everywhere.
+        let equal =
+            parse_config(r#"{"version":1,"bindings":{"new_file":"secondary-shift-n"}}"#).unwrap();
         assert!(matches!(
             resolve_bindings(&[], &defaults, &[], &equal, &mapper),
             Err(HotkeyNotice::Conflict(_))
         ));
         let prefix =
-            parse_config(r#"{"version":1,"bindings":{"new_file":"cmd-k cmd-s"}}"#).unwrap();
+            parse_config(r#"{"version":1,"bindings":{"new_file":"secondary-k secondary-s"}}"#)
+                .unwrap();
         assert!(matches!(
             resolve_bindings(&[], &defaults, &[], &prefix, &mapper),
             Err(HotkeyNotice::Conflict(_))
