@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — 2026-10-16
 
 - Split the editor into panes with tab groups, drag tabs between panes, move tabs to new windows from the tab menu, open independent workspace windows, and save and restore workspace layouts.
 - Add native JSON Canvas boards: text, file, link and group cards, edges with labels, pinch and scroll navigation, and source-preserving saves of unknown fields.
