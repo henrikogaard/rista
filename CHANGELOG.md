@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Split the editor into panes with tab groups, drag tabs between panes or into new windows, open independent workspace windows, and save and restore workspace layouts.
+- Split the editor into panes with tab groups, drag tabs between panes, move tabs to new windows from the tab menu, open independent workspace windows, and save and restore workspace layouts.
 - Add native JSON Canvas boards: text, file, link and group cards, edges with labels, pinch and scroll navigation, and source-preserving saves of unknown fields.
 - Add advanced vault search operators and live query blocks embedded in notes.
 - Add customizable hotkeys, bookmark groups and saved searches, offline spell checking, Vim mode, and style snippets.
@@ -13,7 +13,7 @@
 - Calm the chrome: fewer title-bar buttons, a shorter sidebar header, recent notes first in the command palette, and Appearance first in Settings.
 - Polish Canvas boards: tinted coloured cards, one title per file card, no properties table inside cards, a subtle dot grid, groups drawn behind their cards and edges, and boards that open fitted.
 - Fix the editor font falling back to a proportional face when SF Mono is unavailable, pinch zoom after keyboard input on boards, and the original segmented tab and view-mode chrome.
-- Build and run on Linux (x86_64 and aarch64) with Ctrl shortcuts, a client-drawn title bar, and a desktop entry. Linux is not yet a supported platform; see the README.
+- Run on Linux x86_64 with Ctrl shortcuts, a client-drawn title bar, and a desktop entry, tested on Ubuntu 24.04 with GNOME. aarch64 Linux builds and passes the tests but was not run. Linux is not yet a supported platform; see the README.
 
 ## v0.1.7 — 2026-10-08
 
