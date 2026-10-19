@@ -215,6 +215,15 @@ pub fn note_tags(text: &str) -> Vec<String> {
     found.into_iter().collect()
 }
 
+/// A note's first tag as written — the first `tags:` entry, else the
+/// first inline `#tag`. The graph groups tag colors by it.
+pub fn first_tag(text: &str) -> Option<String> {
+    frontmatter_tags(text)
+        .into_iter()
+        .next()
+        .or_else(|| inline_tags(text).into_iter().next())
+}
+
 /// `tags:` entries from frontmatter — sequence, `[a, b]`, or
 /// comma-separated scalar all count.
 fn frontmatter_tags(text: &str) -> Vec<String> {

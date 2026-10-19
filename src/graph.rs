@@ -19,13 +19,15 @@ use gpui_kit::*;
 
 use crate::actions::{CloseGraph, ToggleLocalGraphPanel};
 use crate::app::Workspace;
-use crate::settings::Language;
+use crate::settings::{GraphColors, Language};
 
 /// One simulated node — `path` is `None` for ghosts (unresolved link
 /// targets, which the reference editor shows too).
 struct GNode {
     path: Option<PathBuf>,
     label: SharedString,
+    /// The note's first tag — the "tag" color group.
+    tag: Option<String>,
     pos: Point<f32>,
     vel: Point<f32>,
     degree: usize,
@@ -57,6 +59,15 @@ pub struct GraphView {
     /// BFS hop distance from the local center — ring 1 bright,
     /// ring 2 mid, the rest far (the local-graph depth).
     dist: Option<Vec<usize>>,
+    /// Local graphs show only nodes within this many hops of the center.
+    depth: usize,
+    /// Restart the animated layout on the next render (local center moved).
+    relayout: bool,
+    color_mode: GraphColors,
+    /// Colored groups, most common first — index = palette slot.
+    groups: Vec<String>,
+    /// Each node's palette slot, if its group is colored.
+    group_of: Vec<Option<usize>>,
     /// The workspace's active document — painted with a halo ring.
     pub(crate) active: Option<PathBuf>,
     docked: bool,
@@ -65,6 +76,7 @@ pub struct GraphView {
     filter: String,
     filter_input: Entity<InputState>,
     _filter_sub: gpui::Subscription,
+    _settings_sub: Option<gpui::Subscription>,
     hovered: Option<usize>,
     scale: f32,
     auto_fit: bool,
@@ -85,6 +97,8 @@ const REPULSION: f32 = 110.0; // ideal spacing k
 const STEPS_INIT: u32 = 120; // silent warmup before first paint
 const STEPS_LIVE: u32 = 600; // animated settle
 const LABEL_SIZE: [f32; 2] = [120., 20.];
+/// `highlight_palette` length — groups past it keep the default fill.
+const GROUP_COLORS: usize = 6;
 /// Rebuild warm-up budget in node pairs × steps — a full
 /// `STEPS_INIT` up to ~300 nodes, fewer above so big vaults don't
 /// stall the UI thread on every save.
@@ -99,6 +113,7 @@ fn warmup_steps(nodes: usize) -> u32 {
 struct CachedLinks {
     root_files: Vec<String>,
     text_targets: Vec<(String, bool)>,
+    first_tag: Option<String>,
 }
 
 type LinkCache = HashMap<PathBuf, (Option<(std::time::SystemTime, u64)>, CachedLinks)>;
@@ -131,6 +146,46 @@ fn bfs_dist(center: usize, adjacent: &[Vec<usize>]) -> Vec<usize> {
     dist
 }
 
+/// Nodes within `depth` hops of the local center.
+fn within_depth(dist: &[usize], depth: usize) -> Vec<bool> {
+    dist.iter().map(|d| *d <= depth).collect()
+}
+
+/// A note's folder group — its first path component under `root`,
+/// or "/" for notes at the root.
+fn folder_group(path: &Path, root: &Path) -> Option<String> {
+    let mut parts = path.strip_prefix(root).ok()?.components();
+    let first = parts.next()?;
+    Some(if parts.next().is_some() {
+        first.as_os_str().to_string_lossy().into_owned()
+    } else {
+        "/".into()
+    })
+}
+
+/// The `slots` most common groups (ties by name), and each key's slot.
+fn rank_groups(keys: &[Option<String>], slots: usize) -> (Vec<String>, Vec<Option<usize>>) {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for key in keys.iter().flatten() {
+        *counts.entry(key).or_default() += 1;
+    }
+    let mut ranked: Vec<(&str, usize)> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let groups: Vec<String> = ranked
+        .into_iter()
+        .take(slots)
+        .map(|(key, _)| key.to_string())
+        .collect();
+    let slot = keys
+        .iter()
+        .map(|key| {
+            key.as_ref()
+                .and_then(|k| groups.iter().position(|g| g == k))
+        })
+        .collect();
+    (groups, slot)
+}
+
 impl GraphView {
     pub(crate) fn local_center_path(&self) -> Option<PathBuf> {
         self.local
@@ -159,6 +214,7 @@ impl GraphView {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default()
                     .into(),
+                tag: None,
                 pos: point(0., 0.),
                 vel: point(0., 0.),
                 degree: 0,
@@ -178,6 +234,7 @@ impl GraphView {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default()
                     .into(),
+                tag: None,
                 pos: point(0., 0.),
                 vel: point(0., 0.),
                 degree: 0,
@@ -203,17 +260,20 @@ impl GraphView {
                         .map(|canvas| CachedLinks {
                             root_files: canvas.vault_file_references(),
                             text_targets: canvas.text_link_targets(),
+                            ..Default::default()
                         })
                         .unwrap_or_default()
                 } else {
                     CachedLinks {
                         text_targets: crate::vault::local_link_targets(&text),
+                        first_tag: crate::properties::first_tag(&text),
                         ..Default::default()
                     }
                 };
                 cache.insert(path.clone(), (stamp, targets));
             }
             let from = by_path[path];
+            nodes[from].tag = cache[path].1.first_tag.clone();
             let from_dir = path.parent().unwrap_or(std::path::Path::new("/"));
             let (resolved, unresolved) = if crate::canvas::is_canvas(path) {
                 vault.canvas_outgoing_targets(
@@ -255,6 +315,7 @@ impl GraphView {
                     nodes.push(GNode {
                         path: None,
                         label: name.clone().into(),
+                        tag: None,
                         pos: point(0., 0.),
                         vel: point(0., 0.),
                         degree: 0,
@@ -300,9 +361,68 @@ impl GraphView {
         }
         match self.dist.as_ref().map(|d| d[ix]) {
             Some(0) | Some(1) => 1.0,
-            Some(2) => 0.45,
-            Some(_) => 0.18,
+            Some(2) => 0.7,
+            Some(_) => 0.5,
             None => 1.0,
+        }
+    }
+
+    /// Which nodes are on the map — local graphs hide everything past
+    /// `depth` hops; the full graph shows all.
+    fn shown(&self) -> Vec<bool> {
+        match &self.dist {
+            Some(dist) => within_depth(dist, self.depth),
+            None => vec![true; self.nodes.len()],
+        }
+    }
+
+    /// Recompute color groups for the current mode, ranked over the vault.
+    fn regroup(&mut self, root: Option<&Path>) {
+        let keys: Vec<Option<String>> = self
+            .nodes
+            .iter()
+            .map(|n| {
+                if n.ghost || n.attachment {
+                    return None;
+                }
+                match self.color_mode {
+                    GraphColors::Off => None,
+                    GraphColors::Folder => root
+                        .zip(n.path.as_deref())
+                        .and_then(|(root, path)| folder_group(path, root)),
+                    GraphColors::Tag => n.tag.clone(),
+                }
+            })
+            .collect();
+        (self.groups, self.group_of) = rank_groups(&keys, GROUP_COLORS);
+    }
+
+    /// Pick up graph settings changes — colors regroup, a new depth
+    /// re-settles the local layout.
+    fn sync_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((mode, depth)) = self.workspace.upgrade().map(|ws| {
+            let settings = ws.read(cx).settings();
+            (settings.graph_colors, settings.local_graph_depth)
+        }) else {
+            return;
+        };
+        if mode != self.color_mode {
+            self.color_mode = mode;
+            let root = self.vault.read(cx).root.clone();
+            self.regroup(root.as_deref());
+        }
+        if depth != self.depth {
+            self.depth = depth;
+            self.relayout = self.local.is_some();
+        }
+        if std::mem::take(&mut self.relayout) {
+            let idle = self.steps == 0;
+            self.steps = STEPS_LIVE;
+            self.auto_fit = true;
+            // A running sim chain picks up the new budget by itself.
+            if idle {
+                self.kick(window, cx);
+            }
         }
     }
 
@@ -329,6 +449,22 @@ impl GraphView {
             }
         });
         (input, sub)
+    }
+
+    /// The graph is a cached view and settings live on the workspace —
+    /// re-render when the graph settings change.
+    fn observe_settings(
+        workspace: &WeakEntity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Subscription> {
+        let workspace = workspace.upgrade()?;
+        Some(cx.observe(&workspace, |this, workspace, cx| {
+            let settings = workspace.read(cx).settings();
+            if (settings.graph_colors, settings.local_graph_depth) != (this.color_mode, this.depth)
+            {
+                cx.notify();
+            }
+        }))
     }
 
     /// ⌘F while the graph is open — focus the filter field.
@@ -494,6 +630,7 @@ impl GraphView {
         let (nodes, _by_path, edges, adjacent, mutual) =
             Self::build(vault.read(cx), &mut link_cache);
         let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
+        let _settings_sub = Self::observe_settings(&workspace, cx);
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -504,12 +641,18 @@ impl GraphView {
             mutual,
             local: None,
             dist: None,
+            depth: 1,
+            relayout: false,
+            color_mode: GraphColors::Off,
+            groups: Vec::new(),
+            group_of: Vec::new(),
             active: None,
             docked: false,
             filter_visible: true,
             filter: String::new(),
             filter_input,
             _filter_sub,
+            _settings_sub,
             hovered: None,
             scale: 1.0,
             auto_fit: true,
@@ -527,8 +670,8 @@ impl GraphView {
         view
     }
 
-    /// Local graph — `center`'s node pinned at the origin; the rest of
-    /// the map still renders but fades back, like the local view.
+    /// Local graph — `center`'s node pinned at the origin; only its
+    /// neighbourhood within the depth setting is shown.
     pub fn new_local(
         workspace: WeakEntity<Workspace>,
         vault: Entity<crate::vault::Vault>,
@@ -541,6 +684,7 @@ impl GraphView {
         let (mut nodes, by_path, edges, adjacent, mutual) =
             Self::build(vault.read(cx), &mut link_cache);
         let (filter_input, _filter_sub) = Self::make_filter(language, window, cx);
+        let _settings_sub = Self::observe_settings(&workspace, cx);
         let local = by_path.get(center).copied();
         if let Some(ix) = local {
             nodes[ix].pos = point(0., 0.);
@@ -557,12 +701,18 @@ impl GraphView {
             mutual,
             local,
             dist,
+            depth: 1,
+            relayout: false,
+            color_mode: GraphColors::Off,
+            groups: Vec::new(),
+            group_of: Vec::new(),
             active: Some(center.to_path_buf()),
             docked: false,
             filter_visible: true,
             filter: String::new(),
             filter_input,
             _filter_sub,
+            _settings_sub,
             hovered: None,
             // Fit the whole neighbourhood until the user pans or zooms.
             scale: 1.0,
@@ -626,6 +776,8 @@ impl GraphView {
         self.local = next;
         self.active = path.map(Path::to_path_buf);
         self.dist = self.local.map(|center| bfs_dist(center, &self.adjacent));
+        // The neighbourhood changed — let it settle (render has the window).
+        self.relayout = self.local.is_some();
         if self.docked {
             self.offset = point(0., 0.);
             self.auto_fit = true;
@@ -708,6 +860,8 @@ impl GraphView {
         self.edges = edges;
         self.adjacent = adjacent;
         self.mutual = mutual;
+        let root = self.vault.read(cx).root.clone();
+        self.regroup(root.as_deref());
         self.dist = self.local.map(|c| bfs_dist(c, &self.adjacent));
         if self.docked {
             let active = self.active.clone();
@@ -730,13 +884,22 @@ impl GraphView {
     /// One Fruchterman–Reingold iteration in place.
     fn step(&mut self) {
         let k = REPULSION;
-        let pos: Vec<[f32; 2]> = self.nodes.iter().map(|n| [n.pos.x, n.pos.y]).collect();
-        let mut disp: Vec<Point<f32>> = crate::graph_layout::repulsion(&pos, k * k)
-            .into_iter()
-            .map(|[x, y]| point(x, y))
+        // Hidden (out-of-depth) nodes neither push, pull nor move.
+        let shown = self.shown();
+        let ids: Vec<usize> = (0..self.nodes.len()).filter(|ix| shown[*ix]).collect();
+        let pos: Vec<[f32; 2]> = ids
+            .iter()
+            .map(|ix| [self.nodes[*ix].pos.x, self.nodes[*ix].pos.y])
             .collect();
+        let mut disp: Vec<Point<f32>> = vec![point(0., 0.); self.nodes.len()];
+        for (ix, [x, y]) in ids.iter().zip(crate::graph_layout::repulsion(&pos, k * k)) {
+            disp[*ix] = point(x, y);
+        }
         // Edge springs.
         for (a, b) in &self.edges {
+            if !(shown[*a] && shown[*b]) {
+                continue;
+            }
             let dx = self.nodes[*b].pos.x - self.nodes[*a].pos.x;
             let dy = self.nodes[*b].pos.y - self.nodes[*a].pos.y;
             let d = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -756,8 +919,8 @@ impl GraphView {
         // Cool the temperature; cap displacement by it.
         let t = (STEPS_LIVE as f32 * 0.5) * (self.steps as f32 / STEPS_LIVE as f32) + 1.0;
         let mut max_move = 0f32;
-        for (node, dvec) in self.nodes.iter_mut().zip(disp.iter()) {
-            if node.pinned {
+        for ((node, dvec), shown) in self.nodes.iter_mut().zip(disp.iter()).zip(shown) {
+            if node.pinned || !shown {
                 continue;
             }
             let d = (dvec.x * dvec.x + dvec.y * dvec.y).sqrt();
@@ -829,7 +992,8 @@ impl GraphView {
     /// Nearest node within its radius (+ slack) of a screen point.
     fn hit(&self, at: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
-        for ix in 0..self.nodes.len() {
+        let shown = self.shown();
+        for ix in (0..self.nodes.len()).filter(|ix| shown[*ix]) {
             let c = self.to_screen(self.nodes[ix].pos, bounds);
             let dx = f32::from(at.x) - f32::from(c.x);
             let dy = f32::from(at.y) - f32::from(c.y);
@@ -881,14 +1045,24 @@ struct Painted {
     fade: Vec<f32>,
     /// Nodes that get a halo ring (local center / active doc).
     ring: Vec<bool>,
+    /// Nodes on the map — local graphs hide the far vault.
+    shown: Vec<bool>,
+    /// Group color, when graph colors are on and the group is ranked.
+    group_fill: Vec<Option<Hsla>>,
 }
 
 impl Render for GraphView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_settings(window, cx);
+        let shown = self.shown();
         if self.auto_fit {
             let bounds = self.bounds.get();
             if let Some((scale, [x, y])) = crate::graph_layout::fit(
-                self.nodes.iter().map(|n| [n.pos.x, n.pos.y]),
+                self.nodes
+                    .iter()
+                    .zip(&shown)
+                    .filter(|(_, shown)| **shown)
+                    .map(|(n, _)| [n.pos.x, n.pos.y]),
                 [f32::from(bounds.size.width), f32::from(bounds.size.height)],
             ) {
                 self.scale = scale;
@@ -979,6 +1153,17 @@ impl Render for GraphView {
         // Attachments read as files, not notes — info tint, a bit dimmer.
         let attach_fill = theme.info.opacity(0.75);
         let label_color = theme.muted_foreground;
+        let palette = crate::preview::highlight_palette(theme);
+        let group_fill: Vec<Option<Hsla>> = (0..self.nodes.len())
+            .map(|ix| {
+                self.group_of
+                    .get(ix)
+                    .copied()
+                    .flatten()
+                    .map(|slot| palette[slot])
+            })
+            .collect();
+        let painted_shown = shown.clone();
 
         // Screen geometry for hit tests/labels needs the painted bounds —
         // read the slot written by last frame's prepaint.
@@ -1021,6 +1206,8 @@ impl Render for GraphView {
                     lit,
                     fade,
                     ring,
+                    shown: painted_shown,
+                    group_fill,
                 }
             },
             move |bounds, painted, window, _cx| {
@@ -1033,6 +1220,9 @@ impl Render for GraphView {
                 let mut hot = gpui::PathBuilder::stroke(px(1.5));
                 let mut any_hot = false;
                 for (a, b) in &edges {
+                    if !(painted.shown[*a] && painted.shown[*b]) {
+                        continue;
+                    }
                     let (ca, ra) = painted.nodes[*a];
                     let (cb, rb) = painted.nodes[*b];
                     // Both ends past the same pane edge — never visible.
@@ -1073,7 +1263,9 @@ impl Render for GraphView {
                     // Arrowheads on lit edges only — direction reads
                     // while inspecting, zero clutter at rest.
                     for (eix, (a, b)) in edges.iter().enumerate() {
-                        if !(painted.lit[*a] || painted.lit[*b]) {
+                        if !(painted.lit[*a] || painted.lit[*b])
+                            || !(painted.shown[*a] && painted.shown[*b])
+                        {
                             continue;
                         }
                         let (ca, ra) = painted.nodes[*a];
@@ -1107,7 +1299,8 @@ impl Render for GraphView {
                 for (ix, (c, r)) in painted.nodes.iter().enumerate() {
                     // Off-pane dots (halo included) — skip the quads.
                     let reach = *r + px(3.);
-                    if c.x + reach < bounds.left()
+                    if !painted.shown[ix]
+                        || c.x + reach < bounds.left()
                         || c.x - reach > bounds.right()
                         || c.y + reach < bounds.top()
                         || c.y - reach > bounds.bottom()
@@ -1119,6 +1312,8 @@ impl Render for GraphView {
                         ghost_fill
                     } else if painted.attachment[ix] {
                         attach_fill
+                    } else if let Some(fill) = painted.group_fill[ix] {
+                        fill
                     } else if is_hover {
                         node_hover
                     } else {
@@ -1155,19 +1350,28 @@ impl Render for GraphView {
             },
         );
 
-        // Prioritize the hovered label; cull overlapping titles before layout.
+        // Prioritize the hovered, then the center label; cull overlapping
+        // titles before layout. Local graphs label every visible note.
         let mut labels = crate::graph_layout::LabelGrid::new(LABEL_SIZE);
-        let label_layer = self
+        let first = self
             .hovered
             .into_iter()
-            .chain((0..self.nodes.len()).filter(|ix| Some(*ix) != self.hovered))
+            .chain(self.local.filter(|c| Some(*c) != self.hovered));
+        let label_layer = first
+            .chain(
+                (0..self.nodes.len())
+                    .filter(|ix| Some(*ix) != self.hovered && Some(*ix) != self.local),
+            )
+            .filter(|ix| shown[*ix])
             .map(|ix| (ix, &self.nodes[ix]))
             .filter(|(ix, n)| {
                 self.hovered == Some(*ix)
-                    || if self.filter.is_empty() {
-                        n.degree >= 3 && !n.ghost
-                    } else {
+                    || if !self.filter.is_empty() {
                         self.base_fade(*ix) >= 1.0
+                    } else if self.local.is_some() {
+                        !n.ghost
+                    } else {
+                        n.degree >= 3 && !n.ghost
                     }
             })
             // Off-pane labels still cost layout — big vaults have thousands.
@@ -1353,6 +1557,18 @@ impl Render for GraphView {
                     });
                 }
             });
+        // Caption counts only what the map shows.
+        let notes = self
+            .nodes
+            .iter()
+            .zip(&shown)
+            .filter(|(n, shown)| **shown && !n.ghost && !n.attachment)
+            .count();
+        let links = self
+            .edges
+            .iter()
+            .filter(|(a, b)| shown[*a] && shown[*b])
+            .count();
         let canvas_view = canvas_view
             .child(canvas.size_full())
             .children(label_layer)
@@ -1368,47 +1584,158 @@ impl Render for GraphView {
                         let matches = self
                             .nodes
                             .iter()
-                            .filter(|n| n.label.to_lowercase().contains(self.filter.as_str()))
+                            .zip(&shown)
+                            .filter(|(n, shown)| {
+                                **shown && n.label.to_lowercase().contains(self.filter.as_str())
+                            })
                             .count();
-                        format!(
-                            "{} matching · {} notes · {} links",
-                            matches,
-                            self.nodes
-                                .iter()
-                                .filter(|n| !n.ghost && !n.attachment)
-                                .count(),
-                            self.edges.len()
-                        )
+                        format!("{matches} matching · {notes} notes · {links} links")
                     } else {
                         match self.local {
-                            Some(_c) if self.docked => format!(
-                                "{} notes · {} links",
-                                self.nodes
-                                    .iter()
-                                    .filter(|n| !n.ghost && !n.attachment)
-                                    .count(),
-                                self.edges.len()
-                            ),
+                            Some(_c) if self.docked => format!("{notes} notes · {links} links"),
                             Some(c) => format!(
-                                "local graph · {} · {} notes · {} links",
+                                "local graph · {} · {notes} notes · {links} links",
                                 self.nodes[c].label,
-                                self.nodes
-                                    .iter()
-                                    .filter(|n| !n.ghost && !n.attachment)
-                                    .count(),
-                                self.edges.len()
                             ),
                             None => format!(
-                                "{} notes · {} links · scroll to zoom, drag to pan",
-                                self.nodes
-                                    .iter()
-                                    .filter(|n| !n.ghost && !n.attachment)
-                                    .count(),
-                                self.edges.len()
+                                "{notes} notes · {links} links · scroll to zoom, drag to pan"
                             ),
                         }
                     }),
             );
-        root.child(canvas_view).into_any_element()
+        // Legend — the colored groups on the map, palette order.
+        let mut on_map = [false; GROUP_COLORS];
+        for slot in self
+            .group_of
+            .iter()
+            .zip(&shown)
+            .filter_map(|(slot, shown)| slot.filter(|_| *shown))
+        {
+            on_map[slot] = true;
+        }
+        let legend = (self.color_mode != GraphColors::Off && on_map.contains(&true)).then(|| {
+            h_flex()
+                .flex_shrink_0()
+                .flex_wrap()
+                .px_4()
+                .pb_2()
+                .gap_x_3()
+                .gap_y_1()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .children(
+                    self.groups
+                        .iter()
+                        .enumerate()
+                        .filter(|(slot, _)| on_map[*slot])
+                        .map(|(slot, name)| {
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(div().size_2().rounded_full().bg(palette[slot]))
+                                .child(name.clone())
+                        }),
+                )
+        });
+        root.child(canvas_view).children(legend).into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bfs_dist, folder_group, rank_groups, within_depth};
+    use std::path::Path;
+
+    #[test]
+    fn tag_color_uses_the_first_declared_tag() {
+        use crate::properties::first_tag;
+        let frontmatter = "---\ntags: [zebra, alpha]\n---\nBody #inline\n";
+        assert_eq!(first_tag(frontmatter).as_deref(), Some("zebra"));
+        assert_eq!(
+            first_tag("Body #zebra and #alpha\n").as_deref(),
+            Some("zebra")
+        );
+        assert_eq!(first_tag("No tags here\n"), None);
+    }
+
+    #[test]
+    fn local_depth_limits_the_visible_set() {
+        // 0 - 1 - 2 - 3 - 4, a branch 1 - 5, and an orphan 6.
+        let mut adjacent = vec![Vec::new(); 7];
+        for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 4), (1, 5)] {
+            adjacent[a].push(b);
+            adjacent[b].push(a);
+        }
+        let dist = bfs_dist(0, &adjacent);
+        let visible = |depth| -> Vec<usize> {
+            within_depth(&dist, depth)
+                .into_iter()
+                .enumerate()
+                .filter_map(|(ix, shown)| shown.then_some(ix))
+                .collect()
+        };
+        assert_eq!(visible(1), [0, 1]);
+        assert_eq!(visible(2), [0, 1, 2, 5]);
+        assert_eq!(visible(3), [0, 1, 2, 3, 5]);
+    }
+
+    #[test]
+    fn folder_groups_rank_by_frequency() {
+        let root = Path::new("/vault");
+        let keys: Vec<Option<String>> = [
+            "/vault/work/a.md",
+            "/vault/work/deep/b.md",
+            "/vault/work/c.md",
+            "/vault/top.md",
+            "/vault/home/d.md",
+            "/vault/home/e.md",
+            "/vault/x.md",
+            "/elsewhere/f.md",
+        ]
+        .into_iter()
+        .map(|p| folder_group(Path::new(p), root))
+        .collect();
+        assert_eq!(keys[3].as_deref(), Some("/"));
+        assert_eq!(keys[7], None);
+        let (groups, slots) = rank_groups(&keys, 6);
+        // "/" and "home" tie at two — ties order by name.
+        assert_eq!(groups, ["work", "/", "home"]);
+        assert_eq!(
+            slots,
+            [
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(2),
+                Some(1),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn tag_groups_past_the_palette_stay_uncolored() {
+        let keys: Vec<Option<String>> = ["b", "a", "b", "c", "a", "b", "d"]
+            .into_iter()
+            .map(|t| Some(t.to_string()))
+            .chain([None])
+            .collect();
+        let (groups, slots) = rank_groups(&keys, 2);
+        assert_eq!(groups, ["b", "a"]);
+        assert_eq!(
+            slots,
+            [
+                Some(0),
+                Some(1),
+                Some(0),
+                None,
+                Some(1),
+                Some(0),
+                None,
+                None
+            ]
+        );
     }
 }
