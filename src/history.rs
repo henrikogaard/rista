@@ -447,7 +447,8 @@ pub(crate) fn prepare_composer_snapshots(
 }
 
 /// Move `path` into `.rista/trash/` and record its original location.
-pub fn move_to_trash(root: &Path, path: &Path) -> io::Result<()> {
+/// Returns the trashed name that [`restore`] takes.
+pub fn move_to_trash(root: &Path, path: &Path) -> io::Result<String> {
     let rel = path
         .strip_prefix(root)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -465,11 +466,11 @@ pub fn move_to_trash(root: &Path, path: &Path) -> io::Result<()> {
     std::fs::rename(path, trash.join(&trashed))?;
     let mut index = read_index(root);
     index.push(TrashEntry {
-        trashed,
+        trashed: trashed.clone(),
         original: rel.to_string_lossy().to_string(),
     });
     write_index(root, &index);
-    Ok(())
+    Ok(trashed)
 }
 
 /// Trash contents in deletion order, oldest first.

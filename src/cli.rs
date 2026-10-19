@@ -44,6 +44,10 @@ pub(crate) enum Command {
         note: PathBuf,
         text: Option<String>,
     },
+    Inbox {
+        vault: PathBuf,
+        text: Option<String>,
+    },
     Search {
         vault: PathBuf,
         query: String,
@@ -160,10 +164,11 @@ pub(crate) fn help(language: Language) -> &'static str {
                new <vault> <name> [--template T]\n\
                daily <vault>\n\
                append <vault> <note> [text|-]\n\
+               inbox <vault> [text|-]\n\
                search <vault> <query>\n\
                links <note> [--vault <vault>]\n\
                backlinks <note> [--vault <vault>]\n\
-             Omitted append text or '-' reads at most 2 MiB from stdin.\n\
+             Omitted append or inbox text or '-' reads at most 2 MiB from stdin.\n\
              Read-only search and link results describe files on disk.\n\
              Use '--' before a path named like a command."
         }
@@ -175,10 +180,11 @@ pub(crate) fn help(language: Language) -> &'static str {
                new <hvelv> <navn> [--template M]\n\
                daily <hvelv>\n\
                append <hvelv> <notat> [tekst|-]\n\
+               inbox <hvelv> [tekst|-]\n\
                search <hvelv> <søk>\n\
                links <notat> [--vault <hvelv>]\n\
                backlinks <notat> [--vault <hvelv>]\n\
-             Utelatt append-tekst eller '-' leser maksimalt 2 MiB fra stdin.\n\
+             Utelatt append- eller inbox-tekst eller '-' leser maksimalt 2 MiB fra stdin.\n\
              Søke- og lenkeresultater viser filer på disk.\n\
              Bruk '--' foran en sti med navn som en kommando."
         }
@@ -212,7 +218,7 @@ pub(crate) fn parse_argv(args: Vec<OsString>) -> Result<Startup, CliError> {
     }
 
     match first {
-        "open" | "new" | "daily" | "append" | "search" | "links" | "backlinks" => {
+        "open" | "new" | "daily" | "append" | "inbox" | "search" | "links" | "backlinks" => {
             let command = parse_command(first, &args[1..])?;
             let request = CliRequest {
                 command,
@@ -222,7 +228,10 @@ pub(crate) fn parse_argv(args: Vec<OsString>) -> Result<Startup, CliError> {
                 if is_read_only(&request.command)
                     || matches!(
                         &request.command,
-                        Command::New { .. } | Command::Daily { .. } | Command::Append { .. }
+                        Command::New { .. }
+                            | Command::Daily { .. }
+                            | Command::Append { .. }
+                            | Command::Inbox { .. }
                     )
                 {
                     Startup::Headless(request)
@@ -338,6 +347,18 @@ fn parse_command(command: &str, args: &[OsString]) -> Result<Command, CliError> 
                 text,
             })
         }
+        "inbox" => {
+            arity(1, 2)?;
+            let text = args
+                .get(1)
+                .map(|_| text_arg(1).map(str::to_owned))
+                .transpose()?
+                .filter(|text| text != "-");
+            Ok(Command::Inbox {
+                vault: path_arg(0)?,
+                text,
+            })
+        }
         "search" => {
             arity(2, 2)?;
             Ok(Command::Search {
@@ -418,6 +439,7 @@ pub(crate) fn parse_url(value: &str) -> Result<CliRequest, CliError> {
         "new" => &["vault", "name", "template"],
         "daily" => &["vault"],
         "append" => &["vault", "file", "text"],
+        "inbox" => &["vault", "text"],
         "search" => &["vault", "query"],
         "links" | "backlinks" => &["vault", "file"],
         _ => {
@@ -463,6 +485,10 @@ pub(crate) fn parse_url(value: &str) -> Result<CliRequest, CliError> {
             note: path_field("file")?,
             text: Some(required("text")?),
         },
+        "inbox" => Command::Inbox {
+            vault: path_field("vault")?,
+            text: Some(required("text")?),
+        },
         "search" => Command::Search {
             vault: path_field("vault")?,
             query: required("query")?,
@@ -482,6 +508,7 @@ pub(crate) fn parse_url(value: &str) -> Result<CliRequest, CliError> {
         | Command::New { vault, .. }
         | Command::Daily { vault }
         | Command::Append { vault, .. }
+        | Command::Inbox { vault, .. }
         | Command::Search { vault, .. } => Some(vault),
         Command::Links { vault, .. } | Command::Backlinks { vault, .. } => vault.as_ref(),
         Command::OpenPaths { .. } => None,
@@ -572,6 +599,7 @@ pub(crate) fn normalize_request_paths(request: &CliRequest) -> CliRequest {
         | Command::New { vault, .. }
         | Command::Daily { vault }
         | Command::Append { vault, .. }
+        | Command::Inbox { vault, .. }
         | Command::Search { vault, .. } => *vault = absolute(vault),
         Command::Links { vault, .. } | Command::Backlinks { vault, .. } => {
             *vault = Some(
@@ -1217,7 +1245,7 @@ pub(crate) fn resolve_stdin(
     request: &mut CliRequest,
     input: &mut impl Read,
 ) -> Result<(), CliError> {
-    if let Command::Append { text, .. } = &mut request.command {
+    if let Command::Append { text, .. } | Command::Inbox { text, .. } = &mut request.command {
         if text.is_none() {
             *text = Some(read_stdin_limited(input)?);
         }
@@ -1250,6 +1278,11 @@ pub(crate) fn write_destination(
             return Ok((root, destination));
         }
         Command::Append { vault, note, .. } => (vault, note, true),
+        Command::Inbox { vault, text } => {
+            let root = canonical_vault(vault)?;
+            let destination = inbox_destination(&root, text.as_deref(), now)?;
+            return Ok((root, destination));
+        }
         _ => {
             return Err(CliError::new(
                 "This command does not write a note",
@@ -1333,6 +1366,23 @@ pub(crate) fn execute_write(
             append_atomically(&root, &destination, &text)?;
             Ok(destination)
         }
+        Command::Inbox { vault, text } => {
+            let root = canonical_vault(vault)?;
+            let text = match text {
+                Some(text) => text.clone(),
+                None => read_stdin_limited(stdin)?,
+            };
+            // The whole note, frontmatter included, stays within the limit
+            // whether the text came from an argument, a URL, the dialog or stdin.
+            let content = crate::inbox::content(&text, now);
+            if content.len() > MAX_NOTE_BYTES {
+                return Err(size_error());
+            }
+            let destination = inbox_destination(&root, Some(&text), now)?;
+            create_parent_directories(&root, &destination)?;
+            create_exclusive(&destination, content.as_bytes())?;
+            Ok(destination)
+        }
         _ => Err(CliError::new(
             "This command does not write a note",
             "Denne kommandoen skriver ikke et notat",
@@ -1352,6 +1402,27 @@ pub(crate) fn execute_write_coordinated(
         execute_write(&request.command, settings, now, stdin)
             .map(|path| vec![path.display().to_string()])
     })
+}
+
+/// The next free capture path in `<vault>/Inbox/`, checked like any other
+/// new-note destination.
+fn inbox_destination(
+    root: &Path,
+    text: Option<&str>,
+    now: NaiveDateTime,
+) -> Result<PathBuf, CliError> {
+    let text = text.ok_or_else(|| {
+        CliError::new(
+            "Inbox text was not provided",
+            "Teksten til innboksen ble ikke oppgitt",
+        )
+    })?;
+    if text.trim().is_empty() {
+        return Err(CliError::new("Nothing to capture", "Ingenting å lagre"));
+    }
+    let destination = crate::inbox::free_path(&root.join(crate::inbox::INBOX_DIR), text, now);
+    validate_destination(root, &destination, false)?;
+    Ok(destination)
 }
 
 fn io_error(error: io::Error) -> CliError {
@@ -1864,6 +1935,128 @@ mod tests {
                     text: None,
                 })))
         );
+    }
+
+    #[test]
+    fn parses_inbox_text_argument_stdin_marker_and_url() {
+        assert_eq!(
+            parse_argv(vec!["inbox".into(), "/vault".into(), "Buy milk".into()]).unwrap(),
+            Startup::Headless(request(Command::Inbox {
+                vault: "/vault".into(),
+                text: Some("Buy milk".into()),
+            }))
+        );
+        for args in [
+            vec!["inbox".into(), "/vault".into()],
+            vec!["inbox".into(), "/vault".into(), "-".into()],
+        ] {
+            assert_eq!(
+                parse_argv(args).unwrap(),
+                Startup::Headless(request(Command::Inbox {
+                    vault: "/vault".into(),
+                    text: None,
+                }))
+            );
+        }
+        assert!(parse_argv(vec!["inbox".into()]).is_err());
+        assert!(parse_argv(vec!["inbox".into(), "/v".into(), "a".into(), "b".into()]).is_err());
+        assert_eq!(
+            parse_url("rista://inbox?vault=%2Ftmp%2FNotes&text=hei%20verden")
+                .unwrap()
+                .command,
+            Command::Inbox {
+                vault: "/tmp/Notes".into(),
+                text: Some("hei verden".into()),
+            }
+        );
+        assert!(parse_url("rista://inbox?vault=%2Ftmp%2FNotes").is_err());
+        assert!(parse_url("rista://inbox?vault=%2Ftmp&text=x&file=a.md").is_err());
+    }
+
+    #[test]
+    fn inbox_creates_one_note_per_capture_from_argument_or_stdin() {
+        let root = temp_dir();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(9, 30, 0)
+            .unwrap();
+        let command = Command::Inbox {
+            vault: root.clone(),
+            text: Some("Idea: ship it\nmore".into()),
+        };
+        let settings = Settings::default();
+        let first = execute_write(&command, &settings, now, &mut io::Cursor::new([])).unwrap();
+        let inbox = root.canonicalize().unwrap().join("Inbox");
+        assert_eq!(first, inbox.join("2026-03-04 0930 Idea ship it.md"));
+        assert_eq!(
+            fs::read_to_string(&first).unwrap(),
+            "---\ncreated: 2026-03-04T09:30:00\n---\nIdea: ship it\nmore\n"
+        );
+        let second = execute_write(&command, &settings, now, &mut io::Cursor::new([])).unwrap();
+        assert_eq!(second, inbox.join("2026-03-04 0930 Idea ship it 2.md"));
+        let piped = execute_write(
+            &Command::Inbox {
+                vault: root.clone(),
+                text: None,
+            },
+            &settings,
+            now,
+            &mut io::Cursor::new("\nfrom stdin\n\n".as_bytes()),
+        )
+        .unwrap();
+        assert_eq!(piped, inbox.join("2026-03-04 0930.md"));
+        assert_eq!(
+            fs::read_to_string(&piped).unwrap(),
+            "---\ncreated: 2026-03-04T09:30:00\n---\n\nfrom stdin\n\n"
+        );
+        assert!(execute_write(
+            &Command::Inbox {
+                vault: root.clone(),
+                text: Some("  \n".into()),
+            },
+            &settings,
+            now,
+            &mut io::Cursor::new([]),
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inbox_rejects_text_over_the_note_limit_from_any_source() {
+        let root = temp_dir();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(9, 30, 0)
+            .unwrap();
+        let settings = Settings::default();
+        let too_large = "x".repeat(MAX_NOTE_BYTES);
+        assert_eq!(
+            execute_write(
+                &Command::Inbox {
+                    vault: root.clone(),
+                    text: Some(too_large.clone()),
+                },
+                &settings,
+                now,
+                &mut io::Cursor::new([]),
+            ),
+            Err(size_error())
+        );
+        assert_eq!(
+            execute_write(
+                &Command::Inbox {
+                    vault: root.clone(),
+                    text: None,
+                },
+                &settings,
+                now,
+                &mut io::Cursor::new(too_large.into_bytes()),
+            ),
+            Err(size_error())
+        );
+        assert!(!root.join("Inbox").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

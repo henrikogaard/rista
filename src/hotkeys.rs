@@ -113,6 +113,15 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         OpenDailyNote
     ),
     action_command!(
+        "quick_capture",
+        "Quick capture",
+        "Hurtignotat",
+        Some("secondary-shift-i"),
+        None,
+        QuickCapture
+    ),
+    action_command!("open_inbox", "Inbox", "Innboks", None, None, OpenInbox),
+    action_command!(
         "close_folder",
         "Close folder",
         "Lukk mappe",

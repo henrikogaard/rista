@@ -15,6 +15,8 @@ actions!(
         OpenFile,
         OpenFolder,
         OpenDailyNote,
+        QuickCapture,
+        OpenInbox,
         CloseFolder,
         SaveFile,
         SaveFileAs,
