@@ -3,7 +3,8 @@
 use crate::app::Workspace;
 use crate::hotkeys::{self, CommandSpec, HotkeyNotice};
 use crate::settings::{
-    Appearance, Language, Period, PropertiesVisibility, Settings, ViewMode, EDITOR_FONTS,
+    Appearance, GraphColors, Language, Period, PropertiesVisibility, Settings, ViewMode,
+    EDITOR_FONTS,
 };
 use crate::spellcheck;
 use crate::theme;
@@ -1653,6 +1654,34 @@ impl Render for SettingsView {
                         )
                     })
             )
+            .child(v_flex().gap_2()
+                .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child(settings.language.text("GRAPH", "GRAF")))
+                .child(Self::row(cx, settings.language.text("Colors", "Farger"),
+                    TabBar::new("graph-colors").segmented()
+                        .selected_index(match settings.graph_colors {
+                            GraphColors::Off => 0,
+                            GraphColors::Folder => 1,
+                            GraphColors::Tag => 2,
+                        })
+                        .children([
+                            Tab::new().label(settings.language.text("Off", "Av")),
+                            Tab::new().label(settings.language.text("Folder", "Mappe")),
+                            Tab::new().label(settings.language.text("Tag", "Tagg")),
+                        ])
+                        .on_click(cx.listener(|this, &index, window, cx| this.update_setting(cx, |s| {
+                            s.graph_colors = match index {
+                                1 => GraphColors::Folder,
+                                2 => GraphColors::Tag,
+                                _ => GraphColors::Off,
+                            };
+                        }, window)))))
+                .child(Self::row(cx, settings.language.text("Local depth", "Lokal dybde"),
+                    TabBar::new("local-graph-depth").segmented()
+                        .selected_index(settings.local_graph_depth.saturating_sub(1))
+                        .children([Tab::new().label("1"), Tab::new().label("2"), Tab::new().label("3")])
+                        .on_click(cx.listener(|this, &index, window, cx| this.update_setting(cx, |s| {
+                            s.local_graph_depth = index + 1;
+                        }, window))))))
             .child(v_flex().gap_2()
                 .child(div().text_xs().font_semibold().text_color(cx.theme().muted_foreground).child(settings.language.text("TERMINAL", "TERMINAL")))
                 .child(Self::row(cx, settings.language.text("Font", "Skrifttype"), Input::new(&self.terminal_font_input).w(px(180.))))

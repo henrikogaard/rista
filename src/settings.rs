@@ -121,6 +121,16 @@ pub enum PropertiesVisibility {
     Hidden,
 }
 
+/// What colors graph nodes: nothing, the top-level folder, or the first tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphColors {
+    #[default]
+    Off,
+    Folder,
+    Tag,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TreeSort {
@@ -161,6 +171,10 @@ pub struct Settings {
     #[serde(deserialize_with = "deserialize_theme_name")]
     pub light_theme: String,
     pub properties_visibility: PropertiesVisibility,
+    pub graph_colors: GraphColors,
+    /// Hops from the active note the local graph shows (1–3).
+    #[serde(deserialize_with = "deserialize_graph_depth")]
+    pub local_graph_depth: usize,
     /// Editor font family — a writing-first set, resolved by name.
     pub editor_font_family: String,
     pub editor_font_size: f32,
@@ -445,6 +459,8 @@ impl Default for Settings {
             dark_theme: crate::theme::NIGHT_THEME_NAME.to_string(),
             light_theme: crate::theme::DAY_THEME_NAME.to_string(),
             properties_visibility: PropertiesVisibility::default(),
+            graph_colors: GraphColors::default(),
+            local_graph_depth: 1,
             editor_font_family: "SF Mono".to_string(),
             editor_font_size: 14.0,
             ui_font_size: 13.0,
@@ -523,6 +539,12 @@ fn deserialize_theme_name<'de, D: serde::Deserializer<'de>>(
         "Rísta Day" => "Slate Day".into(),
         _ => name,
     })
+}
+
+fn deserialize_graph_depth<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<usize, D::Error> {
+    Ok(usize::deserialize(deserializer)?.clamp(1, 3))
 }
 
 pub fn config_path() -> PathBuf {
@@ -688,6 +710,24 @@ mod tests {
             restored.extract_behavior,
             crate::note_composer::ExtractBehavior::Embed
         );
+    }
+
+    #[test]
+    fn graph_settings_default_roundtrip_and_clamp_depth() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":"light"}"#).unwrap();
+        assert_eq!(old.graph_colors, GraphColors::Off);
+        assert_eq!(old.local_graph_depth, 1);
+        let mut settings = old;
+        settings.graph_colors = GraphColors::Tag;
+        settings.local_graph_depth = 3;
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.graph_colors, GraphColors::Tag);
+        assert_eq!(restored.local_graph_depth, 3);
+        let high: Settings = serde_json::from_str(r#"{"local_graph_depth":9}"#).unwrap();
+        assert_eq!(high.local_graph_depth, 3);
+        let low: Settings = serde_json::from_str(r#"{"local_graph_depth":0}"#).unwrap();
+        assert_eq!(low.local_graph_depth, 1);
     }
 
     #[test]
