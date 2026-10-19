@@ -293,17 +293,7 @@ pub struct AgentProcess {
 
 impl AgentProcess {
     pub fn spawn(program: &str, args: &[String], cwd: &Path) -> io::Result<Arc<Self>> {
-        #[cfg(target_os = "macos")]
-        let path = {
-            let inherited = std::env::var_os("PATH").unwrap_or_default();
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            crate::terminal_session::build_macos_path(&inherited, &home, Path::is_dir)
-        };
-        #[cfg(not(target_os = "macos"))]
-        let path = None;
-        let mut child = agent_command(program, args, cwd, path)
+        let mut child = agent_command(program, args, cwd, Some(agent_search_path()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -458,6 +448,62 @@ impl AgentProcess {
             let _ = child.wait();
         }
     }
+}
+
+/// PATH that agent processes run with. Spawning and install detection both
+/// use it, so an agent shown as installed is one that spawning can find.
+pub fn agent_search_path() -> OsString {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        if let Some(path) =
+            crate::terminal_session::build_macos_path(&inherited, &home, Path::is_dir)
+        {
+            return path;
+        }
+    }
+    inherited
+}
+
+/// Programs that fetch and run any package on demand, so finding one says
+/// nothing about whether a particular agent is installed.
+const LAUNCHERS: &[&str] = &["npx", "bunx", "pnpx", "uvx"];
+
+/// Finds `program` with stat calls only: an absolute path must be an
+/// executable file, and a bare name must be one in a `search_path` directory.
+pub fn resolve_program(program: &str, search_path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let program_path = Path::new(program);
+    if program_path.is_absolute() {
+        return is_executable_file(program_path).then(|| program_path.to_path_buf());
+    }
+    if program_path.components().count() != 1 {
+        return None;
+    }
+    std::env::split_paths(search_path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+/// A built-in preset is installed when its own CLI or ACP adapter resolves.
+/// A launcher never counts on its own.
+pub fn preset_installed(program: &str, search_path: &std::ffi::OsStr) -> bool {
+    !LAUNCHERS.contains(&program) && resolve_program(program, search_path).is_some()
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file() || path.with_extension("exe").is_file()
 }
 
 fn agent_command(program: &str, args: &[String], cwd: &Path, path: Option<OsString>) -> Command {
@@ -1145,6 +1191,62 @@ mod tests {
                 child_path.to_string_lossy()
             )
         );
+    }
+
+    #[cfg(unix)]
+    fn write_program(dir: &Path, name: &str, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        fs::write(&path, "#!/bin/sh\n").expect("write program");
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).expect("set mode");
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_program_finds_only_executable_files() {
+        let temp = TempDir::new();
+        let bin = temp.0.join("bin");
+        fs::create_dir(&bin).expect("create bin");
+        let agent = write_program(&bin, "agent-acp", 0o755);
+        write_program(&bin, "plain-file", 0o644);
+        let search_path = std::env::join_paths([Path::new("/nonexistent"), &bin]).expect("join");
+
+        assert_eq!(
+            resolve_program("agent-acp", &search_path).as_deref(),
+            Some(agent.as_path())
+        );
+        assert_eq!(resolve_program("plain-file", &search_path), None);
+        assert_eq!(resolve_program("missing-acp", &search_path), None);
+        assert_eq!(
+            resolve_program(
+                agent.to_str().expect("UTF-8 path"),
+                std::ffi::OsStr::new("")
+            )
+            .as_deref(),
+            Some(agent.as_path())
+        );
+        let missing = bin.join("missing-acp");
+        assert_eq!(
+            resolve_program(missing.to_str().expect("UTF-8 path"), &search_path),
+            None
+        );
+        assert_eq!(resolve_program("bin/agent-acp", &search_path), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preset_needs_its_adapter_not_just_a_launcher() {
+        let temp = TempDir::new();
+        write_program(&temp.0, "npx", 0o755);
+        write_program(&temp.0, "codex", 0o755);
+        let search_path = temp.0.clone().into_os_string();
+
+        assert!(!preset_installed("npx", &search_path));
+        assert!(!preset_installed("codex-acp", &search_path));
+        write_program(&temp.0, "codex-acp", 0o755);
+        assert!(preset_installed("codex-acp", &search_path));
     }
 
     #[test]

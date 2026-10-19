@@ -17,6 +17,33 @@ struct AgentChoice {
     agent: Agent,
 }
 
+impl AgentChoice {
+    fn same_agent(&self, other: &AgentChoice) -> bool {
+        self.agent.id == other.agent.id && self.manifest_id == other.manifest_id
+    }
+
+    // Every built-in preset launches its agent binary directly, so it is
+    // installed when that binary resolves on the agent PATH: Vibe needs
+    // `vibe-acp`, Codex `codex-acp` (not `codex`), Claude `claude-agent-acp`
+    // (not `claude`), and OpenCode and Grok `opencode`. Grok's xAI access is
+    // checked later through the session's `xai/` models. A custom agent is
+    // installed when its `program` resolves.
+    fn is_installed(&self, search_path: &std::ffi::OsStr) -> bool {
+        if self.manifest_id.is_some() {
+            agent::resolve_program(&self.agent.program, search_path).is_some()
+        } else {
+            agent::preset_installed(&self.agent.program, search_path)
+        }
+    }
+}
+
+#[derive(Default)]
+struct AgentDiscovery {
+    installed: Vec<AgentChoice>,
+    missing: Vec<AgentChoice>,
+    errors: Vec<String>,
+}
+
 fn normalize_context_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -89,6 +116,7 @@ pub(super) struct AgentPanel {
     focus_handle: FocusHandle,
     selected: Option<AgentChoice>,
     picker_open: bool,
+    discovery: Option<AgentDiscovery>,
     model_selection: agent::ModelSelection,
     model_selector_open: bool,
     model_error: Option<String>,
@@ -135,6 +163,7 @@ impl AgentPanel {
             focus_handle: cx.focus_handle(),
             selected: None,
             picker_open: false,
+            discovery: None,
             model_selection: agent::ModelSelection::default(),
             model_selector_open: false,
             model_error: None,
@@ -202,6 +231,9 @@ impl AgentPanel {
     }
 
     pub(super) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Every path that opens the panel focuses the composer, so detect
+        // agents here to pick up tools installed while Rísta runs.
+        self.refresh_agents(cx);
         self.composer
             .update(cx, |composer, cx| composer.focus(window, cx));
     }
@@ -252,6 +284,7 @@ impl AgentPanel {
         self.dismissed_context.clear();
         self.active_context = None;
         self.selected = None;
+        self.discovery = None;
         self.model_selection.reset();
         self.model_selector_open = false;
         self.model_error = None;
@@ -265,22 +298,86 @@ impl AgentPanel {
             .is_some_and(|root| agent::guard_vault_path(&root, path).is_ok())
     }
 
-    fn choices(&self, cx: &App) -> (Vec<AgentChoice>, Vec<String>) {
+    /// Reloads agent manifests and sorts agents into installed and missing.
+    /// Detection uses stat calls only, so it can run each time the panel or
+    /// picker opens. A selected agent that is gone is marked unavailable.
+    fn refresh_agents(&mut self, cx: &App) {
         let root = self
             .workspace
             .upgrade()
             .and_then(|workspace| workspace.read(cx).vault.read(cx).root.clone());
         let registry = extensions::Registry::load(&extensions::user_dir(), root.as_deref());
-        let choices = extensions::registered_agents(registry.plugins)
-            .into_iter()
-            .map(|(manifest_id, agent)| AgentChoice { manifest_id, agent })
-            .collect();
-        let errors = registry
-            .errors
+        let search_path = agent::agent_search_path();
+        let mut discovery = AgentDiscovery {
+            errors: registry
+                .errors
+                .iter()
+                .map(|error| error.text(self.language(cx)))
+                .collect(),
+            ..Default::default()
+        };
+        for (manifest_id, agent) in extensions::registered_agents(registry.plugins) {
+            let choice = AgentChoice { manifest_id, agent };
+            if choice.is_installed(&search_path) {
+                discovery.installed.push(choice);
+            } else {
+                discovery.missing.push(choice);
+            }
+        }
+        self.discovery = Some(discovery);
+        if let Some(choice) = self
+            .selected
+            .as_ref()
+            .filter(|_| self.selected_unavailable())
+        {
+            let name = choice.agent.name.text(self.language(cx)).to_string();
+            self.status = AgentStatus::Error;
+            self.error = Some(format!(
+                "{name} {}",
+                self.tr(
+                    cx,
+                    "is not installed. Choose another agent, or open Setup for install steps.",
+                    "er ikke installert. Velg en annen agent, eller åpne Oppsett for installasjonstrinn.",
+                )
+            ));
+            self.picker_open = true;
+        }
+    }
+
+    fn selected_unavailable(&self) -> bool {
+        self.process.is_none()
+            && self.selected.as_ref().is_some_and(|selected| {
+                self.discovery.as_ref().is_some_and(|discovery| {
+                    !discovery
+                        .installed
+                        .iter()
+                        .any(|choice| choice.same_agent(selected))
+                })
+            })
+    }
+
+    fn show_other_setup(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.language(cx);
+        let setup = self
+            .discovery
             .iter()
-            .map(|error| error.text(self.language(cx)))
-            .collect();
-        (choices, errors)
+            .flat_map(|discovery| &discovery.missing)
+            .map(|choice| {
+                format!(
+                    "{}: {}",
+                    choice.agent.name.text(language),
+                    setup_help_text(choice, language)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(language.text("Setup for other agents", "Oppsett for andre agenter"))
+                .description(setup.clone())
+                .show_cancel(false)
+                .ok_text(language.text("Done", "Ferdig"))
+        });
     }
 
     fn show_setup(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1100,7 +1197,12 @@ impl AgentPanel {
         if matches!(self.status, AgentStatus::Working | AgentStatus::Stopping) {
             return;
         }
-        let Some(choice) = self.selected.clone() else {
+        self.refresh_agents(cx);
+        let Some(choice) = self
+            .selected
+            .clone()
+            .filter(|_| !self.selected_unavailable())
+        else {
             self.picker_open = true;
             cx.notify();
             return;
@@ -1219,19 +1321,27 @@ impl Workspace {
 impl Render for AgentPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let language = self.language(cx);
-        // The registry reads manifests from disk, so only load it while the
-        // picker is visible rather than on every streamed frame.
+        // Detection reads manifests and stats files, so it runs when the
+        // panel or picker opens, not on every streamed frame.
         let show_picker = self.picker_open || self.selected.is_none();
-        let (choices, errors) = if show_picker {
-            self.choices(cx)
-        } else {
-            Default::default()
-        };
+        if show_picker && self.discovery.is_none() {
+            self.refresh_agents(cx);
+        }
+        let discovery = self.discovery.as_ref();
+        let installed = discovery.map_or(&[][..], |discovery| &discovery.installed);
+        let has_missing = discovery.is_some_and(|discovery| !discovery.missing.is_empty());
+        let errors = discovery.map_or(&[][..], |discovery| &discovery.errors);
         let context_root = self
             .workspace
             .upgrade()
             .and_then(|workspace| workspace.read(cx).vault.read(cx).root.clone());
-        let has_configured_agents = choices.iter().any(|choice| choice.manifest_id.is_some());
+        let has_configured_agents = discovery.is_some_and(|discovery| {
+            discovery
+                .installed
+                .iter()
+                .chain(&discovery.missing)
+                .any(|choice| choice.manifest_id.is_some())
+        });
         let current_choice = self.selected.as_ref();
         let current_name = current_choice
             .map(|choice| choice.agent.name.text(language))
@@ -1373,6 +1483,9 @@ impl Render for AgentPanel {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if agent::can_select_agent(this.process.is_some()) {
                                             this.picker_open = !this.picker_open;
+                                            if this.picker_open {
+                                                this.refresh_agents(cx);
+                                            }
                                             cx.notify();
                                         }
                                     })),
@@ -1404,7 +1517,19 @@ impl Render for AgentPanel {
                     )
                     .when(show_picker, |content| {
                         let mut content = content
-                            .when(!has_configured_agents, |content| {
+                            .when(installed.is_empty(), |content| {
+                                content.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(self.tr(
+                                            cx,
+                                            "No installed agents were found. See setup for other agents below.",
+                                            "Fant ingen installerte agenter. Se oppsett for andre agenter nedenfor.",
+                                        )),
+                                )
+                            })
+                            .when(!installed.is_empty() && !has_configured_agents, |content| {
                                 content.child(
                                     div()
                                         .text_xs()
@@ -1416,7 +1541,7 @@ impl Render for AgentPanel {
                                         )),
                                 )
                             })
-                            .child(
+                            .when(!installed.is_empty(), |content| content.child(
                                 v_flex()
                                     .gap_0p5()
                                     .max_h(px(150.))
@@ -1424,16 +1549,14 @@ impl Render for AgentPanel {
                                     .bg(cx.theme().group_box)
                                     .rounded(cx.theme().radius)
                                     .p_1()
-                                    .children(choices.iter().enumerate().map(|(index, choice)| {
+                                    .children(installed.iter().enumerate().map(|(index, choice)| {
                                         let source = choice
                                             .manifest_id
                                             .as_deref()
                                             .unwrap_or(self.tr(cx, "Built-in", "Innebygd"));
                                         let name = choice.agent.name.text(language).to_string();
-                                        let is_selected = current_choice.is_some_and(|selected| {
-                                            selected.agent.id == choice.agent.id
-                                                && selected.manifest_id == choice.manifest_id
-                                        });
+                                        let is_selected = current_choice
+                                            .is_some_and(|selected| selected.same_agent(choice));
                                         Button::new(("agent-choice", index))
                                             .ghost()
                                             .xsmall()
@@ -1467,6 +1590,10 @@ impl Render for AgentPanel {
                                                 let choice = choice.clone();
                                                 move |this, _, _, cx| {
                                                     if agent::can_select_agent(this.process.is_some()) {
+                                                        if this.selected_unavailable() {
+                                                            this.status = AgentStatus::Idle;
+                                                            this.error = None;
+                                                        }
                                                         this.selected = Some(choice.clone());
                                                         this.model_selection.reset();
                                                         this.model_selector_open = false;
@@ -1477,7 +1604,23 @@ impl Render for AgentPanel {
                                                 }
                                             }))
                                     })),
-                            );
+                            ))
+                            .when(has_missing, |content| {
+                                content.child(
+                                    Button::new("agent-other-setup")
+                                        .ghost()
+                                        .xsmall()
+                                        .self_start()
+                                        .label(self.tr(
+                                            cx,
+                                            "Show setup for other agents",
+                                            "Vis oppsett for andre agenter",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.show_other_setup(window, cx)
+                                        })),
+                                )
+                            });
                         for error in errors.iter().take(6) {
                             content = content.child(
                                 div()
