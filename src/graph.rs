@@ -266,7 +266,7 @@ impl GraphView {
                 } else {
                     CachedLinks {
                         text_targets: crate::vault::local_link_targets(&text),
-                        first_tag: crate::properties::note_tags(&text).into_iter().next(),
+                        first_tag: crate::properties::first_tag(&text),
                         ..Default::default()
                     }
                 };
@@ -1645,6 +1645,18 @@ impl Render for GraphView {
 mod tests {
     use super::{bfs_dist, folder_group, rank_groups, within_depth};
     use std::path::Path;
+
+    #[test]
+    fn tag_color_uses_the_first_declared_tag() {
+        use crate::properties::first_tag;
+        let frontmatter = "---\ntags: [zebra, alpha]\n---\nBody #inline\n";
+        assert_eq!(first_tag(frontmatter).as_deref(), Some("zebra"));
+        assert_eq!(
+            first_tag("Body #zebra and #alpha\n").as_deref(),
+            Some("zebra")
+        );
+        assert_eq!(first_tag("No tags here\n"), None);
+    }
 
     #[test]
     fn local_depth_limits_the_visible_set() {
