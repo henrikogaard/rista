@@ -56,7 +56,12 @@ without preventing valid extensions from loading. Manifests are bounded to 64 Ki
 
 The `agents` array is optional. Each entry requires a unique `id`, localized
 `name`, and `program`; `args` defaults to an empty array. The Agent picker lists
-the built-in presets followed by configured agents. The IDs `vibe`,
+installed built-in presets followed by installed configured agents. A preset is
+installed when its program below is found on the agent PATH; a launcher such as
+`npx` alone does not count. A configured agent is installed when `program` is
+an executable absolute path or a name found on that PATH. Rísta checks again
+each time the panel or picker opens, and **Show setup for other agents** lists
+install steps for the rest. The IDs `vibe`,
 `rista-codex`, `rista-claude`, `rista-opencode`, and `rista-grok` are reserved
 for those presets and cannot be used by a manifest agent. If no manifest agents
 are configured, **Open extensions folder** opens the vault extension directory
