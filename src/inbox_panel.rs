@@ -1,6 +1,6 @@
 use super::*;
 use crate::folder::Kind;
-use crate::inbox::{InboxUndo, INBOX_DIR};
+use crate::inbox::{DoneBlocked, InboxUndo, INBOX_DIR};
 use gpui_kit::component::input::{Textarea, TextareaState};
 
 impl Workspace {
@@ -343,18 +343,45 @@ impl Workspace {
         }
     }
 
-    /// Done sends the note to the vault trash; it never hard-deletes.
+    /// Done sends the note to the vault trash; it never hard-deletes. An
+    /// open copy is saved first, and a conflicted one blocks Done, so the
+    /// tab closes with no unsaved edits.
     fn inbox_done(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.vault.read(cx).root.clone() else {
             return;
         };
+        let open = self
+            .docs
+            .iter()
+            .find(|doc| doc.entity.read(cx).path == path)
+            .map(|doc| doc.entity.clone());
+        if let Some(doc) = &open {
+            let conflict = doc.read(cx).conflict;
+            let guard = crate::inbox::guard_done(conflict, || {
+                doc.update(cx, |doc, cx| doc.flush_and_save(cx))
+            });
+            if let Err(blocked) = guard {
+                let message = match blocked {
+                    DoneBlocked::Conflict => self.tr(
+                        "Not moved to trash: the open note conflicts with the file on disk",
+                        "Ikke flyttet til papirkurven: det åpne notatet er i konflikt med filen på disken",
+                    ),
+                    DoneBlocked::SaveFailed => self.tr(
+                        "Not moved to trash: could not save the open note",
+                        "Ikke flyttet til papirkurven: kunne ikke lagre det åpne notatet",
+                    ),
+                };
+                self.note_status(message, cx);
+                return;
+            }
+        }
         match crate::history::move_to_trash(&root, &path) {
             Ok(trashed) => {
-                if let Some(ix) = self
-                    .docs
-                    .iter()
-                    .position(|doc| doc.entity.read(cx).path == path)
-                {
+                if let Some(ix) = open.and_then(|open| {
+                    self.docs
+                        .iter()
+                        .position(|doc| doc.entity.entity_id() == open.entity_id())
+                }) {
                     self.close_tab_now(ix, window, cx);
                 }
                 self.inbox_undo.push(InboxUndo::Trashed { trashed });

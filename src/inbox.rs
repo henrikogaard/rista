@@ -15,6 +15,27 @@ pub(crate) enum InboxUndo {
     Trashed { trashed: String },
 }
 
+/// Why Done leaves a capture where it is.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DoneBlocked {
+    /// The open copy conflicts with the file on disk.
+    Conflict,
+    /// Saving the open copy's edits failed.
+    SaveFailed,
+}
+
+/// The gate before Done trashes a capture that is open in a tab: a conflict
+/// refuses, otherwise `save` (a no-op when the buffer is clean) must succeed.
+pub(crate) fn guard_done(
+    conflict: bool,
+    save: impl FnOnce() -> std::io::Result<()>,
+) -> Result<(), DoneBlocked> {
+    if conflict {
+        return Err(DoneBlocked::Conflict);
+    }
+    save().map_err(|_| DoneBlocked::SaveFailed)
+}
+
 /// The first line, made safe for a file name: characters that are invalid
 /// in file names (or break `[[wikilinks]]`) dropped, whitespace collapsed,
 /// cut to about 40 characters on a word boundary.
@@ -94,6 +115,32 @@ mod tests {
             .unwrap()
             .and_hms_opt(9, 5, 7)
             .unwrap()
+    }
+
+    #[test]
+    fn done_saves_first_and_refuses_conflicts() {
+        let mut saved = false;
+        assert_eq!(
+            guard_done(false, || {
+                saved = true;
+                Ok(())
+            }),
+            Ok(())
+        );
+        assert!(saved);
+        assert_eq!(
+            guard_done(false, || Err(std::io::Error::other("disk full"))),
+            Err(DoneBlocked::SaveFailed)
+        );
+        let mut called = false;
+        assert_eq!(
+            guard_done(true, || {
+                called = true;
+                Ok(())
+            }),
+            Err(DoneBlocked::Conflict)
+        );
+        assert!(!called, "a conflicted buffer is never saved over the file");
     }
 
     #[test]
