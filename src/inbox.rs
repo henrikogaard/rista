@@ -69,10 +69,18 @@ pub(crate) fn free_path(dir: &Path, text: &str, now: NaiveDateTime) -> PathBuf {
     path
 }
 
-/// The captured text as written, under a `created` frontmatter stamp.
+/// The captured text as written, under a `created` frontmatter stamp, ending
+/// in exactly one newline: trailing whitespace-only lines are dropped.
 pub(crate) fn content(text: &str, now: NaiveDateTime) -> String {
+    let body = match text.rfind(|c: char| !c.is_whitespace()) {
+        Some(last) => match text[last..].find('\n') {
+            Some(newline) => &text[..last + newline],
+            None => text,
+        },
+        None => "",
+    };
     format!(
-        "---\ncreated: {}\n---\n{text}",
+        "---\ncreated: {}\n---\n{body}\n",
         now.format("%Y-%m-%dT%H:%M:%S")
     )
 }
@@ -149,14 +157,22 @@ mod tests {
     }
 
     #[test]
-    fn content_is_created_frontmatter_then_text_as_written() {
+    fn content_is_created_frontmatter_then_text_ending_in_one_newline() {
         assert_eq!(
             content("Line one\n\n- two\n", now()),
             "---\ncreated: 2026-10-19T09:05:07\n---\nLine one\n\n- two\n"
         );
         assert_eq!(
-            content("no newline", now()),
-            "---\ncreated: 2026-10-19T09:05:07\n---\nno newline"
+            content("See [[Hub]]", now()),
+            "---\ncreated: 2026-10-19T09:05:07\n---\nSee [[Hub]]\n"
+        );
+        assert_eq!(
+            content("Keep  \n\n  inner\n\n \t\n\n", now()),
+            "---\ncreated: 2026-10-19T09:05:07\n---\nKeep  \n\n  inner\n"
+        );
+        assert_eq!(
+            content("crlf\r\n\r\n", now()),
+            "---\ncreated: 2026-10-19T09:05:07\n---\ncrlf\r\n"
         );
     }
 }

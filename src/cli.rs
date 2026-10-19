@@ -1984,7 +1984,7 @@ mod tests {
         assert_eq!(first, inbox.join("2026-03-04 0930 Idea ship it.md"));
         assert_eq!(
             fs::read_to_string(&first).unwrap(),
-            "---\ncreated: 2026-03-04T09:30:00\n---\nIdea: ship it\nmore"
+            "---\ncreated: 2026-03-04T09:30:00\n---\nIdea: ship it\nmore\n"
         );
         let second = execute_write(&command, &settings, now, &mut io::Cursor::new([])).unwrap();
         assert_eq!(second, inbox.join("2026-03-04 0930 Idea ship it 2.md"));
