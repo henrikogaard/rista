@@ -171,9 +171,8 @@ impl Workspace {
                     .collect()
             })
             .unwrap_or_default();
-        // Capture names start with `YYYY-MM-DD HHmm`, so name order is
-        // capture order.
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+            .sort_by_cached_key(|entry| crate::inbox::capture_order_of(&entry.path, &entry.name));
         let mut rows = v_flex().w_full();
         if entries.is_empty() {
             rows = rows.child(

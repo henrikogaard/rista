@@ -90,6 +90,44 @@ pub(crate) fn free_path(dir: &Path, text: &str, now: NaiveDateTime) -> PathBuf {
     path
 }
 
+/// The `created:` frontmatter time of a note, if it has a readable one.
+pub(crate) fn created_at(text: &str) -> Option<NaiveDateTime> {
+    crate::properties::properties(text)
+        .into_iter()
+        .find(|(key, _)| key == "created")
+        .and_then(|(_, value)| {
+            NaiveDateTime::parse_from_str(value.as_str()?.trim(), "%Y-%m-%dT%H:%M:%S%.f").ok()
+        })
+}
+
+/// Triage order, oldest first: the `created:` time (the modified time when a
+/// note has none), then the modified time, then the name.
+pub(crate) fn capture_order(
+    created: Option<NaiveDateTime>,
+    modified: Option<NaiveDateTime>,
+    name: &str,
+) -> (Option<NaiveDateTime>, Option<NaiveDateTime>, String) {
+    (created.or(modified), modified, name.to_string())
+}
+
+/// `capture_order` for a file on disk, reading only the start of the file
+/// for its frontmatter.
+pub(crate) fn capture_order_of(
+    path: &Path,
+    name: &str,
+) -> (Option<NaiveDateTime>, Option<NaiveDateTime>, String) {
+    use std::io::Read;
+    let mut head = Vec::new();
+    if let Ok(file) = std::fs::File::open(path) {
+        let _ = file.take(8 * 1024).read_to_end(&mut head);
+    }
+    let modified = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .map(|time| chrono::DateTime::<chrono::Local>::from(time).naive_local());
+    capture_order(created_at(&String::from_utf8_lossy(&head)), modified, name)
+}
+
 /// The captured text as written, under a `created` frontmatter stamp, ending
 /// in exactly one newline: trailing whitespace-only lines are dropped.
 pub(crate) fn content(text: &str, now: NaiveDateTime) -> String {
@@ -141,6 +179,47 @@ mod tests {
             Err(DoneBlocked::Conflict)
         );
         assert!(!called, "a conflicted buffer is never saved over the file");
+    }
+
+    #[test]
+    fn created_at_reads_the_frontmatter_stamp() {
+        assert_eq!(created_at(&content("Idea", now())), Some(now()));
+        assert_eq!(
+            created_at("---\ntitle: x\ncreated: \"2026-10-19T09:05:07.250\"\n---\nbody"),
+            Some(now() + chrono::Duration::milliseconds(250))
+        );
+        assert_eq!(created_at("no frontmatter"), None);
+        assert_eq!(created_at("---\ncreated: yesterday\n---\n"), None);
+    }
+
+    #[test]
+    fn capture_order_uses_created_then_modified_then_name() {
+        let at = |s: u32| Some(now() + chrono::Duration::seconds(s.into()));
+        let mut notes = [
+            capture_order(at(5), at(5), "2026-10-19 0905 Apple.md"),
+            capture_order(at(1), at(1), "2026-10-19 0905 Zebra.md"),
+            // Same second: the modified time breaks the tie, not the name.
+            capture_order(at(9), at(10), "2026-10-19 0905 Idea 10.md"),
+            capture_order(at(9), at(9), "2026-10-19 0905 Idea 2.md"),
+            // Hand-made, no `created:`: its modified time places it.
+            capture_order(None, at(3), "hand made.md"),
+            capture_order(at(9), at(8), "2026-10-19 0905 Idea.md"),
+        ];
+        notes.sort();
+        let names: Vec<_> = notes.iter().map(|(_, _, name)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "2026-10-19 0905 Zebra.md",
+                "hand made.md",
+                "2026-10-19 0905 Apple.md",
+                "2026-10-19 0905 Idea.md",
+                "2026-10-19 0905 Idea 2.md",
+                "2026-10-19 0905 Idea 10.md",
+            ]
+        );
+        let tie = |name| capture_order(at(1), at(1), name);
+        assert!(tie("b.md") > tie("a.md"));
     }
 
     #[test]
