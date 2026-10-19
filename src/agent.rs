@@ -494,11 +494,14 @@ pub fn preset_installed(program: &str, search_path: &std::ffi::OsStr) -> bool {
     !LAUNCHERS.contains(&program) && resolve_program(program, search_path).is_some()
 }
 
+/// An execute bit is not enough: it may belong to another user or be denied
+/// by an ACL, so ask the kernel whether this process may execute the file.
 #[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    use std::os::unix::ffi::OsStrExt;
+    path.metadata().is_ok_and(|metadata| metadata.is_file())
+        && std::ffi::CString::new(path.as_os_str().as_bytes())
+            .is_ok_and(|path| unsafe { libc::access(path.as_ptr(), libc::X_OK) } == 0)
 }
 
 #[cfg(not(unix))]
@@ -1233,6 +1236,24 @@ mod tests {
             None
         );
         assert_eq!(resolve_program("bin/agent-acp", &search_path), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_program_skips_files_the_owner_cannot_execute() {
+        // Root may execute any file with an execute bit.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let temp = TempDir::new();
+        let other_only = write_program(&temp.0, "other-acp", 0o001);
+        let search_path = temp.0.clone().into_os_string();
+
+        assert_eq!(resolve_program("other-acp", &search_path), None);
+        assert_eq!(
+            resolve_program(other_only.to_str().expect("UTF-8 path"), &search_path),
+            None
+        );
     }
 
     #[cfg(unix)]

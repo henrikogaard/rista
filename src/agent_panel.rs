@@ -116,6 +116,8 @@ pub(super) struct AgentPanel {
     focus_handle: FocusHandle,
     selected: Option<AgentChoice>,
     picker_open: bool,
+    /// The message `refresh_agents` set for a missing selected agent.
+    missing_notice: Option<String>,
     discovery: Option<AgentDiscovery>,
     model_selection: agent::ModelSelection,
     model_selector_open: bool,
@@ -163,6 +165,7 @@ impl AgentPanel {
             focus_handle: cx.focus_handle(),
             selected: None,
             picker_open: false,
+            missing_notice: None,
             discovery: None,
             model_selection: agent::ModelSelection::default(),
             model_selector_open: false,
@@ -341,16 +344,25 @@ impl AgentPanel {
             .filter(|_| self.selected_unavailable())
         {
             let name = choice.agent.name.text(self.language(cx)).to_string();
-            self.status = AgentStatus::Error;
-            self.error = Some(format!(
+            let notice = format!(
                 "{name} {}",
                 self.tr(
                     cx,
                     "is not installed. Choose another agent, or open Setup for install steps.",
                     "er ikke installert. Velg en annen agent, eller åpne Oppsett for installasjonstrinn.",
                 )
-            ));
+            );
+            self.status = AgentStatus::Error;
+            self.error = Some(notice.clone());
+            self.missing_notice = Some(notice);
             self.picker_open = true;
+        } else {
+            clear_missing_notice(
+                &mut self.missing_notice,
+                &mut self.status,
+                &mut self.error,
+                &mut self.picker_open,
+            );
         }
     }
 
@@ -1492,10 +1504,13 @@ impl Render for AgentPanel {
                                     .disabled(self.process.is_some())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if agent::can_select_agent(this.process.is_some()) {
-                                            this.picker_open = !this.picker_open;
-                                            if this.picker_open {
+                                            // Refresh first: clearing a missing-agent
+                                            // notice closes the picker it opened.
+                                            let open = !this.picker_open;
+                                            if open {
                                                 this.refresh_agents(cx);
                                             }
+                                            this.picker_open = open;
                                             cx.notify();
                                         }
                                     })),
@@ -2305,11 +2320,53 @@ impl Focusable for AgentPanel {
     }
 }
 
+/// Undoes what `refresh_agents` set for a missing agent once it is available
+/// again. A later error, such as a failed session, replaced the notice and
+/// stays.
+fn clear_missing_notice(
+    notice: &mut Option<String>,
+    status: &mut AgentStatus,
+    error: &mut Option<String>,
+    picker_open: &mut bool,
+) {
+    if let Some(notice) = notice.take() {
+        if error.as_ref() == Some(&notice) {
+            *status = AgentStatus::Idle;
+            *error = None;
+            *picker_open = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::merge_active_context;
+    use super::{clear_missing_notice, merge_active_context, AgentStatus};
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn available_agent_clears_only_its_missing_notice() {
+        let notice = "Codex is not installed.".to_string();
+        let mut missing = Some(notice.clone());
+        let mut status = AgentStatus::Error;
+        let mut error = Some(notice);
+        let mut picker_open = true;
+        clear_missing_notice(&mut missing, &mut status, &mut error, &mut picker_open);
+        assert!(missing.is_none());
+        assert!(status == AgentStatus::Idle);
+        assert!(error.is_none());
+        assert!(!picker_open);
+
+        let mut missing = Some("Codex is not installed.".to_string());
+        let mut status = AgentStatus::Error;
+        let mut error = Some("Agent error: session failed".to_string());
+        let mut picker_open = true;
+        clear_missing_notice(&mut missing, &mut status, &mut error, &mut picker_open);
+        assert!(missing.is_none());
+        assert!(status == AgentStatus::Error);
+        assert_eq!(error.as_deref(), Some("Agent error: session failed"));
+        assert!(picker_open);
+    }
 
     #[test]
     fn only_protocol_mediated_writes_are_described_as_reviewed() {
