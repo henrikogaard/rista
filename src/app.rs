@@ -55,6 +55,8 @@ mod bookmarks_panel;
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "inbox_panel.rs"]
+mod inbox_panel;
 #[path = "pdf_export_ui.rs"]
 mod pdf_export_ui;
 #[path = "saved_workspaces.rs"]
@@ -193,6 +195,7 @@ pub struct Workspace {
     folder_search: Entity<InputState>,
     explorer_search: Entity<InputState>,
     move_undo: Vec<(PathBuf, PathBuf)>,
+    inbox_undo: Vec<crate::inbox::InboxUndo>,
     terminals: Vec<tools_panel::TerminalTab>,
     active_terminal: Option<usize>,
     next_terminal_id: usize,
@@ -396,6 +399,8 @@ pub(crate) enum PaletteCmd {
     NextPeriodic,
     NewFromTemplate,
     AppendDaily,
+    QuickCapture,
+    Inbox,
     CloseFolder,
     Save,
     SaveAs,
@@ -502,6 +507,8 @@ impl PaletteCmd {
         Self::PrevPeriodic,
         Self::NextPeriodic,
         Self::AppendDaily,
+        Self::QuickCapture,
+        Self::Inbox,
         Self::OpenFile,
         Self::OpenFolder,
         Self::NewFolder,
@@ -610,6 +617,8 @@ impl PaletteCmd {
             PrevPeriodic => "previous_periodic_note",
             NextPeriodic => "next_periodic_note",
             AppendDaily => "append_daily_note",
+            QuickCapture => "quick_capture",
+            Inbox => "open_inbox",
             OpenFile => "open_file",
             OpenFolder => "open_folder",
             NewFolder => "new_folder",
@@ -723,6 +732,8 @@ impl PaletteCmd {
             PrevPeriodic => "Forrige periodiske notat",
             NextPeriodic => "Neste periodiske notat",
             AppendDaily => "Legg til i dagsnotat",
+            QuickCapture => "Hurtignotat",
+            Inbox => "Innboks",
             OpenFile => "Åpne fil…",
             OpenFolder => "Åpne mappe…",
             NewFolder => "Ny mappe",
@@ -917,6 +928,16 @@ impl PaletteCmd {
                 assets::IconName::SquarePen,
                 "Append to daily note…",
                 &["today", "journal", "log", "quick"],
+            ),
+            QuickCapture => (
+                assets::IconName::SquarePen,
+                "Quick capture",
+                &["inbox", "capture", "jot", "quick"],
+            ),
+            Inbox => (
+                assets::IconName::FolderOpen,
+                "Inbox",
+                &["capture", "triage", "review"],
             ),
             CloseFolder => (
                 assets::IconName::FolderClosed,
@@ -1434,6 +1455,7 @@ impl Workspace {
             folder_search,
             explorer_search,
             move_undo: Vec::new(),
+            inbox_undo: Vec::new(),
             terminals: Vec::new(),
             active_terminal: None,
             next_terminal_id: 0,
@@ -1716,6 +1738,7 @@ impl Workspace {
         self.nav_pos = 0;
         self.nav_suppress = false;
         self.move_undo.clear();
+        self.inbox_undo.clear();
         self.explorer_search
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.vault.update(cx, |vault, cx| {
@@ -2242,6 +2265,10 @@ impl Workspace {
             crate::cli::Command::Append { .. } => (
                 language.text("Append to this note?", "Legge til tekst i dette notatet?"),
                 language.text("Append", "Legg til"),
+            ),
+            crate::cli::Command::Inbox { .. } => (
+                language.text("Capture to Inbox?", "Legge i innboksen?"),
+                language.text("Capture", "Legg i innboksen"),
             ),
             _ => return,
         };
@@ -7277,6 +7304,8 @@ impl Workspace {
             PaletteCmd::NewFromTemplate => {
                 self.defer_dialog(Self::show_new_from_template, window, cx)
             }
+            PaletteCmd::QuickCapture => self.defer_dialog(Self::show_quick_capture, window, cx),
+            PaletteCmd::Inbox => self.on_open_inbox(&OpenInbox, window, cx),
             PaletteCmd::AppendDaily => {
                 self.defer_dialog(Self::show_append_daily_dialog, window, cx)
             }
@@ -8388,8 +8417,20 @@ impl Workspace {
             };
             dir.join(name)
         };
+        self.move_with_links(path, new_path, window, cx);
+    }
+
+    /// Rename or move `path` to `new_path`, retargeting inbound links and
+    /// the moved note's own relative links. Returns whether it moved.
+    pub(super) fn move_with_links(
+        &mut self,
+        path: PathBuf,
+        new_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if new_path == path || new_path.exists() {
-            return;
+            return false;
         }
         if crate::canvas::rejects_canvas_kind_change(&path, &new_path, path.is_dir()) {
             self.note_status(
@@ -8399,7 +8440,7 @@ impl Workspace {
                 ),
                 cx,
             );
-            return;
+            return false;
         }
         let canvas_rewrites = match self.vault.read(cx).root.clone() {
             Some(root) if path.starts_with(&root) && new_path.starts_with(&root) => {
@@ -8413,16 +8454,14 @@ impl Workspace {
                             ),
                             cx,
                         );
-                        return;
+                        return false;
                     }
                 }
             }
             _ => Vec::new(),
         };
-        if name.contains('/') {
-            if let Some(parent) = new_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
+        if let Some(parent) = new_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
         // Collect inbound `[[link]]`/`![[embed]]` targets resolving to the
         // file *before* it moves — resolution uses the pre-rename index.
@@ -8626,8 +8665,9 @@ impl Workspace {
             );
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
             self.persist_tabs(cx);
+            return true;
         }
-        let _ = window;
+        false
     }
 
     /// Edit `prop` on the active document — the preview's Properties
@@ -11878,6 +11918,7 @@ impl Workspace {
                     ),
             )
             .child(self.render_explorer_controls(cx))
+            .children(self.render_inbox_link(cx))
             // The header stays even when empty: its "+" menu is the only way to
             // bookmark a heading or view, make a group, or import bookmarks.
             .child(self.render_starred(cx))
@@ -14533,6 +14574,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_open_folder))
             .on_action(cx.listener(Self::on_open_daily))
+            .on_action(cx.listener(Self::on_quick_capture))
+            .on_action(cx.listener(Self::on_open_inbox))
             .on_action(cx.listener(Self::on_close_folder))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))

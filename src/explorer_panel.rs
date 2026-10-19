@@ -1,6 +1,10 @@
 use super::*;
 use crate::explorer::FileFilter;
 
+/// What the path switcher does with the picked path.
+pub(super) type PathPick =
+    Rc<dyn Fn(&mut Workspace, PathBuf, &mut Window, &mut Context<Workspace>)>;
+
 pub(super) struct CanvasMoveRewrite {
     destination: PathBuf,
     before: String,
@@ -382,16 +386,18 @@ impl Workspace {
             paths,
             root,
             self.tr("Open file or folder…", "Åpne fil eller mappe…"),
+            Rc::new(|this, path, window, cx| this.open_explorer_path(path, false, window, cx)),
             window,
             cx,
         );
     }
 
-    fn open_path_switcher(
+    pub(super) fn open_path_switcher(
         &mut self,
         paths: Vec<PathBuf>,
         root: PathBuf,
         title: &'static str,
+        on_pick: PathPick,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -419,6 +425,7 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             let paths = paths.clone();
             let view = view.clone();
+            let on_pick = on_pick.clone();
             dialog.w(px(580.)).close_button(false).child(
                 Command::new(&state)
                     .placeholder(title)
@@ -432,10 +439,9 @@ impl Workspace {
                             let path = path.clone();
                             window.defer(cx, {
                                 let view = view.clone();
+                                let on_pick = on_pick.clone();
                                 move |window, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.open_explorer_path(path, false, window, cx)
-                                    });
+                                    view.update(cx, |this, cx| on_pick(this, path, window, cx));
                                 }
                             });
                         }
@@ -472,6 +478,7 @@ impl Workspace {
             paths,
             folder,
             self.tr("Browse this folder…", "Bla i denne mappen…"),
+            Rc::new(|this, path, window, cx| this.open_explorer_path(path, false, window, cx)),
             window,
             cx,
         );
