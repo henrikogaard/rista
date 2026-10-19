@@ -232,8 +232,18 @@ impl AgentPanel {
 
     pub(super) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Every path that opens the panel focuses the composer, so detect
-        // agents here to pick up tools installed while Rísta runs.
-        self.refresh_agents(cx);
+        // agents here to pick up tools installed while Rísta runs. Callers
+        // run inside a Workspace update, and the refresh reads the Workspace,
+        // so it waits until that update ends.
+        let panel = cx.weak_entity();
+        cx.defer(move |cx| {
+            panel
+                .update(cx, |panel, cx| {
+                    panel.refresh_agents(cx);
+                    cx.notify();
+                })
+                .ok();
+        });
         self.composer
             .update(cx, |composer, cx| composer.focus(window, cx));
     }
