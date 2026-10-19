@@ -2001,10 +2001,14 @@ mod tests {
             },
             &settings,
             now,
-            &mut io::Cursor::new("\nfrom stdin".as_bytes()),
+            &mut io::Cursor::new("\nfrom stdin\n\n".as_bytes()),
         )
         .unwrap();
         assert_eq!(piped, inbox.join("2026-03-04 0930.md"));
+        assert_eq!(
+            fs::read_to_string(&piped).unwrap(),
+            "---\ncreated: 2026-03-04T09:30:00\n---\n\nfrom stdin\n\n"
+        );
         assert!(execute_write(
             &Command::Inbox {
                 vault: root.clone(),

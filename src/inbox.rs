@@ -128,18 +128,12 @@ pub(crate) fn capture_order_of(
     capture_order(created_at(&String::from_utf8_lossy(&head)), modified, name)
 }
 
-/// The captured text as written, under a `created` frontmatter stamp, ending
-/// in exactly one newline: trailing whitespace-only lines are dropped.
+/// The captured text exactly as given, under a `created` frontmatter stamp,
+/// with a newline added only when the text does not already end in one.
 pub(crate) fn content(text: &str, now: NaiveDateTime) -> String {
-    let body = match text.rfind(|c: char| !c.is_whitespace()) {
-        Some(last) => match text[last..].find('\n') {
-            Some(newline) => &text[..last + newline],
-            None => text,
-        },
-        None => "",
-    };
+    let newline = if text.ends_with('\n') { "" } else { "\n" };
     format!(
-        "---\ncreated: {}\n---\n{body}\n",
+        "---\ncreated: {}\n---\n{text}{newline}",
         now.format("%Y-%m-%dT%H:%M:%S")
     )
 }
@@ -283,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn content_is_created_frontmatter_then_text_ending_in_one_newline() {
+    fn content_is_created_frontmatter_then_the_text_as_given() {
         assert_eq!(
             content("Line one\n\n- two\n", now()),
             "---\ncreated: 2026-10-19T09:05:07\n---\nLine one\n\n- two\n"
@@ -294,11 +288,19 @@ mod tests {
         );
         assert_eq!(
             content("Keep  \n\n  inner\n\n \t\n\n", now()),
-            "---\ncreated: 2026-10-19T09:05:07\n---\nKeep  \n\n  inner\n"
+            "---\ncreated: 2026-10-19T09:05:07\n---\nKeep  \n\n  inner\n\n \t\n\n"
+        );
+        assert_eq!(
+            content("trailing  ", now()),
+            "---\ncreated: 2026-10-19T09:05:07\n---\ntrailing  \n"
+        );
+        assert_eq!(
+            content("crlf\r\n", now()),
+            "---\ncreated: 2026-10-19T09:05:07\n---\ncrlf\r\n"
         );
         assert_eq!(
             content("crlf\r\n\r\n", now()),
-            "---\ncreated: 2026-10-19T09:05:07\n---\ncrlf\r\n"
+            "---\ncreated: 2026-10-19T09:05:07\n---\ncrlf\r\n\r\n"
         );
     }
 }

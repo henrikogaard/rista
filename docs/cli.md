@@ -37,7 +37,8 @@ creating the folder on first use. The note is named
 characters that are invalid in file names or break wikilinks removed and the
 words cut to about 40 characters. An empty first line gives the time alone,
 and a taken name gets a ` 2`, ` 3`, … suffix. The note holds a `created:`
-frontmatter timestamp (local ISO 8601) followed by the text exactly as given.
+frontmatter timestamp (local ISO 8601) followed by the text exactly as given,
+plus a newline when the text does not already end with one.
 Like `append`, an omitted text argument or `-` reads standard input; empty
 text is rejected. The command prints the new note's path, which suits Raycast
 script commands or a macOS Shortcuts **Run Shell Script** action. In the app,
