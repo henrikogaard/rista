@@ -1372,9 +1372,15 @@ pub(crate) fn execute_write(
                 Some(text) => text.clone(),
                 None => read_stdin_limited(stdin)?,
             };
+            // The whole note, frontmatter included, stays within the limit
+            // whether the text came from an argument, a URL, the dialog or stdin.
+            let content = crate::inbox::content(&text, now);
+            if content.len() > MAX_NOTE_BYTES {
+                return Err(size_error());
+            }
             let destination = inbox_destination(&root, Some(&text), now)?;
             create_parent_directories(&root, &destination)?;
-            create_exclusive(&destination, crate::inbox::content(&text, now).as_bytes())?;
+            create_exclusive(&destination, content.as_bytes())?;
             Ok(destination)
         }
         _ => Err(CliError::new(
@@ -2009,6 +2015,43 @@ mod tests {
             &mut io::Cursor::new([]),
         )
         .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inbox_rejects_text_over_the_note_limit_from_any_source() {
+        let root = temp_dir();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(9, 30, 0)
+            .unwrap();
+        let settings = Settings::default();
+        let too_large = "x".repeat(MAX_NOTE_BYTES);
+        assert_eq!(
+            execute_write(
+                &Command::Inbox {
+                    vault: root.clone(),
+                    text: Some(too_large.clone()),
+                },
+                &settings,
+                now,
+                &mut io::Cursor::new([]),
+            ),
+            Err(size_error())
+        );
+        assert_eq!(
+            execute_write(
+                &Command::Inbox {
+                    vault: root.clone(),
+                    text: None,
+                },
+                &settings,
+                now,
+                &mut io::Cursor::new(too_large.into_bytes()),
+            ),
+            Err(size_error())
+        );
+        assert!(!root.join("Inbox").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
