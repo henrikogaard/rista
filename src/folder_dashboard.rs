@@ -7,6 +7,10 @@ pub(super) struct FolderPage {
     pub scroll: ScrollHandle,
     contents: std::io::Result<folder::Contents>,
     introduction: Option<Entity<TextViewState>>,
+    /// What `introduction` was built from — reused across reloads and
+    /// watcher refreshes so the markdown re-parse only happens when the
+    /// note, its text, or the active theme actually changed.
+    introduction_source: Option<IntroductionSource>,
     introduction_error: bool,
     banner: Option<preview::BannerSpec>,
     folds: preview::CalloutFolds,
@@ -17,6 +21,13 @@ pub(super) struct FolderPage {
     config: folder::Dashboard,
     cards: Vec<FolderCard>,
     pub pages: [usize; 7],
+}
+
+#[derive(Clone)]
+struct IntroductionSource {
+    note: PathBuf,
+    raw: String,
+    theme: (String, String),
 }
 
 struct FolderCard {
@@ -64,11 +75,16 @@ impl Workspace {
             contents
         });
         let mut introduction = None;
+        let mut introduction_source = None;
         let mut introduction_error = false;
         let mut banner = None;
         let mut metadata =
             folder::Metadata::parse("", &path.file_name().unwrap_or_default().to_string_lossy());
         let mut config = folder::Dashboard::default();
+        let theme_key = (
+            self.settings.dark_theme.clone(),
+            self.settings.light_theme.clone(),
+        );
         if let Some(note) = contents.as_ref().ok().and_then(|c| c.introduction.as_ref()) {
             // Prefer the open buffer; navigating away must never show stale saved text.
             let raw = self
@@ -90,11 +106,34 @@ impl Workspace {
                     let vault = self.vault.read(cx);
                     let resolver = vault.image_resolver();
                     banner = preview::banner_spec(&raw, &path, &*resolver);
-                    let body = folder::introduction_body(&raw, &metadata.title);
-                    let marks = preview::MarkColors::from_theme(cx.theme());
-                    let text =
-                        preview::preprocess(body, note, vault.root.as_deref(), &*resolver, &marks);
-                    introduction = Some(cx.new(|cx| TextViewState::markdown(&text, cx)));
+                    // Same note, same text, same theme → reuse the parsed
+                    // introduction view instead of re-running markdown.
+                    let reused = self.folder.as_ref().and_then(|page| {
+                        let source = page.introduction_source.as_ref()?;
+                        let entity = page.introduction.as_ref()?;
+                        (source.note == *note && source.raw == raw && source.theme == theme_key)
+                            .then(|| (source.clone(), entity.clone()))
+                    });
+                    if let Some((source, entity)) = reused {
+                        introduction = Some(entity);
+                        introduction_source = Some(source);
+                    } else {
+                        let body = folder::introduction_body(&raw, &metadata.title);
+                        let marks = preview::MarkColors::from_theme(cx.theme());
+                        let text = preview::preprocess(
+                            body,
+                            note,
+                            vault.root.as_deref(),
+                            &*resolver,
+                            &marks,
+                        );
+                        introduction = Some(cx.new(|cx| TextViewState::markdown(&text, cx)));
+                        introduction_source = Some(IntroductionSource {
+                            note: note.clone(),
+                            raw,
+                            theme: theme_key.clone(),
+                        });
+                    }
                 }
                 Err(_) => introduction_error = true,
             }
@@ -178,6 +217,7 @@ impl Workspace {
             scroll,
             contents,
             introduction,
+            introduction_source,
             introduction_error,
             banner,
             folds: preview::CalloutFolds::default(),
