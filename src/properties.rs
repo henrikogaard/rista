@@ -4,8 +4,9 @@
 
 use crate::document::Document;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, WindowExt};
+use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::*;
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeMap;
@@ -106,7 +107,7 @@ pub fn splice_frontmatter(text: &str, body: Option<String>) -> String {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum PropKind {
     Text,
     Bool,
@@ -522,38 +523,249 @@ fn tag_token_edits(
 }
 
 // ------------------------------------------------------------------
-// Properties panel — rows of key/value inputs, applied on commit.
+// Vault property schema — inferred controls and value suggestions.
+// ------------------------------------------------------------------
+
+/// The control a property row offers, inferred from how the vault uses the key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropertyControl {
+    /// A plain text field.
+    Plain,
+    /// A true/false toggle.
+    Bool,
+    /// A date picker.
+    Date,
+    /// A text field with the key's known values offered as chips.
+    Select,
+}
+
+/// Per-key controls and value suggestions, inferred from the vault's notes.
+#[derive(Clone, Debug, Default)]
+pub struct PropertySchema {
+    /// Every key seen in frontmatter, sorted.
+    pub keys: Vec<String>,
+    controls: BTreeMap<String, PropertyControl>,
+    suggestions: BTreeMap<String, Vec<String>>,
+}
+
+/// Distinct values offered before a text key stops looking like a choice.
+const MAX_SUGGESTIONS: usize = 12;
+/// Values longer than this are free text, not choices.
+const MAX_SUGGESTION_CHARS: usize = 40;
+
+impl PropertySchema {
+    /// The control to use for `key`, falling back to the current value's own
+    /// kind when the vault has not seen the key before.
+    pub fn control_for(&self, key: &str, value: &Value) -> PropertyControl {
+        if let Some(control) = self.controls.get(key) {
+            return *control;
+        }
+        match value {
+            Value::Bool(_) => PropertyControl::Bool,
+            Value::String(text) if parse_iso_date(text).is_some() => PropertyControl::Date,
+            _ => PropertyControl::Plain,
+        }
+    }
+
+    /// Known values for a text key, for use as chips. Empty when unknown.
+    pub fn suggestions_for(&self, key: &str) -> &[String] {
+        self.suggestions.get(key).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+/// Controls and suggestions inferred from the notes' frontmatter.
+pub fn vault_schema(notes: &[PathBuf]) -> PropertySchema {
+    let mut tallies: BTreeMap<String, KindTally> = BTreeMap::new();
+    for path in notes {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for (key, value) in properties(&text) {
+            tallies.entry(key).or_default().observe(&value);
+        }
+    }
+    let mut schema = PropertySchema::default();
+    for (key, tally) in tallies {
+        schema.controls.insert(key.clone(), tally.control());
+        if let Some(values) = tally.suggestions() {
+            schema.suggestions.insert(key.clone(), values);
+        }
+        schema.keys.push(key);
+    }
+    schema
+}
+
+/// `YYYY-MM-DD` or `YYYY/MM/DD`, the shapes date properties use.
+fn parse_iso_date(text: &str) -> Option<chrono::NaiveDate> {
+    let text = text.trim();
+    ["%Y-%m-%d", "%Y/%m/%d"]
+        .into_iter()
+        .find_map(|format| chrono::NaiveDate::parse_from_str(text, format).ok())
+}
+
+#[derive(Default)]
+struct KindTally {
+    bools: usize,
+    dates: usize,
+    texts: usize,
+    scalars: usize,
+    values: BTreeMap<String, usize>,
+}
+
+impl KindTally {
+    fn observe(&mut self, value: &Value) {
+        match value {
+            Value::Bool(_) => self.bools += 1,
+            Value::String(text) => {
+                if parse_iso_date(text).is_some() {
+                    self.dates += 1;
+                } else {
+                    self.texts += 1;
+                }
+                if text.chars().count() <= MAX_SUGGESTION_CHARS {
+                    *self.values.entry(text.clone()).or_default() += 1;
+                }
+            }
+            Value::Null => {}
+            Value::Number(_) | Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => {
+                self.scalars += 1
+            }
+        }
+    }
+
+    fn control(&self) -> PropertyControl {
+        let (count, control) = [
+            (self.bools, PropertyControl::Bool),
+            (self.dates, PropertyControl::Date),
+            (self.texts, PropertyControl::Select),
+            (self.scalars, PropertyControl::Plain),
+        ]
+        .into_iter()
+        .max_by_key(|(count, _)| *count)
+        .unwrap();
+        if count == 0 {
+            return PropertyControl::Plain;
+        }
+        match control {
+            PropertyControl::Select if !(2..=MAX_SUGGESTIONS).contains(&self.values.len()) => {
+                PropertyControl::Plain
+            }
+            control => control,
+        }
+    }
+
+    fn suggestions(&self) -> Option<Vec<String>> {
+        if self.values.is_empty() || self.values.len() > MAX_SUGGESTIONS {
+            return None;
+        }
+        let mut ranked = self
+            .values
+            .iter()
+            .map(|(value, count)| (value.clone(), *count))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        Some(ranked.into_iter().map(|(value, _)| value).collect())
+    }
+}
+
+/// The parse kind a control writes back as: booleans stay booleans, dates and
+/// selects are strings (or lists), everything else keeps the value's own kind.
+fn kind_for(control: PropertyControl, value: &Value) -> PropKind {
+    match control {
+        PropertyControl::Bool => PropKind::Bool,
+        PropertyControl::Date => PropKind::Text,
+        PropertyControl::Select => match value {
+            Value::Sequence(_) => PropKind::List,
+            _ => PropKind::Text,
+        },
+        PropertyControl::Plain => kind_of(value),
+    }
+}
+
+/// The parse kind for a row: an existing value keeps its own YAML type, and a
+/// key with no value yet takes the control's kind.
+fn initial_control_value(control: PropertyControl, value: &str) -> String {
+    if control == PropertyControl::Bool && value.trim().is_empty() {
+        "false".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn row_kind(control: PropertyControl, value: &Value) -> PropKind {
+    match value {
+        Value::Null => kind_for(control, value),
+        _ => kind_of(value),
+    }
+}
+
+// ------------------------------------------------------------------
+// Properties panel — rows of typed key/value controls, applied on commit.
 // ------------------------------------------------------------------
 
 struct PropRow {
     key: Entity<InputState>,
     value: Entity<InputState>,
     kind: PropKind,
+    control: PropertyControl,
+    date_state: Option<Entity<DatePickerState>>,
 }
 
 pub struct PropertiesPanel {
     doc: Entity<Document>,
     rows: Vec<PropRow>,
+    schema: PropertySchema,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl PropertiesPanel {
-    fn new(doc: Entity<Document>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        doc: Entity<Document>,
+        schema: PropertySchema,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let text = doc.read(cx).editor.read(cx).value().to_string();
+        let mut subscriptions = Vec::new();
         let rows = properties(&text)
             .into_iter()
             .map(|(key, value)| {
-                Self::make_row(&key, &display_value(&value), kind_of(&value), window, cx)
+                let control = schema.control_for(&key, &value);
+                // Keep an existing value's own YAML type; infer the type from
+                // the control only when the note has no value yet. Otherwise a
+                // mixed-type key (e.g. one note with `status: 42`) would be
+                // rewritten as a string just by applying the dialog.
+                let kind = row_kind(control, &value);
+                Self::make_row(
+                    &key,
+                    &display_value(&value),
+                    kind,
+                    control,
+                    window,
+                    cx,
+                    &mut subscriptions,
+                )
             })
             .collect();
-        Self { doc, rows }
+        Self {
+            doc,
+            rows,
+            schema,
+            _subscriptions: subscriptions,
+        }
     }
 
     fn make_row(
         key: &str,
         value: &str,
         kind: PropKind,
+        control: PropertyControl,
         window: &mut Window,
         cx: &mut Context<Self>,
+        subscriptions: &mut Vec<Subscription>,
     ) -> PropRow {
         let key_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("name");
@@ -562,19 +774,112 @@ impl PropertiesPanel {
         });
         let value_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("value");
-            state.set_value(value.to_string(), window, cx);
+            let value = initial_control_value(control, value);
+            state.set_value(value, window, cx);
+            state
+        });
+        // A key chosen or typed after the row was built must still pick up the
+        // inferred control (e.g. a boolean key added from a chip gets a toggle).
+        subscriptions.push(cx.subscribe_in(&key_input, window, {
+            let key_input = key_input.clone();
+            move |panel, _input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    panel.refresh_row_control(&key_input, window, cx);
+                }
+            }
+        }));
+        let date_state = (control == PropertyControl::Date).then(|| {
+            let state = cx.new(|cx| DatePickerState::new(window, cx));
+            if let Some(date) = parse_iso_date(value) {
+                state.update(cx, |state, cx| state.set_date(date, window, cx));
+            }
+            subscriptions.push(cx.subscribe_in(&state, window, {
+                let value_input = value_input.clone();
+                move |_panel, _state, event: &DatePickerEvent, window, cx| {
+                    if let DatePickerEvent::Change(DateTime::Single(Some(when))) = event {
+                        let iso = when.date().format("%Y-%m-%d").to_string();
+                        value_input.update(cx, |input, cx| input.set_value(iso, window, cx));
+                    }
+                }
+            }));
             state
         });
         PropRow {
             key: key_input,
             value: value_input,
             kind,
+            control,
+            date_state,
+        }
+    }
+
+    /// Recompute a row's control after its key changes — and, while the value
+    /// is still empty, its parse kind — so a key taken from the vault schema
+    /// gets the inferred editor.
+    fn refresh_row_control(
+        &mut self,
+        key: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .rows
+            .iter()
+            .position(|row| row.key.entity_id() == key.entity_id())
+        else {
+            return;
+        };
+        let key_text = self.rows[index].key.read(cx).value().trim().to_string();
+        let value_empty = self.rows[index].value.read(cx).value().trim().is_empty();
+        let control = self.schema.control_for(&key_text, &Value::Null);
+        let mut changed = self.rows[index].control != control;
+        self.rows[index].control = control;
+        if value_empty {
+            let value = initial_control_value(control, "");
+            if !value.is_empty() {
+                self.rows[index]
+                    .value
+                    .update(cx, |input, cx| input.set_value(value, window, cx));
+                changed = true;
+            }
+            let kind = row_kind(control, &Value::Null);
+            if self.rows[index].kind != kind {
+                self.rows[index].kind = kind;
+                changed = true;
+            }
+        }
+        if control == PropertyControl::Date && self.rows[index].date_state.is_none() {
+            let state = cx.new(|cx| DatePickerState::new(window, cx));
+            let value_input = self.rows[index].value.clone();
+            self._subscriptions.push(cx.subscribe_in(&state, window, {
+                move |_panel, _state, event: &DatePickerEvent, window, cx| {
+                    if let DatePickerEvent::Change(DateTime::Single(Some(when))) = event {
+                        let iso = when.date().format("%Y-%m-%d").to_string();
+                        value_input.update(cx, |input, cx| input.set_value(iso, window, cx));
+                    }
+                }
+            }));
+            self.rows[index].date_state = Some(state);
+            changed = true;
+        }
+        if changed {
+            cx.notify();
         }
     }
 
     fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.rows
-            .push(Self::make_row("", "", PropKind::Text, window, cx));
+        let mut subscriptions = Vec::new();
+        let row = Self::make_row(
+            "",
+            "",
+            PropKind::Text,
+            PropertyControl::Plain,
+            window,
+            cx,
+            &mut subscriptions,
+        );
+        self.rows.push(row);
+        self._subscriptions.extend(subscriptions);
         cx.notify();
     }
 
@@ -603,22 +908,129 @@ impl Render for PropertiesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let this = cx.entity();
-        let mut list = v_flex().w_full().gap_1();
+        let mut list = v_flex().w_full().gap_2();
         for (ix, row) in self.rows.iter().enumerate() {
+            let key_text = row.key.read(cx).value().trim().to_string();
+            let key_suggestions = if key_text.is_empty() {
+                self.schema.keys.clone()
+            } else {
+                Vec::new()
+            };
+            let select_suggestions = if row.control == PropertyControl::Select {
+                self.schema.suggestions_for(&key_text).to_vec()
+            } else {
+                Vec::new()
+            };
+
+            let mut value_cell = v_flex().w_full().gap_1();
+            match row.control {
+                PropertyControl::Bool => {
+                    let on = row
+                        .value
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .eq_ignore_ascii_case("true");
+                    let target = row.value.clone();
+                    value_cell = value_cell.child(
+                        Button::new(("prop-bool", ix))
+                            .small()
+                            .icon(if on {
+                                assets::IconName::Check
+                            } else {
+                                assets::IconName::X
+                            })
+                            .label(if on { "true" } else { "false" })
+                            .on_click({
+                                let this = this.clone();
+                                move |_, window, cx| {
+                                    let next = if on { "false" } else { "true" };
+                                    target
+                                        .update(cx, |input, cx| input.set_value(next, window, cx));
+                                    // The label and `on` are captured per render;
+                                    // repaint so the next click toggles back.
+                                    this.update(cx, |_panel, cx| cx.notify());
+                                }
+                            }),
+                    );
+                }
+                PropertyControl::Date => {
+                    if let Some(state) = &row.date_state {
+                        value_cell = value_cell.child(div().w_full().child(DatePicker::new(state)));
+                    }
+                }
+                PropertyControl::Select | PropertyControl::Plain => {
+                    value_cell = value_cell.child(Input::new(&row.value).appearance(true));
+                }
+            }
+            if !select_suggestions.is_empty() {
+                let target = row.value.clone();
+                value_cell = value_cell.child(
+                    h_flex().w_full().flex_wrap().gap_1().children(
+                        select_suggestions
+                            .into_iter()
+                            .enumerate()
+                            .map(move |(chip_ix, value)| {
+                                let target = target.clone();
+                                let picked = value.clone();
+                                Button::new(("prop-value-chip", ix * 100 + chip_ix))
+                                    .ghost()
+                                    .xsmall()
+                                    .label(picked.clone())
+                                    .on_click(move |_, window, cx| {
+                                        target.update(cx, |input, cx| {
+                                            input.set_value(picked.clone(), window, cx)
+                                        });
+                                    })
+                                    .into_any_element()
+                            }),
+                    ),
+                );
+            }
+
+            let mut key_cell = v_flex()
+                .w(px(150.))
+                .gap_1()
+                .child(Input::new(&row.key).appearance(true));
+            if !key_suggestions.is_empty() {
+                let target = row.key.clone();
+                let panel = this.clone();
+                key_cell = key_cell.child(
+                    h_flex().w_full().flex_wrap().gap_1().children(
+                        key_suggestions
+                            .into_iter()
+                            .take(MAX_SUGGESTIONS)
+                            .enumerate()
+                            .map(move |(chip_ix, value)| {
+                                let target = target.clone();
+                                let panel = panel.clone();
+                                let picked = value.clone();
+                                Button::new(("prop-key-chip", ix * 100 + chip_ix))
+                                    .ghost()
+                                    .xsmall()
+                                    .label(picked.clone())
+                                    .on_click(move |_, window, cx| {
+                                        target.update(cx, |input, cx| {
+                                            input.set_value(picked.clone(), window, cx)
+                                        });
+                                        // set_value does not emit InputEvent::Change.
+                                        panel.update(cx, |panel, cx| {
+                                            panel.refresh_row_control(&target, window, cx);
+                                        });
+                                    })
+                                    .into_any_element()
+                            }),
+                    ),
+                );
+            }
+
             list = list.child(
                 h_flex()
                     .w_full()
                     .gap_2()
-                    .child(
-                        div()
-                            .w(px(150.))
-                            .child(Input::new(&row.key).appearance(true)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&row.value).appearance(true)),
-                    )
+                    .items_start()
+                    .child(key_cell)
+                    .child(div().flex_1().child(value_cell))
                     .child(
                         div()
                             .id(("prop-delete", ix))
@@ -679,19 +1091,151 @@ impl Render for PropertiesPanel {
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child("Lists are comma-separated; booleans and numbers keep their type."),
+                    .child("Booleans toggle; dates use a picker; lists are comma-separated."),
             )
     }
 }
 
-/// Open the properties dialog for `doc`.
-pub fn open_properties(doc: Entity<Document>, window: &mut Window, cx: &mut App) {
-    let panel = cx.new(|cx| PropertiesPanel::new(doc, window, cx));
+/// Open the properties dialog for `doc`, using `schema` for typed controls.
+pub fn open_properties(
+    doc: Entity<Document>,
+    schema: PropertySchema,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let panel = cx.new(|cx| PropertiesPanel::new(doc, schema, window, cx));
     window.open_dialog(cx, move |dialog, _window, _cx| {
         dialog
             .title("Properties")
-            .w(px(520.))
+            .w(px(560.))
             .overlay_closable(true)
             .child(panel.clone())
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        initial_control_value, row_kind, value_from_text, vault_schema, PropKind, PropertyControl,
+    };
+    use serde_yaml::Value;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_vault() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rista-properties-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn schema_infers_bool_date_and_select_controls() {
+        let root = temp_vault();
+        std::fs::write(
+            root.join("a.md"),
+            "---\ndone: true\ndue: 2026-01-02\nstatus: Draft\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.md"),
+            "---\ndone: false\ndue: 2026-02-03\nstatus: Done\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("c.md"), "---\nstatus: Draft\n---\nbody\n").unwrap();
+        let schema = vault_schema(&[root.join("a.md"), root.join("b.md"), root.join("c.md")]);
+        assert_eq!(
+            schema.keys,
+            vec!["done".to_string(), "due".to_string(), "status".to_string()]
+        );
+        assert_eq!(
+            schema.control_for("done", &Value::Bool(true)),
+            PropertyControl::Bool
+        );
+        assert_eq!(
+            schema.control_for("due", &Value::String("2026-01-02".into())),
+            PropertyControl::Date
+        );
+        assert_eq!(
+            schema.control_for("status", &Value::String("Draft".into())),
+            PropertyControl::Select
+        );
+        assert_eq!(
+            schema.suggestions_for("status").to_vec(),
+            vec!["Draft".to_string(), "Done".to_string()]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn many_unique_values_stay_plain() {
+        let root = temp_vault();
+        let paths = (0..20)
+            .map(|index| {
+                let path = root.join(format!("n{index}.md"));
+                std::fs::write(&path, format!("---\ntitle: Note {index}\n---\nbody\n")).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let schema = vault_schema(&paths);
+        assert_eq!(
+            schema.control_for("title", &Value::String("Note".into())),
+            PropertyControl::Plain
+        );
+        assert!(schema.suggestions_for("title").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unknown_keys_fall_back_to_the_value_kind() {
+        let schema = vault_schema(&[]);
+        assert_eq!(
+            schema.control_for("drafted", &Value::Bool(true)),
+            PropertyControl::Bool
+        );
+        assert_eq!(
+            schema.control_for("when", &Value::String("2026-03-04".into())),
+            PropertyControl::Date
+        );
+        assert_eq!(
+            schema.control_for("note", &Value::String("free".into())),
+            PropertyControl::Plain
+        );
+    }
+
+    #[test]
+    fn existing_values_keep_their_own_kind() {
+        // A Select control must not retype an existing number.
+        assert_eq!(
+            row_kind(PropertyControl::Select, &Value::Number(42i64.into())),
+            PropKind::Number
+        );
+        // A Bool control must not retype an existing string.
+        assert_eq!(
+            row_kind(PropertyControl::Bool, &Value::String("true".into())),
+            PropKind::Text
+        );
+        // A key with no value yet follows the control.
+        assert_eq!(
+            row_kind(PropertyControl::Bool, &Value::Null),
+            PropKind::Bool
+        );
+        assert_eq!(
+            row_kind(PropertyControl::Select, &Value::Null),
+            PropKind::Text
+        );
+    }
+
+    #[test]
+    fn empty_boolean_matches_its_displayed_false_value() {
+        let raw = initial_control_value(PropertyControl::Bool, "");
+        assert_eq!(raw, "false");
+        assert_eq!(value_from_text(PropKind::Bool, &raw), Value::Bool(false));
+        assert_eq!(initial_control_value(PropertyControl::Bool, "true"), "true");
+        assert_eq!(initial_control_value(PropertyControl::Plain, ""), "");
+    }
 }
