@@ -507,17 +507,25 @@ impl Vault {
                 }
                 continue;
             }
-            if note.extension().and_then(|e| e.to_str()) != Some("md") {
+            if !note
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
                 continue;
             }
             let (resolved, _) = self.outgoing_from(&text, dir);
             referenced.extend(resolved);
+            // Frontmatter banners/covers resolve through the same rules as the
+            // preview (`banner` / `cover` / `banner_icon`), including the
+            // basename image lookup a bare `cover: header.png` relies on.
+            let resolver = self.image_resolver();
             for (key, value) in crate::properties::properties(&text) {
-                if key != "cover" && key != "icon" {
+                if !matches!(key.as_str(), "banner" | "cover" | "banner_icon") {
                     continue;
                 }
                 for target in yaml_strings(&value) {
-                    if let Some(path) = self.md_link_path(&target, dir) {
+                    if let Some(path) = resolve_banner_path(&target, dir, resolver.as_ref()) {
                         referenced.insert(path);
                     }
                 }
@@ -1861,4 +1869,38 @@ fn yaml_strings(value: &serde_yaml::Value) -> Vec<String> {
         serde_yaml::Value::Sequence(items) => items.iter().flat_map(yaml_strings).collect(),
         _ => Vec::new(),
     }
+}
+
+/// Resolve a `banner`/`cover`/`banner_icon` value the way the preview does:
+/// strip a `![[…]]` / `[[…]]` wrapper and any `|alt`, then look the name up in
+/// the vault's image index, falling back to a path relative to the note.
+fn resolve_banner_path(
+    value: &str,
+    doc_dir: &Path,
+    resolve_image: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let value = value.trim();
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return None;
+    }
+    let name = value
+        .strip_prefix("![[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+        .or_else(|| {
+            value
+                .strip_prefix("[[")
+                .and_then(|rest| rest.strip_suffix("]]"))
+        })
+        .unwrap_or(value)
+        .split('|')
+        .next()
+        .unwrap_or(value)
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    resolve_image(name).or_else(|| {
+        let local = doc_dir.join(name);
+        local.exists().then_some(local)
+    })
 }

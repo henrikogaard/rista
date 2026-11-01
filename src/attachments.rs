@@ -5,16 +5,39 @@
 //! supplies both.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Candidate images that no note references, largest first.
+/// Lexically normalize a path — drop `.` and apply `..` against the previous
+/// component. Candidate image paths and resolved references both derive from
+/// the vault root, so this makes `notes/../assets/x.png` comparable with the
+/// indexed `assets/x.png` without touching the filesystem.
+fn normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Candidate images that no note references, largest first. Paths are
+/// normalized before comparison.
 pub fn unused(
     candidates: impl IntoIterator<Item = (PathBuf, u64)>,
     referenced: &HashSet<PathBuf>,
 ) -> Vec<(PathBuf, u64)> {
+    let referenced: HashSet<PathBuf> = referenced.iter().map(|path| normalize(path)).collect();
     let mut unused = candidates
         .into_iter()
-        .filter(|(path, _)| !referenced.contains(path))
+        .filter(|(path, _)| !referenced.contains(&normalize(path)))
         .collect::<Vec<_>>();
     unused.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     unused
@@ -56,6 +79,15 @@ mod tests {
                 (PathBuf::from("/v/small.png"), 5)
             ]
         );
+    }
+
+    #[test]
+    fn unused_normalizes_parent_relative_references() {
+        // A note in `notes/` embedding `../assets/photo.png` produces a
+        // `..`-containing path; it must still match the indexed image.
+        let referenced = HashSet::from([PathBuf::from("/v/notes/../assets/photo.png")]);
+        let candidates = vec![(PathBuf::from("/v/assets/photo.png"), 10)];
+        assert!(unused(candidates, &referenced).is_empty());
     }
 
     #[test]
