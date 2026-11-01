@@ -41,8 +41,11 @@ impl Render for HistoryView {
             .and_then(|index| self.snapshots.get(index))
             .and_then(|(_, file)| std::fs::read_to_string(file).ok())
             .map(|snapshot| {
+                // `simple_diff` compares lines, so it cannot tell a
+                // newline-only change from no change; compare the text.
+                let identical = current == snapshot;
                 let diff = crate::agent::simple_diff(&label, &current, &snapshot);
-                (snapshot, diff)
+                (snapshot, diff, identical)
             });
 
         let mut list = v_flex().w_full().py_1();
@@ -93,8 +96,8 @@ impl Render for HistoryView {
                     .overflow_y_scroll()
                     .child(list),
             )
-            .when_some(preview, |this, (snapshot, diff)| {
-                let identical = diff.is_empty();
+            .when_some(preview, |this, (snapshot, diff, identical)| {
+                let newline_only = !identical && diff.is_empty();
                 this.child(
                     v_flex()
                         .gap_2()
@@ -107,6 +110,11 @@ impl Render for HistoryView {
                                         "This version matches the current text.",
                                         "Denne versjonen er lik gjeldende tekst.",
                                     )
+                                } else if newline_only {
+                                    language.text(
+                                        "Only line endings or trailing whitespace differ.",
+                                        "Bare linjeskift eller etterfølgende mellomrom skiller.",
+                                    )
                                 } else {
                                     language.text(
                                         "Changes if you restore this version:",
@@ -114,7 +122,7 @@ impl Render for HistoryView {
                                     )
                                 }),
                         )
-                        .when(!identical, |this| {
+                        .when(!diff.is_empty(), |this| {
                             this.child(
                                 div()
                                     .id("history-diff")
