@@ -9,7 +9,7 @@ pub(super) struct FolderPage {
     introduction: Option<Entity<TextViewState>>,
     /// What `introduction` was built from — reused across reloads and
     /// watcher refreshes so the markdown re-parse only happens when the
-    /// note, its text, or the active theme actually changed.
+    /// note, its text, the active theme, or the vault index changed.
     introduction_source: Option<IntroductionSource>,
     introduction_error: bool,
     banner: Option<preview::BannerSpec>,
@@ -28,6 +28,22 @@ struct IntroductionSource {
     note: PathBuf,
     raw: String,
     theme: (String, String),
+    index_epoch: u64,
+}
+
+impl IntroductionSource {
+    fn can_reuse(
+        &self,
+        note: &Path,
+        raw: &str,
+        theme: &(String, String),
+        index_epoch: u64,
+    ) -> bool {
+        self.note == note
+            && self.raw == raw
+            && &self.theme == theme
+            && self.index_epoch == index_epoch
+    }
 }
 
 struct FolderCard {
@@ -105,13 +121,16 @@ impl Workspace {
                     config = folder::dashboard(&raw);
                     let vault = self.vault.read(cx);
                     let resolver = vault.image_resolver();
+                    let index_epoch = vault.index_epoch();
                     banner = preview::banner_spec(&raw, &path, &*resolver);
-                    // Same note, same text, same theme → reuse the parsed
-                    // introduction view instead of re-running markdown.
+                    // A structural index change may resolve a missing
+                    // image or remove an existing one even when the raw
+                    // introduction is unchanged.
                     let reused = self.folder.as_ref().and_then(|page| {
                         let source = page.introduction_source.as_ref()?;
                         let entity = page.introduction.as_ref()?;
-                        (source.note == *note && source.raw == raw && source.theme == theme_key)
+                        source
+                            .can_reuse(note, &raw, &theme_key, index_epoch)
                             .then(|| (source.clone(), entity.clone()))
                     });
                     if let Some((source, entity)) = reused {
@@ -132,6 +151,7 @@ impl Workspace {
                             note: note.clone(),
                             raw,
                             theme: theme_key.clone(),
+                            index_epoch,
                         });
                     }
                 }
@@ -1523,5 +1543,25 @@ impl Workspace {
                     )
                     .vertical_scrollbar(&self.sidebar_details_scroll),
             )
+    }
+}
+
+#[cfg(test)]
+mod introduction_cache_tests {
+    use super::IntroductionSource;
+    use std::path::PathBuf;
+
+    #[test]
+    fn introduction_reprocesses_when_the_resolver_index_changes() {
+        let source = IntroductionSource {
+            note: PathBuf::from("/vault/README.md"),
+            raw: "![[photo.png]]".into(),
+            theme: ("Graphite".into(), "Graphite Day".into()),
+            index_epoch: 1,
+        };
+        assert!(source.can_reuse(&source.note, &source.raw, &source.theme, 1));
+        // Creation, removal, or a move changes the vault index even
+        // though the introduction itself remains unchanged.
+        assert!(!source.can_reuse(&source.note, &source.raw, &source.theme, 2));
     }
 }

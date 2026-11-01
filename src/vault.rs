@@ -282,7 +282,7 @@ impl Vault {
         let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
         self.content_cache.retain(|p, _| note_set.contains(p));
         for note in &notes {
-            self.refresh_note_content(note, &tpl_root);
+            Self::refresh_note_content(&mut self.content_cache, note, &tpl_root);
         }
         Self::aggregate_content(
             &notes,
@@ -391,7 +391,8 @@ impl Vault {
                 "md" | "markdown"
             );
             if is_md || crate::canvas::is_canvas(path) {
-                content_changed |= self.refresh_note_content(path, &tpl_root);
+                content_changed |=
+                    Self::refresh_note_content(&mut self.content_cache, path, &tpl_root);
             }
         }
         if content_changed {
@@ -412,28 +413,33 @@ impl Vault {
 
     /// Re-read one note's cached parse when its stamp changed. Returns
     /// whether the cache entry was replaced or dropped.
-    fn refresh_note_content(&mut self, note: &Path, tpl_root: &Path) -> bool {
+    fn refresh_note_content(
+        cache: &mut std::collections::HashMap<PathBuf, (ContentStamp, NoteContent)>,
+        note: &Path,
+        tpl_root: &Path,
+    ) -> bool {
         let is_md = matches!(
             crate::file_preview::extension(note).as_str(),
             "md" | "markdown"
         );
         let is_canvas = crate::canvas::is_canvas(note);
         if note.starts_with(tpl_root) || (!is_md && !is_canvas) {
-            return false;
+            // A settings change can exclude an already cached note.
+            // Drop it so aggregate_content cannot reuse stale indexes.
+            return cache.remove(note).is_some();
         }
         let stamp = content_stamp(note);
-        if let (Some(stamp), Some((cached, _))) = (stamp, self.content_cache.get(note)) {
+        if let (Some(stamp), Some((cached, _))) = (stamp, cache.get(note)) {
             if *cached == stamp {
                 return false;
             }
         }
         let Ok(text) = std::fs::read_to_string(note) else {
-            return self.content_cache.remove(note).is_some();
+            return cache.remove(note).is_some();
         };
         let content = parse_note_content(&text, is_canvas);
         if let Some(stamp) = stamp {
-            self.content_cache
-                .insert(note.to_path_buf(), (stamp, content));
+            cache.insert(note.to_path_buf(), (stamp, content));
         }
         true
     }
@@ -1760,6 +1766,56 @@ mod content_index_tests {
 
     fn stamp() -> ContentStamp {
         (SystemTime::UNIX_EPOCH, 0)
+    }
+
+    #[test]
+    fn changing_template_folder_evicts_previously_indexed_content() {
+        let root = temp_root("template-cache");
+        let new_templates = root.join("new-templates");
+        std::fs::create_dir(&new_templates).unwrap();
+        let note = new_templates.join("example.md");
+        let text = "---\naliases: [Example]\ntags: [template]\n---\n- [ ] scaffold\n[[Target]]\n";
+        std::fs::write(&note, text).unwrap();
+        let notes = vec![note.clone()];
+        let mut cache = HashMap::new();
+        assert!(Vault::refresh_note_content(
+            &mut cache,
+            &note,
+            &root.join("old-templates")
+        ));
+        assert!(cache.contains_key(&note));
+
+        assert!(Vault::refresh_note_content(
+            &mut cache,
+            &note,
+            &new_templates
+        ));
+        assert!(!cache.contains_key(&note));
+        let mut tags = Vec::new();
+        let mut tasks = Vec::new();
+        let mut aliases = HashMap::new();
+        Vault::aggregate_content(&notes, &cache, &mut tags, &mut tasks, &mut aliases);
+        assert!(tags.is_empty());
+        assert!(tasks.is_empty());
+        assert!(aliases.is_empty());
+
+        // Subsequent edits inside the template directory cannot
+        // repopulate the excluded content.
+        std::fs::write(&note, format!("{text}#edited\n")).unwrap();
+        assert!(!Vault::refresh_note_content(
+            &mut cache,
+            &note,
+            &new_templates
+        ));
+        assert!(!cache.contains_key(&note));
+        // Moving the setting away makes the note eligible again.
+        assert!(Vault::refresh_note_content(
+            &mut cache,
+            &note,
+            &root.join("old-templates")
+        ));
+        assert!(cache.contains_key(&note));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
