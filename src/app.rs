@@ -476,6 +476,7 @@ pub(crate) enum PaletteCmd {
     Quit,
     Graph,
     LocalGraph,
+    LinkHealth,
     ToggleLocalGraphPanel,
     ToggleAgentPanel,
 }
@@ -519,6 +520,7 @@ impl PaletteCmd {
         Self::ProjectSearch,
         Self::Graph,
         Self::LocalGraph,
+        Self::LinkHealth,
         Self::ToggleLocalGraphPanel,
         Self::ToggleAgentPanel,
         Self::MoveLineUp,
@@ -627,6 +629,7 @@ impl PaletteCmd {
             ProjectSearch => "open_project_search",
             Graph => "open_graph",
             LocalGraph => "open_local_graph",
+            LinkHealth => "open_link_health",
             ToggleLocalGraphPanel => "toggle_local_graph_panel",
             ToggleAgentPanel => "toggle_agent_panel",
             MoveLineUp => "move_line_up",
@@ -740,6 +743,7 @@ impl PaletteCmd {
             ProjectSearch => "Søk i prosjektet",
             Graph => "Åpne graf",
             LocalGraph => "Åpne lokal graf",
+            LinkHealth => "Lenkehelse…",
             ToggleLocalGraphPanel => "Vis/skjul lokalt grafpanel",
             ToggleAgentPanel => "Vis/skjul agentpanel",
             MoveLineUp => "Flytt linje opp",
@@ -1299,6 +1303,11 @@ impl PaletteCmd {
                 assets::IconName::Waypoints,
                 "Open local graph",
                 &["graph", "local", "neighborhood", "links", "current"],
+            ),
+            LinkHealth => (
+                assets::IconName::Waypoints,
+                "Link health…",
+                &["links", "broken", "orphans", "missing"],
             ),
             ToggleLocalGraphPanel => (
                 assets::IconName::Waypoints,
@@ -7301,6 +7310,7 @@ impl Workspace {
             ),
             PaletteCmd::Graph => self.on_open_graph(&OpenGraph, window, cx),
             PaletteCmd::LocalGraph => self.on_open_local_graph(&OpenLocalGraph, window, cx),
+            PaletteCmd::LinkHealth => self.defer_dialog(Self::show_link_health, window, cx),
             PaletteCmd::ToggleLocalGraphPanel => {
                 self.on_toggle_local_graph_panel(&ToggleLocalGraphPanel, window, cx)
             }
@@ -9256,6 +9266,131 @@ impl Workspace {
                 .child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
                         list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
+    /// Scan the vault for broken links and orphans and present the report.
+    fn show_link_health(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let health = self.vault.read(cx).link_health();
+        let language = self.settings.language;
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1().gap_1();
+            if health.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(language.text(
+                            "No broken links or orphan notes.",
+                            "Ingen ødelagte lenker eller foreldreløse notater.",
+                        )),
+                );
+            }
+            if !health.broken.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "{} ({})",
+                            language.text("Broken links", "Ødelagte lenker"),
+                            health.broken.len()
+                        )),
+                );
+                for (index, broken) in health.broken.iter().enumerate() {
+                    let label = broken
+                        .source
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let label = format!("{label} → {}", broken.target);
+                    let view = view.clone();
+                    let source = broken.source.clone();
+                    list = list.child(
+                        div()
+                            .id(("broken-link", index))
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.muted))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.foreground)
+                                    .truncate()
+                                    .child(label),
+                            )
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                view.update(cx, |this, cx| {
+                                    this.open_path(source.clone(), window, cx);
+                                });
+                            }),
+                    );
+                }
+            }
+            if !health.orphans.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "{} ({})",
+                            language.text("Orphan notes", "Foreldreløse notater"),
+                            health.orphans.len()
+                        )),
+                );
+                for (index, orphan) in health.orphans.iter().enumerate() {
+                    let label = orphan
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let view = view.clone();
+                    let path = orphan.clone();
+                    list = list.child(
+                        div()
+                            .id(("orphan-note", index))
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.muted))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.foreground)
+                                    .truncate()
+                                    .child(label),
+                            )
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                view.update(cx, |this, cx| {
+                                    this.open_path(path.clone(), window, cx);
+                                });
+                            }),
+                    );
+                }
+            }
+            dialog
+                .title(language.text("Link health", "Lenkehelse"))
+                .w(px(520.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(400.)),
                     ),
                 )
         });

@@ -31,6 +31,7 @@ mod history;
 mod hotkeys;
 mod http;
 mod image_resize;
+mod link_health;
 mod math;
 mod mermaid;
 mod note_composer;
