@@ -32,8 +32,30 @@ impl LinkHealth {
 fn is_note(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),
-        Some("md") | Some("markdown")
+        Some(extension)
+            if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
     )
+}
+
+/// Lexically normalize a path — drop `.` and apply `..` against the previous
+/// component. Indexed notes and resolved link targets both derive from the
+/// vault root, so this makes a `../target.md` target comparable with the note
+/// index without touching the filesystem.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Scan `notes`, resolving each one's links with `resolve`, and report broken
@@ -51,9 +73,9 @@ pub fn analyze(
         };
         let dir = path.parent().unwrap_or_else(|| Path::new("/"));
         let (resolved, unresolved) = resolve(&text, dir);
-        outgoing.insert(path.clone(), resolved.len());
+        outgoing.insert(normalize_path(path), resolved.len());
         for target in resolved {
-            *incoming.entry(target).or_default() += 1;
+            *incoming.entry(normalize_path(&target)).or_default() += 1;
         }
         for target in unresolved {
             broken.push(BrokenLink {
@@ -71,8 +93,9 @@ pub fn analyze(
         .iter()
         .filter(|path| is_note(path))
         .filter(|path| {
-            outgoing.get(*path).copied().unwrap_or(0) == 0
-                && incoming.get(*path).copied().unwrap_or(0) == 0
+            let key = normalize_path(path);
+            outgoing.get(&key).copied().unwrap_or(0) == 0
+                && incoming.get(&key).copied().unwrap_or(0) == 0
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -143,6 +166,37 @@ mod tests {
             (Vec::new(), Vec::new())
         });
         assert_eq!(health.orphans, vec![note]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parent_relative_targets_are_normalized() {
+        let root = temp_dir();
+        let notes_dir = root.join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        let a = write(&notes_dir, "a.md", "links [[target]]");
+        let target = root.join("target.md");
+        std::fs::write(&target, "").unwrap();
+        // A note in `notes/` resolving a sibling through `..`, as a relative
+        // Markdown link does.
+        let health = analyze(&[a.clone(), target.clone()], |_, dir| {
+            (vec![dir.join("..").join("target.md")], Vec::new())
+        });
+        assert!(
+            health.orphans.is_empty(),
+            "target has an incoming link, so nothing is an orphan: {:?}",
+            health.orphans
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uppercase_markdown_extensions_are_scanned() {
+        let root = temp_dir();
+        let note = write(&root, "NOTE.MD", "links [[missing]]");
+        let health = analyze(&[note], fake_resolve);
+        assert_eq!(health.broken.len(), 1);
+        assert_eq!(health.broken[0].target, "missing");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
