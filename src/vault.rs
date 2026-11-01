@@ -498,12 +498,21 @@ impl Vault {
             let dir = note.parent().unwrap_or_else(|| Path::new(""));
             if crate::canvas::is_canvas(note) {
                 if let Ok(canvas) = crate::canvas::CanvasDocument::parse(&text) {
+                    let text_targets = canvas.text_link_targets();
                     let (resolved, _) = self.canvas_outgoing_targets(
                         &canvas.vault_file_references(),
-                        &canvas.text_link_targets(),
+                        &text_targets,
                         dir,
                     );
                     referenced.extend(resolved);
+                    // Text-card embeds can use relative image paths the
+                    // note-link resolver rejects; resolve them like the preview.
+                    let resolver = self.image_resolver();
+                    for (target, _) in &text_targets {
+                        if let Some(path) = resolve_banner_path(target, dir, resolver.as_ref()) {
+                            referenced.insert(path);
+                        }
+                    }
                 }
                 continue;
             }
@@ -537,6 +546,16 @@ impl Vault {
             // unused. Unresolved note links are dropped (the file must exist).
             for (target, _) in local_link_targets(&text) {
                 if let Some(path) = resolve_banner_path(&target, dir, resolver.as_ref()) {
+                    referenced.insert(path);
+                }
+            }
+            // `![](file:///…)` destinations are URLs, so `local_link_targets`
+            // drops them; count the local ones against the image candidates.
+            for url in local_file_urls(&text) {
+                if let Some(path) = url::Url::parse(&url)
+                    .ok()
+                    .and_then(|url| url.to_file_path().ok())
+                {
                     referenced.insert(path);
                 }
             }
@@ -1547,6 +1566,47 @@ pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
     out
 }
 
+/// `file:` destinations in markdown links/images — `local_link_targets`
+/// deliberately drops URLs, so these are collected separately. The attachment
+/// scan needs the local ones to avoid flagging a `file://` image as unused.
+fn local_file_urls(text: &str) -> Vec<String> {
+    use markdown::mdast::Node;
+    fn definitions(node: &Node, out: &mut std::collections::HashMap<String, String>) {
+        if let Node::Definition(def) = node {
+            out.entry(def.identifier.clone())
+                .or_insert_with(|| def.url.clone());
+        }
+        for child in node.children().into_iter().flatten() {
+            definitions(child, out);
+        }
+    }
+    fn walk(node: &Node, defs: &std::collections::HashMap<String, String>, out: &mut Vec<String>) {
+        let url = match node {
+            Node::Link(link) => Some(&link.url),
+            Node::Image(image) => Some(&image.url),
+            Node::LinkReference(link) => defs.get(&link.identifier),
+            Node::ImageReference(image) => defs.get(&image.identifier),
+            _ => None,
+        };
+        if let Some(url) = url.filter(|url| url.starts_with("file:")) {
+            out.push(url.clone());
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, defs, out);
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let Ok(root) = markdown::to_mdast(text, &options) else {
+        return Vec::new();
+    };
+    let mut defs = std::collections::HashMap::new();
+    definitions(&root, &mut defs);
+    let mut out = Vec::new();
+    walk(&root, &defs, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod link_diagnostics_tests {
     use std::path::PathBuf;
@@ -1963,5 +2023,18 @@ mod banner_path_tests {
             Some(dir.join("cover.png"))
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn finds_local_file_urls_only() {
+        let text =
+            "[a](file:///vault/assets/p.png) [b](https://x/p.png) ![](file:///vault/a%20b.png)";
+        assert_eq!(
+            super::local_file_urls(text),
+            vec![
+                "file:///vault/assets/p.png".to_string(),
+                "file:///vault/a%20b.png".to_string()
+            ]
+        );
     }
 }
