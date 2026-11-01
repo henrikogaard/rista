@@ -77,8 +77,11 @@ impl ProjectSearch {
         if let Some(workspace_entity) = workspace.upgrade() {
             let vault = workspace_entity.read(cx).vault_entity().clone();
             subscriptions.push(cx.subscribe(&vault, |this, _, event: &VaultEvent, cx| {
-                if matches!(event, VaultEvent::Files) {
-                    this.service.invalidate_all();
+                if let VaultEvent::Files { changed } = event {
+                    match changed {
+                        Some(paths) => this.service.invalidate(paths.iter().cloned()),
+                        None => this.service.invalidate_all(),
+                    }
                     this.schedule_search(cx);
                 }
             }));

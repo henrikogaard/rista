@@ -17,7 +17,12 @@ const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".build"]
 /// Emitted after a filesystem burst settles — the tree was already refreshed.
 pub enum VaultEvent {
     TreeExpansion,
-    Files,
+    /// The file index was refreshed. `changed` carries the watcher's
+    /// paths for incremental refreshes; `None` means a full rebuild, so
+    /// consumers should treat every path as changed.
+    Files {
+        changed: Option<Vec<PathBuf>>,
+    },
     /// Star/unstar flipped — `.base` `file.starred` rows recompute.
     Starred,
 }
@@ -53,9 +58,17 @@ pub struct Vault {
     /// on duplicates, matching the old `.find()` scan order.
     by_stem: std::collections::HashMap<String, PathBuf>,
     stem_counts: std::collections::HashMap<String, usize>,
-    /// Per-note mtime → parsed `aliases:` values. Lets a refresh reuse
-    /// frontmatter without re-reading every file's body.
-    alias_cache: std::collections::HashMap<PathBuf, (std::time::SystemTime, Vec<String>)>,
+    /// Parsed per-note content, keyed by stamp — a refresh re-reads only
+    /// files whose stamp (mtime + size) changed. Feeds the tag, task,
+    /// alias, and backlink indexes without touching disk.
+    content_cache: std::collections::HashMap<PathBuf, (ContentStamp, NoteContent)>,
+    /// Every indexed path — notes, images, attachments — for deciding
+    /// whether a watcher event can refresh incrementally or needs a
+    /// full rebuild.
+    known_paths: std::collections::HashSet<PathBuf>,
+    /// Bumped whenever the index content is rebuilt — cached derived
+    /// views key off it.
+    index_epoch: u64,
     /// Starred notes (absolute path strings) — mirrors
     /// `Settings::starred` so `.base` `file.starred` can read it
     /// without touching the workspace borrow.
@@ -159,7 +172,9 @@ impl Vault {
             by_rel: std::collections::HashMap::new(),
             by_stem: std::collections::HashMap::new(),
             stem_counts: std::collections::HashMap::new(),
-            alias_cache: std::collections::HashMap::new(),
+            content_cache: std::collections::HashMap::new(),
+            known_paths: std::collections::HashSet::new(),
+            index_epoch: 0,
             starred: std::collections::BTreeSet::new(),
             expanded: Default::default(),
             all_items: Vec::new(),
@@ -194,7 +209,7 @@ impl Vault {
         self.root = Some(root);
         self.refresh_tree(cx);
         self.start_watcher(cx);
-        cx.emit(VaultEvent::Files);
+        cx.emit(VaultEvent::Files { changed: None });
         cx.notify();
     }
 
@@ -209,9 +224,12 @@ impl Vault {
         self.by_stem.clear();
         self.stem_counts.clear();
         self.aliases.clear();
+        self.content_cache.clear();
+        self.known_paths.clear();
+        self.index_epoch = self.index_epoch.wrapping_add(1);
         self.tree
             .update(cx, |tree, cx| tree.set_items(Vec::new(), cx));
-        cx.emit(VaultEvent::Files);
+        cx.emit(VaultEvent::Files { changed: None });
         cx.notify();
     }
 
@@ -244,30 +262,13 @@ impl Vault {
         // tree and resolve as links, but their tags/tasks/aliases don't
         // index (a `- [ ] {{cursor}}` placeholder is not a vault task).
         let tpl_root = root.join(&self.templates_dir);
-        let content: Vec<PathBuf> = notes
-            .iter()
-            .filter(|p| {
-                !p.starts_with(&tpl_root)
-                    && matches!(
-                        crate::file_preview::extension(p).as_str(),
-                        "md" | "markdown"
-                    )
-            })
-            .cloned()
-            .collect();
-        self.tags = crate::properties::vault_tags(&content);
-        self.tasks = crate::properties::vault_tasks(&content);
-        // Link-resolution indexes + frontmatter aliases. Aliases are
-        // cached per note by mtime so a watcher refresh only re-reads
-        // files that actually changed instead of the whole vault.
+        // Link-resolution indexes. Note content is cached per note by
+        // stamp, so a refresh re-reads only files that changed and the
+        // tag/task/alias/backlink indexes rebuild without disk reads.
         self.by_rel.clear();
         self.by_stem.clear();
         self.stem_counts.clear();
-        self.aliases.clear();
-        let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
-        self.alias_cache.retain(|p, _| note_set.contains(p));
         for note in &notes {
-            let in_templates = note.starts_with(&tpl_root);
             if let Some(rel) = note.strip_prefix(&root).ok().and_then(|rel| rel.to_str()) {
                 self.by_rel
                     .insert(rel.trim_end_matches(".md").to_lowercase(), note.clone());
@@ -277,29 +278,26 @@ impl Vault {
                 *self.stem_counts.entry(stem.clone()).or_default() += 1;
                 self.by_stem.entry(stem).or_insert_with(|| note.clone());
             }
-            // `aliases:` only live in markdown frontmatter — `.base`
-            // files and templates get indexed above but skip the read.
-            if in_templates || note.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let mtime = std::fs::metadata(note).and_then(|m| m.modified()).ok();
-            let aliases = match (mtime, self.alias_cache.get(note)) {
-                (Some(mt), Some((cached_mt, cached))) if *cached_mt == mt => cached.clone(),
-                _ => {
-                    let parsed = std::fs::read_to_string(note)
-                        .ok()
-                        .map(|text| crate::properties::frontmatter_aliases(&text))
-                        .unwrap_or_default();
-                    if let Some(mt) = mtime {
-                        self.alias_cache.insert(note.clone(), (mt, parsed.clone()));
-                    }
-                    parsed
-                }
-            };
-            for alias in aliases {
-                self.aliases.insert(alias.to_lowercase(), note.clone());
-            }
         }
+        let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
+        self.content_cache.retain(|p, _| note_set.contains(p));
+        for note in &notes {
+            self.refresh_note_content(note, &tpl_root);
+        }
+        Self::aggregate_content(
+            &notes,
+            &self.content_cache,
+            &mut self.tags,
+            &mut self.tasks,
+            &mut self.aliases,
+        );
+        self.known_paths = notes
+            .iter()
+            .cloned()
+            .chain(images.values().cloned())
+            .chain(attachments.values().cloned())
+            .collect();
+        self.index_epoch = self.index_epoch.wrapping_add(1);
         self.tree.update(cx, |tree, cx| {
             tree.set_items(items, cx);
             // A scroll offset that outlives a shrunken entry list leaves the
@@ -367,18 +365,122 @@ impl Vault {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh_tree(cx);
-        cx.emit(VaultEvent::Files);
+        cx.emit(VaultEvent::Files { changed: None });
+    }
+
+    /// Bumped whenever index content is rebuilt — cached derived views
+    /// (backlink panes, mentions memos) key off it to know when to
+    /// recompute.
+    pub fn index_epoch(&self) -> u64 {
+        self.index_epoch
+    }
+
+    /// Incremental refresh for a watcher burst that only touched
+    /// existing files. Re-reads those notes and rebuilds the derived
+    /// indexes from the content cache — no directory walk, and
+    /// unchanged notes are never re-read.
+    fn refresh_changed_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let tpl_root = root.join(&self.templates_dir);
+        let mut content_changed = false;
+        for path in paths {
+            let is_md = matches!(
+                crate::file_preview::extension(path).as_str(),
+                "md" | "markdown"
+            );
+            if is_md || crate::canvas::is_canvas(path) {
+                content_changed |= self.refresh_note_content(path, &tpl_root);
+            }
+        }
+        if content_changed {
+            Self::aggregate_content(
+                &self.notes,
+                &self.content_cache,
+                &mut self.tags,
+                &mut self.tasks,
+                &mut self.aliases,
+            );
+            self.index_epoch = self.index_epoch.wrapping_add(1);
+        }
+        cx.emit(VaultEvent::Files {
+            changed: Some(paths.to_vec()),
+        });
+        cx.notify();
+    }
+
+    /// Re-read one note's cached parse when its stamp changed. Returns
+    /// whether the cache entry was replaced or dropped.
+    fn refresh_note_content(&mut self, note: &Path, tpl_root: &Path) -> bool {
+        let is_md = matches!(
+            crate::file_preview::extension(note).as_str(),
+            "md" | "markdown"
+        );
+        let is_canvas = crate::canvas::is_canvas(note);
+        if note.starts_with(tpl_root) || (!is_md && !is_canvas) {
+            return false;
+        }
+        let stamp = content_stamp(note);
+        if let (Some(stamp), Some((cached, _))) = (stamp, self.content_cache.get(note)) {
+            if *cached == stamp {
+                return false;
+            }
+        }
+        let Ok(text) = std::fs::read_to_string(note) else {
+            return self.content_cache.remove(note).is_some();
+        };
+        let content = parse_note_content(&text, is_canvas);
+        if let Some(stamp) = stamp {
+            self.content_cache
+                .insert(note.to_path_buf(), (stamp, content));
+        }
+        true
+    }
+
+    /// Rebuild the tag, task, and alias indexes from the content cache,
+    /// in note order (aliases last-wins like the old per-note inserts).
+    fn aggregate_content(
+        notes: &[PathBuf],
+        cache: &std::collections::HashMap<PathBuf, (ContentStamp, NoteContent)>,
+        tags: &mut Vec<(String, usize)>,
+        tasks: &mut Vec<crate::properties::VaultTask>,
+        aliases: &mut std::collections::HashMap<String, PathBuf>,
+    ) {
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        tasks.clear();
+        aliases.clear();
+        for note in notes {
+            let Some((_, content)) = cache.get(note) else {
+                continue;
+            };
+            for tag in &content.tags {
+                *counts.entry(tag.clone()).or_default() += 1;
+            }
+            for (line, text) in &content.tasks {
+                tasks.push(crate::properties::VaultTask {
+                    path: note.clone(),
+                    line: *line,
+                    text: text.clone(),
+                });
+            }
+            for alias in &content.aliases {
+                aliases.insert(alias.to_lowercase(), note.clone());
+            }
+        }
+        *tags = counts.into_iter().collect();
     }
 
     fn start_watcher(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let (tx, rx) = smol::channel::unbounded::<()>();
+        let (tx, rx) = smol::channel::unbounded::<notify::Event>();
         let result =
             notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if res.is_ok() {
-                    let _ = tx.send_blocking(());
+                if let Ok(event) = res {
+                    let _ = tx.send_blocking(event);
                 }
             });
         let Ok(mut watcher) = result else {
@@ -389,21 +491,71 @@ impl Vault {
         }
         self.watcher = Some(watcher);
 
-        // Debounce: a burst of events collapses into one refresh.
+        // Debounce: a burst of events collapses into one refresh. The
+        // event paths decide between an incremental content refresh and
+        // a full rebuild, so one edited note no longer re-walks the
+        // vault or re-reads its neighbours.
         cx.spawn(async move |this: WeakEntity<Vault>, cx| {
-            while rx.recv().await.is_ok() {
+            while let Ok(first) = rx.recv().await {
                 // Let the dust settle — saves, renames and builds emit clusters.
                 smol::Timer::after(std::time::Duration::from_millis(250)).await;
                 // Drain any trailing events.
-                while rx.try_recv().is_ok() {}
+                let mut batch = vec![first];
+                while let Ok(event) = rx.try_recv() {
+                    batch.push(event);
+                }
                 let _ = this.update(&mut *cx, |this, cx| {
                     this.pending_events += 1;
-                    this.refresh_tree(cx);
-                    cx.emit(VaultEvent::Files);
+                    this.apply_watcher_batch(&batch, cx);
                 });
             }
         })
         .detach();
+    }
+
+    /// Route one debounced watcher batch: content-only changes refresh
+    /// the touched notes, anything structural (create/remove/rename,
+    /// folders, new files) rebuilds the tree and indexes.
+    fn apply_watcher_batch(&mut self, batch: &[notify::Event], cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let mut structural = false;
+        for event in batch {
+            // Pure reads don't change files.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                continue;
+            }
+            // An event without paths can't be attributed — rebuild
+            // rather than risk a stale index.
+            if event.paths.is_empty() {
+                structural = true;
+                continue;
+            }
+            for path in &event.paths {
+                if paths.contains(path) {
+                    continue;
+                }
+                match classify_path(&root, path, &self.ignore_filters, &self.known_paths) {
+                    PathChange::Ignore => {}
+                    PathChange::Content => paths.push(path.clone()),
+                    PathChange::Structural => {
+                        structural = true;
+                        paths.push(path.clone());
+                    }
+                }
+            }
+        }
+        if paths.is_empty() && !structural {
+            return;
+        }
+        if structural {
+            self.refresh_tree(cx);
+            cx.emit(VaultEvent::Files { changed: None });
+        } else {
+            self.refresh_changed_paths(&paths, cx);
+        }
     }
 
     fn stop_watching(&mut self) {
@@ -468,40 +620,19 @@ impl Vault {
     }
 
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
-    /// Scans note bodies — O(vault); callers should cache the result.
+    /// Answers from the content cache — no disk reads, so this is cheap
+    /// enough for render paths.
     pub fn backlinks_to(&self, target: &Path) -> Vec<PathBuf> {
-        let mut links = Vec::new();
-        for note in &self.notes {
-            if *note == target {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(note) else {
-                continue;
+        let resolve = |link: &str, note: &Path| self.resolve_wikilink_from(link, note);
+        let canvas = |note: &Path, content: &NoteContent| {
+            let Some((references, text_targets)) = &content.canvas_refs else {
+                return Vec::new();
             };
-            if crate::canvas::is_canvas(note) {
-                let Some(canvas) = crate::canvas::CanvasDocument::parse(&text).ok() else {
-                    continue;
-                };
-                let (resolved, _) = self.canvas_outgoing_targets(
-                    &canvas.vault_file_references(),
-                    &canvas.text_link_targets(),
-                    note.parent().unwrap_or(Path::new("")),
-                );
-                if resolved.contains(&target.to_path_buf()) {
-                    links.push(note.clone());
-                }
-                continue;
-            }
-            if note.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            if local_link_targets(&text).iter().any(|(link, wiki)| {
-                *wiki && self.resolve_wikilink_from(link, note).as_deref() == Some(target)
-            }) {
-                links.push(note.clone());
-            }
-        }
-        links
+            let from_dir = note.parent().unwrap_or(Path::new(""));
+            self.canvas_outgoing_targets(references, text_targets, from_dir)
+                .0
+        };
+        backlinks_from_cache(&self.notes, &self.content_cache, target, &resolve, &canvas)
     }
 
     /// First line of `note` containing a `[[link]]` that resolves to
@@ -1413,6 +1544,200 @@ pub(crate) fn plain_mention_offset(text: &str, needle: &str) -> Option<usize> {
     None
 }
 
+/// `(modified, len)` — the content cache's invalidation stamp. Size
+/// backs up mtime so a same-timestamp write that changed length still
+/// invalidates.
+type ContentStamp = (std::time::SystemTime, u64);
+
+fn content_stamp(path: &Path) -> Option<ContentStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Canvas link sources: `(file references, text targets)` — parsed
+/// once per change for the backlink scan.
+type CanvasRefs = (Vec<String>, Vec<(String, bool)>);
+
+/// Parsed per-note content the vault reuses across refreshes.
+#[derive(Default)]
+struct NoteContent {
+    aliases: Vec<String>,
+    /// Deduplicated bare tags (frontmatter + inline).
+    tags: Vec<String>,
+    /// Open tasks as `(1-based line, text)`.
+    tasks: Vec<(usize, String)>,
+    /// `[[wikilink]]` target strings in body order — backlinks resolve
+    /// against these instead of re-reading the note.
+    wiki_targets: Vec<String>,
+    /// Canvas `(file references, text targets)`; `Some` only for canvas
+    /// documents so backlinks can branch without re-parsing JSON.
+    canvas_refs: Option<CanvasRefs>,
+}
+
+fn parse_note_content(text: &str, is_canvas: bool) -> NoteContent {
+    let mut content = NoteContent::default();
+    if is_canvas {
+        content.canvas_refs = Some(match crate::canvas::CanvasDocument::parse(text) {
+            Ok(canvas) => (canvas.vault_file_references(), canvas.text_link_targets()),
+            Err(_) => (Vec::new(), Vec::new()),
+        });
+    } else {
+        content.aliases = crate::properties::frontmatter_aliases(text);
+        content.tags = crate::properties::note_tags(text);
+        content.tasks = crate::properties::open_task_lines(text);
+        content.wiki_targets = wiki_targets(text);
+    }
+    content
+}
+
+/// `[[wikilink]]` targets in reading order, with `|alias` and `#anchor`
+/// suffixes stripped. Frontmatter, fenced blocks, and inline code are
+/// skipped so prose samples and metadata values don't count as links —
+/// the same span rules the markdown-AST scan applied.
+fn wiki_targets(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut fence_marker = "";
+    let mut in_frontmatter = text.starts_with("---");
+    for (ix, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if in_frontmatter {
+            if ix > 0 && trimmed.trim_end() == "---" {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let marker = &trimmed[..3];
+            if !in_fence {
+                in_fence = true;
+                fence_marker = marker;
+            } else if marker == fence_marker {
+                in_fence = false;
+            }
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let stripped = strip_inline_code(line);
+        let mut rest = stripped.as_str();
+        while let Some((_, tail)) = rest.split_once("[[") {
+            let Some((target, tail)) = tail.split_once("]]") else {
+                break;
+            };
+            let target = target
+                .split('|')
+                .next()
+                .unwrap_or("")
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !target.is_empty() {
+                out.push(target.to_string());
+            }
+            rest = tail;
+        }
+    }
+    out
+}
+
+/// Replace `` `code` `` spans with spaces of the same length, so a
+/// link-looking string inside a code span can't count (or fuse with
+/// text on the other side of the span).
+fn strip_inline_code(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_code = false;
+    for part in line.split('`') {
+        if in_code {
+            out.push_str(&" ".repeat(part.len()));
+        } else {
+            out.push_str(part);
+        }
+        in_code = !in_code;
+    }
+    out
+}
+
+/// How one watcher path affects the index.
+enum PathChange {
+    /// Hidden, ignored, or irrelevant — no index work.
+    Ignore,
+    /// An indexed file's content changed — incremental refresh.
+    Content,
+    /// The file set changed (create, remove, rename, folder) — the
+    /// tree and indexes need a full rebuild.
+    Structural,
+}
+
+fn classify_path(
+    root: &Path,
+    path: &Path,
+    ignore_filters: &IgnoreFilters,
+    known: &std::collections::HashSet<PathBuf>,
+) -> PathChange {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return PathChange::Ignore;
+    };
+    // Hidden entries (including `.rista` history) and build folders
+    // never enter the tree or indexes.
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return PathChange::Ignore;
+        };
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || SKIP_DIRS.iter().any(|skip| name == *skip) {
+            return PathChange::Ignore;
+        }
+    }
+    if ignore_filters.matches(root, path) {
+        return PathChange::Ignore;
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => PathChange::Structural,
+        Ok(_) if known.contains(path) => PathChange::Content,
+        Ok(_) => PathChange::Structural,
+        Err(_) if known.contains(path) => PathChange::Structural,
+        Err(_) => PathChange::Ignore,
+    }
+}
+
+/// Notes whose cached content links to `target`. Wiki resolution and
+/// canvas handling come in as closures so the scan is testable without
+/// a vault.
+fn backlinks_from_cache(
+    notes: &[PathBuf],
+    cache: &std::collections::HashMap<PathBuf, (ContentStamp, NoteContent)>,
+    target: &Path,
+    resolve_wiki: &dyn Fn(&str, &Path) -> Option<PathBuf>,
+    canvas_targets: &dyn Fn(&Path, &NoteContent) -> Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut links = Vec::new();
+    for note in notes {
+        if note == target {
+            continue;
+        }
+        let Some((_, content)) = cache.get(note) else {
+            continue;
+        };
+        let linked = if content.canvas_refs.is_some() {
+            canvas_targets(note, content)
+                .iter()
+                .any(|path| path == target)
+        } else {
+            content
+                .wiki_targets
+                .iter()
+                .any(|link| resolve_wiki(link, note).as_deref() == Some(target))
+        };
+        if linked {
+            links.push(note.clone());
+        }
+    }
+    links
+}
+
 pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
     use markdown::mdast::Node;
     fn definitions(node: &Node, out: &mut std::collections::HashMap<String, String>) {
@@ -1468,6 +1793,206 @@ pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     walk(&root, &defs, &mut out);
     out
+}
+
+#[cfg(test)]
+mod content_index_tests {
+    use super::{
+        backlinks_from_cache, classify_path, content_stamp, parse_note_content, wiki_targets,
+        ContentStamp, IgnoreFilters, NoteContent, PathChange, Vault,
+    };
+    use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::SystemTime;
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rista-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn stamp() -> ContentStamp {
+        (SystemTime::UNIX_EPOCH, 0)
+    }
+
+    #[test]
+    fn wiki_targets_skip_metadata_fences_and_inline_code() {
+        let text = "---\nrelated: \"[[Frontmatter]]\"\n---\n\
+            [[Alpha|alias]] and ![[Beta#Head]] and [[#section]] and `[[Code]]`\n\
+            \n```\n[[Fenced]]\n```\n[[Gamma#h]] and [[Delta|d#h]]\n";
+        assert_eq!(wiki_targets(text), vec!["Alpha", "Beta", "Gamma", "Delta"]);
+    }
+
+    #[test]
+    fn parse_note_content_collects_tags_tasks_aliases_and_wiki_links() {
+        let text = "---\ntags: [a, b]\naliases: [Zeta]\n---\n- [ ] open\n- [x] done\n#inline and [[Link]]\n";
+        let content = parse_note_content(text, false);
+        assert_eq!(
+            content.tags,
+            vec!["a".to_string(), "b".to_string(), "inline".to_string()]
+        );
+        assert_eq!(content.aliases, vec!["Zeta".to_string()]);
+        assert_eq!(content.tasks, vec![(5, "open".to_string())]);
+        assert_eq!(content.wiki_targets, vec!["Link".to_string()]);
+        assert!(content.canvas_refs.is_none());
+    }
+
+    #[test]
+    fn canvas_content_records_references_without_note_indexes() {
+        let text = r#"{"nodes":[{"type":"file","file":"Note.md"}],"edges":[]}"#;
+        let content = parse_note_content(text, true);
+        assert!(content.canvas_refs.is_some());
+        assert!(content.tags.is_empty());
+        assert!(content.aliases.is_empty());
+        assert!(content.tasks.is_empty());
+    }
+
+    #[test]
+    fn aggregate_content_keeps_note_order_and_last_alias_wins() {
+        let notes = vec![PathBuf::from("/v/a.md"), PathBuf::from("/v/b.md")];
+        let mut cache: HashMap<PathBuf, (ContentStamp, NoteContent)> = HashMap::new();
+        let a = NoteContent {
+            tags: vec!["x".to_string()],
+            tasks: vec![(2, "one".to_string())],
+            aliases: vec!["Ali".to_string()],
+            ..NoteContent::default()
+        };
+        let b = NoteContent {
+            tags: vec!["x".to_string(), "y".to_string()],
+            tasks: vec![(1, "two".to_string())],
+            aliases: vec!["ali".to_string()],
+            ..NoteContent::default()
+        };
+        cache.insert(notes[0].clone(), (stamp(), a));
+        cache.insert(notes[1].clone(), (stamp(), b));
+
+        let mut tags = Vec::new();
+        let mut tasks = Vec::new();
+        let mut aliases = HashMap::new();
+        Vault::aggregate_content(&notes, &cache, &mut tags, &mut tasks, &mut aliases);
+
+        assert_eq!(tags, vec![("x".to_string(), 2), ("y".to_string(), 1)]);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].path, notes[0]);
+        assert_eq!(tasks[0].line, 2);
+        assert_eq!(tasks[1].path, notes[1]);
+        assert_eq!(
+            aliases.get("ali"),
+            Some(&notes[1].clone()),
+            "later notes win the case-folded alias"
+        );
+    }
+
+    #[test]
+    fn backlinks_from_cache_resolves_wiki_targets_and_canvases() {
+        let target = PathBuf::from("/v/Target.md");
+        let notes = vec![
+            PathBuf::from("/v/a.md"),
+            PathBuf::from("/v/b.md"),
+            PathBuf::from("/v/c.canvas"),
+        ];
+        let mut cache: HashMap<PathBuf, (ContentStamp, NoteContent)> = HashMap::new();
+        let a = NoteContent {
+            wiki_targets: vec!["Target".to_string()],
+            ..NoteContent::default()
+        };
+        let b = NoteContent {
+            wiki_targets: vec!["Other".to_string()],
+            ..NoteContent::default()
+        };
+        let c = NoteContent {
+            canvas_refs: Some((vec!["Target.md".to_string()], Vec::new())),
+            ..NoteContent::default()
+        };
+        cache.insert(notes[0].clone(), (stamp(), a));
+        cache.insert(notes[1].clone(), (stamp(), b));
+        cache.insert(notes[2].clone(), (stamp(), c));
+
+        let expected = target.clone();
+        let resolve = move |link: &str, _note: &Path| (link == "Target").then(|| expected.clone());
+        let canvas = |_note: &Path, content: &NoteContent| {
+            content
+                .canvas_refs
+                .as_ref()
+                .map(|(references, _)| {
+                    references
+                        .iter()
+                        .map(|reference| PathBuf::from("/v").join(reference))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            backlinks_from_cache(&notes, &cache, &target, &resolve, &canvas),
+            vec![notes[0].clone(), notes[2].clone()]
+        );
+    }
+
+    #[test]
+    fn classify_path_separates_hidden_content_and_structural_events() {
+        let root = temp_root("classify");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        let known_file = root.join("note.md");
+        std::fs::write(&known_file, "body").unwrap();
+        let new_file = root.join("new.md");
+        std::fs::write(&new_file, "body").unwrap();
+        let mut known = HashSet::new();
+        known.insert(known_file.clone());
+
+        let filters = IgnoreFilters::from_settings(&["private".to_string()]);
+        {
+            let classify = |path: &Path| classify_path(&root, path, &filters, &known);
+            assert!(matches!(
+                classify(&root.join(".git/config")),
+                PathChange::Ignore
+            ));
+            assert!(matches!(
+                classify(&root.join("node_modules/x.js")),
+                PathChange::Ignore
+            ));
+            assert!(matches!(
+                classify(&root.join("private/note.md")),
+                PathChange::Ignore
+            ));
+            assert!(matches!(classify(&known_file), PathChange::Content));
+            assert!(matches!(classify(&new_file), PathChange::Structural));
+            assert!(matches!(
+                classify(&root.join("sub")),
+                PathChange::Structural
+            ));
+            assert!(matches!(
+                classify(&root.join("gone.md")),
+                PathChange::Ignore
+            ));
+        }
+        known.insert(root.join("gone.md"));
+        assert!(matches!(
+            classify_path(&root, &root.join("gone.md"), &filters, &known),
+            PathChange::Structural
+        ));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn content_stamp_tracks_writes_and_missing_files() {
+        let root = temp_root("stamp");
+        let file = root.join("note.md");
+        std::fs::write(&file, "one").unwrap();
+        let first = content_stamp(&file).unwrap();
+        std::fs::write(&file, "two-and-longer").unwrap();
+        assert_ne!(first, content_stamp(&file).unwrap());
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(content_stamp(&file), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 #[cfg(test)]
