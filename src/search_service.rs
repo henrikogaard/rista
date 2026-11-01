@@ -50,6 +50,28 @@ pub struct SearchResponse {
     pub explanation_norwegian: String,
 }
 
+/// One file a literal replacement would change.
+#[derive(Clone, Debug)]
+pub struct ReplacementFile {
+    pub path: PathBuf,
+    pub before: Vec<u8>,
+    pub after: Vec<u8>,
+    pub count: usize,
+}
+
+/// The result of planning a project-wide replacement.
+#[derive(Clone, Debug, Default)]
+pub struct ReplacePlan {
+    pub files: Vec<ReplacementFile>,
+    pub total: usize,
+}
+
+impl ReplacePlan {
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CachedFile {
     modified: Option<SystemTime>,
@@ -205,6 +227,43 @@ impl SearchService {
             explanation: explain(&query, false),
             explanation_norwegian: explain(&query, true),
         })
+    }
+
+    /// Plan a literal find-and-replace across `paths`. Only files whose raw
+    /// text is what search indexes are considered — Markdown and `.base`.
+    /// JSON Canvas boards are searched through a projection, so their source
+    /// is left untouched.
+    pub fn plan_replacements(
+        &self,
+        paths: &[PathBuf],
+        needle: &str,
+        replacement: &str,
+        match_case: bool,
+    ) -> ReplacePlan {
+        let mut plan = ReplacePlan::default();
+        if needle.is_empty() {
+            return plan;
+        }
+        for path in paths {
+            if !is_replaceable(path) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else {
+                continue;
+            };
+            let (after, count) = replace_literal(&content, needle, replacement, match_case);
+            if count == 0 {
+                continue;
+            }
+            plan.total += count;
+            plan.files.push(ReplacementFile {
+                path: path.clone(),
+                before: content.into_bytes(),
+                after: after.into_bytes(),
+                count,
+            });
+        }
+        plan
     }
 
     fn document(
@@ -372,6 +431,122 @@ fn canvas_search_projection(raw: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a file's raw text is what search indexes, and so can be replaced.
+fn is_replaceable(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["md", "markdown", "base"]
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
+/// Replace every non-overlapping occurrence of `needle`, returning the new
+/// text and the number of replacements. An empty needle matches nothing.
+///
+/// Case-insensitive matching lowercases the *whole* strings, exactly like
+/// `search_query`, so replacement never touches text the search would not
+/// match. Matches are mapped back to original character boundaries with a
+/// fold map, so a match that lands inside a multi-character fold (e.g. `İ`)
+/// is skipped rather than corrupting the text.
+pub fn replace_literal(
+    text: &str,
+    needle: &str,
+    replacement: &str,
+    match_case: bool,
+) -> (String, usize) {
+    if needle.is_empty() {
+        return (text.to_string(), 0);
+    }
+    if match_case {
+        let count = text.matches(needle).count();
+        return (text.replace(needle, replacement), count);
+    }
+    let folded_needle = needle.to_lowercase();
+    if folded_needle.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let Folded {
+        text: haystack,
+        char_at,
+        starts,
+    } = fold_case(text);
+    let mut out = String::with_capacity(text.len());
+    let mut count = 0;
+    let mut cursor = 0usize;
+    let mut emitted = 0usize;
+    while let Some(relative) = haystack[cursor..].find(folded_needle.as_str()) {
+        let start = cursor + relative;
+        let end = start + folded_needle.len();
+        let aligned = starts[start] && (end == haystack.len() || starts[end]);
+        if aligned {
+            let original_start = char_at[start];
+            let original_end = if end == haystack.len() {
+                text.len()
+            } else {
+                char_at[end]
+            };
+            out.push_str(&text[emitted..original_start]);
+            out.push_str(replacement);
+            count += 1;
+            emitted = original_end;
+            cursor = end;
+        } else {
+            cursor = (start + 1..haystack.len())
+                .find(|&index| starts[index])
+                .unwrap_or(haystack.len());
+        }
+        if cursor >= haystack.len() {
+            break;
+        }
+    }
+    out.push_str(&text[emitted..]);
+    (out, count)
+}
+
+/// A matching form of `text` with, for every folded byte, the byte offset of
+/// the original character it came from and whether it starts that character's
+/// fold.
+struct Folded {
+    text: String,
+    char_at: Vec<usize>,
+    starts: Vec<bool>,
+}
+
+fn fold_case(text: &str) -> Folded {
+    // The boundary map is built per character, but the text matched against
+    // uses whole-string lowercasing to agree with `search_query::normalize`
+    // (which is context-sensitive — e.g. a Greek final sigma). The two layouts
+    // differ only in which lowercase form is chosen, never in length; if a
+    // future mapping ever changed the length, fall back to the per-character
+    // fold so the map stays valid.
+    let mut per_char = String::with_capacity(text.len());
+    let mut char_at = Vec::with_capacity(text.len());
+    let mut starts = Vec::with_capacity(text.len());
+    for (index, ch) in text.char_indices() {
+        let begin = per_char.len();
+        for lower in ch.to_lowercase() {
+            per_char.push(lower);
+        }
+        for offset in begin..per_char.len() {
+            char_at.push(index);
+            starts.push(offset == begin);
+        }
+    }
+    let whole = text.to_lowercase();
+    let folded = if whole.len() == per_char.len() {
+        whole
+    } else {
+        per_char
+    };
+    Folded {
+        text: folded,
+        char_at,
+        starts,
+    }
+}
+
 fn is_cancelled(cancellation: &Option<(Arc<AtomicU64>, u64)>) -> bool {
     cancellation
         .as_ref()
@@ -464,6 +639,80 @@ mod tests {
         ];
         sort_results(&mut results, SearchSort::Relevance);
         assert_eq!(results[0].relative_path, "a.md");
+    }
+
+    #[test]
+    fn replace_literal_honours_case_and_counts() {
+        assert_eq!(
+            replace_literal("Needle needle NEEDLE", "needle", "thread", false),
+            ("thread thread thread".to_string(), 3)
+        );
+        assert_eq!(
+            replace_literal("Needle needle", "needle", "thread", true),
+            ("Needle thread".to_string(), 1)
+        );
+        assert_eq!(
+            replace_literal("nothing here", "needle", "thread", false),
+            ("nothing here".to_string(), 0)
+        );
+        assert_eq!(
+            replace_literal("abc", "", "x", false),
+            ("abc".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn replace_literal_matches_whole_string_lowercasing() {
+        // Agrees with search's `to_lowercase` semantics: 'ß' folds to itself,
+        // so only the ASCII occurrence matches.
+        assert_eq!(
+            replace_literal("Straße STRASSE", "strasse", "x", false),
+            ("Straße x".to_string(), 1)
+        );
+    }
+
+    #[test]
+    fn replace_literal_matches_context_sensitive_lowercasing() {
+        // Rust's `to_lowercase` yields a final sigma: search matches `ος` in
+        // `ΟΣ`, so replacement must too, and leave the non-matching `οσ` alone.
+        assert_eq!(
+            replace_literal("ΟΣ and οσ", "ος", "x", false),
+            ("x and οσ".to_string(), 1)
+        );
+    }
+
+    #[test]
+    fn replace_literal_skips_matches_inside_a_multichar_fold() {
+        // 'İ' folds to "i̇"; a bare "i" match inside it is not aligned to a
+        // character boundary, so the text is left intact rather than corrupted.
+        assert_eq!(
+            replace_literal("İstanbul", "i", "x", false),
+            ("İstanbul".to_string(), 0)
+        );
+        assert_eq!(replace_literal("İ", "İ", "x", false), ("x".to_string(), 1));
+    }
+
+    #[test]
+    fn plan_replacements_collects_notes_and_skips_canvas() {
+        let root = test_root();
+        let note = root.join("note.md");
+        let base = root.join("view.base");
+        let board = root.join("board.canvas");
+        fs::write(&note, "needle\nneedle\n").unwrap();
+        fs::write(&base, "filters: needle\n").unwrap();
+        fs::write(&board, r#"{"nodes":[{"text":"needle"}],"edges":[]}"#).unwrap();
+        let paths = vec![note.clone(), base.clone(), board.clone()];
+        let plan = SearchService::new().plan_replacements(&paths, "needle", "thread", false);
+        assert_eq!(plan.files.len(), 2);
+        assert_eq!(plan.total, 3);
+        assert!(plan.files.iter().all(|file| file.path != board));
+        let note_file = plan.files.iter().find(|file| file.path == note).unwrap();
+        assert_eq!(note_file.count, 2);
+        assert_eq!(
+            String::from_utf8(note_file.after.clone()).unwrap(),
+            "thread\nthread\n"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

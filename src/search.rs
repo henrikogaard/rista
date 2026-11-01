@@ -1,7 +1,7 @@
 //! Project-wide text search — a small dialog: one input, results beneath.
 //! Picking a hit opens the note at its first matching line.
 
-use crate::search_service::{SearchOptions, SearchService, SearchSort};
+use crate::search_service::{ReplacePlan, SearchOptions, SearchService, SearchSort};
 use crate::vault::VaultEvent;
 use crate::{
     actions::{SearchNextResult, SearchPreviousResult},
@@ -42,6 +42,10 @@ pub struct ProjectSearch {
     more: bool,
     explanation: Option<String>,
     explanation_open: bool,
+    replace_input: Entity<InputState>,
+    replace_open: bool,
+    pending_replace: Option<ReplacePlan>,
+    replace_message: Option<(String, bool)>,
     selected_index: usize,
     results_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -57,6 +61,14 @@ impl ProjectSearch {
                 "Søk… (tag:, path:, file:, task:, -term utelater)"
             } else {
                 "Search… (tag:, path:, file:, task:, -term negates)"
+            })
+        });
+
+        let replace_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(if norwegian {
+                "Erstatt med…"
+            } else {
+                "Replace with…"
             })
         });
 
@@ -99,6 +111,10 @@ impl ProjectSearch {
             more: false,
             explanation: None,
             explanation_open: false,
+            replace_input,
+            replace_open: false,
+            pending_replace: None,
+            replace_message: None,
             selected_index: 0,
             results_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -106,6 +122,9 @@ impl ProjectSearch {
     }
 
     fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        // A plan taken for one query must not survive into another: the
+        // query field, case toggle and sort all funnel through here.
+        self.pending_replace = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let cancellation_generation = self.cancellation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -248,6 +267,12 @@ impl Render for ProjectSearch {
         let selected_index = self.selected_index;
         let explanation = self.explanation.clone();
         let explanation_open = self.explanation_open;
+        let replace_open = self.replace_open;
+        let pending_replace = self.pending_replace.clone();
+        let replace_message = self.replace_message.clone();
+        let replace_input = self.replace_input.clone();
+        let replace_workspace = self.workspace.clone();
+        let search_entity = this.clone();
         let status = if self.busy {
             Some(
                 if norwegian {
@@ -372,8 +397,157 @@ impl Render for ProjectSearch {
                                 };
                                 this.schedule_search(cx);
                             })),
+                    )
+                    .child(
+                        Button::new("search-replace-toggle")
+                            .ghost()
+                            .xsmall()
+                            .label(if replace_open {
+                                if norwegian {
+                                    "Skjul erstatning"
+                                } else {
+                                    "Hide replace"
+                                }
+                            } else if norwegian {
+                                "Erstatt"
+                            } else {
+                                "Replace"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.replace_open = !this.replace_open;
+                                this.pending_replace = None;
+                                this.replace_message = None;
+                                cx.notify();
+                            })),
                     ),
             )
+            .when(replace_open, |this| {
+                this.child(match pending_replace.as_ref() {
+                    Some(plan) => {
+                        let files = plan.files.len();
+                        let total = plan.total;
+                        let confirm_plan = plan.clone();
+                        let cancel_view = search_entity.clone();
+                        let confirm_view = search_entity.clone();
+                        let confirm_workspace = replace_workspace.clone();
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if norwegian {
+                                        format!("Erstatt {total} forekomster i {files} notater?")
+                                    } else {
+                                        format!("Replace {total} occurrences across {files} notes?")
+                                    }),
+                            )
+                            .child(
+                                Button::new("replace-cancel")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(if norwegian { "Avbryt" } else { "Cancel" })
+                                    .on_click(move |_, _, cx| {
+                                        cancel_view.update(cx, |search, cx| {
+                                            search.pending_replace = None;
+                                            search.replace_message = None;
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("replace-confirm")
+                                    .primary()
+                                    .xsmall()
+                                    .label(if norwegian { "Erstatt" } else { "Replace" })
+                                    .on_click(move |_, window, cx| {
+                                        let plan = confirm_plan.clone();
+                                        let Some(workspace) = confirm_workspace.upgrade() else {
+                                            return;
+                                        };
+                                        let result = workspace.update(cx, |workspace, cx| {
+                                            workspace.apply_replace_in_project(&plan, window, cx)
+                                        });
+                                        confirm_view.update(cx, |search, cx| {
+                                            match result {
+                                                Ok(message) => {
+                                                    search.pending_replace = None;
+                                                    search.replace_message = Some((message, false));
+                                                    search.schedule_search(cx);
+                                                }
+                                                Err(message) => {
+                                                    search.replace_message = Some((message, true));
+                                                }
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                    }
+                    None => h_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(Input::new(&replace_input).appearance(true)),
+                        )
+                        .child(
+                            Button::new("replace-all")
+                                .xsmall()
+                                .label(if norwegian {
+                                    "Erstatt alle"
+                                } else {
+                                    "Replace all"
+                                })
+                                .disabled(query.is_empty())
+                                .on_click({
+                                    let workspace = replace_workspace.clone();
+                                    let input = replace_input.clone();
+                                    let view = search_entity.clone();
+                                    let query = query.clone();
+                                    move |_, _, cx| {
+                                        let replacement = input.read(cx).value().to_string();
+                                        let Some(workspace) = workspace.upgrade() else {
+                                            return;
+                                        };
+                                        let result = workspace.read(cx).plan_replace_in_project(
+                                            &query,
+                                            &replacement,
+                                            match_case,
+                                            cx,
+                                        );
+                                        view.update(cx, |search, cx| {
+                                            match result {
+                                                Ok(plan) => {
+                                                    search.pending_replace = Some(plan);
+                                                    search.replace_message = None;
+                                                }
+                                                Err(message) => {
+                                                    search.pending_replace = None;
+                                                    search.replace_message = Some((message, true));
+                                                }
+                                            }
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        ),
+                })
+            })
+            .when_some(replace_message, |this, (message, is_error)| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(if is_error {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .child(message),
+                )
+            })
             .when_some(status, |this, status| {
                 this.child(
                     div()
