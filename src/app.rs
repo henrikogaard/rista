@@ -55,6 +55,8 @@ mod bookmarks_panel;
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "history_view.rs"]
+mod history_view;
 #[path = "pdf_export_ui.rs"]
 mod pdf_export_ui;
 #[path = "saved_workspaces.rs"]
@@ -9210,54 +9212,14 @@ impl Workspace {
         let Some(root) = root else {
             return;
         };
-        let snaps = crate::history::snapshots(&root, &path);
-        window.open_dialog(cx, move |dialog, _window, cx| {
-            let theme = cx.theme();
-            let mut list = v_flex().w_full().py_1();
-            if snaps.is_empty() {
-                list = list.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_sm()
-                        .text_color(theme.muted_foreground)
-                        .child("No snapshots yet — history is taken on each save."),
-                );
-            }
-            for (ix, (ts, file)) in snaps.iter().enumerate() {
-                let file = file.clone();
-                let doc = doc.clone();
-                list = list.child(
-                    div()
-                        .id(("history-row", ix))
-                        .w_full()
-                        .px_3()
-                        .py_1p5()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.muted))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.foreground)
-                                .child(crate::history::format_epoch(*ts)),
-                        )
-                        .on_click(move |_, window, cx| {
-                            if let Ok(text) = std::fs::read_to_string(&file) {
-                                doc.update(cx, |doc, cx| doc.restore_text(text, window, cx));
-                            }
-                            window.close_dialog(cx);
-                        }),
-                );
-            }
+        let language = self.settings.language;
+        let view = cx.new(|_| history_view::HistoryView::new(doc, root, path, language));
+        window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
-                .title("Page history")
-                .w(px(440.))
+                .title(language.text("Page history", "Sidehistorikk"))
+                .w(px(560.))
                 .overlay_closable(true)
-                .child(
-                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
-                        list.max_h(px(360.)),
-                    ),
-                )
+                .child(view.clone())
         });
     }
 
