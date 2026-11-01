@@ -83,7 +83,7 @@ the look and feel of the Mac.
 ### Databases from your own files
 
 - A `.base` file turns notes and their frontmatter into a table, cards, a board,
-  or a calendar.
+  a calendar, or a timeline.
 - Filters, formulas, relations, and rollups — with every value still living in
   the notes themselves.
 
