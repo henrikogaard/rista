@@ -505,9 +505,9 @@ pub fn replace_literal(
     (out, count)
 }
 
-/// A whole-string lowercase of `text` with, for every folded byte, the byte
-/// offset of the original character it came from and whether it starts that
-/// character's fold.
+/// A matching form of `text` with, for every folded byte, the byte offset of
+/// the original character it came from and whether it starts that character's
+/// fold.
 struct Folded {
     text: String,
     char_at: Vec<usize>,
@@ -515,19 +515,31 @@ struct Folded {
 }
 
 fn fold_case(text: &str) -> Folded {
-    let mut folded = String::with_capacity(text.len());
+    // The boundary map is built per character, but the text matched against
+    // uses whole-string lowercasing to agree with `search_query::normalize`
+    // (which is context-sensitive — e.g. a Greek final sigma). The two layouts
+    // differ only in which lowercase form is chosen, never in length; if a
+    // future mapping ever changed the length, fall back to the per-character
+    // fold so the map stays valid.
+    let mut per_char = String::with_capacity(text.len());
     let mut char_at = Vec::with_capacity(text.len());
     let mut starts = Vec::with_capacity(text.len());
     for (index, ch) in text.char_indices() {
-        let begin = folded.len();
+        let begin = per_char.len();
         for lower in ch.to_lowercase() {
-            folded.push(lower);
+            per_char.push(lower);
         }
-        for offset in begin..folded.len() {
+        for offset in begin..per_char.len() {
             char_at.push(index);
             starts.push(offset == begin);
         }
     }
+    let whole = text.to_lowercase();
+    let folded = if whole.len() == per_char.len() {
+        whole
+    } else {
+        per_char
+    };
     Folded {
         text: folded,
         char_at,
@@ -656,6 +668,16 @@ mod tests {
         assert_eq!(
             replace_literal("Straße STRASSE", "strasse", "x", false),
             ("Straße x".to_string(), 1)
+        );
+    }
+
+    #[test]
+    fn replace_literal_matches_context_sensitive_lowercasing() {
+        // Rust's `to_lowercase` yields a final sigma: search matches `ος` in
+        // `ΟΣ`, so replacement must too, and leave the non-matching `οσ` alone.
+        assert_eq!(
+            replace_literal("ΟΣ and οσ", "ος", "x", false),
+            ("x and οσ".to_string(), 1)
         );
     }
 
