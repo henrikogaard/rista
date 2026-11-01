@@ -293,6 +293,27 @@ fn is_note_like_path(path: &Path) -> bool {
     )
 }
 
+/// Separate preview preprocessing from link resolution after a vault
+/// change. Returns `(preview, outgoing, mentions)` refresh decisions.
+fn vault_change_effects(
+    source: &Path,
+    outgoing: &[PathBuf],
+    changed: Option<&[PathBuf]>,
+) -> (bool, bool, bool) {
+    match changed {
+        None => (true, true, true),
+        Some(paths) => {
+            let preview = paths.iter().any(|path| {
+                path == source || is_embed_source_path(path) || outgoing.contains(path)
+            });
+            let mentions = paths.iter().any(|path| is_note_like_path(path));
+            // Any note may gain or lose an alias. Re-resolve outgoing
+            // links even if that note wasn't a resolved target before.
+            (preview, preview || mentions, mentions)
+        }
+    }
+}
+
 impl Document {
     pub(crate) fn load_initial(path: &Path) -> io::Result<InitialDocument> {
         let is_image = crate::vault::is_image_file(path);
@@ -1347,22 +1368,16 @@ impl Document {
     /// Apply one vault change to this document. The changed set keeps
     /// untouched docs from re-parsing per watcher burst: the preview
     /// re-syncs for this file, for embed/banner sources, and for notes
-    /// this document links at; linked mentions re-scan only when note
-    /// content changed anywhere.
+    /// this document links at. Any note-content change re-resolves
+    /// outgoing links and linked mentions because aliases may change.
     pub fn on_vault_files_changed(&mut self, changed: Option<&[PathBuf]>, cx: &mut Context<Self>) {
-        let (resync, mentions) = match changed {
-            None => (true, true),
-            Some(paths) => (
-                paths.iter().any(|path| {
-                    path == &self.path
-                        || is_embed_source_path(path)
-                        || self.outgoing_links.contains(path)
-                }),
-                paths.iter().any(|path| is_note_like_path(path)),
-            ),
-        };
+        let (resync, outgoing, mentions) =
+            vault_change_effects(&self.path, &self.outgoing_links, changed);
         if resync {
             self.sync_preview(cx);
+        } else if outgoing {
+            let raw = self.editor.read(cx).value();
+            self.refresh_outgoing(&raw, cx);
         }
         if mentions {
             self.refresh_linked_mentions(cx);
@@ -1374,8 +1389,8 @@ impl Document {
     }
 
     /// Notes that `[[link]]` here — drives the preview's mentions footer.
-    /// Only runs on open/vault events, not the typing debounce: the scan
-    /// reads every note and inbound links only change elsewhere.
+    /// Only runs on open/vault events, not the typing debounce. Uses
+    /// cached targets because inbound links only change elsewhere.
     fn refresh_linked_mentions(&mut self, cx: &mut Context<Self>) {
         let Some(vault) = self.vault.clone() else {
             return;
@@ -4671,6 +4686,24 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unrelated_note_alias_changes_refresh_outgoing_without_preview() {
+        use super::vault_change_effects;
+        let source = std::path::Path::new("/vault/source.md");
+        let changed = vec![PathBuf::from("/vault/alias-owner.md")];
+        // No resolved outgoing targets yet: the changed note can gain
+        // an alias that resolves an existing [[Alias]] in the source.
+        assert_eq!(
+            vault_change_effects(source, &[], Some(&changed)),
+            (false, true, true)
+        );
+        assert_eq!(
+            vault_change_effects(source, &[], Some(&[])),
+            (false, false, false)
+        );
+        assert_eq!(vault_change_effects(source, &[], None), (true, true, true));
+    }
+
     #[test]
     fn vim_named_keys_take_precedence_over_control_characters() {
         use super::{normalize_vim_key, Keystroke, VimKey};

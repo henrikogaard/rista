@@ -668,11 +668,7 @@ fn normalize_links(lit: Lit, resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Lit {
     }
 }
 
-fn row_data(
-    root: &Path,
-    path: &Path,
-    resolve: &dyn Fn(&str) -> Option<PathBuf>,
-) -> (RowData, Vec<String>, Vec<String>) {
+fn row_data(root: &Path, path: &Path) -> (RowData, Vec<String>, Vec<String>) {
     let rel = path
         .strip_prefix(root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -752,7 +748,7 @@ fn row_data(
             if prop_had_links(&v) {
                 link_props.insert(k.clone());
             }
-            (k, normalize_links(lit_of(&v), resolve))
+            (k, lit_of(&v))
         })
         .collect();
     (
@@ -4291,8 +4287,9 @@ pub struct BaseView {
     _subscriptions: Vec<Subscription>,
 }
 
-/// Rows persisted across base recomputes: `(stamp, row, wiki targets,
-/// embed targets)`, in note order of the last compute.
+/// Rows persisted across base recomputes: `(stamp, raw row, wiki targets,
+/// embed targets)`. Properties stay unresolved until each compute so
+/// target creation, deletion, and moves do not require a source edit.
 type RowCache = std::collections::HashMap<PathBuf, (RowStamp, RowData, Vec<String>, Vec<String>)>;
 
 /// `(modified, len)` — size backs up mtime so same-timestamp writes
@@ -4312,20 +4309,26 @@ fn cached_row(
     resolve: &dyn Fn(&str) -> Option<PathBuf>,
     cache: &mut RowCache,
 ) -> (RowData, Vec<String>, Vec<String>) {
+    let resolve_row = |mut row: RowData| {
+        for value in row.props.values_mut() {
+            *value = normalize_links(value.clone(), resolve);
+        }
+        row
+    };
     let stamp = row_stamp(note);
     if let Some((cached_stamp, row, targets, embeds)) = cache.get(note) {
         if Some(cached_stamp) == stamp.as_ref() {
-            return (row.clone(), targets.clone(), embeds.clone());
+            return (resolve_row(row.clone()), targets.clone(), embeds.clone());
         }
     }
-    let (row, targets, embeds) = row_data(root, note, resolve);
+    let (row, targets, embeds) = row_data(root, note);
     if let Some(stamp) = stamp {
         cache.insert(
             note.to_path_buf(),
             (stamp, row.clone(), targets.clone(), embeds.clone()),
         );
     }
-    (row, targets, embeds)
+    (resolve_row(row), targets, embeds)
 }
 
 impl BaseView {
@@ -8085,6 +8088,30 @@ mod tests {
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn cached_relations_follow_resolver_changes_without_source_edits() {
+        use super::{cached_row, RowCache};
+        let root =
+            std::env::temp_dir().join(format!("rista-relation-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.md");
+        let target = root.join("Target.md");
+        std::fs::write(&source, "---\nrelated: '[[Target]]'\n---\n").unwrap();
+        let mut cache = RowCache::new();
+        let missing = |_: &str| None;
+        let present = |name: &str| (name == "Target").then(|| target.clone());
+        let (row, _, _) = cached_row(&root, &source, &missing, &mut cache);
+        assert_eq!(row.props["related"], Lit::Str("[[Target]]".into()));
+        let (row, _, _) = cached_row(&root, &source, &present, &mut cache);
+        assert_eq!(
+            row.props["related"],
+            Lit::Str(target.to_string_lossy().into_owned())
+        );
+        let (row, _, _) = cached_row(&root, &source, &missing, &mut cache);
+        assert_eq!(row.props["related"], Lit::Str("[[Target]]".into()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn row_cache_reuses_unchanged_files_and_refreshes_changed_ones() {

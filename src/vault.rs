@@ -1590,74 +1590,13 @@ fn parse_note_content(text: &str, is_canvas: bool) -> NoteContent {
     content
 }
 
-/// `[[wikilink]]` targets in reading order, with `|alias` and `#anchor`
-/// suffixes stripped. Frontmatter, fenced blocks, and inline code are
-/// skipped so prose samples and metadata values don't count as links —
-/// the same span rules the markdown-AST scan applied.
+/// Cache the same Markdown-aware wiki targets used by outgoing links.
+/// Parsing happens once per changed note, not once per backlink query.
 fn wiki_targets(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    let mut fence_marker = "";
-    let mut in_frontmatter = text.starts_with("---");
-    for (ix, line) in text.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if in_frontmatter {
-            if ix > 0 && trimmed.trim_end() == "---" {
-                in_frontmatter = false;
-            }
-            continue;
-        }
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let marker = &trimmed[..3];
-            if !in_fence {
-                in_fence = true;
-                fence_marker = marker;
-            } else if marker == fence_marker {
-                in_fence = false;
-            }
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        let stripped = strip_inline_code(line);
-        let mut rest = stripped.as_str();
-        while let Some((_, tail)) = rest.split_once("[[") {
-            let Some((target, tail)) = tail.split_once("]]") else {
-                break;
-            };
-            let target = target
-                .split('|')
-                .next()
-                .unwrap_or("")
-                .split('#')
-                .next()
-                .unwrap_or("")
-                .trim();
-            if !target.is_empty() {
-                out.push(target.to_string());
-            }
-            rest = tail;
-        }
-    }
-    out
-}
-
-/// Replace `` `code` `` spans with spaces of the same length, so a
-/// link-looking string inside a code span can't count (or fuse with
-/// text on the other side of the span).
-fn strip_inline_code(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut in_code = false;
-    for part in line.split('`') {
-        if in_code {
-            out.push_str(&" ".repeat(part.len()));
-        } else {
-            out.push_str(part);
-        }
-        in_code = !in_code;
-    }
-    out
+    local_link_targets(text)
+        .into_iter()
+        .filter_map(|(target, wiki)| wiki.then_some(target))
+        .collect()
 }
 
 /// How one watcher path affects the index.
@@ -1698,8 +1637,9 @@ fn classify_path(
         Ok(meta) if meta.is_dir() => PathChange::Structural,
         Ok(_) if known.contains(path) => PathChange::Content,
         Ok(_) => PathChange::Structural,
-        Err(_) if known.contains(path) => PathChange::Structural,
-        Err(_) => PathChange::Ignore,
+        // Directories aren't in `known`, and a removal event may name
+        // only the directory. Rebuild conservatively for missing paths.
+        Err(_) => PathChange::Structural,
     }
 }
 
@@ -1827,7 +1767,10 @@ mod content_index_tests {
         let text = "---\nrelated: \"[[Frontmatter]]\"\n---\n\
             [[Alpha|alias]] and ![[Beta#Head]] and [[#section]] and `[[Code]]`\n\
             \n```\n[[Fenced]]\n```\n[[Gamma#h]] and [[Delta|d#h]]\n";
-        assert_eq!(wiki_targets(text), vec!["Alpha", "Beta", "Gamma", "Delta"]);
+        assert_eq!(
+            wiki_targets(text),
+            vec!["Alpha", "Beta#Head", "Gamma#h", "Delta"]
+        );
     }
 
     #[test]
@@ -1970,7 +1913,7 @@ mod content_index_tests {
             ));
             assert!(matches!(
                 classify(&root.join("gone.md")),
-                PathChange::Ignore
+                PathChange::Structural
             ));
         }
         known.insert(root.join("gone.md"));
@@ -1992,6 +1935,40 @@ mod content_index_tests {
         std::fs::remove_file(&file).unwrap();
         assert_eq!(content_stamp(&file), None);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn removed_directories_require_a_tree_rebuild() {
+        let root = temp_root("removed-directories");
+        let empty = root.join("empty");
+        let populated = root.join("populated");
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::create_dir(&populated).unwrap();
+        let note = populated.join("note.md");
+        std::fs::write(&note, "body").unwrap();
+        let known = HashSet::from([note]);
+        std::fs::remove_dir(&empty).unwrap();
+        std::fs::remove_dir_all(&populated).unwrap();
+        for directory in [&empty, &populated] {
+            assert!(matches!(
+                classify_path(&root, directory, &IgnoreFilters::default(), &known),
+                PathChange::Structural
+            ));
+        }
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn cached_backlinks_preserve_markdown_delimiter_semantics() {
+        for source in [
+            "``[[Code]]`` [[Real]]",
+            "literal ` then [[Real]]",
+            "```outer\n[[Code]]\n````\n[[Real]]",
+            "---\n\n[[Real]]",
+            "    [[Code]]\n\n[[Real]]",
+        ] {
+            assert_eq!(wiki_targets(source), vec!["Real"], "{source:?}");
+        }
     }
 }
 
