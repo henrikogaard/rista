@@ -687,6 +687,14 @@ fn kind_for(control: PropertyControl, value: &Value) -> PropKind {
 
 /// The parse kind for a row: an existing value keeps its own YAML type, and a
 /// key with no value yet takes the control's kind.
+fn initial_control_value(control: PropertyControl, value: &str) -> String {
+    if control == PropertyControl::Bool && value.trim().is_empty() {
+        "false".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 fn row_kind(control: PropertyControl, value: &Value) -> PropKind {
     match value {
         Value::Null => kind_for(control, value),
@@ -766,7 +774,8 @@ impl PropertiesPanel {
         });
         let value_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("value");
-            state.set_value(value.to_string(), window, cx);
+            let value = initial_control_value(control, value);
+            state.set_value(value, window, cx);
             state
         });
         // A key chosen or typed after the row was built must still pick up the
@@ -826,6 +835,13 @@ impl PropertiesPanel {
         let mut changed = self.rows[index].control != control;
         self.rows[index].control = control;
         if value_empty {
+            let value = initial_control_value(control, "");
+            if !value.is_empty() {
+                self.rows[index]
+                    .value
+                    .update(cx, |input, cx| input.set_value(value, window, cx));
+                changed = true;
+            }
             let kind = row_kind(control, &Value::Null);
             if self.rows[index].kind != kind {
                 self.rows[index].kind = kind;
@@ -978,6 +994,7 @@ impl Render for PropertiesPanel {
                 .child(Input::new(&row.key).appearance(true));
             if !key_suggestions.is_empty() {
                 let target = row.key.clone();
+                let panel = this.clone();
                 key_cell = key_cell.child(
                     h_flex().w_full().flex_wrap().gap_1().children(
                         key_suggestions
@@ -986,6 +1003,7 @@ impl Render for PropertiesPanel {
                             .enumerate()
                             .map(move |(chip_ix, value)| {
                                 let target = target.clone();
+                                let panel = panel.clone();
                                 let picked = value.clone();
                                 Button::new(("prop-key-chip", ix * 100 + chip_ix))
                                     .ghost()
@@ -994,6 +1012,10 @@ impl Render for PropertiesPanel {
                                     .on_click(move |_, window, cx| {
                                         target.update(cx, |input, cx| {
                                             input.set_value(picked.clone(), window, cx)
+                                        });
+                                        // set_value does not emit InputEvent::Change.
+                                        panel.update(cx, |panel, cx| {
+                                            panel.refresh_row_control(&target, window, cx);
                                         });
                                     })
                                     .into_any_element()
@@ -1093,7 +1115,9 @@ pub fn open_properties(
 
 #[cfg(test)]
 mod tests {
-    use super::{row_kind, vault_schema, PropKind, PropertyControl};
+    use super::{
+        initial_control_value, row_kind, value_from_text, vault_schema, PropKind, PropertyControl,
+    };
     use serde_yaml::Value;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1204,5 +1228,14 @@ mod tests {
             row_kind(PropertyControl::Select, &Value::Null),
             PropKind::Text
         );
+    }
+
+    #[test]
+    fn empty_boolean_matches_its_displayed_false_value() {
+        let raw = initial_control_value(PropertyControl::Bool, "");
+        assert_eq!(raw, "false");
+        assert_eq!(value_from_text(PropKind::Bool, &raw), Value::Bool(false));
+        assert_eq!(initial_control_value(PropertyControl::Bool, "true"), "true");
+        assert_eq!(initial_control_value(PropertyControl::Plain, ""), "");
     }
 }
