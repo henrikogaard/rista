@@ -35,6 +35,9 @@ pub struct Vault {
     /// Shared behind one `Rc`: resolvers handed out to documents stay live
     /// and see files added later (paste/drop, watcher refreshes).
     pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
+    /// Every image file in the vault, including same-named duplicates the
+    /// basename-keyed `images` map collapses.
+    pub image_files: Vec<PathBuf>,
     attachments: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
     /// `(tag, note_count)` pairs, rebuilt with the index — completions read
     /// this snapshot instead of re-parsing every note per keystroke.
@@ -149,6 +152,7 @@ impl Vault {
             tree,
             notes: Vec::new(),
             images: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            image_files: Vec::new(),
             attachments: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watcher: None,
             pending_events: 0,
@@ -239,6 +243,7 @@ impl Vault {
             notes,
             images,
             attachments,
+            image_paths,
         } = collect_files(&root, &self.ignore_filters);
         // Template files are scaffolding, not notes — they stay in the
         // tree and resolve as links, but their tags/tasks/aliases don't
@@ -318,6 +323,7 @@ impl Vault {
         self.notes = notes;
         *self.images.borrow_mut() = images;
         *self.attachments.borrow_mut() = attachments;
+        self.image_files = image_paths;
         cx.notify();
     }
 
@@ -465,6 +471,96 @@ impl Vault {
                 Some(if count <= 1 { stem } else { target_text })
             }
         }
+    }
+
+    /// Image files nothing in the vault references, largest first.
+    pub fn unused_attachments(&self) -> Vec<(PathBuf, u64)> {
+        let referenced = self.referenced_files();
+        let candidates = self
+            .image_files
+            .iter()
+            .map(|path| {
+                let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                (path.clone(), bytes)
+            })
+            .collect::<Vec<_>>();
+        crate::attachments::unused(candidates, &referenced)
+    }
+
+    /// Every path a note or board points at: resolved wiki/Markdown links,
+    /// Canvas file references and frontmatter `cover:`/`icon:` values.
+    fn referenced_files(&self) -> std::collections::HashSet<PathBuf> {
+        let mut referenced = std::collections::HashSet::new();
+        for note in &self.notes {
+            let Ok(text) = std::fs::read_to_string(note) else {
+                continue;
+            };
+            let dir = note.parent().unwrap_or_else(|| Path::new(""));
+            if crate::canvas::is_canvas(note) {
+                if let Ok(canvas) = crate::canvas::CanvasDocument::parse(&text) {
+                    let text_targets = canvas.text_link_targets();
+                    let (resolved, _) = self.canvas_outgoing_targets(
+                        &canvas.vault_file_references(),
+                        &text_targets,
+                        dir,
+                    );
+                    referenced.extend(resolved);
+                    // Text-card embeds can use relative image paths the
+                    // note-link resolver rejects; resolve them like the preview.
+                    let resolver = self.image_resolver();
+                    for (target, _) in &text_targets {
+                        if let Some(path) = resolve_banner_path(target, dir, resolver.as_ref()) {
+                            referenced.insert(path);
+                        }
+                    }
+                }
+                continue;
+            }
+            if !note
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                continue;
+            }
+            let (resolved, _) = self.outgoing_from(&text, dir);
+            referenced.extend(resolved);
+            // Frontmatter banners/covers resolve through the same rules as the
+            // preview (`banner` / `cover` / `banner_icon`), including the
+            // basename image lookup a bare `cover: header.png` relies on.
+            let resolver = self.image_resolver();
+            for (key, value) in crate::properties::properties(&text) {
+                if !matches!(key.as_str(), "banner" | "cover" | "banner_icon") {
+                    continue;
+                }
+                for target in yaml_strings(&value) {
+                    if let Some(path) = resolve_banner_path(&target, dir, resolver.as_ref()) {
+                        referenced.insert(path);
+                    }
+                }
+            }
+            // Wiki image embeds can use a relative path (`![[../assets/p.png]]`)
+            // that the note-link resolver rejects (it appends `.md`); resolve
+            // every link through the image resolver and document-relative
+            // fallback the preview uses so visible embeds are not offered as
+            // unused. Unresolved note links are dropped (the file must exist).
+            for (target, _) in local_link_targets(&text) {
+                if let Some(path) = resolve_banner_path(&target, dir, resolver.as_ref()) {
+                    referenced.insert(path);
+                }
+            }
+            // `![](file:///…)` destinations are URLs, so `local_link_targets`
+            // drops them; count the local ones against the image candidates.
+            for url in local_file_urls(&text) {
+                if let Some(path) = url::Url::parse(&url)
+                    .ok()
+                    .and_then(|url| url.to_file_path().ok())
+                {
+                    referenced.insert(path);
+                }
+            }
+        }
+        referenced
     }
 
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
@@ -1470,6 +1566,47 @@ pub(crate) fn local_link_targets(text: &str) -> Vec<(String, bool)> {
     out
 }
 
+/// `file:` destinations in markdown links/images — `local_link_targets`
+/// deliberately drops URLs, so these are collected separately. The attachment
+/// scan needs the local ones to avoid flagging a `file://` image as unused.
+fn local_file_urls(text: &str) -> Vec<String> {
+    use markdown::mdast::Node;
+    fn definitions(node: &Node, out: &mut std::collections::HashMap<String, String>) {
+        if let Node::Definition(def) = node {
+            out.entry(def.identifier.clone())
+                .or_insert_with(|| def.url.clone());
+        }
+        for child in node.children().into_iter().flatten() {
+            definitions(child, out);
+        }
+    }
+    fn walk(node: &Node, defs: &std::collections::HashMap<String, String>, out: &mut Vec<String>) {
+        let url = match node {
+            Node::Link(link) => Some(&link.url),
+            Node::Image(image) => Some(&image.url),
+            Node::LinkReference(link) => defs.get(&link.identifier),
+            Node::ImageReference(image) => defs.get(&image.identifier),
+            _ => None,
+        };
+        if let Some(url) = url.filter(|url| url.starts_with("file:")) {
+            out.push(url.clone());
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, defs, out);
+        }
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.frontmatter = true;
+    let Ok(root) = markdown::to_mdast(text, &options) else {
+        return Vec::new();
+    };
+    let mut defs = std::collections::HashMap::new();
+    definitions(&root, &mut defs);
+    let mut out = Vec::new();
+    walk(&root, &defs, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod link_diagnostics_tests {
     use std::path::PathBuf;
@@ -1734,6 +1871,7 @@ struct FileIndex {
     notes: Vec<PathBuf>,
     images: std::collections::HashMap<String, PathBuf>,
     attachments: std::collections::HashMap<String, PathBuf>,
+    image_paths: Vec<PathBuf>,
 }
 
 fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
@@ -1775,6 +1913,7 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
                                 .images
                                 .entry(name.to_lowercase())
                                 .or_insert_with(|| path.clone());
+                            files.image_paths.push(path.clone());
                         }
                     }
                     if let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str()) {
@@ -1791,4 +1930,111 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
     }
     files.notes.sort();
     files
+}
+
+/// String values inside a frontmatter value — a scalar or a list of strings.
+fn yaml_strings(value: &serde_yaml::Value) -> Vec<String> {
+    match value {
+        serde_yaml::Value::String(text) => vec![text.clone()],
+        serde_yaml::Value::Sequence(items) => items.iter().flat_map(yaml_strings).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve a `banner`/`cover`/`banner_icon` value the way the preview does:
+/// strip a `![[…]]` / `[[…]]` wrapper and any `|alt`, then look the name up in
+/// the vault's image index, falling back to a path relative to the note.
+fn resolve_banner_path(
+    value: &str,
+    doc_dir: &Path,
+    resolve_image: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let value = value.trim();
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return None;
+    }
+    let name = value
+        .strip_prefix("![[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+        .or_else(|| {
+            value
+                .strip_prefix("[[")
+                .and_then(|rest| rest.strip_suffix("]]"))
+        })
+        .unwrap_or(value)
+        .split('|')
+        .next()
+        .unwrap_or(value)
+        .trim();
+    if name.is_empty() {
+        return None;
+    }
+    resolve_image(name).or_else(|| {
+        let local = doc_dir.join(name);
+        local.exists().then_some(local)
+    })
+}
+
+#[cfg(test)]
+mod banner_path_tests {
+    use super::resolve_banner_path;
+    use std::path::PathBuf;
+
+    fn temp_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rista-banner-path-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn resolves_wrappers_relative_paths_and_basenames() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("photo.png"), b"x").unwrap();
+        let notes = dir.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        let no_basename = |_: &str| None;
+
+        // `./name` and a bare name relative to the note's own folder.
+        assert_eq!(
+            resolve_banner_path("![[./photo.png]]", &dir, &no_basename),
+            Some(dir.join("./photo.png"))
+        );
+        // `../name` from a subfolder, with a wrapper and an alias.
+        assert_eq!(
+            resolve_banner_path("[[../photo.png|alt]]", &notes, &no_basename),
+            Some(notes.join("../photo.png"))
+        );
+        assert_eq!(
+            resolve_banner_path("![[missing.png]]", &dir, &no_basename),
+            None
+        );
+
+        // A bare name falls back to the vault's basename image index.
+        let by_name = |name: &str| (name == "cover.png").then(|| dir.join("cover.png"));
+        assert_eq!(
+            resolve_banner_path("cover.png", &dir, &by_name),
+            Some(dir.join("cover.png"))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn finds_local_file_urls_only() {
+        let text =
+            "[a](file:///vault/assets/p.png) [b](https://x/p.png) ![](file:///vault/a%20b.png)";
+        assert_eq!(
+            super::local_file_urls(text),
+            vec![
+                "file:///vault/assets/p.png".to_string(),
+                "file:///vault/a%20b.png".to_string()
+            ]
+        );
+    }
 }

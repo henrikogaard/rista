@@ -444,6 +444,7 @@ pub(crate) enum PaletteCmd {
     DeleteLine,
     PageHistory,
     RestoreDeleted,
+    UnusedAttachments,
     InsertTemplate,
     DuplicateNote,
     EditProperties,
@@ -555,6 +556,7 @@ impl PaletteCmd {
         Self::DeleteLine,
         Self::PageHistory,
         Self::RestoreDeleted,
+        Self::UnusedAttachments,
         Self::InsertTemplate,
         Self::DuplicateNote,
         Self::EditProperties,
@@ -663,6 +665,7 @@ impl PaletteCmd {
             DeleteLine => "delete_line",
             PageHistory => "open_page_history",
             RestoreDeleted => "restore_deleted",
+            UnusedAttachments => "unused_attachments",
             InsertTemplate => "insert_template",
             DuplicateNote => "duplicate_note",
             EditProperties => "edit_properties",
@@ -776,6 +779,7 @@ impl PaletteCmd {
             DeleteLine => "Slett linje",
             PageHistory => "Åpne sidehistorikk",
             RestoreDeleted => "Gjenopprett slettet notat",
+            UnusedAttachments => "Ubetydelige vedlegg…",
             InsertTemplate => "Sett inn mal",
             DuplicateNote => "Dupliser notat",
             EditProperties => "Rediger egenskaper",
@@ -1140,6 +1144,11 @@ impl PaletteCmd {
                 assets::IconName::ArchiveRestore,
                 "Restore deleted files…",
                 &["trash", "recover", "undelete"],
+            ),
+            UnusedAttachments => (
+                assets::IconName::Image,
+                "Unused attachments…",
+                &["images", "orphans", "cleanup", "attachments"],
             ),
             InsertTemplate => (
                 assets::IconName::LayoutTemplate,
@@ -7422,6 +7431,9 @@ impl Workspace {
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
             PaletteCmd::RestoreDeleted => self.defer_dialog(Self::show_trash, window, cx),
+            PaletteCmd::UnusedAttachments => {
+                self.defer_dialog(Self::show_unused_attachments, window, cx)
+            }
             PaletteCmd::InsertTemplate => self.defer_dialog(Self::show_templates, window, cx),
             PaletteCmd::DuplicateNote => {
                 if let Some(doc) = self.active_doc().cloned() {
@@ -9256,6 +9268,97 @@ impl Workspace {
                 .child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
                         list.max_h(px(360.)),
+                    ),
+                )
+        });
+    }
+
+    /// List image files no note references, largest first.
+    fn show_unused_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unused = self.vault.read(cx).unused_attachments();
+        let total: u64 = unused.iter().map(|(_, bytes)| *bytes).sum();
+        let language = self.settings.language;
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1().gap_1();
+            if unused.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(language.text(
+                            "Every image is referenced by a note.",
+                            "Alle bilder er referert fra et notat.",
+                        )),
+                );
+            }
+            for (index, (path, bytes)) in unused.iter().enumerate() {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let size = crate::attachments::human_size(*bytes);
+                let view = view.clone();
+                let path = path.clone();
+                list = list.child(
+                    div()
+                        .id(("unused-attachment", index))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.muted))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .text_color(theme.foreground)
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(size),
+                                ),
+                        )
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            view.update(cx, |this, cx| {
+                                this.open_path(path.clone(), window, cx);
+                            });
+                        }),
+                );
+            }
+            dialog
+                .title(if unused.is_empty() {
+                    language
+                        .text("Unused attachments", "Ubetydelige vedlegg")
+                        .to_string()
+                } else {
+                    format!(
+                        "{} · {}",
+                        language.text("Unused attachments", "Ubetydelige vedlegg"),
+                        crate::attachments::human_size(total)
+                    )
+                })
+                .w(px(520.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(400.)),
                     ),
                 )
         });
