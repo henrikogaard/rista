@@ -152,33 +152,49 @@ impl Render for HistoryView {
     }
 }
 
+/// The content lines of a `simple_diff` patch. Its three header lines
+/// (`---`, `+++`, `@@`) are skipped by position, so a removed line that
+/// happens to begin with `-- ` is not mistaken for a header and hidden.
+fn patch_body(diff: &str) -> impl Iterator<Item = &str> {
+    diff.lines().skip(3)
+}
+
 fn render_patch(diff: &str, cx: &Context<HistoryView>) -> impl IntoElement {
     v_flex()
         .w_full()
         .font_family("monospace")
         .text_xs()
-        .children(
-            diff.lines()
-                .filter(|line| {
-                    !(line.starts_with("--- ")
-                        || line.starts_with("+++ ")
-                        || line.starts_with("@@"))
-                })
-                .map(|line| {
-                    let text = match line.split_at_checked(1) {
-                        Some((sign @ ("+" | "-"), rest)) => format!("{sign} {rest}"),
-                        _ => line.to_string(),
-                    };
-                    let row = div().w_full().px_1().rounded(cx.theme().radius).child(text);
-                    if line.starts_with('+') {
-                        row.text_color(cx.theme().success)
-                            .bg(cx.theme().success.opacity(0.1))
-                    } else if line.starts_with('-') {
-                        row.text_color(cx.theme().danger)
-                            .bg(cx.theme().danger.opacity(0.1))
-                    } else {
-                        row.text_color(cx.theme().muted_foreground)
-                    }
-                }),
-        )
+        .children(patch_body(diff).map(|line| {
+            let text = match line.split_at_checked(1) {
+                Some((sign @ ("+" | "-"), rest)) => format!("{sign} {rest}"),
+                _ => line.to_string(),
+            };
+            let row = div().w_full().px_1().rounded(cx.theme().radius).child(text);
+            if line.starts_with('+') {
+                row.text_color(cx.theme().success)
+                    .bg(cx.theme().success.opacity(0.1))
+            } else if line.starts_with('-') {
+                row.text_color(cx.theme().danger)
+                    .bg(cx.theme().danger.opacity(0.1))
+            } else {
+                row.text_color(cx.theme().muted_foreground)
+            }
+        }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::patch_body;
+
+    #[test]
+    fn patch_body_keeps_content_lines() {
+        let diff = "--- a.md\n+++ a.md\n@@ -1,1 +1,2 @@\n--- important warning\n+ok\n";
+        let body = patch_body(diff).collect::<Vec<_>>();
+        assert_eq!(body, vec!["--- important warning", "+ok"]);
+    }
+
+    #[test]
+    fn patch_body_is_empty_for_an_empty_diff() {
+        assert_eq!(patch_body("").count(), 0);
+    }
 }
