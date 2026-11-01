@@ -107,7 +107,7 @@ pub fn splice_frontmatter(text: &str, body: Option<String>) -> String {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum PropKind {
     Text,
     Bool,
@@ -685,6 +685,15 @@ fn kind_for(control: PropertyControl, value: &Value) -> PropKind {
     }
 }
 
+/// The parse kind for a row: an existing value keeps its own YAML type, and a
+/// key with no value yet takes the control's kind.
+fn row_kind(control: PropertyControl, value: &Value) -> PropKind {
+    match value {
+        Value::Null => kind_for(control, value),
+        _ => kind_of(value),
+    }
+}
+
 // ------------------------------------------------------------------
 // Properties panel — rows of typed key/value controls, applied on commit.
 // ------------------------------------------------------------------
@@ -717,10 +726,15 @@ impl PropertiesPanel {
             .into_iter()
             .map(|(key, value)| {
                 let control = schema.control_for(&key, &value);
+                // Keep an existing value's own YAML type; infer the type from
+                // the control only when the note has no value yet. Otherwise a
+                // mixed-type key (e.g. one note with `status: 42`) would be
+                // rewritten as a string just by applying the dialog.
+                let kind = row_kind(control, &value);
                 Self::make_row(
                     &key,
                     &display_value(&value),
-                    kind_for(control, &value),
+                    kind,
                     control,
                     window,
                     cx,
@@ -854,9 +868,16 @@ impl Render for PropertiesPanel {
                                 assets::IconName::X
                             })
                             .label(if on { "true" } else { "false" })
-                            .on_click(move |_, window, cx| {
-                                let next = if on { "false" } else { "true" };
-                                target.update(cx, |input, cx| input.set_value(next, window, cx));
+                            .on_click({
+                                let this = this.clone();
+                                move |_, window, cx| {
+                                    let next = if on { "false" } else { "true" };
+                                    target
+                                        .update(cx, |input, cx| input.set_value(next, window, cx));
+                                    // The label and `on` are captured per render;
+                                    // repaint so the next click toggles back.
+                                    this.update(cx, |_panel, cx| cx.notify());
+                                }
                             }),
                     );
                 }
@@ -1015,7 +1036,7 @@ pub fn open_properties(
 
 #[cfg(test)]
 mod tests {
-    use super::{vault_schema, PropertyControl};
+    use super::{row_kind, vault_schema, PropKind, PropertyControl};
     use serde_yaml::Value;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1102,6 +1123,29 @@ mod tests {
         assert_eq!(
             schema.control_for("note", &Value::String("free".into())),
             PropertyControl::Plain
+        );
+    }
+
+    #[test]
+    fn existing_values_keep_their_own_kind() {
+        // A Select control must not retype an existing number.
+        assert_eq!(
+            row_kind(PropertyControl::Select, &Value::Number(42i64.into())),
+            PropKind::Number
+        );
+        // A Bool control must not retype an existing string.
+        assert_eq!(
+            row_kind(PropertyControl::Bool, &Value::String("true".into())),
+            PropKind::Text
+        );
+        // A key with no value yet follows the control.
+        assert_eq!(
+            row_kind(PropertyControl::Bool, &Value::Null),
+            PropKind::Bool
+        );
+        assert_eq!(
+            row_kind(PropertyControl::Select, &Value::Null),
+            PropKind::Text
         );
     }
 }
