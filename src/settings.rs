@@ -200,6 +200,9 @@ pub struct Settings {
     pub focus_mode: bool,
     /// The folder that was open last — reopened on launch.
     pub last_vault: Option<std::path::PathBuf>,
+    /// Recently opened vaults, most recent first — the "Open recent vault" list.
+    #[serde(default)]
+    pub recent_vaults: Vec<std::path::PathBuf>,
     /// Vault-relative folder pasted/dropped images are copied into
     /// (the "attachment folder path").
     pub attachments_dir: String,
@@ -478,6 +481,7 @@ impl Default for Settings {
             dock_heights: Default::default(),
             focus_mode: false,
             last_vault: None,
+            recent_vaults: Vec::new(),
             attachments_dir: "attachments".to_string(),
             link_format: LinkFormat::Shortest,
             user_ignore_filters: Vec::new(),
@@ -522,6 +526,15 @@ pub(crate) fn valid_sidebar_width(width: f32) -> bool {
 
 pub(crate) fn valid_dock_width(width: f32) -> bool {
     width.is_finite() && (220.0..=520.0).contains(&width)
+}
+
+/// Insert `root` at the front of `recent`: deduplicated, newest first, capped
+/// at ten entries. Used for the "Open recent vault" list.
+pub(crate) fn push_recent_vault(recent: &mut Vec<PathBuf>, root: &std::path::Path) {
+    const MAX_RECENT_VAULTS: usize = 10;
+    recent.retain(|existing| existing != root);
+    recent.insert(0, root.to_path_buf());
+    recent.truncate(MAX_RECENT_VAULTS);
 }
 
 pub fn config_dir() -> PathBuf {
@@ -785,5 +798,26 @@ mod period_tests {
         assert_eq!(Period::Month.shift(d(2026, 1, 31), 1), d(2026, 2, 28));
         assert_eq!(Period::Quarter.shift(d(2026, 11, 15), 1), d(2027, 2, 15));
         assert_eq!(Period::Year.shift(d(2028, 2, 29), -1), d(2027, 2, 28));
+    }
+}
+
+#[cfg(test)]
+mod recent_vault_tests {
+    use super::push_recent_vault;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn recents_dedupe_move_to_front_and_cap() {
+        let mut recent = Vec::new();
+        push_recent_vault(&mut recent, Path::new("/a"));
+        push_recent_vault(&mut recent, Path::new("/b"));
+        push_recent_vault(&mut recent, Path::new("/a"));
+        assert_eq!(recent, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+
+        for index in 0..12 {
+            push_recent_vault(&mut recent, Path::new(&format!("/v{index}")));
+        }
+        assert_eq!(recent.len(), 10);
+        assert_eq!(recent[0], PathBuf::from("/v11"));
     }
 }
