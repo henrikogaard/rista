@@ -122,6 +122,9 @@ impl ProjectSearch {
     }
 
     fn schedule_search(&mut self, cx: &mut Context<Self>) {
+        // A plan taken for one query must not survive into another: the
+        // query field, case toggle and sort all funnel through here.
+        self.pending_replace = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let cancellation_generation = self.cancellation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -472,12 +475,12 @@ impl Render for ProjectSearch {
                                                 Ok(message) => {
                                                     search.pending_replace = None;
                                                     search.replace_message = Some((message, false));
+                                                    search.schedule_search(cx);
                                                 }
                                                 Err(message) => {
                                                     search.replace_message = Some((message, true));
                                                 }
                                             }
-                                            search.schedule_search(cx);
                                             cx.notify();
                                         });
                                     }),

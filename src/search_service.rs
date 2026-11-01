@@ -444,8 +444,12 @@ fn is_replaceable(path: &Path) -> bool {
 
 /// Replace every non-overlapping occurrence of `needle`, returning the new
 /// text and the number of replacements. An empty needle matches nothing.
-/// Matching compares characters case-folded one at a time, so it never
-/// misaligns on the handful of characters that lowercase to more than one.
+///
+/// Case-insensitive matching lowercases the *whole* strings, exactly like
+/// `search_query`, so replacement never touches text the search would not
+/// match. Matches are mapped back to original character boundaries with a
+/// fold map, so a match that lands inside a multi-character fold (e.g. `İ`)
+/// is skipped rather than corrupting the text.
 pub fn replace_literal(
     text: &str,
     needle: &str,
@@ -455,35 +459,80 @@ pub fn replace_literal(
     if needle.is_empty() {
         return (text.to_string(), 0);
     }
-    let needle_chars = needle.chars().collect::<Vec<_>>();
-    let text_chars = text.chars().collect::<Vec<_>>();
-    let matches_at = |start: usize| {
-        if start + needle_chars.len() > text_chars.len() {
-            return false;
-        }
-        needle_chars.iter().enumerate().all(|(offset, needle)| {
-            let candidate = text_chars[start + offset];
-            if match_case {
-                *needle == candidate
-            } else {
-                needle.to_lowercase().eq(candidate.to_lowercase())
-            }
-        })
-    };
+    if match_case {
+        let count = text.matches(needle).count();
+        return (text.replace(needle, replacement), count);
+    }
+    let folded_needle = needle.to_lowercase();
+    if folded_needle.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let Folded {
+        text: haystack,
+        char_at,
+        starts,
+    } = fold_case(text);
     let mut out = String::with_capacity(text.len());
     let mut count = 0;
-    let mut index = 0;
-    while index < text_chars.len() {
-        if matches_at(index) {
+    let mut cursor = 0usize;
+    let mut emitted = 0usize;
+    while let Some(relative) = haystack[cursor..].find(folded_needle.as_str()) {
+        let start = cursor + relative;
+        let end = start + folded_needle.len();
+        let aligned = starts[start] && (end == haystack.len() || starts[end]);
+        if aligned {
+            let original_start = char_at[start];
+            let original_end = if end == haystack.len() {
+                text.len()
+            } else {
+                char_at[end]
+            };
+            out.push_str(&text[emitted..original_start]);
             out.push_str(replacement);
             count += 1;
-            index += needle_chars.len();
+            emitted = original_end;
+            cursor = end;
         } else {
-            out.push(text_chars[index]);
-            index += 1;
+            cursor = (start + 1..haystack.len())
+                .find(|&index| starts[index])
+                .unwrap_or(haystack.len());
+        }
+        if cursor >= haystack.len() {
+            break;
         }
     }
+    out.push_str(&text[emitted..]);
     (out, count)
+}
+
+/// A whole-string lowercase of `text` with, for every folded byte, the byte
+/// offset of the original character it came from and whether it starts that
+/// character's fold.
+struct Folded {
+    text: String,
+    char_at: Vec<usize>,
+    starts: Vec<bool>,
+}
+
+fn fold_case(text: &str) -> Folded {
+    let mut folded = String::with_capacity(text.len());
+    let mut char_at = Vec::with_capacity(text.len());
+    let mut starts = Vec::with_capacity(text.len());
+    for (index, ch) in text.char_indices() {
+        let begin = folded.len();
+        for lower in ch.to_lowercase() {
+            folded.push(lower);
+        }
+        for offset in begin..folded.len() {
+            char_at.push(index);
+            starts.push(offset == begin);
+        }
+    }
+    Folded {
+        text: folded,
+        char_at,
+        starts,
+    }
 }
 
 fn is_cancelled(cancellation: &Option<(Arc<AtomicU64>, u64)>) -> bool {
@@ -598,6 +647,27 @@ mod tests {
             replace_literal("abc", "", "x", false),
             ("abc".to_string(), 0)
         );
+    }
+
+    #[test]
+    fn replace_literal_matches_whole_string_lowercasing() {
+        // Agrees with search's `to_lowercase` semantics: 'ß' folds to itself,
+        // so only the ASCII occurrence matches.
+        assert_eq!(
+            replace_literal("Straße STRASSE", "strasse", "x", false),
+            ("Straße x".to_string(), 1)
+        );
+    }
+
+    #[test]
+    fn replace_literal_skips_matches_inside_a_multichar_fold() {
+        // 'İ' folds to "i̇"; a bare "i" match inside it is not aligned to a
+        // character boundary, so the text is left intact rather than corrupted.
+        assert_eq!(
+            replace_literal("İstanbul", "i", "x", false),
+            ("İstanbul".to_string(), 0)
+        );
+        assert_eq!(replace_literal("İ", "İ", "x", false), ("x".to_string(), 1));
     }
 
     #[test]

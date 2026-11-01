@@ -109,7 +109,9 @@ pub fn literal_term(query: &Query) -> Option<(String, Option<bool>)> {
             Some((text.clone(), None))
         }
         Query::Case { match_case, query } => {
-            literal_term(query).map(|(text, _)| (text, Some(*match_case)))
+            // An inner case override (e.g. `ignore-case:(match-case:x)`) wins
+            // over the outer wrapper, matching how the evaluator compiles it.
+            literal_term(query).map(|(text, inner)| (text, inner.or(Some(*match_case))))
         }
         _ => None,
     }
@@ -1975,6 +1977,11 @@ mod tests {
         assert_eq!(
             literal_term(&parse_query("ignore-case:needle").unwrap()),
             Some(("needle".to_string(), Some(false)))
+        );
+        // An inner override wins over the outer wrapper.
+        assert_eq!(
+            literal_term(&parse_query("ignore-case:(match-case:Needle)").unwrap()),
+            Some(("Needle".to_string(), Some(true)))
         );
         for operators in ["needle thread", "tag:work", "path:daily", "/re/", "a OR b"] {
             assert_eq!(
