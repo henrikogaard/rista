@@ -5,7 +5,7 @@
 use crate::document::Document;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::*;
 use serde_yaml::{Mapping, Value};
@@ -769,6 +769,16 @@ impl PropertiesPanel {
             state.set_value(value.to_string(), window, cx);
             state
         });
+        // A key chosen or typed after the row was built must still pick up the
+        // inferred control (e.g. a boolean key added from a chip gets a toggle).
+        subscriptions.push(cx.subscribe_in(&key_input, window, {
+            let key_input = key_input.clone();
+            move |panel, _input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    panel.refresh_row_control(&key_input, window, cx);
+                }
+            }
+        }));
         let date_state = (control == PropertyControl::Date).then(|| {
             let state = cx.new(|cx| DatePickerState::new(window, cx));
             if let Some(date) = parse_iso_date(value) {
@@ -791,6 +801,53 @@ impl PropertiesPanel {
             kind,
             control,
             date_state,
+        }
+    }
+
+    /// Recompute a row's control after its key changes — and, while the value
+    /// is still empty, its parse kind — so a key taken from the vault schema
+    /// gets the inferred editor.
+    fn refresh_row_control(
+        &mut self,
+        key: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .rows
+            .iter()
+            .position(|row| row.key.entity_id() == key.entity_id())
+        else {
+            return;
+        };
+        let key_text = self.rows[index].key.read(cx).value().trim().to_string();
+        let value_empty = self.rows[index].value.read(cx).value().trim().is_empty();
+        let control = self.schema.control_for(&key_text, &Value::Null);
+        let mut changed = self.rows[index].control != control;
+        self.rows[index].control = control;
+        if value_empty {
+            let kind = row_kind(control, &Value::Null);
+            if self.rows[index].kind != kind {
+                self.rows[index].kind = kind;
+                changed = true;
+            }
+        }
+        if control == PropertyControl::Date && self.rows[index].date_state.is_none() {
+            let state = cx.new(|cx| DatePickerState::new(window, cx));
+            let value_input = self.rows[index].value.clone();
+            self._subscriptions.push(cx.subscribe_in(&state, window, {
+                move |_panel, _state, event: &DatePickerEvent, window, cx| {
+                    if let DatePickerEvent::Change(DateTime::Single(Some(when))) = event {
+                        let iso = when.date().format("%Y-%m-%d").to_string();
+                        value_input.update(cx, |input, cx| input.set_value(iso, window, cx));
+                    }
+                }
+            }));
+            self.rows[index].date_state = Some(state);
+            changed = true;
+        }
+        if changed {
+            cx.notify();
         }
     }
 
