@@ -69,7 +69,8 @@ the look and feel of the Mac.
   filter by tag or status, and sort by name or recent edits.
 - Prefer a plain view? **Files** shows a compact Name / Type / Modified / Size table.
 - Turn on **Show non-Markdown files** to browse images, PDFs, and other files
-  alongside your notes, with previews and *Open in default app*.
+  alongside your notes, with previews and *Open in default app*. **Unused
+  attachments…** lists images no note references, largest first.
 - Layout and pins are stored in the folder's own Markdown frontmatter, so they
   travel with your vault.
 

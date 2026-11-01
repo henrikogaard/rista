@@ -35,6 +35,9 @@ pub struct Vault {
     /// Shared behind one `Rc`: resolvers handed out to documents stay live
     /// and see files added later (paste/drop, watcher refreshes).
     pub images: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
+    /// Every image file in the vault, including same-named duplicates the
+    /// basename-keyed `images` map collapses.
+    pub image_files: Vec<PathBuf>,
     attachments: Rc<RefCell<std::collections::HashMap<String, PathBuf>>>,
     /// `(tag, note_count)` pairs, rebuilt with the index — completions read
     /// this snapshot instead of re-parsing every note per keystroke.
@@ -149,6 +152,7 @@ impl Vault {
             tree,
             notes: Vec::new(),
             images: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            image_files: Vec::new(),
             attachments: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watcher: None,
             pending_events: 0,
@@ -239,6 +243,7 @@ impl Vault {
             notes,
             images,
             attachments,
+            image_paths,
         } = collect_files(&root, &self.ignore_filters);
         // Template files are scaffolding, not notes — they stay in the
         // tree and resolve as links, but their tags/tasks/aliases don't
@@ -318,6 +323,7 @@ impl Vault {
         self.notes = notes;
         *self.images.borrow_mut() = images;
         *self.attachments.borrow_mut() = attachments;
+        self.image_files = image_paths;
         cx.notify();
     }
 
@@ -465,6 +471,59 @@ impl Vault {
                 Some(if count <= 1 { stem } else { target_text })
             }
         }
+    }
+
+    /// Image files nothing in the vault references, largest first.
+    pub fn unused_attachments(&self) -> Vec<(PathBuf, u64)> {
+        let referenced = self.referenced_files();
+        let candidates = self
+            .image_files
+            .iter()
+            .map(|path| {
+                let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                (path.clone(), bytes)
+            })
+            .collect::<Vec<_>>();
+        crate::attachments::unused(candidates, &referenced)
+    }
+
+    /// Every path a note or board points at: resolved wiki/Markdown links,
+    /// Canvas file references and frontmatter `cover:`/`icon:` values.
+    fn referenced_files(&self) -> std::collections::HashSet<PathBuf> {
+        let mut referenced = std::collections::HashSet::new();
+        for note in &self.notes {
+            let Ok(text) = std::fs::read_to_string(note) else {
+                continue;
+            };
+            let dir = note.parent().unwrap_or_else(|| Path::new(""));
+            if crate::canvas::is_canvas(note) {
+                if let Ok(canvas) = crate::canvas::CanvasDocument::parse(&text) {
+                    let (resolved, _) = self.canvas_outgoing_targets(
+                        &canvas.vault_file_references(),
+                        &canvas.text_link_targets(),
+                        dir,
+                    );
+                    referenced.extend(resolved);
+                }
+                continue;
+            }
+            if note.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let (resolved, _) = self.outgoing_from(&text, dir);
+            referenced.extend(resolved);
+            for (key, value) in crate::properties::properties(&text) {
+                if key != "cover" && key != "icon" {
+                    continue;
+                }
+                for target in yaml_strings(&value) {
+                    if let Some(path) = self.md_link_path(&target, dir) {
+                        referenced.insert(path);
+                    }
+                }
+            }
+        }
+        referenced
     }
 
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
@@ -1734,6 +1793,7 @@ struct FileIndex {
     notes: Vec<PathBuf>,
     images: std::collections::HashMap<String, PathBuf>,
     attachments: std::collections::HashMap<String, PathBuf>,
+    image_paths: Vec<PathBuf>,
 }
 
 fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
@@ -1775,6 +1835,7 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
                                 .images
                                 .entry(name.to_lowercase())
                                 .or_insert_with(|| path.clone());
+                            files.image_paths.push(path.clone());
                         }
                     }
                     if let Some(relative) = path.strip_prefix(root).ok().and_then(|p| p.to_str()) {
@@ -1791,4 +1852,13 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
     }
     files.notes.sort();
     files
+}
+
+/// String values inside a frontmatter value — a scalar or a list of strings.
+fn yaml_strings(value: &serde_yaml::Value) -> Vec<String> {
+    match value {
+        serde_yaml::Value::String(text) => vec![text.clone()],
+        serde_yaml::Value::Sequence(items) => items.iter().flat_map(yaml_strings).collect(),
+        _ => Vec::new(),
+    }
 }
