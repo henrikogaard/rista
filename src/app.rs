@@ -9267,7 +9267,8 @@ impl Workspace {
             self.note_status("Open a note first", cx);
             return;
         };
-        properties::open_properties(doc, window, cx);
+        let schema = self.vault.read(cx).property_schema.clone();
+        properties::open_properties(doc, schema, window, cx);
     }
 
     /// List every `#tag` and `tags:` entry in the vault; clicking one
