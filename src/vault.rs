@@ -530,6 +530,16 @@ impl Vault {
                     }
                 }
             }
+            // Wiki image embeds can use a relative path (`![[../assets/p.png]]`)
+            // that the note-link resolver rejects (it appends `.md`); resolve
+            // every link through the image resolver and document-relative
+            // fallback the preview uses so visible embeds are not offered as
+            // unused. Unresolved note links are dropped (the file must exist).
+            for (target, _) in local_link_targets(&text) {
+                if let Some(path) = resolve_banner_path(&target, dir, resolver.as_ref()) {
+                    referenced.insert(path);
+                }
+            }
         }
         referenced
     }
@@ -1903,4 +1913,55 @@ fn resolve_banner_path(
         let local = doc_dir.join(name);
         local.exists().then_some(local)
     })
+}
+
+#[cfg(test)]
+mod banner_path_tests {
+    use super::resolve_banner_path;
+    use std::path::PathBuf;
+
+    fn temp_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rista-banner-path-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn resolves_wrappers_relative_paths_and_basenames() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("photo.png"), b"x").unwrap();
+        let notes = dir.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        let no_basename = |_: &str| None;
+
+        // `./name` and a bare name relative to the note's own folder.
+        assert_eq!(
+            resolve_banner_path("![[./photo.png]]", &dir, &no_basename),
+            Some(dir.join("./photo.png"))
+        );
+        // `../name` from a subfolder, with a wrapper and an alias.
+        assert_eq!(
+            resolve_banner_path("[[../photo.png|alt]]", &notes, &no_basename),
+            Some(notes.join("../photo.png"))
+        );
+        assert_eq!(
+            resolve_banner_path("![[missing.png]]", &dir, &no_basename),
+            None
+        );
+
+        // A bare name falls back to the vault's basename image index.
+        let by_name = |name: &str| (name == "cover.png").then(|| dir.join("cover.png"));
+        assert_eq!(
+            resolve_banner_path("cover.png", &dir, &by_name),
+            Some(dir.join("cover.png"))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
