@@ -4744,8 +4744,11 @@ impl BaseView {
             );
         }
         dated.sort_by_key(|(date, _, _)| *date);
-        let start = dated[0].0;
-        let end = dated[dated.len() - 1].0;
+        let first = dated[0].0;
+        let last = dated[dated.len() - 1].0;
+        // Pad to whole months so consecutive month labels never collide when
+        // the first or last row sits near a month boundary.
+        let (start, end) = timeline_bounds(first, last);
         const DAY_W: f32 = 26.;
         const ROW_H: f32 = 30.;
         let days = (end - start).num_days().max(1) + 1;
@@ -4827,6 +4830,21 @@ impl BaseView {
                 )
             })
     }
+}
+
+/// The padded axis bounds for a timeline: the first day of the earliest month
+/// through the last day of the latest month.
+fn timeline_bounds(
+    first: chrono::NaiveDate,
+    last: chrono::NaiveDate,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let start = first.with_day(1).unwrap_or(first);
+    let end = last
+        .with_day(1)
+        .and_then(|month| month.checked_add_months(chrono::Months::new(1)))
+        .map(|next| next - chrono::Duration::days(1))
+        .unwrap_or(last);
+    (start, end)
 }
 
 impl Render for BaseView {
@@ -7816,7 +7834,7 @@ impl Render for BaseView {
         }
         // `summaries:` footer row — aggregate cells under their
         // column, same grid as the header.
-        if !computed.summaries.is_empty() && !cards && !kanban && !calendar && !list {
+        if !computed.summaries.is_empty() && !cards && !kanban && !calendar && !list && !timeline {
             rows = rows.child(
                 h_flex()
                     .w_full()
@@ -8004,7 +8022,9 @@ impl Render for BaseView {
                     Some(bar)
                 }
             })
-            .when(!cards && !kanban && !calendar && !list, |v| v.child(header))
+            .when(!cards && !kanban && !calendar && !list && !timeline, |v| {
+                v.child(header)
+            })
             .children(computed.error.iter().map(|e| {
                 div()
                     .w_full()
@@ -8126,10 +8146,24 @@ mod moment_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{eval, eval_filter_node, parse_expr, parse_spec, prefill_pairs, Env, Lit, RowData};
+    use super::{
+        eval, eval_filter_node, parse_expr, parse_spec, prefill_pairs, timeline_bounds, Env, Lit,
+        RowData,
+    };
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn timeline_bounds_pad_to_whole_months() {
+        let first = chrono::NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let last = chrono::NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+        let (start, end) = timeline_bounds(first, last);
+        assert_eq!(start, chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(end, chrono::NaiveDate::from_ymd_opt(2026, 2, 28).unwrap());
+        // Two months of padding give the labels room instead of two days.
+        assert_eq!((end - start).num_days(), 58);
+    }
 
     fn env_with(pairs: &[(&str, Lit)]) -> (Vec<RowData>, BTreeMap<String, super::Expr>) {
         let mut props = BTreeMap::new();
