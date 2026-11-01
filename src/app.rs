@@ -267,7 +267,16 @@ pub struct Workspace {
     graph: Option<Entity<crate::graph::GraphView>>,
     graph_dock: Option<Entity<crate::graph::GraphView>>,
     agent_panel: Entity<agent_panel::AgentPanel>,
-    needs_fs_check: bool,
+    /// Pending doc fs-hygiene pass after vault events — `All` for full
+    /// rebuilds, `Paths` when only the listed files changed.
+    fs_check: Option<FsCheck>,
+    /// Mentions pane rows for the active note (linked + unlinked),
+    /// cached against the vault index epoch so the render path never
+    /// rescans the vault per frame.
+    mentions_memo: RefCell<Option<Rc<MentionsMemo>>>,
+    /// Debounce for the explorer filter box — one filter pass per
+    /// typing pause instead of one per keystroke.
+    explorer_filter_task: Option<Task<()>>,
     needs_standalone_fs_check: bool,
     standalone_fs_task: Option<Task<()>>,
     focus_fallback_pending: bool,
@@ -277,6 +286,27 @@ pub struct Workspace {
     hotkey_warning: Option<crate::hotkeys::HotkeyNotice>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Which docs a pending vault change touches.
+enum FsCheck {
+    All,
+    Paths(Vec<PathBuf>),
+}
+
+/// Cached mentions-pane data for one active document at one vault
+/// index epoch — linked mentions, unlinked mentions, and their
+/// context snippets.
+struct MentionsMemo {
+    target: PathBuf,
+    epoch: u64,
+    links: Vec<PathBuf>,
+    link_contexts: Vec<Option<String>>,
+    unlinked: Vec<PathBuf>,
+    unlinked_contexts: Vec<Option<String>>,
+    /// Whether the (expensive) unlinked scan ran for this memo — a
+    /// collapsed pane only needs the linked count.
+    unlinked_built: bool,
 }
 
 struct OpenDoc {
@@ -1401,10 +1431,18 @@ impl Workspace {
             &explorer_search,
             |this, input, _: &input::InputEvent, cx| {
                 let query = input.read(cx).value().to_string();
-                this.vault.update(cx, |vault, cx| {
-                    vault.explorer_query = query;
-                    vault.filter_tree(cx);
-                });
+                // Debounce: filter once per typing pause, not once per
+                // keystroke — `filter_tree` deep-copies the whole tree.
+                this.explorer_filter_task = Some(cx.spawn(async move |this, cx| {
+                    smol::Timer::after(std::time::Duration::from_millis(120)).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.vault.update(cx, |vault, cx| {
+                            vault.explorer_query = query;
+                            vault.filter_tree(cx);
+                        });
+                        cx.notify();
+                    });
+                }));
                 cx.notify();
             },
         );
@@ -1481,7 +1519,9 @@ impl Workspace {
             graph: None,
             graph_dock: None,
             agent_panel,
-            needs_fs_check: false,
+            fs_check: None,
+            mentions_memo: RefCell::new(None),
+            explorer_filter_task: None,
             needs_standalone_fs_check: false,
             standalone_fs_task: None,
             focus_fallback_pending: false,
@@ -2451,19 +2491,60 @@ impl Workspace {
             return;
         }
         // Flag docs whose files changed underneath; they reload themselves on
-        // the next frame where a window handle is available.
-        self.needs_fs_check = true;
-        if matches!(event, VaultEvent::Files) {
-            self.search_service.invalidate_all();
+        // the next frame where a window handle is available. Incremental
+        // bursts carry their paths so untouched docs skip the work.
+        match event {
+            VaultEvent::TreeExpansion => {}
+            VaultEvent::Starred => {
+                // Star toggling never changes file content — only `.base`
+                // views react, through their own subscription.
+                cx.notify();
+            }
+            VaultEvent::Files { changed } => {
+                self.merge_fs_check(changed.clone());
+                match changed {
+                    Some(paths) => self.search_service.invalidate(paths.iter().cloned()),
+                    None => self.search_service.invalidate_all(),
+                }
+                // An open graph keeps its map in sync — positions carry
+                // over so it settles instead of jumping. Content events
+                // only matter to the graph when a note body changed;
+                // image or attachment touches leave nodes and edges alone.
+                let graph_relevant = changed.as_ref().is_none_or(|paths| {
+                    paths.iter().any(|path| {
+                        matches!(
+                            crate::file_preview::extension(path).as_str(),
+                            "md" | "markdown" | "canvas"
+                        )
+                    })
+                });
+                if graph_relevant {
+                    if let Some(graph) = self.graph.clone() {
+                        graph.update(cx, |g, cx| g.rebuild(cx));
+                    }
+                    if let Some(graph) = self.graph_dock.clone() {
+                        graph.update(cx, |g, cx| g.rebuild(cx));
+                    }
+                }
+                cx.notify();
+            }
         }
-        cx.notify();
-        // An open graph keeps its map in sync — positions carry over
-        // so it settles instead of jumping.
-        if let Some(graph) = self.graph.clone() {
-            graph.update(cx, |g, cx| g.rebuild(cx));
-        }
-        if let Some(graph) = self.graph_dock.clone() {
-            graph.update(cx, |g, cx| g.rebuild(cx));
+    }
+
+    /// Merge a pending vault change into the doc fs-check queue — once
+    /// any full rebuild is queued, one `All` covers every path.
+    fn merge_fs_check(&mut self, changed: Option<Vec<PathBuf>>) {
+        match (self.fs_check.take(), changed) {
+            (Some(FsCheck::All), _) | (_, None) => self.fs_check = Some(FsCheck::All),
+            (Some(FsCheck::Paths(mut known)), Some(paths)) => {
+                for path in paths {
+                    if !known.contains(&path) {
+                        known.push(path);
+                    }
+                }
+                self.fs_check = Some(FsCheck::Paths(known));
+            }
+            (None, Some(paths)) => self.fs_check = Some(FsCheck::Paths(paths)),
         }
     }
 
@@ -9412,20 +9493,68 @@ impl Workspace {
         });
     }
 
-    /// Backlink paths for the active document — shared by the
-    /// backlinks dialog and the sidebar pane.
-    fn backlinks(&self, cx: &App) -> Vec<PathBuf> {
-        self.active_doc()
-            .map(|d| self.vault.read(cx).backlinks_to(&d.read(cx).path))
-            .unwrap_or_default()
-    }
-
-    /// Unlinked mentions of the active document (plain-text title
-    /// occurrences) — listed under the linked mentions.
-    fn unlinked(&self, cx: &App) -> Vec<PathBuf> {
-        self.active_doc()
-            .map(|d| self.vault.read(cx).unlinked_mentions(&d.read(cx).path))
-            .unwrap_or_default()
+    /// Mentions-pane data for the active document, cached per vault
+    /// index epoch — the render path must never scan the vault per
+    /// frame. The unlinked scan only runs while the pane is open.
+    fn mentions(&self, cx: &App, include_unlinked: bool) -> Rc<MentionsMemo> {
+        let Some(doc) = self.active_doc() else {
+            return Rc::new(MentionsMemo {
+                target: PathBuf::new(),
+                epoch: 0,
+                links: Vec::new(),
+                link_contexts: Vec::new(),
+                unlinked: Vec::new(),
+                unlinked_contexts: Vec::new(),
+                unlinked_built: include_unlinked,
+            });
+        };
+        let target = doc.read(cx).path.clone();
+        let vault = self.vault.read(cx);
+        let epoch = vault.index_epoch();
+        if let Some(memo) = self.mentions_memo.borrow().as_ref() {
+            if memo.target == target
+                && memo.epoch == epoch
+                && (!include_unlinked || memo.unlinked_built)
+            {
+                return memo.clone();
+            }
+        }
+        let links = vault.backlinks_to(&target);
+        let link_contexts = links
+            .iter()
+            .map(|path| vault.backlink_context(path, &target))
+            .collect();
+        let mut unlinked = Vec::new();
+        let mut unlinked_contexts = Vec::new();
+        if include_unlinked {
+            unlinked = vault.unlinked_mentions(&target);
+            let needle = target
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_lowercase)
+                .unwrap_or_default();
+            unlinked_contexts = unlinked
+                .iter()
+                .map(|path| {
+                    if needle.is_empty() {
+                        None
+                    } else {
+                        vault.unlinked_context(path, &needle)
+                    }
+                })
+                .collect();
+        }
+        let memo = Rc::new(MentionsMemo {
+            target,
+            epoch,
+            links,
+            link_contexts,
+            unlinked,
+            unlinked_contexts,
+            unlinked_built: include_unlinked,
+        });
+        *self.mentions_memo.borrow_mut() = Some(memo.clone());
+        memo
     }
 
     /// Convert the first plain-text mention of the active note's
@@ -10864,7 +10993,7 @@ impl Workspace {
     fn render_backlinks_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ws_entity = cx.entity().downgrade();
         let theme = cx.theme();
-        let links = self.backlinks(cx);
+        let memo = self.mentions(cx, self.backlinks_open);
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
 
         v_flex()
@@ -10892,7 +11021,7 @@ impl Workspace {
                                 div()
                                     .text_xs()
                                     .text_color(theme.muted_foreground)
-                                    .child(format!("Linked mentions · {}", links.len())),
+                                    .child(format!("Linked mentions · {}", memo.links.len())),
                             ),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -10903,10 +11032,8 @@ impl Workspace {
                     })),
             )
             .when(self.backlinks_open, |this| {
-                let unlinked = self.unlinked(cx);
-                let active_path = self.active_doc().map(|d| d.read(cx).path.clone());
                 let mut rows = v_flex().w_full();
-                if links.is_empty() && unlinked.is_empty() {
+                if memo.links.is_empty() && memo.unlinked.is_empty() {
                     return this.child(
                         div().w_full().px_2().pb_1().child(
                             div()
@@ -10916,16 +11043,14 @@ impl Workspace {
                         ),
                     );
                 }
-                for (ix, path) in links.iter().enumerate() {
+                for (ix, path) in memo.links.iter().enumerate() {
                     let rel = path
                         .strip_prefix(&root)
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                    // First line containing the link — the reference editor shows
-                    // the mention's context under each backlink.
-                    let snippet = active_path
-                        .as_ref()
-                        .and_then(|target| self.vault.read(cx).backlink_context(path, target));
+                    // First line containing the link — cached in the memo
+                    // so rendering never re-reads the note.
+                    let snippet = memo.link_contexts.get(ix).cloned().flatten();
                     let open = path.clone();
                     rows = rows.child(
                         div()
@@ -10988,29 +11113,24 @@ impl Workspace {
                             }),
                     );
                 }
-                if !unlinked.is_empty() {
+                if !memo.unlinked.is_empty() {
                     rows = rows.child(
                         div().w_full().px_2().pt_1().child(
                             div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child(format!("Unlinked · {}", unlinked.len())),
+                                .child(format!("Unlinked · {}", memo.unlinked.len())),
                         ),
                     );
                     // The plain-text needle is the active note's stem —
-                    // `unlinked_context` finds the line it's on.
-                    let needle = active_path
-                        .as_ref()
-                        .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
-                        .map(|s| s.to_lowercase());
-                    for (ix, path) in unlinked.iter().enumerate() {
+                    // `unlinked_context` finds the line it's on; the
+                    // snippets are cached in the memo.
+                    for (ix, path) in memo.unlinked.iter().enumerate() {
                         let rel = path
                             .strip_prefix(&root)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        let snippet = needle
-                            .as_ref()
-                            .and_then(|n| self.vault.read(cx).unlinked_context(path, n));
+                        let snippet = memo.unlinked_contexts.get(ix).cloned().flatten();
                         let open = path.clone();
                         let link_note = path.clone();
                         rows = rows.child(
@@ -14398,20 +14518,31 @@ impl Render for Workspace {
             });
         }
         // Docs pick up external edits here — a window handle is guaranteed.
-        if self.needs_fs_check {
-            self.needs_fs_check = false;
+        if let Some(check) = self.fs_check.take() {
+            let all = matches!(check, FsCheck::All);
+            let paths: &[PathBuf] = match &check {
+                FsCheck::All => &[],
+                FsCheck::Paths(paths) => paths,
+            };
             for doc in &self.docs {
                 doc.entity.update(cx, |doc, cx| {
                     if doc.vault_root.is_some() {
                         doc.check_external(window, cx);
                         // Embeds/banners resolve against the vault index — a
                         // newly added image should light up open previews.
-                        doc.resync_preview(cx);
+                        // The changed set keeps untouched docs from
+                        // re-parsing per burst.
+                        doc.on_vault_files_changed((!all).then_some(paths), cx);
                     }
                 });
             }
-            if let Some(page) = self.folder.take() {
-                self.folder = Some(self.load_folder_page(page.path, page.scroll, cx));
+            if let Some(page) = self.folder.as_ref() {
+                // Folder pages only reload when their own subtree changed.
+                if all || paths.iter().any(|path| path.starts_with(&page.path)) {
+                    let page_path = page.path.clone();
+                    let scroll = page.scroll.clone();
+                    self.folder = Some(self.load_folder_page(page_path, scroll, cx));
+                }
             }
         }
         if self.needs_standalone_fs_check {

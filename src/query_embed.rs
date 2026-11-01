@@ -48,7 +48,7 @@ impl QueryView {
             .map(|workspace| workspace.read(cx).search_service())
             .unwrap_or_default();
         let subscription = cx.subscribe(&vault, |this, vault, event: &VaultEvent, cx| {
-            if matches!(event, VaultEvent::Files) && this.active {
+            if matches!(event, VaultEvent::Files { .. }) && this.active {
                 this.root = vault.read(cx).root.clone().unwrap_or_default();
                 this.paths = vault.read(cx).explorer_path_snapshot();
                 this.start(cx);

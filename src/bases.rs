@@ -24,7 +24,7 @@
 use crate::app::Workspace;
 use crate::document::Document;
 use crate::properties;
-use crate::vault::Vault;
+use crate::vault::{Vault, VaultEvent};
 use chrono::Datelike as _;
 use gpui_kit::assets;
 use gpui_kit::base::StyledExt as _;
@@ -555,6 +555,7 @@ fn parse_expr(src: &str) -> Result<Expr, String> {
 // ------------------------------------------------------------------
 
 /// One vault note flattened for evaluation.
+#[derive(Clone)]
 struct RowData {
     path: PathBuf,
     props: BTreeMap<String, Lit>,
@@ -667,11 +668,7 @@ fn normalize_links(lit: Lit, resolve: &dyn Fn(&str) -> Option<PathBuf>) -> Lit {
     }
 }
 
-fn row_data(
-    root: &Path,
-    path: &Path,
-    resolve: &dyn Fn(&str) -> Option<PathBuf>,
-) -> (RowData, Vec<String>, Vec<String>) {
+fn row_data(root: &Path, path: &Path) -> (RowData, Vec<String>, Vec<String>) {
     let rel = path
         .strip_prefix(root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -751,7 +748,7 @@ fn row_data(
             if prop_had_links(&v) {
                 link_props.insert(k.clone());
             }
-            (k, normalize_links(lit_of(&v), resolve))
+            (k, lit_of(&v))
         })
         .collect();
     (
@@ -2466,14 +2463,22 @@ fn is_date_column(name: &str) -> bool {
     ) || name.strip_prefix("note.").is_some_and(|p| p == "date")
 }
 
+/// Vault-derived lookups a base evaluation reads — the image index and
+/// the starred set, bundled so `compute` stays within its argument
+/// budget as the evaluator grows.
+struct VaultIndexes<'a> {
+    images: &'a std::collections::HashMap<String, PathBuf>,
+    starred: &'a std::collections::BTreeSet<String>,
+}
+
 fn compute(
     spec: &BaseSpec,
     view: &ViewSpec,
     notes: &[PathBuf],
     root: &Path,
-    images: &std::collections::HashMap<String, PathBuf>,
-    starred: &std::collections::BTreeSet<String>,
+    indexes: VaultIndexes<'_>,
     this_path: Option<&Path>,
+    row_cache: &mut RowCache,
 ) -> Computed {
     // Link index: vault-relative path, file name, and bare stem all
     // resolve — `[[a]]` finds notes/a.md, `[[notes/a.md]]` hits directly.
@@ -2510,17 +2515,25 @@ fn compute(
             .unwrap_or_else(|_| p.to_string_lossy().to_string())
     };
 
-    // First pass: every note's row + resolved outgoing links.
+    // First pass: every note's row + resolved outgoing links. The row
+    // cache persists across recomputes, so a spec edit re-reads only
+    // notes whose file stamp changed.
+    let note_set: std::collections::HashSet<&PathBuf> = notes.iter().collect();
+    row_cache.retain(|path, _| note_set.contains(path));
     let mut all_rows: Vec<RowData> = Vec::new();
     let mut resolved_targets: Vec<Vec<PathBuf>> = Vec::new();
     let mut resolved_embeds: Vec<Vec<PathBuf>> = Vec::new();
     for note in notes {
-        let (mut row, targets, embeds) = row_data(root, note, &resolve);
+        let (mut row, targets, embeds) = cached_row(root, note, &resolve, row_cache);
         // `file.starred` — absolute-path membership in the vault's
         // starred set (the starred/bookmarked file property).
         row.file_meta.insert(
             "starred".into(),
-            Lit::Bool(starred.contains(&note.to_string_lossy().to_string())),
+            Lit::Bool(
+                indexes
+                    .starred
+                    .contains(&note.to_string_lossy().to_string()),
+            ),
         );
         resolved_targets.push(targets.iter().filter_map(|t| resolve(t)).collect());
         // `file.embeds` — `![[x]]` targets resolve against notes AND
@@ -2528,7 +2541,9 @@ fn compute(
         resolved_embeds.push(
             embeds
                 .iter()
-                .filter_map(|t| resolve(t).or_else(|| images.get(&t.to_lowercase()).cloned()))
+                .filter_map(|t| {
+                    resolve(t).or_else(|| indexes.images.get(&t.to_lowercase()).cloned())
+                })
                 .collect(),
         );
         all_rows.push(row);
@@ -2679,7 +2694,7 @@ fn compute(
                 },
             )
             .collect();
-        let cover = cover_of(row, root, images, view.image_prop.clone());
+        let cover = cover_of(row, root, indexes.images, view.image_prop.clone());
         rows.push((row, cells, cover));
     }
 
@@ -4261,9 +4276,59 @@ pub struct BaseView {
     col_resize: Option<(usize, f32, f32, f32)>,
     notes_epoch: u64,
     doc_epoch: u64,
+    /// Debounce for spec edits — one recompute per typing pause
+    /// instead of per keystroke. Dropping the task cancels it.
+    epoch_task: Option<Task<()>>,
+    /// Per-note row data keyed by stamp — a recompute re-reads only
+    /// files that changed instead of the whole vault.
+    row_cache: RowCache,
     cache_key: Option<(u64, u64, usize)>,
     cached: Option<std::rc::Rc<Computed>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Rows persisted across base recomputes: `(stamp, raw row, wiki targets,
+/// embed targets)`. Properties stay unresolved until each compute so
+/// target creation, deletion, and moves do not require a source edit.
+type RowCache = std::collections::HashMap<PathBuf, (RowStamp, RowData, Vec<String>, Vec<String>)>;
+
+/// `(modified, len)` — size backs up mtime so same-timestamp writes
+/// still invalidate.
+type RowStamp = (std::time::SystemTime, u64);
+
+fn row_stamp(path: &Path) -> Option<RowStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// `row_data` with a stamp cache — unchanged notes are cloned from the
+/// cache instead of re-read and re-parsed.
+fn cached_row(
+    root: &Path,
+    note: &Path,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+    cache: &mut RowCache,
+) -> (RowData, Vec<String>, Vec<String>) {
+    let resolve_row = |mut row: RowData| {
+        for value in row.props.values_mut() {
+            *value = normalize_links(value.clone(), resolve);
+        }
+        row
+    };
+    let stamp = row_stamp(note);
+    if let Some((cached_stamp, row, targets, embeds)) = cache.get(note) {
+        if Some(cached_stamp) == stamp.as_ref() {
+            return (resolve_row(row.clone()), targets.clone(), embeds.clone());
+        }
+    }
+    let (row, targets, embeds) = row_data(root, note);
+    if let Some(stamp) = stamp {
+        cache.insert(
+            note.to_path_buf(),
+            (stamp, row.clone(), targets.clone(), embeds.clone()),
+        );
+    }
+    (resolve_row(row), targets, embeds)
 }
 
 impl BaseView {
@@ -4287,8 +4352,15 @@ impl BaseView {
                 event,
                 crate::document::DocumentEvent::Changed | crate::document::DocumentEvent::Saved
             ) {
-                this.doc_epoch += 1;
-                cx.notify();
+                // Debounce: a spec edit recomputes once per typing
+                // pause — dropping the task cancels the pending pass.
+                this.epoch_task = Some(cx.spawn(async move |this, cx| {
+                    smol::Timer::after(std::time::Duration::from_millis(150)).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.doc_epoch += 1;
+                        cx.notify();
+                    });
+                }));
             }
         });
         let mut view = Self::init(SpecSrc::Doc(doc), vault, workspace, window, cx);
@@ -4330,9 +4402,13 @@ impl BaseView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let vault_sub = cx.subscribe_in(&vault, window, |this, _vault, _event, _window, cx| {
-            this.notes_epoch += 1;
-            cx.notify();
+        let vault_sub = cx.subscribe_in(&vault, window, |this, _vault, event, _window, cx| {
+            // Sidebar disclosure changes don't touch the row set —
+            // only file index events and star flips invalidate rows.
+            if matches!(event, VaultEvent::Files { .. } | VaultEvent::Starred) {
+                this.notes_epoch += 1;
+                cx.notify();
+            }
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search or prop=value"));
         let search_sub = cx.subscribe(&search, |_this, _search, event, cx| {
@@ -4354,6 +4430,8 @@ impl BaseView {
             col_resize: None,
             notes_epoch: 0,
             doc_epoch: 0,
+            epoch_task: None,
+            row_cache: RowCache::new(),
             cache_key: None,
             cached: None,
             _subscriptions: vec![vault_sub, search_sub],
@@ -4504,9 +4582,12 @@ impl BaseView {
             view,
             &notes,
             &root,
-            &images.borrow(),
-            &starred,
+            VaultIndexes {
+                images: &images.borrow(),
+                starred: &starred,
+            },
             self.this_path.as_deref(),
+            &mut self.row_cache,
         ));
         self.cache_key = Some(key);
         self.cached = Some(computed.clone());
@@ -8007,6 +8088,74 @@ mod tests {
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn cached_relations_follow_resolver_changes_without_source_edits() {
+        use super::{cached_row, RowCache};
+        let root =
+            std::env::temp_dir().join(format!("rista-relation-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.md");
+        let target = root.join("Target.md");
+        std::fs::write(&source, "---\nrelated: '[[Target]]'\n---\n").unwrap();
+        let mut cache = RowCache::new();
+        let missing = |_: &str| None;
+        let present = |name: &str| (name == "Target").then(|| target.clone());
+        let (row, _, _) = cached_row(&root, &source, &missing, &mut cache);
+        assert_eq!(row.props["related"], Lit::Str("[[Target]]".into()));
+        let (row, _, _) = cached_row(&root, &source, &present, &mut cache);
+        assert_eq!(
+            row.props["related"],
+            Lit::Str(target.to_string_lossy().into_owned())
+        );
+        let (row, _, _) = cached_row(&root, &source, &missing, &mut cache);
+        assert_eq!(row.props["related"], Lit::Str("[[Target]]".into()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn row_cache_reuses_unchanged_files_and_refreshes_changed_ones() {
+        use super::{cached_row, RowCache};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let root = std::env::temp_dir().join(format!(
+            "rista-row-cache-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let note = root.join("note.md");
+        std::fs::write(&note, "---\ntitle: first\n---\n\nBody\n").unwrap();
+
+        let resolve = |_: &str| None::<PathBuf>;
+        let mut cache = RowCache::new();
+        let (row, _, _) = cached_row(&root, &note, &resolve, &mut cache);
+        assert_eq!(row.props.get("title"), Some(&Lit::Str("first".into())));
+
+        // Same stamp → the cached row is reused, not re-read: tampering
+        // with the cache must be visible in the result.
+        if let Some((_, row, _, _)) = cache.get_mut(&note) {
+            row.props.insert("title".into(), Lit::Str("stale".into()));
+        }
+        let (row, _, _) = cached_row(&root, &note, &resolve, &mut cache);
+        assert_eq!(
+            row.props.get("title"),
+            Some(&Lit::Str("stale".into())),
+            "an unchanged stamp must serve the cached row"
+        );
+
+        // A rewrite changes the stamp → the file is re-read for real.
+        std::fs::write(&note, "---\ntitle: second-and-longer\n---\n\nBody\n").unwrap();
+        let (row, _, _) = cached_row(&root, &note, &resolve, &mut cache);
+        assert_eq!(
+            row.props.get("title"),
+            Some(&Lit::Str("second-and-longer".into())),
+            "a changed stamp must re-read the file"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn env_with(pairs: &[(&str, Lit)]) -> (Vec<RowData>, BTreeMap<String, super::Expr>) {
         let mut props = BTreeMap::new();
