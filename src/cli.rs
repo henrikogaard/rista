@@ -44,6 +44,10 @@ pub(crate) enum Command {
         note: PathBuf,
         text: Option<String>,
     },
+    Capture {
+        vault: PathBuf,
+        text: Option<String>,
+    },
     Search {
         vault: PathBuf,
         query: String,
@@ -160,10 +164,11 @@ pub(crate) fn help(language: Language) -> &'static str {
                new <vault> <name> [--template T]\n\
                daily <vault>\n\
                append <vault> <note> [text|-]\n\
+               capture <vault> [text|-]\n\
                search <vault> <query>\n\
                links <note> [--vault <vault>]\n\
                backlinks <note> [--vault <vault>]\n\
-             Omitted append text or '-' reads at most 2 MiB from stdin.\n\
+             Omitted append or capture text, or '-', reads at most 2 MiB from stdin.\n\
              Read-only search and link results describe files on disk.\n\
              Use '--' before a path named like a command."
         }
@@ -175,10 +180,11 @@ pub(crate) fn help(language: Language) -> &'static str {
                new <hvelv> <navn> [--template M]\n\
                daily <hvelv>\n\
                append <hvelv> <notat> [tekst|-]\n\
+               capture <hvelv> [tekst|-]\n\
                search <hvelv> <søk>\n\
                links <notat> [--vault <hvelv>]\n\
                backlinks <notat> [--vault <hvelv>]\n\
-             Utelatt append-tekst eller '-' leser maksimalt 2 MiB fra stdin.\n\
+             Utelatt append- eller capture-tekst, eller '-', leser maksimalt 2 MiB fra stdin.\n\
              Søke- og lenkeresultater viser filer på disk.\n\
              Bruk '--' foran en sti med navn som en kommando."
         }
@@ -212,7 +218,7 @@ pub(crate) fn parse_argv(args: Vec<OsString>) -> Result<Startup, CliError> {
     }
 
     match first {
-        "open" | "new" | "daily" | "append" | "search" | "links" | "backlinks" => {
+        "open" | "new" | "daily" | "append" | "capture" | "search" | "links" | "backlinks" => {
             let command = parse_command(first, &args[1..])?;
             let request = CliRequest {
                 command,
@@ -222,7 +228,10 @@ pub(crate) fn parse_argv(args: Vec<OsString>) -> Result<Startup, CliError> {
                 if is_read_only(&request.command)
                     || matches!(
                         &request.command,
-                        Command::New { .. } | Command::Daily { .. } | Command::Append { .. }
+                        Command::New { .. }
+                            | Command::Daily { .. }
+                            | Command::Append { .. }
+                            | Command::Capture { .. }
                     )
                 {
                     Startup::Headless(request)
@@ -338,6 +347,18 @@ fn parse_command(command: &str, args: &[OsString]) -> Result<Command, CliError> 
                 text,
             })
         }
+        "capture" => {
+            arity(1, 2)?;
+            let text = args
+                .get(1)
+                .map(|_| text_arg(1).map(str::to_owned))
+                .transpose()?
+                .filter(|text| text != "-");
+            Ok(Command::Capture {
+                vault: path_arg(0)?,
+                text,
+            })
+        }
         "search" => {
             arity(2, 2)?;
             Ok(Command::Search {
@@ -418,6 +439,7 @@ pub(crate) fn parse_url(value: &str) -> Result<CliRequest, CliError> {
         "new" => &["vault", "name", "template"],
         "daily" => &["vault"],
         "append" => &["vault", "file", "text"],
+        "capture" => &["vault", "text"],
         "search" => &["vault", "query"],
         "links" | "backlinks" => &["vault", "file"],
         _ => {
@@ -463,6 +485,10 @@ pub(crate) fn parse_url(value: &str) -> Result<CliRequest, CliError> {
             note: path_field("file")?,
             text: Some(required("text")?),
         },
+        "capture" => Command::Capture {
+            vault: path_field("vault")?,
+            text: Some(required("text")?),
+        },
         "search" => Command::Search {
             vault: path_field("vault")?,
             query: required("query")?,
@@ -482,6 +508,7 @@ pub(crate) fn parse_url(value: &str) -> Result<CliRequest, CliError> {
         | Command::New { vault, .. }
         | Command::Daily { vault }
         | Command::Append { vault, .. }
+        | Command::Capture { vault, .. }
         | Command::Search { vault, .. } => Some(vault),
         Command::Links { vault, .. } | Command::Backlinks { vault, .. } => vault.as_ref(),
         Command::OpenPaths { .. } => None,
@@ -572,6 +599,7 @@ pub(crate) fn normalize_request_paths(request: &CliRequest) -> CliRequest {
         | Command::New { vault, .. }
         | Command::Daily { vault }
         | Command::Append { vault, .. }
+        | Command::Capture { vault, .. }
         | Command::Search { vault, .. } => *vault = absolute(vault),
         Command::Links { vault, .. } | Command::Backlinks { vault, .. } => {
             *vault = Some(
@@ -1217,10 +1245,11 @@ pub(crate) fn resolve_stdin(
     request: &mut CliRequest,
     input: &mut impl Read,
 ) -> Result<(), CliError> {
-    if let Command::Append { text, .. } = &mut request.command {
-        if text.is_none() {
+    match &mut request.command {
+        Command::Append { text, .. } | Command::Capture { text, .. } if text.is_none() => {
             *text = Some(read_stdin_limited(input)?);
         }
+        _ => {}
     }
     Ok(())
 }
@@ -1238,7 +1267,7 @@ pub(crate) fn write_destination(
 ) -> Result<(PathBuf, PathBuf), CliError> {
     let (vault, relative, allow_file) = match command {
         Command::New { vault, name, .. } => (vault, name, true),
-        Command::Daily { vault } => {
+        Command::Daily { vault } | Command::Capture { vault, .. } => {
             let name = crate::bases::format_moment(now, &settings.daily_format);
             let mut relative = PathBuf::from(&settings.daily_dir);
             relative.push(name);
@@ -1331,6 +1360,39 @@ pub(crate) fn execute_write(
             validate_destination(&root, &destination, true)?;
             create_parent_directories(&root, &destination)?;
             append_atomically(&root, &destination, &text)?;
+            Ok(destination)
+        }
+        Command::Capture { vault, text } => {
+            let root = canonical_vault(vault)?;
+            let name = crate::bases::format_moment(now, &settings.daily_format);
+            let mut relative = PathBuf::from(&settings.daily_dir);
+            relative.push(name);
+            let destination = note_path(&root, &relative, true)?;
+            validate_markdown_destination(&destination)?;
+            // Create today's note from the daily template when it is missing,
+            // exactly like `rista daily`, then append the timestamped line.
+            execute_write(
+                &Command::Daily {
+                    vault: vault.clone(),
+                },
+                settings,
+                now,
+                &mut io::empty(),
+            )?;
+            let text = match text {
+                Some(text) => text.clone(),
+                None => crate::cli::read_stdin_limited(stdin)?,
+            };
+            let text = text.trim();
+            if text.is_empty() {
+                return Err(CliError::new("Nothing to capture", "Ingenting å fange"));
+            }
+            let prefix = match fs::read(&destination) {
+                Ok(bytes) if !bytes.is_empty() && !bytes.ends_with(b"\n") => "\n",
+                _ => "",
+            };
+            let line = format!("{prefix}- {} {text}\n", now.format("%H:%M"));
+            append_atomically(&root, &destination, line.as_bytes())?;
             Ok(destination)
         }
         _ => Err(CliError::new(
@@ -2133,6 +2195,62 @@ mod tests {
         let snapshots = crate::history::snapshots(&root, &note);
         assert_eq!(snapshots.len(), 1);
         assert_eq!(fs::read(&snapshots[0].1).unwrap(), [0xff, 0xfe]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capture_creates_the_daily_note_and_appends_timestamped_lines() {
+        let root = temp_dir();
+        let settings = Settings::default();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(9, 30, 0)
+            .unwrap();
+        let command = Command::Capture {
+            vault: root.clone(),
+            text: Some("buy milk".into()),
+        };
+        let note = execute_write(&command, &settings, now, &mut io::Cursor::new([])).unwrap();
+        let body = fs::read_to_string(&note).unwrap();
+        assert!(body.ends_with("- 09:30 buy milk\n"), "got {body:?}");
+
+        // A second capture appends rather than recreating the note.
+        execute_write(&command, &settings, now, &mut io::Cursor::new([])).unwrap();
+        assert_eq!(
+            fs::read_to_string(&note)
+                .unwrap()
+                .matches("- 09:30 buy milk")
+                .count(),
+            2
+        );
+
+        // Text may arrive on standard input.
+        let from_stdin = Command::Capture {
+            vault: root.clone(),
+            text: None,
+        };
+        execute_write(
+            &from_stdin,
+            &settings,
+            now,
+            &mut io::Cursor::new(b"from stdin\n".as_slice()),
+        )
+        .unwrap();
+        assert!(fs::read_to_string(&note)
+            .unwrap()
+            .contains("- 09:30 from stdin\n"));
+
+        // Blank captures are rejected.
+        assert!(execute_write(
+            &Command::Capture {
+                vault: root.clone(),
+                text: Some("   ".into()),
+            },
+            &settings,
+            now,
+            &mut io::Cursor::new([]),
+        )
+        .is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

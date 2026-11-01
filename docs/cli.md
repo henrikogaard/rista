@@ -13,6 +13,8 @@ rista daily ~/Notes
 rista append ~/Notes "Río plan.md" "Follow up tomorrow"
 printf '%s' "Exact text" | rista append ~/Notes "Río plan.md" -
 cat change.md | rista append ~/Notes "Río plan.md"
+rista capture ~/Notes "Buy milk"
+printf '%s' "Buy milk" | rista capture ~/Notes -
 rista search ~/Notes "project status"
 rista links "Río plan.md" [--vault ~/Notes]
 rista backlinks "Río plan.md" [--vault ~/Notes]
@@ -20,14 +22,20 @@ rista backlinks "Río plan.md" [--vault ~/Notes]
 
 `append` adds exactly the supplied UTF-8 bytes: it does not add a bullet or
 newline. If its text argument is omitted or is `-`, it reads standard input.
-Input larger than 2 MiB is rejected rather than truncated. `new`, `daily`, and
-`append` only target `.md` or `.markdown` notes; `.md` is added when the name
-has no extension. Creating a note never overwrites an existing path. `daily`
-uses the vault's configured daily folder and date format, with an optional
-`daily.md` template in the configured templates folder. `new --template`
-resolves the template inside that configured folder. Templates requiring
-interactive prompts, clipboard, or selection context are not supported by the
-CLI.
+Input larger than 2 MiB is rejected rather than truncated. `new`, `daily`,
+`capture`, and `append` only target `.md` or `.markdown` notes; `.md` is added
+when the name has no extension. Creating a note never overwrites an existing
+path. `daily` uses the vault's configured daily folder and date format, with an
+optional `daily.md` template in the configured templates folder. `new
+--template` resolves the template inside that configured folder. Templates
+requiring interactive prompts, clipboard, or selection context are not
+supported by the CLI.
+
+`capture` is the quick-capture path for launchers such as Raycast, Alfred, or a
+shell alias: it creates today's daily note from the daily template when it is
+missing, then appends one timestamped bullet, `- HH:MM <text>`, and prints the
+note's path. Its text argument is optional and reads standard input when omitted
+or `-`; blank captures are rejected.
 
 `search` prints matching filesystem paths using the vault's existing search
 behavior, which may include non-Markdown files. `links` prints resolved local
@@ -51,6 +59,7 @@ rista://open?vault=%2FUsers%2Fyou%2FNotes&file=R%C3%ADo%20plan.md
 rista://new?vault=%2FUsers%2Fyou%2FNotes&name=Draft%20notes
 rista://daily?vault=%2FUsers%2Fyou%2FNotes
 rista://append?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md&text=More%20text
+rista://capture?vault=%2FUsers%2Fyou%2FNotes&text=Buy%20milk
 rista://search?vault=%2FUsers%2Fyou%2FNotes&query=project%20status
 rista://links?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md
 rista://backlinks?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md
@@ -58,9 +67,9 @@ rista://backlinks?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md
 
 URL fields must be unique and known for the selected action; malformed
 percent-encoding, credentials, ports, fragments, and non-local vault paths are
-rejected. URL writes (`new`, `daily`, and `append`) require native confirmation
-before any file or directory is changed. Cancel is the keyboard default.
-Dirty, conflicted, or externally changed open notes are not silently
+rejected. URL writes (`new`, `daily`, `capture`, and `append`) require native
+confirmation before any file or directory is changed. Cancel is the keyboard
+default. Dirty, conflicted, or externally changed open notes are not silently
 overwritten.
 
 ## Limits and errors

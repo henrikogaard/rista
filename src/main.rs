@@ -433,7 +433,8 @@ fn dispatch_cli_requests(requests: Vec<cli::CliRequest>, cx: &mut App) -> cli::C
                 }
                 cli::Command::New { .. }
                 | cli::Command::Daily { .. }
-                | cli::Command::Append { .. } => {
+                | cli::Command::Append { .. }
+                | cli::Command::Capture { .. } => {
                     if request.origin == cli::RequestOrigin::Url {
                         windows::confirm_cli_write(request.clone(), cx)?;
                         Ok(Vec::new())
