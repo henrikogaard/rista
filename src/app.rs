@@ -57,6 +57,8 @@ mod explorer_panel;
 mod folder_dashboard;
 #[path = "pdf_export_ui.rs"]
 mod pdf_export_ui;
+#[path = "replace.rs"]
+mod replace;
 #[path = "saved_workspaces.rs"]
 mod saved_workspaces;
 #[path = "tools_panel.rs"]

@@ -50,6 +50,28 @@ pub struct SearchResponse {
     pub explanation_norwegian: String,
 }
 
+/// One file a literal replacement would change.
+#[derive(Clone, Debug)]
+pub struct ReplacementFile {
+    pub path: PathBuf,
+    pub before: Vec<u8>,
+    pub after: Vec<u8>,
+    pub count: usize,
+}
+
+/// The result of planning a project-wide replacement.
+#[derive(Clone, Debug, Default)]
+pub struct ReplacePlan {
+    pub files: Vec<ReplacementFile>,
+    pub total: usize,
+}
+
+impl ReplacePlan {
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CachedFile {
     modified: Option<SystemTime>,
@@ -205,6 +227,43 @@ impl SearchService {
             explanation: explain(&query, false),
             explanation_norwegian: explain(&query, true),
         })
+    }
+
+    /// Plan a literal find-and-replace across `paths`. Only files whose raw
+    /// text is what search indexes are considered — Markdown and `.base`.
+    /// JSON Canvas boards are searched through a projection, so their source
+    /// is left untouched.
+    pub fn plan_replacements(
+        &self,
+        paths: &[PathBuf],
+        needle: &str,
+        replacement: &str,
+        match_case: bool,
+    ) -> ReplacePlan {
+        let mut plan = ReplacePlan::default();
+        if needle.is_empty() {
+            return plan;
+        }
+        for path in paths {
+            if !is_replaceable(path) {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else {
+                continue;
+            };
+            let (after, count) = replace_literal(&content, needle, replacement, match_case);
+            if count == 0 {
+                continue;
+            }
+            plan.total += count;
+            plan.files.push(ReplacementFile {
+                path: path.clone(),
+                before: content.into_bytes(),
+                after: after.into_bytes(),
+                count,
+            });
+        }
+        plan
     }
 
     fn document(
@@ -372,6 +431,61 @@ fn canvas_search_projection(raw: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a file's raw text is what search indexes, and so can be replaced.
+fn is_replaceable(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["md", "markdown", "base"]
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
+/// Replace every non-overlapping occurrence of `needle`, returning the new
+/// text and the number of replacements. An empty needle matches nothing.
+/// Matching compares characters case-folded one at a time, so it never
+/// misaligns on the handful of characters that lowercase to more than one.
+pub fn replace_literal(
+    text: &str,
+    needle: &str,
+    replacement: &str,
+    match_case: bool,
+) -> (String, usize) {
+    if needle.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let needle_chars = needle.chars().collect::<Vec<_>>();
+    let text_chars = text.chars().collect::<Vec<_>>();
+    let matches_at = |start: usize| {
+        if start + needle_chars.len() > text_chars.len() {
+            return false;
+        }
+        needle_chars.iter().enumerate().all(|(offset, needle)| {
+            let candidate = text_chars[start + offset];
+            if match_case {
+                *needle == candidate
+            } else {
+                needle.to_lowercase().eq(candidate.to_lowercase())
+            }
+        })
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut count = 0;
+    let mut index = 0;
+    while index < text_chars.len() {
+        if matches_at(index) {
+            out.push_str(replacement);
+            count += 1;
+            index += needle_chars.len();
+        } else {
+            out.push(text_chars[index]);
+            index += 1;
+        }
+    }
+    (out, count)
+}
+
 fn is_cancelled(cancellation: &Option<(Arc<AtomicU64>, u64)>) -> bool {
     cancellation
         .as_ref()
@@ -464,6 +578,49 @@ mod tests {
         ];
         sort_results(&mut results, SearchSort::Relevance);
         assert_eq!(results[0].relative_path, "a.md");
+    }
+
+    #[test]
+    fn replace_literal_honours_case_and_counts() {
+        assert_eq!(
+            replace_literal("Needle needle NEEDLE", "needle", "thread", false),
+            ("thread thread thread".to_string(), 3)
+        );
+        assert_eq!(
+            replace_literal("Needle needle", "needle", "thread", true),
+            ("Needle thread".to_string(), 1)
+        );
+        assert_eq!(
+            replace_literal("nothing here", "needle", "thread", false),
+            ("nothing here".to_string(), 0)
+        );
+        assert_eq!(
+            replace_literal("abc", "", "x", false),
+            ("abc".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn plan_replacements_collects_notes_and_skips_canvas() {
+        let root = test_root();
+        let note = root.join("note.md");
+        let base = root.join("view.base");
+        let board = root.join("board.canvas");
+        fs::write(&note, "needle\nneedle\n").unwrap();
+        fs::write(&base, "filters: needle\n").unwrap();
+        fs::write(&board, r#"{"nodes":[{"text":"needle"}],"edges":[]}"#).unwrap();
+        let paths = vec![note.clone(), base.clone(), board.clone()];
+        let plan = SearchService::new().plan_replacements(&paths, "needle", "thread", false);
+        assert_eq!(plan.files.len(), 2);
+        assert_eq!(plan.total, 3);
+        assert!(plan.files.iter().all(|file| file.path != board));
+        let note_file = plan.files.iter().find(|file| file.path == note).unwrap();
+        assert_eq!(note_file.count, 2);
+        assert_eq!(
+            String::from_utf8(note_file.after.clone()).unwrap(),
+            "thread\nthread\n"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

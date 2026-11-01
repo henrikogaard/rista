@@ -96,6 +96,25 @@ fn merge_requirements(mut left: QueryRequirements, right: QueryRequirements) -> 
     left
 }
 
+/// The literal text of a plain-text query, for find and replace.
+///
+/// Returns `Some((text, case))` only when the query is exactly one content
+/// word or quoted phrase — optionally wrapped in `match-case:` / `ignore-case:`.
+/// Operator, boolean and regex queries have no single text to replace, so they
+/// return `None`. The `case` override is `None` when the query does not state
+/// one and the caller's own toggle applies.
+pub fn literal_term(query: &Query) -> Option<(String, Option<bool>)> {
+    match query {
+        Query::Term(Term::Content(text)) | Query::Term(Term::Phrase(text)) => {
+            Some((text.clone(), None))
+        }
+        Query::Case { match_case, query } => {
+            literal_term(query).map(|(text, _)| (text, Some(*match_case)))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     Line,
@@ -1937,6 +1956,33 @@ mod tests {
         )
         .expect("query compiles")
         .matched
+    }
+
+    #[test]
+    fn literal_term_accepts_one_word_or_phrase_only() {
+        assert_eq!(
+            literal_term(&parse_query("needle").unwrap()),
+            Some(("needle".to_string(), None))
+        );
+        assert_eq!(
+            literal_term(&parse_query("\"two words\"").unwrap()),
+            Some(("two words".to_string(), None))
+        );
+        assert_eq!(
+            literal_term(&parse_query("match-case:needle").unwrap()),
+            Some(("needle".to_string(), Some(true)))
+        );
+        assert_eq!(
+            literal_term(&parse_query("ignore-case:needle").unwrap()),
+            Some(("needle".to_string(), Some(false)))
+        );
+        for operators in ["needle thread", "tag:work", "path:daily", "/re/", "a OR b"] {
+            assert_eq!(
+                literal_term(&parse_query(operators).unwrap()),
+                None,
+                "{operators} has no single literal text"
+            );
+        }
     }
 
     #[test]
