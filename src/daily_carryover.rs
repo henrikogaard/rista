@@ -145,17 +145,25 @@ pub fn prepare_task(
 fn rebase_relative_wikilinks(text: &str, source_path: &Path, root: &Path) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find("[[") {
+    while let Some(start) = rest.find(['`', '[']) {
         let (before, tail) = rest.split_at(start);
         out.push_str(before);
-        let Some(end) = tail.find("]]") else {
-            rest = tail;
-            break;
+        if tail.starts_with('`') {
+            // A code span is copied as written; an unmatched run is literal.
+            let run = tail.len() - tail.trim_start_matches('`').len();
+            let end = code_span_end(tail, run).unwrap_or(run);
+            out.push_str(&tail[..end]);
+            rest = &tail[end..];
+            continue;
+        }
+        let Some(end) = tail.find("]]").filter(|_| tail.starts_with("[[")) else {
+            out.push('[');
+            rest = &tail[1..];
+            continue;
         };
         let inner = &tail[2..end];
-        let in_code = text[..text.len() - tail.len()].matches('`').count() % 2 == 1;
         let (target, suffix) = inner.split_at(inner.find(['#', '|']).unwrap_or(inner.len()));
-        let rebased = (!in_code && (target.starts_with("./") || target.starts_with("../")))
+        let rebased = (target.starts_with("./") || target.starts_with("../"))
             .then(|| vault_relative(source_path.parent()?, target, root))
             .flatten();
         match rebased {
@@ -166,6 +174,21 @@ fn rebase_relative_wikilinks(text: &str, source_path: &Path, root: &Path) -> Str
     }
     out.push_str(rest);
     out
+}
+
+/// Where the code span opened by the `run` backticks at the start of `tail`
+/// ends: after the next backtick run of exactly the same length.
+fn code_span_end(tail: &str, run: usize) -> Option<usize> {
+    let mut at = run;
+    while let Some(offset) = tail[at..].find('`') {
+        let start = at + offset;
+        let len = tail[start..].len() - tail[start..].trim_start_matches('`').len();
+        if len == run {
+            return Some(start + len);
+        }
+        at = start + len;
+    }
+    None
 }
 
 /// `target` resolved from `dir` as a path under `root`, with `/` separators.
@@ -649,6 +672,17 @@ mod tests {
         assert_eq!(
             rebase_relative_wikilinks(text, &from, &root),
             "see [[2026/10/plan]] then [[./plan"
+        );
+    }
+
+    #[test]
+    fn rebase_skips_code_spans_of_any_backtick_length() {
+        let root = PathBuf::from("/v");
+        let from = root.join("2026/10/31.md");
+        let text = "``a ` [[./plan]] b`` [[./plan]] `x [[./plan]]";
+        assert_eq!(
+            rebase_relative_wikilinks(text, &from, &root),
+            "``a ` [[./plan]] b`` [[2026/10/plan]] `x [[2026/10/plan]]"
         );
     }
 
