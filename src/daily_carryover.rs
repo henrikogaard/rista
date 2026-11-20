@@ -10,6 +10,7 @@
 //! index (which reads only `[ ]`) correct.
 
 use crate::date_phrase;
+use crate::note_composer::{extract_reference_definitions, rebase_markdown_links, ComposeError};
 use crate::settings::Language;
 use chrono::{Duration, NaiveDate};
 use gpui_kit::component::checkbox::Checkbox;
@@ -17,7 +18,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
 use gpui_kit::*;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 /// How many days before today are searched for unfinished tasks.
 pub const LOOKBACK_DAYS: i64 = 7;
@@ -57,9 +58,162 @@ pub fn heading(norwegian: bool) -> &'static str {
     }
 }
 
+/// `text` split before a trailing block anchor: `("Call Ada", " ^call")`.
+/// The anchor part is empty when there is none.
+fn split_block_anchor(text: &str) -> (&str, &str) {
+    let trimmed = text.trim_end();
+    if let Some(at) = trimmed.rfind(" ^") {
+        let id = &trimmed[at + 2..];
+        if !id.is_empty() && id.chars().all(|c| c.is_alphanumeric() || c == '-') {
+            return (&trimmed[..at], &trimmed[at..]);
+        }
+    }
+    (text, "")
+}
+
 /// `- [ ] text ([[2026-11-18]])` — the task and a link back to its source.
+/// A trailing block anchor stays with the source line, so the copy drops it.
 pub fn carried_line(text: &str, source_link: &str) -> String {
+    let (text, _) = split_block_anchor(text);
     format!("- [ ] {text} ([[{source_link}]])")
+}
+
+/// A task ready to copy into today's note.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Prepared {
+    pub text: String,
+    /// Reference-style link definitions the text needs in today's note.
+    pub definitions: Vec<String>,
+}
+
+/// The task on 1-based `line` of `source`, with its local links rebased for
+/// `today_path` and the reference definitions it uses brought along. A link
+/// that cannot be rebased stays as written; ambiguous definitions fail.
+pub fn prepare_task(
+    source: &str,
+    line: usize,
+    source_path: &Path,
+    today_path: &Path,
+    root: &Path,
+) -> Result<Prepared, ComposeError> {
+    let mut offset = 0;
+    let mut found = None;
+    for (index, segment) in source.split_inclusive('\n').enumerate() {
+        if index + 1 == line {
+            let body = segment.trim_end_matches(['\n', '\r']);
+            let lead = body.len() - body.trim_start().len();
+            found = Some((offset + lead)..(offset + body.len()));
+            break;
+        }
+        offset += segment.len();
+    }
+    let range = found.ok_or(ComposeError::InvalidMarkdown)?;
+    let (with_definitions, _) =
+        extract_reference_definitions(source, range.clone(), &source[range])?;
+    let same_dir = source_path.parent() == today_path.parent();
+    let rebased = if same_dir {
+        with_definitions
+    } else {
+        rebase_markdown_links(&with_definitions, source_path, today_path, root)
+            .unwrap_or(with_definitions)
+    };
+    let (task, definitions) = rebased
+        .split_once("\n\n")
+        .map_or((rebased.as_str(), ""), |(task, rest)| (task, rest));
+    let task = if same_dir {
+        task.to_string()
+    } else {
+        rebase_relative_wikilinks(task, source_path, root)
+    };
+    let text = task
+        .split_once("[ ]")
+        .map_or(task.as_str(), |(_, text)| text)
+        .trim()
+        .to_string();
+    Ok(Prepared {
+        text,
+        definitions: definitions
+            .split("\n\n")
+            .filter(|definition| !definition.trim().is_empty())
+            .map(|definition| definition.trim_end().to_string())
+            .collect(),
+    })
+}
+
+/// `[[./plan]]` and `[[../plan]]` mean "next to this note", so they are
+/// rewritten to vault-relative paths before the text moves to another folder.
+fn rebase_relative_wikilinks(text: &str, source_path: &Path, root: &Path) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[[") {
+        let (before, tail) = rest.split_at(start);
+        out.push_str(before);
+        let Some(end) = tail.find("]]") else {
+            break;
+        };
+        let inner = &tail[2..end];
+        let in_code = text[..text.len() - tail.len()].matches('`').count() % 2 == 1;
+        let (target, suffix) = inner.split_at(inner.find(['#', '|']).unwrap_or(inner.len()));
+        let rebased = (!in_code && (target.starts_with("./") || target.starts_with("../")))
+            .then(|| vault_relative(source_path.parent()?, target, root))
+            .flatten();
+        match rebased {
+            Some(path) => out.push_str(&format!("[[{path}{suffix}]]")),
+            None => out.push_str(&tail[..end + 2]),
+        }
+        rest = &tail[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `target` resolved from `dir` as a path under `root`, with `/` separators.
+fn vault_relative(dir: &Path, target: &str, root: &Path) -> Option<String> {
+    let mut parts = dir
+        .strip_prefix(root)
+        .ok()?
+        .components()
+        .collect::<Vec<_>>();
+    for part in Path::new(target).components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::Normal(name) => parts.push(Component::Normal(name)),
+            _ => return None,
+        }
+    }
+    let path = parts
+        .iter()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    (!path.is_empty()).then_some(path)
+}
+
+/// `lines` followed by `definitions` (blank-line separated, identical ones
+/// once), ready for `insert_carried`. `None` when two different definitions
+/// share a label, because one would silently take over the other's links.
+pub fn with_definitions(mut lines: Vec<String>, definitions: Vec<String>) -> Option<Vec<String>> {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for definition in definitions {
+        let label = definition
+            .split("]:")
+            .next()
+            .unwrap_or_default()
+            .to_lowercase();
+        match seen.iter().find(|(known, _)| *known == label) {
+            Some((_, text)) if *text == definition => {}
+            Some(_) => return None,
+            None => seen.push((label, definition)),
+        }
+    }
+    for (_, definition) in seen {
+        lines.push(String::new());
+        lines.push(definition);
+    }
+    Some(lines)
 }
 
 /// `note` with `lines` added at the end of the carried-over section. An
@@ -90,12 +244,34 @@ pub fn insert_under(note: &str, lines: &[String], names: &[&str], new_heading: &
             (start, segment)
         })
         .collect::<Vec<_>>();
+    // A line inside a fenced code block is never a heading.
+    let mut fenced = Vec::with_capacity(segments.len());
+    let mut fence: Option<&str> = None;
+    for (_, segment) in &segments {
+        let trimmed = segment.trim_start();
+        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
+        match (fence, marker) {
+            (None, Some(m)) => {
+                fence = Some(m);
+                fenced.push(true);
+            }
+            (Some(open), Some(m)) if open == m => {
+                fence = None;
+                fenced.push(true);
+            }
+            _ => fenced.push(fence.is_some()),
+        }
+    }
     let is_heading = |segment: &str| {
         let line = segment.trim_end();
         line.strip_prefix("## ")
             .is_some_and(|name| names.contains(&name))
     };
-    let Some(found) = segments.iter().position(|(_, s)| is_heading(s)) else {
+    let Some(found) = segments
+        .iter()
+        .enumerate()
+        .position(|(i, (_, s))| !fenced[i] && is_heading(s))
+    else {
         let mut out = note.to_string();
         if !out.is_empty() && !out.ends_with('\n') {
             out.push_str(nl);
@@ -111,7 +287,7 @@ pub fn insert_under(note: &str, lines: &[String], names: &[&str], new_heading: &
     // non-blank line so trailing blank lines stay below the new tasks.
     let mut last = found;
     for (index, (_, segment)) in segments.iter().enumerate().skip(found + 1) {
-        if segment.starts_with("# ") || segment.starts_with("## ") {
+        if !fenced[index] && (segment.starts_with("# ") || segment.starts_with("## ")) {
             break;
         }
         if !segment.trim().is_empty() {
@@ -148,8 +324,10 @@ pub fn mark_migrated(note: &str, tasks: &[(usize, String)], moved_link: &str) ->
         }
         let body = segment.trim_end_matches(['\n', '\r']);
         let eol = &segment[body.len()..];
-        out.push_str(&body.trim_end().replacen("[ ]", "[x]", 1));
-        out.push_str(&format!(" (moved to [[{moved_link}]]){eol}"));
+        // The notice goes before a trailing `^id`, which only resolves at the end.
+        let marked = body.trim_end().replacen("[ ]", "[x]", 1);
+        let (head, anchor) = split_block_anchor(&marked);
+        out.push_str(&format!("{head} (moved to [[{moved_link}]]){anchor}{eol}"));
     }
     Some(out)
 }
@@ -303,8 +481,12 @@ impl Render for GoToDateView {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: the GPUI glob import there shadows `#[test]`.
-    use super::{carried_line, heading, insert_carried, lookback_dates, mark_migrated, open_tasks};
+    use super::{
+        carried_line, heading, insert_carried, lookback_dates, mark_migrated, open_tasks,
+        prepare_task, with_definitions,
+    };
     use chrono::NaiveDate;
+    use std::path::PathBuf;
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -379,6 +561,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_ignores_headings_inside_fences() {
+        let lines = vec!["- [ ] b".to_string()];
+        let note = "## Carried over\n\n- [ ] a\n```markdown\n# Example\n```\n\n## Next\n";
+        assert_eq!(
+            insert_carried(note, &lines, false),
+            "## Carried over\n\n- [ ] a\n```markdown\n# Example\n```\n- [ ] b\n\n## Next\n"
+        );
+        let fenced_heading = "```\n## Carried over\n```\n";
+        let out = insert_carried(fenced_heading, &lines, false);
+        assert!(out.starts_with(fenced_heading));
+        assert!(out.ends_with("## Carried over\n\n- [ ] b\n"));
+    }
+
+    #[test]
     fn insert_keeps_crlf_endings() {
         let lines = vec!["- [ ] a".to_string()];
         assert_eq!(
@@ -399,6 +595,19 @@ mod tests {
     }
 
     #[test]
+    fn block_anchors_stay_last_on_the_source_and_leave_the_copy() {
+        let tasks = [(1, "Call Ada ^call".to_string())];
+        let marked = mark_migrated("- [ ] Call Ada ^call\n", &tasks, "t").unwrap();
+        assert_eq!(marked, "- [x] Call Ada (moved to [[t]]) ^call\n");
+        assert!(crate::preview::block_lines(&marked.lines().collect::<Vec<_>>(), "call").is_some());
+        assert_eq!(
+            carried_line("Call Ada ^call", "s"),
+            "- [ ] Call Ada ([[s]])"
+        );
+        assert_eq!(carried_line("a^b c", "s"), "- [ ] a^b c ([[s]])");
+    }
+
+    #[test]
     fn migrate_handles_indent_crlf_and_a_missing_final_newline() {
         let note = "  - [ ] a\r\n- [ ] b";
         let tasks = [(1, "a".to_string()), (2, "b".to_string())];
@@ -415,6 +624,60 @@ mod tests {
         assert_eq!(mark_migrated(note, &[(2, "one".to_string())], "t"), None);
         assert_eq!(
             mark_migrated("- [x] one\n", &[(1, "one".to_string())], "t"),
+            None
+        );
+    }
+
+    fn vault(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("rista-carry-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("2026/10")).unwrap();
+        std::fs::create_dir_all(root.join("2026/11")).unwrap();
+        std::fs::write(root.join("2026/10/plan.md"), "# Plan\n").unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn prepare_rebases_links_across_folders() {
+        let root = vault("rebase");
+        let from = root.join("2026/10/31.md");
+        let to = root.join("2026/11/01.md");
+        let source = "- [ ] See [plan](./plan.md) and [[./plan]] [[../x|y]] `[[./plan]]`\n";
+        let prepared = prepare_task(source, 1, &from, &to, &root).unwrap();
+        assert_eq!(
+            prepared.text,
+            "See [plan](../10/plan.md) and [[2026/10/plan]] [[2026/x|y]] `[[./plan]]`"
+        );
+        assert!(prepared.definitions.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepare_leaves_same_folder_links_and_brings_definitions() {
+        let root = vault("defs");
+        let from = root.join("2026/10/30.md");
+        let to = root.join("2026/10/31.md");
+        let source = "- [ ] Read [plan][p] [[./plan]]\n\n[p]: ./plan.md\n";
+        let prepared = prepare_task(source, 1, &from, &to, &root).unwrap();
+        assert_eq!(prepared.text, "Read [plan][p] [[./plan]]");
+        assert_eq!(prepared.definitions, vec!["[p]: ./plan.md".to_string()]);
+        let other = root.join("2026/11/01.md");
+        let moved = prepare_task(source, 1, &from, &other, &root).unwrap();
+        assert_eq!(moved.definitions, vec!["[p]: ../10/plan.md".to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn definitions_dedupe_and_refuse_conflicts() {
+        let lines = vec!["- [ ] a".to_string()];
+        let same = vec!["[p]: /a".to_string(), "[P]: /a".to_string()];
+        assert_eq!(
+            with_definitions(lines.clone(), vec!["[p]: /a".into(), "[p]: /a".into()]),
+            Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()])
+        );
+        assert_eq!(with_definitions(lines.clone(), same), None);
+        assert_eq!(
+            with_definitions(lines, vec!["[p]: /a".into(), "[p]: /b".into()]),
             None
         );
     }
