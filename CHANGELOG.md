@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Show the size of each attached context file on its chip in the Agent panel.
+- Add Accept all and Reject all for several proposed file changes, and one Undo agent changes action that reverts every file accepted in the last turn, or refuses when a file changed since.
+- Replace raw agent errors with one short English or Norwegian line with the fix, for an agent that exits at once, a missing login, or a failed handshake; the raw output stays behind Details.
+
 ## v0.2.0 — 2026-10-16
 
 - Split the editor into panes with tab groups, drag tabs between panes, move tabs to new windows from the tab menu, open independent workspace windows, and save and restore workspace layouts.
