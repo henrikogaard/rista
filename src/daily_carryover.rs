@@ -79,11 +79,33 @@ pub fn insert_carried(note: &str, lines: &[String], norwegian: bool) -> String {
             (start, segment)
         })
         .collect::<Vec<_>>();
+    // A line inside a fenced code block is never a heading.
+    let mut fenced = Vec::with_capacity(segments.len());
+    let mut fence: Option<&str> = None;
+    for (_, segment) in &segments {
+        let trimmed = segment.trim_start();
+        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
+        match (fence, marker) {
+            (None, Some(m)) => {
+                fence = Some(m);
+                fenced.push(true);
+            }
+            (Some(open), Some(m)) if open == m => {
+                fence = None;
+                fenced.push(true);
+            }
+            _ => fenced.push(fence.is_some()),
+        }
+    }
     let is_heading = |segment: &str| {
         let line = segment.trim_end();
         line == "## Carried over" || line == "## Overført"
     };
-    let Some(found) = segments.iter().position(|(_, s)| is_heading(s)) else {
+    let Some(found) = segments
+        .iter()
+        .enumerate()
+        .position(|(i, (_, s))| !fenced[i] && is_heading(s))
+    else {
         let mut out = note.to_string();
         if !out.is_empty() && !out.ends_with('\n') {
             out.push_str(nl);
@@ -99,7 +121,7 @@ pub fn insert_carried(note: &str, lines: &[String], norwegian: bool) -> String {
     // non-blank line so trailing blank lines stay below the new tasks.
     let mut last = found;
     for (index, (_, segment)) in segments.iter().enumerate().skip(found + 1) {
-        if segment.starts_with("# ") || segment.starts_with("## ") {
+        if !fenced[index] && (segment.starts_with("# ") || segment.starts_with("## ")) {
             break;
         }
         if !segment.trim().is_empty() {
@@ -364,6 +386,20 @@ mod tests {
             insert_carried("## Carried over\n## Next\n", &lines, false),
             "## Carried over\n\n- [ ] b\n## Next\n"
         );
+    }
+
+    #[test]
+    fn insert_ignores_headings_inside_fences() {
+        let lines = vec!["- [ ] b".to_string()];
+        let note = "## Carried over\n\n- [ ] a\n```markdown\n# Example\n```\n\n## Next\n";
+        assert_eq!(
+            insert_carried(note, &lines, false),
+            "## Carried over\n\n- [ ] a\n```markdown\n# Example\n```\n- [ ] b\n\n## Next\n"
+        );
+        let fenced_heading = "```\n## Carried over\n```\n";
+        let out = insert_carried(fenced_heading, &lines, false);
+        assert!(out.starts_with(fenced_heading));
+        assert!(out.ends_with("## Carried over\n\n- [ ] b\n"));
     }
 
     #[test]
