@@ -11,6 +11,7 @@
 
 use crate::date_phrase;
 use crate::note_composer::{extract_reference_definitions, rebase_markdown_links, ComposeError};
+use crate::properties::FenceTracker;
 use crate::settings::Language;
 use chrono::{Duration, NaiveDate};
 use gpui_kit::component::checkbox::Checkbox;
@@ -258,23 +259,11 @@ pub fn insert_carried(note: &str, lines: &[String], norwegian: bool) -> String {
         })
         .collect::<Vec<_>>();
     // A line inside a fenced code block is never a heading.
-    let mut fenced = Vec::with_capacity(segments.len());
-    let mut fence: Option<&str> = None;
-    for (_, segment) in &segments {
-        let trimmed = segment.trim_start();
-        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
-        match (fence, marker) {
-            (None, Some(m)) => {
-                fence = Some(m);
-                fenced.push(true);
-            }
-            (Some(open), Some(m)) if open == m => {
-                fence = None;
-                fenced.push(true);
-            }
-            _ => fenced.push(fence.is_some()),
-        }
-    }
+    let mut fences = FenceTracker::default();
+    let fenced = segments
+        .iter()
+        .map(|(_, segment)| fences.in_fence(segment))
+        .collect::<Vec<_>>();
     let is_heading = |segment: &str| {
         let line = segment.trim_end();
         line == "## Carried over" || line == "## Overført"
@@ -584,6 +573,20 @@ mod tests {
         let out = insert_carried(fenced_heading, &lines, false);
         assert!(out.starts_with(fenced_heading));
         assert!(out.ends_with("## Carried over\n\n- [ ] b\n"));
+    }
+
+    #[test]
+    fn insert_tracks_fence_length_and_info_strings() {
+        let lines = vec!["- [ ] a".to_string()];
+        let note = "````\n```\n## Carried over\n````\n\n## Carried over\n\n- [ ] b\n";
+        assert_eq!(
+            insert_carried(note, &lines, false),
+            "````\n```\n## Carried over\n````\n\n## Carried over\n\n- [ ] b\n- [ ] a\n"
+        );
+        // A line with an info string never closes the fence.
+        let open = "```rust\n```js\n## Carried over\n```\n";
+        assert!(insert_carried(open, &lines, false).ends_with("\n## Carried over\n\n- [ ] a\n"));
+        assert!(insert_carried(open, &lines, false).starts_with(open));
     }
 
     #[test]
