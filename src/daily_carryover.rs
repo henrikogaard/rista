@@ -10,7 +10,9 @@
 //! index (which reads only `[ ]`) correct.
 
 use crate::date_phrase;
-use crate::note_composer::{extract_reference_definitions, rebase_markdown_links, ComposeError};
+use crate::note_composer::{
+    extract_reference_definitions, parse, rebase_markdown_links, ComposeError,
+};
 use crate::properties::FenceTracker;
 use crate::settings::Language;
 use chrono::{Duration, NaiveDate};
@@ -19,6 +21,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme};
 use gpui_kit::*;
+use markdown::mdast::Node;
 use std::path::{Component, Path, PathBuf};
 
 /// How many days before today are searched for unfinished tasks.
@@ -217,10 +220,52 @@ fn vault_relative(dir: &Path, target: &str, root: &Path) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
-/// A definition line split into its lowercased `[label` and trimmed target.
-fn definition_parts(definition: &str) -> (String, String) {
-    let (label, target) = definition.split_once("]:").unwrap_or((definition, ""));
-    (label.trim_start().to_lowercase(), target.trim().to_string())
+/// The reference and footnote definitions in `text`, as a normalized label
+/// (lowercase, whitespace collapsed) and what it points to: URL and title for
+/// a link, the body for a footnote. `None` when `text` does not parse.
+fn definitions_in(text: &str) -> Option<Vec<(String, String)>> {
+    fn collapse(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    fn walk(node: &Node, text: &str, found: &mut Vec<(String, String)>) {
+        match node {
+            Node::Definition(definition) => {
+                let label = definition
+                    .label
+                    .as_deref()
+                    .unwrap_or(&definition.identifier);
+                found.push((
+                    collapse(label).to_lowercase(),
+                    format!(
+                        "{}\n{}",
+                        definition.url,
+                        definition.title.as_deref().unwrap_or_default()
+                    ),
+                ));
+            }
+            Node::FootnoteDefinition(definition) => {
+                let label = definition
+                    .label
+                    .as_deref()
+                    .unwrap_or(&definition.identifier);
+                let body = node
+                    .position()
+                    .and_then(|at| text.get(at.start.offset..at.end.offset))
+                    .and_then(|source| source.split_once("]:"))
+                    .map(|(_, body)| collapse(body))
+                    .unwrap_or_default();
+                found.push((format!("footnote:{}", collapse(label).to_lowercase()), body));
+            }
+            _ => {}
+        }
+        for child in node.children().into_iter().flatten() {
+            walk(child, text, found);
+        }
+    }
+    let root = parse(text).ok()?;
+    let mut found = Vec::new();
+    walk(&root, text, &mut found);
+    Some(found)
 }
 
 /// `lines` followed by `definitions` (blank-line separated, identical ones
@@ -232,16 +277,10 @@ pub fn with_definitions(
     definitions: Vec<String>,
     today: &str,
 ) -> Option<Vec<String>> {
-    let mut fences = FenceTracker::default();
-    let existing = today
-        .lines()
-        .filter(|line| !fences.in_fence(line))
-        .filter(|line| line.trim_start().starts_with('[') && line.contains("]:"))
-        .map(definition_parts)
-        .collect::<Vec<_>>();
+    let existing = definitions_in(today)?;
     let mut seen: Vec<(String, String)> = Vec::new();
     for definition in definitions {
-        let (label, target) = definition_parts(&definition);
+        let (label, target) = definitions_in(&definition)?.into_iter().next()?;
         if let Some((_, known)) = existing.iter().find(|(known, _)| *known == label) {
             if *known == target {
                 continue;
@@ -765,10 +804,26 @@ mod tests {
             None
         );
         // A definition inside a fence is not one.
+        let kept = Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()]);
         let fenced = "```\n[p]: /b\n```\n";
         assert_eq!(
-            with_definitions(lines, carried, fenced),
-            Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()])
+            with_definitions(lines.clone(), carried.clone(), fenced),
+            kept
+        );
+        // Neither is an indented code block.
+        assert_eq!(
+            with_definitions(lines.clone(), carried, "    [p]: /b\n"),
+            kept
+        );
+        // A title on the next line is part of the same definition.
+        let titled = vec!["[p]: /a\n  \"Title\"".to_string()];
+        assert_eq!(
+            with_definitions(lines.clone(), titled.clone(), "[p]: /a\n  \"Title\"\n"),
+            same
+        );
+        assert_eq!(
+            with_definitions(lines, titled, "[p]: /a\n  \"Other\"\n"),
+            None
         );
     }
 
