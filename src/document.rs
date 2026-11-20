@@ -3525,6 +3525,13 @@ impl Document {
         Some((text[sel.clone()].to_string(), sel))
     }
 
+    /// Open tasks on the caret line or the selected lines, for "Schedule
+    /// task…": `(1-based line, text)`.
+    pub fn selected_task_lines(&self, cx: &App) -> Vec<(usize, String)> {
+        let editor = self.editor.read(cx);
+        crate::schedule_tasks::tasks_in_selection(&editor.value(), editor.selected_range())
+    }
+
     pub(crate) fn resize_image(
         &mut self,
         anchor: &crate::image_resize::ResizeAnchor,

@@ -65,6 +65,17 @@ pub fn carried_line(text: &str, source_link: &str) -> String {
 /// `note` with `lines` added at the end of the carried-over section. An
 /// existing heading (either language) is reused; otherwise one is appended.
 pub fn insert_carried(note: &str, lines: &[String], norwegian: bool) -> String {
+    insert_under(
+        note,
+        lines,
+        &["Carried over", "Overført"],
+        heading(norwegian),
+    )
+}
+
+/// `note` with `lines` added at the end of the level-2 section named by any
+/// of `names`; `new_heading` is appended as a new section when none exists.
+pub fn insert_under(note: &str, lines: &[String], names: &[&str], new_heading: &str) -> String {
     let nl = if note.contains("\r\n") { "\r\n" } else { "\n" };
     let block = lines
         .iter()
@@ -81,7 +92,8 @@ pub fn insert_carried(note: &str, lines: &[String], norwegian: bool) -> String {
         .collect::<Vec<_>>();
     let is_heading = |segment: &str| {
         let line = segment.trim_end();
-        line == "## Carried over" || line == "## Overført"
+        line.strip_prefix("## ")
+            .is_some_and(|name| names.contains(&name))
     };
     let Some(found) = segments.iter().position(|(_, s)| is_heading(s)) else {
         let mut out = note.to_string();
@@ -91,7 +103,7 @@ pub fn insert_carried(note: &str, lines: &[String], norwegian: bool) -> String {
         if !out.is_empty() && !out.ends_with("\n\n") && !out.ends_with("\r\n\r\n") {
             out.push_str(nl);
         }
-        out.push_str(&format!("## {}{nl}{nl}", heading(norwegian)));
+        out.push_str(&format!("## {new_heading}{nl}{nl}"));
         out.push_str(&block);
         return out;
     };

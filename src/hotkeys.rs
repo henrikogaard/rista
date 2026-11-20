@@ -179,6 +179,14 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         ToggleCheckbox
     ),
     action_command!(
+        "schedule_task",
+        "Schedule task…",
+        "Planlegg oppgave…",
+        Some("secondary-shift-m"),
+        None,
+        ScheduleTask
+    ),
+    action_command!(
         "toggle_italic",
         "Toggle italic",
         "Veksle kursiv",
