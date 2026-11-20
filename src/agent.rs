@@ -779,6 +779,19 @@ pub struct AppliedChange {
     pub after: Vec<u8>,
 }
 
+/// Re-checks, at undo time, that every recorded path still resolves to
+/// itself inside the vault. A file or parent folder swapped for a symlink
+/// since the edit was accepted fails here, before any write.
+pub fn guard_undo_paths(root: &Path, changes: &[AppliedChange]) -> Result<(), PathBuf> {
+    for change in changes {
+        match guard_vault_path(root, &change.path) {
+            Ok(resolved) if resolved == change.path => {}
+            _ => return Err(change.path.clone()),
+        }
+    }
+    Ok(())
+}
+
 /// Checks that every change of one agent turn can be undone. Changes are
 /// replayed newest first against the current content of each file (`current`
 /// returns `None` for a missing file). On success the result is the undo
@@ -1489,6 +1502,30 @@ mod tests {
             simple_diff("note.md", "before\nkeep\n", "after\nkeep\n"),
             "--- note.md\n+++ note.md\n@@ -1,1 +1,1 @@\n-before\n+after\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undo_refuses_paths_swapped_for_symlinks() {
+        use std::os::unix::fs::symlink;
+        let temp = TempDir::new();
+        let root = temp.0.join("vault");
+        fs::create_dir_all(root.join("dir")).expect("create vault");
+        let root = root.canonicalize().expect("canonical root");
+        let outside = temp.0.join("outside");
+        fs::create_dir_all(&outside).expect("create outside");
+        fs::write(outside.join("n.md"), "after").expect("write outside");
+        let note = root.join("dir").join("n.md");
+        fs::write(&note, "after").expect("write note");
+        let changes = [AppliedChange {
+            path: note.clone(),
+            before: Some(b"before".to_vec()),
+            after: b"after".to_vec(),
+        }];
+        assert_eq!(guard_undo_paths(&root, &changes), Ok(()));
+        fs::remove_dir_all(root.join("dir")).expect("remove dir");
+        symlink(&outside, root.join("dir")).expect("symlink parent");
+        assert_eq!(guard_undo_paths(&root, &changes), Err(note));
     }
 
     #[test]

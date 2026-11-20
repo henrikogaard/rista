@@ -1449,6 +1449,9 @@ impl Workspace {
                 .display()
                 .to_string()
         };
+        if let Err(path) = agent::guard_undo_paths(&root, changes) {
+            return Err(format!("{}: outside the vault", name(&path)));
+        }
         let current = |path: &Path| match self.open_doc_at(path, cx) {
             Some(doc) => Some(
                 doc.entity
@@ -1473,9 +1476,6 @@ impl Workspace {
         })?;
         // Refuse before the first write, so a refusal never leaves a partial undo.
         for change in changes {
-            if !change.path.starts_with(&root) {
-                return Err(format!("{}: outside the vault", name(&change.path)));
-            }
             if change.before.is_none() && self.open_doc_at(&change.path, cx).is_some() {
                 let close = language.text("close the note first", "lukk notatet først");
                 return Err(format!("{}: {close}", name(&change.path)));
