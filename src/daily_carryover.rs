@@ -57,8 +57,23 @@ pub fn heading(norwegian: bool) -> &'static str {
     }
 }
 
+/// `text` split before a trailing block anchor: `("Call Ada", " ^call")`.
+/// The anchor part is empty when there is none.
+fn split_block_anchor(text: &str) -> (&str, &str) {
+    let trimmed = text.trim_end();
+    if let Some(at) = trimmed.rfind(" ^") {
+        let id = &trimmed[at + 2..];
+        if !id.is_empty() && id.chars().all(|c| c.is_alphanumeric() || c == '-') {
+            return (&trimmed[..at], &trimmed[at..]);
+        }
+    }
+    (text, "")
+}
+
 /// `- [ ] text ([[2026-11-18]])` — the task and a link back to its source.
+/// A trailing block anchor stays with the source line, so the copy drops it.
 pub fn carried_line(text: &str, source_link: &str) -> String {
+    let (text, _) = split_block_anchor(text);
     format!("- [ ] {text} ([[{source_link}]])")
 }
 
@@ -158,8 +173,10 @@ pub fn mark_migrated(note: &str, tasks: &[(usize, String)], moved_link: &str) ->
         }
         let body = segment.trim_end_matches(['\n', '\r']);
         let eol = &segment[body.len()..];
-        out.push_str(&body.trim_end().replacen("[ ]", "[x]", 1));
-        out.push_str(&format!(" (moved to [[{moved_link}]]){eol}"));
+        // The notice goes before a trailing `^id`, which only resolves at the end.
+        let marked = body.trim_end().replacen("[ ]", "[x]", 1);
+        let (head, anchor) = split_block_anchor(&marked);
+        out.push_str(&format!("{head} (moved to [[{moved_link}]]){anchor}{eol}"));
     }
     Some(out)
 }
@@ -420,6 +437,19 @@ mod tests {
             "- [ ] one\n- [x] two (moved to [[2026-11-20]])\n- [x] three\n"
         );
         assert!(open_tasks(&marked).iter().all(|(_, text)| text != "two"));
+    }
+
+    #[test]
+    fn block_anchors_stay_last_on_the_source_and_leave_the_copy() {
+        let tasks = [(1, "Call Ada ^call".to_string())];
+        let marked = mark_migrated("- [ ] Call Ada ^call\n", &tasks, "t").unwrap();
+        assert_eq!(marked, "- [x] Call Ada (moved to [[t]]) ^call\n");
+        assert!(crate::preview::block_lines(&marked.lines().collect::<Vec<_>>(), "call").is_some());
+        assert_eq!(
+            carried_line("Call Ada ^call", "s"),
+            "- [ ] Call Ada ([[s]])"
+        );
+        assert_eq!(carried_line("a^b c", "s"), "- [ ] a^b c ([[s]])");
     }
 
     #[test]
