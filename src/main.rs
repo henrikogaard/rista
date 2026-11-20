@@ -32,6 +32,7 @@ mod history;
 mod hotkeys;
 mod http;
 mod image_resize;
+mod inbox;
 mod math;
 mod mermaid;
 mod note_composer;
@@ -434,7 +435,8 @@ fn dispatch_cli_requests(requests: Vec<cli::CliRequest>, cx: &mut App) -> cli::C
                 }
                 cli::Command::New { .. }
                 | cli::Command::Daily { .. }
-                | cli::Command::Append { .. } => {
+                | cli::Command::Append { .. }
+                | cli::Command::Inbox { .. } => {
                     if request.origin == cli::RequestOrigin::Url {
                         windows::confirm_cli_write(request.clone(), cx)?;
                         Ok(Vec::new())

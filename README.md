@@ -54,6 +54,11 @@ the look and feel of the Mac.
   start typing to keep it open.
 - Autosave, session restore, local page history, and a zen mode for focused
   writing. A typewriter mode keeps the caret vertically centred as you type.
+- **Quick capture** (`⌘⇧I`) saves a thought as its own note in `Inbox/`
+  without leaving what you are writing; `rista inbox` does the same from the
+  terminal, Raycast, or Shortcuts. The **Inbox** view lists captures oldest
+  first, with **Open**, **Move to…** (links follow the note), and **Done**
+  (moves it to the vault trash), each undoable.
 
 ### Folders that feel like pages
 
@@ -249,6 +254,7 @@ not a promise of complete compatibility with other tools.
 | Quick open file/folder | `⌘P` |
 | Toggle sidebar / Zen mode | `⌘B` / `⌘⇧Enter` |
 | Daily note / Graph | `⌘⇧D` / `⌘G` |
+| Quick capture | `⌘⇧I` |
 | Settings | `⌘,` |
 
 ## Build from source
