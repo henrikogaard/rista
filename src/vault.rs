@@ -45,6 +45,9 @@ pub struct Vault {
     /// Open `- [ ]` checkboxes vault-wide — the sidebar Tasks index.
     /// Rebuilt with the note index.
     pub tasks: Vec<crate::properties::VaultTask>,
+    /// Per-key controls and value suggestions inferred from frontmatter —
+    /// the properties dialog reads this instead of scanning notes per open.
+    pub property_schema: crate::properties::PropertySchema,
     search_paths: Arc<Vec<PathBuf>>,
     /// Lowercase `aliases:` frontmatter values → the note declaring them,
     /// so `[[Alias]]` resolves. Rebuilt with the index.
@@ -158,6 +161,7 @@ impl Vault {
             pending_events: 0,
             tags: Vec::new(),
             tasks: Vec::new(),
+            property_schema: crate::properties::PropertySchema::default(),
             search_paths: Arc::new(Vec::new()),
             aliases: std::collections::HashMap::new(),
             by_rel: std::collections::HashMap::new(),
@@ -262,6 +266,7 @@ impl Vault {
             .collect();
         self.tags = crate::properties::vault_tags(&content);
         self.tasks = crate::properties::vault_tasks(&content);
+        self.property_schema = crate::properties::vault_schema(&content);
         // Link-resolution indexes + frontmatter aliases. Aliases are
         // cached per note by mtime so a watcher refresh only re-reads
         // files that actually changed instead of the whole vault.
@@ -570,6 +575,12 @@ impl Vault {
             }
         }
         referenced
+    }
+
+    /// Vault-wide broken links and orphan notes for the Markdown notes.
+    /// Scans note bodies — O(vault); callers should cache the result.
+    pub fn link_health(&self) -> crate::link_health::LinkHealth {
+        crate::link_health::analyze(&self.notes, |text, dir| self.outgoing_from(text, dir))
     }
 
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
