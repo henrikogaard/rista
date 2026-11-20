@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Add Quick Capture and an Inbox view to triage captured notes, also available from the `rista` command-line tool.
+- Open recent vaults from the command palette.
+- Add typewriter mode, which keeps the caret at the vertical middle of the editor.
+- Add a timeline view for `.base` files, with dated items on a month-labelled axis.
+- Preview a history snapshot as a diff against the current note before restoring it.
+- Add a link health report for broken links and orphan notes, from the command palette.
+- Show type-aware controls in the properties dialog: toggles for booleans, date pickers, and chips for recurring values and existing keys.
+- Find unused image attachments from the command palette, largest first.
+- Replace text across the project from the find dialog, with a confirmation step and a history snapshot for each changed file.
+- Make the local graph readable: it shows only notes within the depth setting, labels every note, and can colour nodes by folder or tag.
+- List only installed agents in the agent panel.
+- Speed up large vaults: saves and file changes now refresh only the notes that changed.
+
 ## v0.2.0 — 2026-10-16
 
 - Split the editor into panes with tab groups, drag tabs between panes, move tabs to new windows from the tab menu, open independent workspace windows, and save and restore workspace layouts.
