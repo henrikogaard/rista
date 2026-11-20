@@ -695,6 +695,15 @@ fn initial_control_value(control: PropertyControl, value: &str) -> String {
     }
 }
 
+/// The text shown for an existing property. Only a missing value (`Null`)
+/// takes the control's default; an existing empty string stays as it is.
+fn row_value_text(control: PropertyControl, value: &Value) -> String {
+    match value {
+        Value::Null => initial_control_value(control, ""),
+        _ => display_value(value),
+    }
+}
+
 fn row_kind(control: PropertyControl, value: &Value) -> PropKind {
     match value {
         Value::Null => kind_for(control, value),
@@ -741,7 +750,7 @@ impl PropertiesPanel {
                 let kind = row_kind(control, &value);
                 Self::make_row(
                     &key,
-                    &display_value(&value),
+                    &row_value_text(control, &value),
                     kind,
                     control,
                     window,
@@ -774,8 +783,7 @@ impl PropertiesPanel {
         });
         let value_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("value");
-            let value = initial_control_value(control, value);
-            state.set_value(value, window, cx);
+            state.set_value(value.to_string(), window, cx);
             state
         });
         // A key chosen or typed after the row was built must still pick up the
@@ -1116,7 +1124,8 @@ pub fn open_properties(
 #[cfg(test)]
 mod tests {
     use super::{
-        initial_control_value, row_kind, value_from_text, vault_schema, PropKind, PropertyControl,
+        initial_control_value, row_kind, row_value_text, value_from_text, vault_schema, PropKind,
+        PropertyControl,
     };
     use serde_yaml::Value;
     use std::path::PathBuf;
@@ -1237,5 +1246,12 @@ mod tests {
         assert_eq!(value_from_text(PropKind::Bool, &raw), Value::Bool(false));
         assert_eq!(initial_control_value(PropertyControl::Bool, "true"), "true");
         assert_eq!(initial_control_value(PropertyControl::Plain, ""), "");
+    }
+
+    #[test]
+    fn existing_empty_string_is_not_initialized_to_false() {
+        let empty = Value::String(String::new());
+        assert_eq!(row_value_text(PropertyControl::Bool, &empty), "");
+        assert_eq!(row_value_text(PropertyControl::Bool, &Value::Null), "false");
     }
 }
