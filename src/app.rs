@@ -55,10 +55,14 @@ mod bookmarks_panel;
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "history_view.rs"]
+mod history_view;
 #[path = "inbox_panel.rs"]
 mod inbox_panel;
 #[path = "pdf_export_ui.rs"]
 mod pdf_export_ui;
+#[path = "replace.rs"]
+mod replace;
 #[path = "saved_workspaces.rs"]
 mod saved_workspaces;
 #[path = "tools_panel.rs"]
@@ -481,6 +485,7 @@ pub(crate) enum PaletteCmd {
     DeleteLine,
     PageHistory,
     RestoreDeleted,
+    UnusedAttachments,
     InsertTemplate,
     DuplicateNote,
     EditProperties,
@@ -514,6 +519,7 @@ pub(crate) enum PaletteCmd {
     Quit,
     Graph,
     LocalGraph,
+    LinkHealth,
     ToggleLocalGraphPanel,
     ToggleAgentPanel,
 }
@@ -560,6 +566,7 @@ impl PaletteCmd {
         Self::ProjectSearch,
         Self::Graph,
         Self::LocalGraph,
+        Self::LinkHealth,
         Self::ToggleLocalGraphPanel,
         Self::ToggleAgentPanel,
         Self::MoveLineUp,
@@ -596,6 +603,7 @@ impl PaletteCmd {
         Self::DeleteLine,
         Self::PageHistory,
         Self::RestoreDeleted,
+        Self::UnusedAttachments,
         Self::InsertTemplate,
         Self::DuplicateNote,
         Self::EditProperties,
@@ -672,6 +680,7 @@ impl PaletteCmd {
             ProjectSearch => "open_project_search",
             Graph => "open_graph",
             LocalGraph => "open_local_graph",
+            LinkHealth => "open_link_health",
             ToggleLocalGraphPanel => "toggle_local_graph_panel",
             ToggleAgentPanel => "toggle_agent_panel",
             MoveLineUp => "move_line_up",
@@ -708,6 +717,7 @@ impl PaletteCmd {
             DeleteLine => "delete_line",
             PageHistory => "open_page_history",
             RestoreDeleted => "restore_deleted",
+            UnusedAttachments => "unused_attachments",
             InsertTemplate => "insert_template",
             DuplicateNote => "duplicate_note",
             EditProperties => "edit_properties",
@@ -789,6 +799,7 @@ impl PaletteCmd {
             ProjectSearch => "Søk i prosjektet",
             Graph => "Åpne graf",
             LocalGraph => "Åpne lokal graf",
+            LinkHealth => "Lenkehelse…",
             ToggleLocalGraphPanel => "Vis/skjul lokalt grafpanel",
             ToggleAgentPanel => "Vis/skjul agentpanel",
             MoveLineUp => "Flytt linje opp",
@@ -825,6 +836,7 @@ impl PaletteCmd {
             DeleteLine => "Slett linje",
             PageHistory => "Åpne sidehistorikk",
             RestoreDeleted => "Gjenopprett slettet notat",
+            UnusedAttachments => "Ubetydelige vedlegg…",
             InsertTemplate => "Sett inn mal",
             DuplicateNote => "Dupliser notat",
             EditProperties => "Rediger egenskaper",
@@ -1206,6 +1218,11 @@ impl PaletteCmd {
                 "Restore deleted files…",
                 &["trash", "recover", "undelete"],
             ),
+            UnusedAttachments => (
+                assets::IconName::Image,
+                "Unused attachments…",
+                &["images", "orphans", "cleanup", "attachments"],
+            ),
             InsertTemplate => (
                 assets::IconName::LayoutTemplate,
                 "Insert template…",
@@ -1369,6 +1386,11 @@ impl PaletteCmd {
                 assets::IconName::Waypoints,
                 "Open local graph",
                 &["graph", "local", "neighborhood", "links", "current"],
+            ),
+            LinkHealth => (
+                assets::IconName::Waypoints,
+                "Link health…",
+                &["links", "broken", "orphans", "missing"],
             ),
             ToggleLocalGraphPanel => (
                 assets::IconName::Waypoints,
@@ -7531,6 +7553,7 @@ impl Workspace {
             ),
             PaletteCmd::Graph => self.on_open_graph(&OpenGraph, window, cx),
             PaletteCmd::LocalGraph => self.on_open_local_graph(&OpenLocalGraph, window, cx),
+            PaletteCmd::LinkHealth => self.defer_dialog(Self::show_link_health, window, cx),
             PaletteCmd::ToggleLocalGraphPanel => {
                 self.on_toggle_local_graph_panel(&ToggleLocalGraphPanel, window, cx)
             }
@@ -7652,6 +7675,9 @@ impl Workspace {
             // palette's own close_dialog, which would close them too.
             PaletteCmd::PageHistory => self.defer_dialog(Self::show_history, window, cx),
             PaletteCmd::RestoreDeleted => self.defer_dialog(Self::show_trash, window, cx),
+            PaletteCmd::UnusedAttachments => {
+                self.defer_dialog(Self::show_unused_attachments, window, cx)
+            }
             PaletteCmd::InsertTemplate => self.defer_dialog(Self::show_templates, window, cx),
             PaletteCmd::DuplicateNote => {
                 if let Some(doc) = self.active_doc().cloned() {
@@ -9458,52 +9484,228 @@ impl Workspace {
         let Some(root) = root else {
             return;
         };
-        let snaps = crate::history::snapshots(&root, &path);
+        let language = self.settings.language;
+        let view = cx.new(|_| history_view::HistoryView::new(doc, root, path, language));
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(language.text("Page history", "Sidehistorikk"))
+                .w(px(560.))
+                .overlay_closable(true)
+                .child(view.clone())
+        });
+    }
+
+    /// Scan the vault for broken links and orphans and present the report.
+    fn show_link_health(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let health = self.vault.read(cx).link_health();
+        let language = self.settings.language;
+        let view = cx.entity();
         window.open_dialog(cx, move |dialog, _window, cx| {
             let theme = cx.theme();
-            let mut list = v_flex().w_full().py_1();
-            if snaps.is_empty() {
+            let mut list = v_flex().w_full().py_1().gap_1();
+            if health.is_empty() {
                 list = list.child(
                     div()
                         .px_3()
                         .py_2()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child("No snapshots yet — history is taken on each save."),
+                        .child(language.text(
+                            "No broken links or orphan notes.",
+                            "Ingen ødelagte lenker eller foreldreløse notater.",
+                        )),
                 );
             }
-            for (ix, (ts, file)) in snaps.iter().enumerate() {
-                let file = file.clone();
-                let doc = doc.clone();
+            if !health.broken.is_empty() {
                 list = list.child(
                     div()
-                        .id(("history-row", ix))
+                        .px_3()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "{} ({})",
+                            language.text("Broken links", "Ødelagte lenker"),
+                            health.broken.len()
+                        )),
+                );
+                for (index, broken) in health.broken.iter().enumerate() {
+                    let label = broken
+                        .source
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let label = format!("{label} → {}", broken.target);
+                    let view = view.clone();
+                    let source = broken.source.clone();
+                    list = list.child(
+                        div()
+                            .id(("broken-link", index))
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.muted))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.foreground)
+                                    .truncate()
+                                    .child(label),
+                            )
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                view.update(cx, |this, cx| {
+                                    this.open_path(source.clone(), window, cx);
+                                });
+                            }),
+                    );
+                }
+            }
+            if !health.orphans.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "{} ({})",
+                            language.text("Orphan notes", "Foreldreløse notater"),
+                            health.orphans.len()
+                        )),
+                );
+                for (index, orphan) in health.orphans.iter().enumerate() {
+                    let label = orphan
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let view = view.clone();
+                    let path = orphan.clone();
+                    list = list.child(
+                        div()
+                            .id(("orphan-note", index))
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.muted))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.foreground)
+                                    .truncate()
+                                    .child(label),
+                            )
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                view.update(cx, |this, cx| {
+                                    this.open_path(path.clone(), window, cx);
+                                });
+                            }),
+                    );
+                }
+            }
+            dialog
+                .title(language.text("Link health", "Lenkehelse"))
+                .w(px(520.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(400.)),
+                    ),
+                )
+        });
+    }
+
+    /// List image files no note references, largest first.
+    fn show_unused_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unused = self.vault.read(cx).unused_attachments();
+        let total: u64 = unused.iter().map(|(_, bytes)| *bytes).sum();
+        let language = self.settings.language;
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1().gap_1();
+            if unused.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(language.text(
+                            "Every image is referenced by a note.",
+                            "Alle bilder er referert fra et notat.",
+                        )),
+                );
+            }
+            for (index, (path, bytes)) in unused.iter().enumerate() {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let size = crate::attachments::human_size(*bytes);
+                let view = view.clone();
+                let path = path.clone();
+                list = list.child(
+                    div()
+                        .id(("unused-attachment", index))
                         .w_full()
                         .px_3()
                         .py_1p5()
+                        .rounded(theme.radius)
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.muted))
+                        .hover(|style| style.bg(theme.muted))
                         .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.foreground)
-                                .child(crate::history::format_epoch(*ts)),
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .text_color(theme.foreground)
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(size),
+                                ),
                         )
                         .on_click(move |_, window, cx| {
-                            if let Ok(text) = std::fs::read_to_string(&file) {
-                                doc.update(cx, |doc, cx| doc.restore_text(text, window, cx));
-                            }
                             window.close_dialog(cx);
+                            view.update(cx, |this, cx| {
+                                this.open_path(path.clone(), window, cx);
+                            });
                         }),
                 );
             }
             dialog
-                .title("Page history")
-                .w(px(440.))
+                .title(if unused.is_empty() {
+                    language
+                        .text("Unused attachments", "Ubetydelige vedlegg")
+                        .to_string()
+                } else {
+                    format!(
+                        "{} · {}",
+                        language.text("Unused attachments", "Ubetydelige vedlegg"),
+                        crate::attachments::human_size(total)
+                    )
+                })
+                .w(px(520.))
                 .overlay_closable(true)
                 .child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
-                        list.max_h(px(360.)),
+                        list.max_h(px(400.)),
                     ),
                 )
         });
@@ -9515,7 +9717,8 @@ impl Workspace {
             self.note_status("Open a note first", cx);
             return;
         };
-        properties::open_properties(doc, window, cx);
+        let schema = self.vault.read(cx).property_schema.clone();
+        properties::open_properties(doc, schema, window, cx);
     }
 
     /// List every `#tag` and `tags:` entry in the vault; clicking one
