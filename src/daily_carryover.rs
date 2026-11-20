@@ -217,17 +217,37 @@ fn vault_relative(dir: &Path, target: &str, root: &Path) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
+/// A definition line split into its lowercased `[label` and trimmed target.
+fn definition_parts(definition: &str) -> (String, String) {
+    let (label, target) = definition.split_once("]:").unwrap_or((definition, ""));
+    (label.trim_start().to_lowercase(), target.trim().to_string())
+}
+
 /// `lines` followed by `definitions` (blank-line separated, identical ones
-/// once), ready for `insert_carried`. `None` when two different definitions
-/// share a label, because one would silently take over the other's links.
-pub fn with_definitions(mut lines: Vec<String>, definitions: Vec<String>) -> Option<Vec<String>> {
+/// once), ready for `insert_carried`. A definition `today` already has is not
+/// added again. `None` when two different definitions share a label, because
+/// one would silently take over the other's links.
+pub fn with_definitions(
+    mut lines: Vec<String>,
+    definitions: Vec<String>,
+    today: &str,
+) -> Option<Vec<String>> {
+    let mut fences = FenceTracker::default();
+    let existing = today
+        .lines()
+        .filter(|line| !fences.in_fence(line))
+        .filter(|line| line.trim_start().starts_with('[') && line.contains("]:"))
+        .map(definition_parts)
+        .collect::<Vec<_>>();
     let mut seen: Vec<(String, String)> = Vec::new();
     for definition in definitions {
-        let label = definition
-            .split("]:")
-            .next()
-            .unwrap_or_default()
-            .to_lowercase();
+        let (label, target) = definition_parts(&definition);
+        if let Some((_, known)) = existing.iter().find(|(known, _)| *known == label) {
+            if *known == target {
+                continue;
+            }
+            return None;
+        }
         match seen.iter().find(|(known, _)| *known == label) {
             Some((_, text)) if *text == definition => {}
             Some(_) => return None,
@@ -709,13 +729,34 @@ mod tests {
         let lines = vec!["- [ ] a".to_string()];
         let same = vec!["[p]: /a".to_string(), "[P]: /a".to_string()];
         assert_eq!(
-            with_definitions(lines.clone(), vec!["[p]: /a".into(), "[p]: /a".into()]),
+            with_definitions(lines.clone(), vec!["[p]: /a".into(), "[p]: /a".into()], ""),
             Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()])
         );
-        assert_eq!(with_definitions(lines.clone(), same), None);
+        assert_eq!(with_definitions(lines.clone(), same, ""), None);
         assert_eq!(
-            with_definitions(lines, vec!["[p]: /a".into(), "[p]: /b".into()]),
+            with_definitions(lines, vec!["[p]: /a".into(), "[p]: /b".into()], ""),
             None
+        );
+    }
+
+    #[test]
+    fn definitions_check_the_destination_note() {
+        let lines = vec!["- [ ] a".to_string()];
+        let same = Some(lines.clone());
+        let carried = vec!["[p]: /a".to_string()];
+        assert_eq!(
+            with_definitions(lines.clone(), carried.clone(), "[P]:  /a\n"),
+            same
+        );
+        assert_eq!(
+            with_definitions(lines.clone(), carried.clone(), "[p]: /b\n"),
+            None
+        );
+        // A definition inside a fence is not one.
+        let fenced = "```\n[p]: /b\n```\n";
+        assert_eq!(
+            with_definitions(lines, carried, fenced),
+            Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()])
         );
     }
 
