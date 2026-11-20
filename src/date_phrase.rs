@@ -38,7 +38,7 @@ enum Unit {
     Year,
 }
 
-const UNITS: [(&str, Unit); 14] = [
+const UNITS: [(&str, Unit); 15] = [
     ("day", Unit::Day),
     ("days", Unit::Day),
     ("week", Unit::Week),
@@ -53,6 +53,7 @@ const UNITS: [(&str, Unit); 14] = [
     ("uker", Unit::Week),
     ("måned", Unit::Month),
     ("måneder", Unit::Month),
+    ("år", Unit::Year),
 ];
 
 /// The date `input` names, relative to `today`, or `None` when it isn't a
@@ -332,6 +333,8 @@ mod tests {
 
     #[test]
     fn offsets_in_norwegian() {
+        assert_eq!(p("om 1 år"), Some(d(2027, 11, 20)));
+        assert_eq!(p("for 1 år siden"), Some(d(2025, 11, 20)));
         assert_eq!(p("for 3 dager siden"), Some(d(2026, 11, 17)));
         assert_eq!(p("for 1 dag siden"), Some(d(2026, 11, 19)));
         assert_eq!(p("for 2 uker siden"), Some(d(2026, 11, 6)));
