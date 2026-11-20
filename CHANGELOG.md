@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add **Carry over unfinished tasks** to the command palette: pick open tasks from the last seven daily notes, copy them to today's note under `## Carried over` (`## Overført`) with a link back, and mark them `- [x] … (moved to [[today]])` in their sources, as one undoable transaction.
+- Add **Go to date…** to the command palette: type an ISO date, `today`, `next friday`, `3 days ago`, `in 2 weeks`, or the Norwegian equivalents, see the resolved day, and open or create its daily note.
+
 ## v0.2.0 — 2026-10-16
 
 - Split the editor into panes with tab groups, drag tabs between panes, move tabs to new windows from the tab menu, open independent workspace windows, and save and restore workspace layouts.
