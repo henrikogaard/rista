@@ -252,7 +252,7 @@ fn definitions_in(text: &str) -> Option<Vec<(String, String)>> {
                     .position()
                     .and_then(|at| text.get(at.start.offset..at.end.offset))
                     .and_then(|source| source.split_once("]:"))
-                    .map(|(_, body)| collapse(body))
+                    .map(|(_, body)| body.replace("\r\n", "\n").trim().to_string())
                     .unwrap_or_default();
                 found.push((format!("footnote:{}", collapse(label).to_lowercase()), body));
             }
@@ -812,6 +812,20 @@ mod tests {
         assert_eq!(
             with_definitions(lines, titled, "[p]: /a\n  \"Other\"\n"),
             None
+        );
+    }
+
+    #[test]
+    fn footnote_bodies_compare_whitespace_inside_code() {
+        let lines = vec!["- [ ] a[^n]".to_string()];
+        let carried = vec!["[^n]: `a  b`".to_string()];
+        assert_eq!(
+            with_definitions(lines.clone(), carried.clone(), "[^n]: `a b`\n"),
+            None
+        );
+        assert_eq!(
+            with_definitions(lines.clone(), carried, "[^n]: `a  b`\n"),
+            Some(lines)
         );
     }
 
