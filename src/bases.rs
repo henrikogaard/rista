@@ -2636,7 +2636,7 @@ fn compute(
         }
     }
     // Calendar views bucket on a date property that may not be in `order`.
-    if view.kind == "calendar" {
+    if view.kind == "calendar" || view.kind == "timeline" {
         let date_col = view
             .date_prop
             .clone()
@@ -2860,7 +2860,7 @@ fn compute(
 
     // Kanban/calendar grouping resolves to a column index, defaulting to
     // the first non-file column (a board without a grouping makes no sense).
-    let group_col = if view.kind == "calendar" {
+    let group_col = if view.kind == "calendar" || view.kind == "timeline" {
         view.date_prop
             .clone()
             .or_else(|| view.group_by.clone())
@@ -4709,6 +4709,142 @@ impl BaseView {
             .child(nav)
             .child(div().w_full().px_3().pb_2().child(grid))
     }
+
+    /// Horizontal timeline: one dated item per row, positioned by its date
+    /// along a month-labelled axis. Undated rows are counted, not placed.
+    fn render_timeline(
+        &self,
+        _this: &Entity<Self>,
+        computed: &Computed,
+        rows: &[&Row],
+        cx: &App,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let di = computed.group_ix.unwrap_or(usize::MAX);
+        let mut dated: Vec<(chrono::NaiveDate, String, PathBuf)> = Vec::new();
+        let mut undated = 0usize;
+        for row in rows {
+            let title = row
+                .cells
+                .first()
+                .map(|c| c.text.clone())
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| stem_of(&row.path.to_string_lossy()));
+            match row.cells.get(di).and_then(|cell| parse_date(&cell.text)) {
+                Some(date) => dated.push((date, title, row.path.clone())),
+                None => undated += 1,
+            }
+        }
+        if dated.is_empty() {
+            return v_flex().w_full().py_6().items_center().child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("No dated rows to place on a timeline."),
+            );
+        }
+        dated.sort_by_key(|(date, _, _)| *date);
+        let first = dated[0].0;
+        let last = dated[dated.len() - 1].0;
+        // Pad to whole months so consecutive month labels never collide when
+        // the first or last row sits near a month boundary.
+        let (start, end) = timeline_bounds(first, last);
+        const DAY_W: f32 = 26.;
+        const ROW_H: f32 = 30.;
+        let days = (end - start).num_days().max(1) + 1;
+        let width = days as f32 * DAY_W;
+
+        let mut header = div().relative().w(px(width)).h(px(22.));
+        let mut cursor = start.with_day(1).unwrap_or(start);
+        while cursor <= end {
+            let x = (cursor - start).num_days().max(0) as f32 * DAY_W;
+            header = header.child(
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .top_0()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(cursor.format("%b %Y").to_string()),
+            );
+            let next = cursor + chrono::Months::new(1);
+            cursor = next.with_day(1).unwrap_or(next);
+        }
+
+        let mut body = div()
+            .relative()
+            .w(px(width))
+            .h(px(dated.len() as f32 * ROW_H));
+        for (index, (date, title, path)) in dated.iter().enumerate() {
+            let x = (*date - start).num_days().max(0) as f32 * DAY_W;
+            let workspace = self.workspace.clone();
+            let path = path.clone();
+            body = body.child(
+                div()
+                    .id(("timeline-item", index))
+                    .absolute()
+                    .left(px(x))
+                    .top(px(index as f32 * ROW_H))
+                    .h(px(ROW_H - 4.))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().size_2().rounded_full().bg(theme.accent))
+                            .child(
+                                div()
+                                    .id(("timeline-label", index))
+                                    .px_2()
+                                    .rounded(px(3.))
+                                    .bg(theme.secondary)
+                                    .text_xs()
+                                    .text_color(theme.foreground)
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.muted))
+                                    .child(title.clone())
+                                    .on_click(move |ev, window, cx| {
+                                        open_path_click(&workspace, path.clone(), ev, window, cx)
+                                    }),
+                            ),
+                    ),
+            );
+        }
+
+        v_flex()
+            .w_full()
+            .child(
+                div()
+                    .id("base-timeline")
+                    .w_full()
+                    .overflow_x_scroll()
+                    .child(v_flex().w(px(width)).px_3().child(header).child(body)),
+            )
+            .when(undated > 0, |this| {
+                this.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!("{undated} undated row(s) hidden")),
+                )
+            })
+    }
+}
+
+/// The padded axis bounds for a timeline: the first day of the earliest month
+/// through the last day of the latest month.
+fn timeline_bounds(
+    first: chrono::NaiveDate,
+    last: chrono::NaiveDate,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let start = first.with_day(1).unwrap_or(first);
+    let end = last
+        .with_day(1)
+        .and_then(|month| month.checked_add_months(chrono::Months::new(1)))
+        .map(|next| next - chrono::Duration::days(1))
+        .unwrap_or(last);
+    (start, end)
 }
 
 impl Render for BaseView {
@@ -4750,6 +4886,7 @@ impl Render for BaseView {
             Some("cards") | Some("gallery") => assets::IconName::GalleryVerticalEnd,
             Some("kanban") | Some("board") => assets::IconName::SquareKanban,
             Some("calendar") => assets::IconName::Calendar,
+            Some("timeline") => assets::IconName::Calendar,
             Some("list") => assets::IconName::List,
             _ => assets::IconName::Table,
         };
@@ -5899,6 +6036,7 @@ impl Render for BaseView {
                                     ("Board", "board"),
                                     ("List", "list"),
                                     ("Calendar", "calendar"),
+                                    ("Timeline", "timeline"),
                                 ]
                                 .into_iter()
                                 .enumerate()
@@ -6033,6 +6171,7 @@ impl Render for BaseView {
         let cards = matches!(computed.kind.as_str(), "cards" | "gallery");
         let kanban = matches!(computed.kind.as_str(), "kanban" | "board");
         let calendar = computed.kind == "calendar";
+        let timeline = computed.kind == "timeline";
         let list = computed.kind == "list";
         let header = h_flex()
             .w_full()
@@ -6933,7 +7072,9 @@ impl Render for BaseView {
                 })
         };
         let mut rows = v_flex().w_full();
-        if calendar {
+        if timeline {
+            rows = rows.child(self.render_timeline(&this, &computed, &visible, cx));
+        } else if calendar {
             rows = rows.child(self.render_calendar(&this, &computed, &visible, cx));
         } else if kanban {
             // Group rows on the resolved column's display value —
@@ -7693,7 +7834,7 @@ impl Render for BaseView {
         }
         // `summaries:` footer row — aggregate cells under their
         // column, same grid as the header.
-        if !computed.summaries.is_empty() && !cards && !kanban && !calendar && !list {
+        if !computed.summaries.is_empty() && !cards && !kanban && !calendar && !list && !timeline {
             rows = rows.child(
                 h_flex()
                     .w_full()
@@ -7881,7 +8022,9 @@ impl Render for BaseView {
                     Some(bar)
                 }
             })
-            .when(!cards && !kanban && !calendar && !list, |v| v.child(header))
+            .when(!cards && !kanban && !calendar && !list && !timeline, |v| {
+                v.child(header)
+            })
             .children(computed.error.iter().map(|e| {
                 div()
                     .w_full()
@@ -8003,10 +8146,24 @@ mod moment_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{eval, eval_filter_node, parse_expr, parse_spec, prefill_pairs, Env, Lit, RowData};
+    use super::{
+        eval, eval_filter_node, parse_expr, parse_spec, prefill_pairs, timeline_bounds, Env, Lit,
+        RowData,
+    };
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn timeline_bounds_pad_to_whole_months() {
+        let first = chrono::NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let last = chrono::NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+        let (start, end) = timeline_bounds(first, last);
+        assert_eq!(start, chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+        assert_eq!(end, chrono::NaiveDate::from_ymd_opt(2026, 2, 28).unwrap());
+        // Two months of padding give the labels room instead of two days.
+        assert_eq!((end - start).num_days(), 58);
+    }
 
     fn env_with(pairs: &[(&str, Lit)]) -> (Vec<RowData>, BTreeMap<String, super::Expr>) {
         let mut props = BTreeMap::new();
