@@ -149,6 +149,7 @@ fn rebase_relative_wikilinks(text: &str, source_path: &Path, root: &Path) -> Str
         let (before, tail) = rest.split_at(start);
         out.push_str(before);
         let Some(end) = tail.find("]]") else {
+            rest = tail;
             break;
         };
         let inner = &tail[2..end];
@@ -471,7 +472,7 @@ mod tests {
     // Not `super::*`: the GPUI glob import there shadows `#[test]`.
     use super::{
         carried_line, heading, insert_carried, lookback_dates, mark_migrated, open_tasks,
-        prepare_task, with_definitions,
+        prepare_task, rebase_relative_wikilinks, with_definitions,
     };
     use chrono::NaiveDate;
     use std::path::PathBuf;
@@ -638,6 +639,17 @@ mod tests {
         );
         assert!(prepared.definitions.is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rebase_keeps_text_before_an_unclosed_wikilink_once() {
+        let root = PathBuf::from("/v");
+        let from = root.join("2026/10/31.md");
+        let text = "see [[./plan]] then [[./plan";
+        assert_eq!(
+            rebase_relative_wikilinks(text, &from, &root),
+            "see [[2026/10/plan]] then [[./plan"
+        );
     }
 
     #[test]
