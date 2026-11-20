@@ -27,7 +27,7 @@ pub(super) struct FolderPage {
 struct IntroductionSource {
     note: PathBuf,
     raw: String,
-    theme: (String, String),
+    theme: (String, String, bool),
     index_epoch: u64,
 }
 
@@ -36,7 +36,7 @@ impl IntroductionSource {
         &self,
         note: &Path,
         raw: &str,
-        theme: &(String, String),
+        theme: &(String, String, bool),
         index_epoch: u64,
     ) -> bool {
         self.note == note
@@ -106,6 +106,8 @@ impl Workspace {
         let theme_key = (
             self.settings.dark_theme.clone(),
             self.settings.light_theme.clone(),
+            // The active appearance picks which palette `MarkColors` bakes in.
+            cx.theme().is_dark(),
         );
         if let Some(note) = contents.as_ref().ok().and_then(|c| c.introduction.as_ref()) {
             // Prefer the open buffer; navigating away must never show stale saved text.
@@ -1565,12 +1567,24 @@ mod introduction_cache_tests {
         let source = IntroductionSource {
             note: PathBuf::from("/vault/README.md"),
             raw: "![[photo.png]]".into(),
-            theme: ("Graphite".into(), "Graphite Day".into()),
+            theme: ("Graphite".into(), "Graphite Day".into(), true),
             index_epoch: 1,
         };
         assert!(source.can_reuse(&source.note, &source.raw, &source.theme, 1));
         // Creation, removal, or a move changes the vault index even
         // though the introduction itself remains unchanged.
         assert!(!source.can_reuse(&source.note, &source.raw, &source.theme, 2));
+    }
+
+    #[test]
+    fn introduction_reprocesses_when_the_appearance_flips() {
+        let source = IntroductionSource {
+            note: PathBuf::from("/vault/README.md"),
+            raw: "==marked==".into(),
+            theme: ("Graphite".into(), "Graphite Day".into(), true),
+            index_epoch: 1,
+        };
+        let light = ("Graphite".into(), "Graphite Day".into(), false);
+        assert!(!source.can_reuse(&source.note, &source.raw, &light, 1));
     }
 }
