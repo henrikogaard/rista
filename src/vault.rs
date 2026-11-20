@@ -432,6 +432,9 @@ impl Vault {
             if is_md || crate::canvas::is_canvas(path) {
                 let dropped = cache.remove(path).is_some();
                 changed |= Self::refresh_note_content(cache, path, tpl_root) || dropped;
+                // Templates are never cached, but the unlinked-mention scan
+                // reads them, so their edits must still advance the epoch.
+                changed |= path.starts_with(tpl_root);
             }
         }
         changed
@@ -2028,6 +2031,23 @@ mod content_index_tests {
             &tpl
         ));
         assert_eq!(cache[&note].1.tags, vec!["two".to_string()]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn template_edit_reports_a_change_so_the_epoch_advances() {
+        let root = temp_root("template-epoch");
+        let tpl = root.join("templates");
+        std::fs::create_dir(&tpl).unwrap();
+        let template = tpl.join("t.md");
+        std::fs::write(&template, "mentions Target\n").unwrap();
+        let mut cache = HashMap::new();
+        assert!(Vault::refresh_watched_content(
+            &mut cache,
+            std::slice::from_ref(&template),
+            &tpl
+        ));
+        assert!(!cache.contains_key(&template));
         std::fs::remove_dir_all(root).unwrap();
     }
 
