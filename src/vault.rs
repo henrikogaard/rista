@@ -491,6 +491,15 @@ impl Vault {
     /// Canvas file references and frontmatter `cover:`/`icon:` values.
     fn referenced_files(&self) -> std::collections::HashSet<PathBuf> {
         let mut referenced = std::collections::HashSet::new();
+        // Cards views can read a cover from a custom property named in a
+        // `.base` file; those frontmatter keys count as image references too.
+        let custom_cover_keys: std::collections::HashSet<String> = self
+            .notes
+            .iter()
+            .filter(|note| note.extension().is_some_and(|ext| ext == "base"))
+            .filter_map(|note| std::fs::read_to_string(note).ok())
+            .flat_map(|yaml| crate::bases::view_image_properties(&yaml))
+            .collect();
         for note in &self.notes {
             let Ok(text) = std::fs::read_to_string(note) else {
                 continue;
@@ -530,7 +539,7 @@ impl Vault {
             // basename image lookup a bare `cover: header.png` relies on.
             let resolver = self.image_resolver();
             for (key, value) in crate::properties::properties(&text) {
-                if !matches!(key.as_str(), "banner" | "cover" | "banner_icon") {
+                if !is_image_key(&key, &custom_cover_keys) {
                     continue;
                 }
                 for target in yaml_strings(&value) {
@@ -1932,6 +1941,12 @@ fn collect_files(root: &Path, ignore_filters: &IgnoreFilters) -> FileIndex {
     files
 }
 
+/// Frontmatter keys whose value can show an image: the preview's banner keys,
+/// the Cards cover keys, and any custom key a Base view names.
+fn is_image_key(key: &str, custom: &std::collections::HashSet<String>) -> bool {
+    key == "banner_icon" || crate::bases::DEFAULT_COVER_KEYS.contains(&key) || custom.contains(key)
+}
+
 /// String values inside a frontmatter value — a scalar or a list of strings.
 fn yaml_strings(value: &serde_yaml::Value) -> Vec<String> {
     match value {
@@ -1977,7 +1992,23 @@ fn resolve_banner_path(
 
 #[cfg(test)]
 mod banner_path_tests {
-    use super::resolve_banner_path;
+    use super::{is_image_key, resolve_banner_path};
+
+    #[test]
+    fn image_keys_include_card_covers_and_custom_properties() {
+        let custom = std::collections::HashSet::from(["hero".to_string()]);
+        for key in [
+            "banner",
+            "cover",
+            "banner_icon",
+            "image",
+            "cover_image",
+            "hero",
+        ] {
+            assert!(is_image_key(key, &custom), "{key}");
+        }
+        assert!(!is_image_key("title", &custom));
+    }
     use std::path::PathBuf;
 
     fn temp_dir() -> PathBuf {

@@ -2142,6 +2142,32 @@ struct Computed {
     error: Option<String>,
 }
 
+/// Frontmatter keys a Cards view probes for a cover when it names none.
+pub(crate) const DEFAULT_COVER_KEYS: [&str; 4] = ["cover", "banner", "image", "cover_image"];
+
+/// Custom cover properties (`image: note.cover`) the views of a `.base` file
+/// name, with any `note.` prefix removed.
+pub(crate) fn view_image_properties(yaml: &str) -> Vec<String> {
+    parse_spec(yaml)
+        .views
+        .into_iter()
+        .filter_map(|view| view.image_prop)
+        .map(|prop| prop.trim().trim_start_matches("note.").to_string())
+        .filter(|prop| !prop.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod view_image_property_tests {
+    use super::view_image_properties;
+
+    #[test]
+    fn collects_custom_image_properties() {
+        let yaml = "views:\n  - type: cards\n    name: A\n    image: note.hero\n  - type: table\n    name: B\n";
+        assert_eq!(view_image_properties(yaml), vec!["hero".to_string()]);
+    }
+}
+
 /// First image-ish property a note declares — `cover`, `banner`, `image`.
 /// `![[name]]`/`[[name]]`/`![](url)` wrappers are unwrapped; vault basenames
 /// resolve through the image index, relative paths against the vault root.
@@ -2168,9 +2194,7 @@ fn cover_of(
     };
     let raw = match &custom {
         Some(key) => prop_of(key)?,
-        None => ["cover", "banner", "image", "cover_image"]
-            .iter()
-            .find_map(|k| prop_of(k))?,
+        None => DEFAULT_COVER_KEYS.iter().find_map(|k| prop_of(k))?,
     };
     let raw = raw.trim();
     let raw = raw
