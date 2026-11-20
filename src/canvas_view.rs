@@ -285,6 +285,12 @@ fn edge_curve_controls(from: Point<Pixels>, to: Point<Pixels>) -> (Point<Pixels>
     )
 }
 
+/// Zoomed out, cards are painted from the LOD plan. The card being edited
+/// stays a real element so its editor is mounted, drawn over the plan.
+fn card_is_element(lod: bool, editing_id: Option<&str>, id: &str) -> bool {
+    !lod || editing_id == Some(id)
+}
+
 /// Whether `screen` is within reach of an edge: the straight segment, or the
 /// cubic curve that is painted above the LOD zoom.
 fn edge_hit(screen: Point<Pixels>, from: Point<Pixels>, to: Point<Pixels>, straight: bool) -> bool {
@@ -3220,9 +3226,15 @@ impl Render for CanvasView {
             .collect::<Vec<_>>();
         let cards = model
             .nodes_in_paint_order()
-            .take_while(|_| !lod)
             .filter_map(|node| {
                 let id = node["id"].as_str()?.to_string();
+                let editing_id = self
+                    .editing
+                    .as_ref()
+                    .map(|editing| editing.node_id.as_str());
+                if !card_is_element(lod, editing_id, &id) {
+                    return None;
+                }
                 let geometry = self.staged_geometry(&id, model.node_geometry(node)?);
                 let x = geometry.x as f64;
                 let y = geometry.y as f64;
@@ -3704,10 +3716,19 @@ impl Drop for CanvasView {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas_file_reference, canvas_markdown_excerpt, canvas_node_matches_search, edge_hit,
-        take_finished_drag, Drag, FinishedDrag,
+        canvas_file_reference, canvas_markdown_excerpt, canvas_node_matches_search,
+        card_is_element, edge_hit, take_finished_drag, Drag, FinishedDrag,
     };
     use gpui_kit::{point, px};
+
+    #[test]
+    fn only_the_edited_card_stays_an_element_in_lod() {
+        assert!(card_is_element(false, None, "a"));
+        assert!(card_is_element(false, Some("b"), "a"));
+        assert!(!card_is_element(true, None, "a"));
+        assert!(!card_is_element(true, Some("b"), "a"));
+        assert!(card_is_element(true, Some("a"), "a"));
+    }
 
     #[test]
     fn edge_hit_tests_the_straight_segment_in_lod_and_the_curve_above() {
