@@ -13,6 +13,7 @@ mod bases;
 mod bookmarks;
 mod canvas;
 mod canvas_history;
+mod canvas_lod;
 mod canvas_view;
 mod cli;
 #[cfg(target_os = "macos")]

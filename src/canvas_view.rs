@@ -202,6 +202,79 @@ fn paint_edge_arrow(window: &mut Window, tip: Point<Pixels>, from: Point<Pixels>
     }
 }
 
+/// Paints a zoomed-out board: group frames, straight edges, then the other
+/// cards, all as flat shapes in one pass. Off-screen shapes are skipped.
+fn paint_lod_plan(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    plan: &crate::canvas_lod::LodPlan,
+    (zoom, viewport): (f64, Point<f64>),
+    selected: &HashSet<String>,
+    [primary, edge_selected]: [Hsla; 2],
+    radius: Pixels,
+) {
+    let to_screen =
+        |value: f64, offset: f64| (value * zoom + offset).clamp(-1_000_000., 1_000_000.) as f32;
+    let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let groups = plan.cards.iter().take_while(|card| card.group).count();
+    let paint_cards = |window: &mut Window, cards: &[crate::canvas_lod::LodCard]| {
+        for card in cards {
+            let (left, top) = (to_screen(card.x, viewport.x), to_screen(card.y, viewport.y));
+            let (w, h) = (
+                (card.width * zoom).max(1.) as f32,
+                (card.height * zoom).max(1.) as f32,
+            );
+            if left + w < 0. || top + h < 0. || left > width || top > height {
+                continue;
+            }
+            window.paint_quad(gpui::quad(
+                Bounds::new(
+                    point(bounds.origin.x + px(left), bounds.origin.y + px(top)),
+                    size(px(w), px(h)),
+                ),
+                radius,
+                card.fill,
+                px(1.),
+                if selected.contains(&card.id) {
+                    primary
+                } else {
+                    card.border
+                },
+                gpui::BorderStyle::Solid,
+            ));
+        }
+    };
+    paint_cards(window, &plan.cards[..groups]);
+    for edge in &plan.edges {
+        let (x1, y1) = (
+            to_screen(edge.from.x, viewport.x),
+            to_screen(edge.from.y, viewport.y),
+        );
+        let (x2, y2) = (
+            to_screen(edge.to.x, viewport.x),
+            to_screen(edge.to.y, viewport.y),
+        );
+        if x1.max(x2) < 0. || y1.max(y2) < 0. || x1.min(x2) > width || y1.min(y2) > height {
+            continue;
+        }
+        let is_selected = selected.contains(&edge.id);
+        let mut path = gpui::PathBuilder::stroke(px(if is_selected { 2. } else { 1. }));
+        path.move_to(point(bounds.origin.x + px(x1), bounds.origin.y + px(y1)));
+        path.line_to(point(bounds.origin.x + px(x2), bounds.origin.y + px(y2)));
+        if let Ok(path) = path.build() {
+            window.paint_path(
+                path,
+                if is_selected {
+                    edge_selected
+                } else {
+                    edge.color
+                },
+            );
+        }
+    }
+    paint_cards(window, &plan.cards[groups..]);
+}
+
 fn edge_curve_controls(from: Point<Pixels>, to: Point<Pixels>) -> (Point<Pixels>, Point<Pixels>) {
     let dx = f32::from(to.x - from.x);
     let sign = if dx < 0. { -1. } else { 1. };
@@ -235,6 +308,7 @@ pub(crate) struct CanvasView {
     vault_root: Option<PathBuf>,
     source: String,
     model: Option<CanvasDocument>,
+    lod_cache: crate::canvas_lod::LodCache,
     error: Option<String>,
     text_views: HashMap<String, Entity<TextViewState>>,
     text_sources: HashMap<String, String>,
@@ -342,6 +416,7 @@ impl CanvasView {
             vault_root,
             source: String::new(),
             model: None,
+            lod_cache: Default::default(),
             error: None,
             text_views: HashMap::new(),
             text_sources: HashMap::new(),
@@ -544,9 +619,11 @@ impl CanvasView {
                 self.selected
                     .retain(|id| model.node(id).is_some() || model.edge(id).is_some());
                 self.model = Some(model);
+                self.lod_cache.invalidate();
             }
             Err(error) => {
                 self.model = None;
+                self.lod_cache.invalidate();
                 self.error = Some(error);
                 self.text_views.clear();
                 self.text_sources.clear();
@@ -818,6 +895,7 @@ impl CanvasView {
         if applied {
             self.source = after;
             self.model = Some(next);
+            self.lod_cache.invalidate();
             self.source_revision = None;
             if let Some(editing) = &mut self.editing {
                 editing.last_revision = revision;
@@ -1934,34 +2012,70 @@ impl CanvasView {
     }
 
     fn edge_anchor(&self, geometry: Geometry, side: Option<&str>, toward: Geometry) -> Point<f64> {
-        let center = point(
-            geometry.x as f64 + geometry.width as f64 * 0.5,
-            geometry.y as f64 + geometry.height as f64 * 0.5,
-        );
-        let target = point(
-            toward.x as f64 + toward.width as f64 * 0.5,
-            toward.y as f64 + toward.height as f64 * 0.5,
-        );
-        let side = side.unwrap_or_else(|| {
-            if (target.x - center.x).abs() >= (target.y - center.y).abs() {
-                if target.x < center.x {
-                    "left"
-                } else {
-                    "right"
-                }
-            } else if target.y < center.y {
-                "top"
-            } else {
-                "bottom"
-            }
-        });
-        match side {
-            "left" => point(geometry.x as f64, center.y),
-            "right" => point(geometry.x as f64 + geometry.width as f64, center.y),
-            "top" => point(center.x, geometry.y as f64),
-            "bottom" => point(center.x, geometry.y as f64 + geometry.height as f64),
-            _ => center,
+        crate::canvas_lod::edge_anchor(geometry, side, toward)
+    }
+
+    /// A left press on a card: select, open on double click, or start a move.
+    /// Shared by the card elements and by the zoomed-out board hit test.
+    fn press_node(
+        &mut self,
+        id: &str,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|editing| editing.node_id == id)
+        {
+            return;
         }
+        if event.click_count >= 2 {
+            self.selected.clear();
+            self.selected.insert(id.to_string());
+            let Some(node) = self
+                .model
+                .as_ref()
+                .and_then(|model| model.node(id))
+                .cloned()
+            else {
+                return;
+            };
+            match node["type"].as_str() {
+                Some("text") => self.begin_inline_edit(id, window, cx),
+                Some("file") => self.open_file_card(&node, window, cx),
+                Some("link") => self.open_link_card(&node, cx),
+                _ => {}
+            }
+            return;
+        }
+        if event.modifiers.shift {
+            if !self.selected.insert(id.to_string()) {
+                self.selected.remove(id);
+            }
+        } else if !self.selected.contains(id) {
+            self.selected.clear();
+            self.selected.insert(id.to_string());
+        }
+        if let Some(model) = &self.model {
+            let ids = model.included_node_ids(&self.selected.iter().cloned().collect::<Vec<_>>());
+            self.drag = if self.space_down {
+                Some(Drag::Pan {
+                    last: event.position,
+                })
+            } else {
+                Some(Drag::Move {
+                    ids,
+                    last: event.position,
+                    dx: 0.,
+                    dy: 0.,
+                })
+            };
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
     }
 
     fn open_file_card(
@@ -2865,9 +2979,36 @@ impl Render for CanvasView {
         let visible_top = -self.viewport.y / self.zoom - 100.;
         let visible_right = visible_left + f64::from(viewport.width) / self.zoom + 200.;
         let visible_bottom = visible_top + f64::from(viewport.height) / self.zoom + 200.;
+        // Zoomed far out, one canvas paints flat cards and straight edges from
+        // a cached plan; no card, label or edge element is built.
+        let lod = self.zoom < crate::canvas_lod::LOD_ZOOM;
+        let lod_plan = if lod {
+            let mut palette = crate::preview::highlight_palette(&theme);
+            palette[4] = theme.cyan;
+            let colors = crate::canvas_lod::LodColors {
+                palette,
+                border: theme.border,
+                group_box: theme.group_box,
+                edge_default: theme.border,
+            };
+            Some(
+                if matches!(self.drag, Some(Drag::Move { .. } | Drag::Resize { .. })) {
+                    std::rc::Rc::new(crate::canvas_lod::build_plan(
+                        model,
+                        &colors,
+                        |id, geometry| self.staged_geometry(id, geometry),
+                    ))
+                } else {
+                    self.lod_cache.plan(model, colors)
+                },
+            )
+        } else {
+            None
+        };
         let edge_specs = model
             .edges()
             .iter()
+            .take_while(|_| !lod)
             .filter_map(|edge| {
                 let from_node = model.node(edge["fromNode"].as_str()?)?;
                 let to_node = model.node(edge["toNode"].as_str()?)?;
@@ -2955,6 +3096,8 @@ impl Render for CanvasView {
                 }
             },
         );
+        let lod_view = (self.zoom, self.viewport);
+        let (theme_primary, theme_radius) = (theme.primary, theme.radius);
         let bounds_slot = self.bounds.clone();
         let pinch_slot = self.pinch_hitbox.clone();
         let fit_on_open = self.fit_on_open.clone();
@@ -2968,6 +3111,17 @@ impl Render for CanvasView {
                 pinch_slot.set(Some(hitbox.id));
             },
             move |bounds, _, window, _cx| {
+                if let Some(plan) = &lod_plan {
+                    paint_lod_plan(
+                        window,
+                        bounds,
+                        plan,
+                        lod_view,
+                        &selected_edges,
+                        [theme_primary, edge_base],
+                        theme_radius,
+                    );
+                }
                 for edge in &edge_specs_for_paint {
                     let from = point(
                         bounds.origin.x + px(edge.from.x as f32),
@@ -3061,6 +3215,7 @@ impl Render for CanvasView {
             .collect::<Vec<_>>();
         let cards = model
             .nodes_in_paint_order()
+            .take_while(|_| !lod)
             .filter_map(|node| {
                 let id = node["id"].as_str()?.to_string();
                 let geometry = self.staged_geometry(&id, model.node_geometry(node)?);
@@ -3078,62 +3233,16 @@ impl Render for CanvasView {
                 let node_type = node["type"].as_str().unwrap_or_default().to_string();
                 let is_group = node_type == "group";
                 let node = node.clone();
-                let file_node = node.clone();
-                let link_node = node.clone();
                 let context_node = node.clone();
                 let context_id = id.clone();
                 let context_type = node_type.clone();
                 let view = cx.entity();
                 let language = self.language;
+                let press_id = id.clone();
                 let card = self.render_card(&id, &node, geometry, cx).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        if this
-                            .editing
-                            .as_ref()
-                            .is_some_and(|editing| editing.node_id == id)
-                        {
-                            return;
-                        }
-                        if event.click_count >= 2 {
-                            this.selected.clear();
-                            this.selected.insert(id.clone());
-                            match node_type.as_str() {
-                                "text" => this.begin_inline_edit(&id, window, cx),
-                                "file" => this.open_file_card(&file_node, window, cx),
-                                "link" => this.open_link_card(&link_node, cx),
-                                _ => {}
-                            }
-                            return;
-                        }
-                        if event.modifiers.shift {
-                            if !this.selected.insert(id.clone()) {
-                                this.selected.remove(&id);
-                            }
-                        } else if !this.selected.contains(&id) {
-                            this.selected.clear();
-                            this.selected.insert(id.clone());
-                        }
-                        if let Some(model) = &this.model {
-                            let ids = model.included_node_ids(
-                                &this.selected.iter().cloned().collect::<Vec<_>>(),
-                            );
-                            this.drag = if this.space_down {
-                                Some(Drag::Pan {
-                                    last: event.position,
-                                })
-                            } else {
-                                Some(Drag::Move {
-                                    ids,
-                                    last: event.position,
-                                    dx: 0.,
-                                    dy: 0.,
-                                })
-                            };
-                        }
-                        this.focus_handle.focus(window, cx);
-                        cx.notify();
+                        this.press_node(&press_id, event, window, cx)
                     }),
                 );
                 Some((
@@ -3239,6 +3348,13 @@ impl Render for CanvasView {
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     let position = this.window_to_board(event.position);
+                    // Zoomed-out cards are painted, not elements: hit test them here.
+                    if this.zoom < crate::canvas_lod::LOD_ZOOM {
+                        if let Some(id) = this.hit_node(position) {
+                            this.press_node(&id, event, window, cx);
+                            return;
+                        }
+                    }
                     if let Some(edge_id) = this.hit_edge(position) {
                         if !event.modifiers.shift {
                             this.selected.clear();

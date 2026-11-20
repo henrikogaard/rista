@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep large Canvas boards smooth when zoomed out: below 35% zoom, cards paint as flat shapes and edges as straight lines from a cached plan, with no dot grid, arrowheads or labels. Selecting and moving cards works as before.
+
 ## v0.2.0 — 2026-10-16
 
 - Split the editor into panes with tab groups, drag tabs between panes, move tabs to new windows from the tab menu, open independent workspace windows, and save and restore workspace layouts.
