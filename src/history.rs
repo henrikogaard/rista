@@ -457,11 +457,13 @@ pub fn move_to_trash(root: &Path, path: &Path) -> io::Result<String> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "untitled".into());
-    let trashed = format!("{}--{}", epoch(), name);
-    let mut trashed = trashed.clone();
-    // Extremely unlikely collision (same name, same second) — disambiguate.
+    let stamp = epoch();
+    let mut trashed = format!("{stamp}--{name}");
+    // Same name in the same second (a batch undo can do this): bump a counter.
+    let mut suffix = 0u64;
     while trash.join(&trashed).exists() {
-        trashed = format!("{}--{}", epoch() + 1, name);
+        suffix += 1;
+        trashed = format!("{}--{name}", stamp + suffix);
     }
     std::fs::rename(path, trash.join(&trashed))?;
     let mut index = read_index(root);
@@ -592,6 +594,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&note).unwrap(), "v2");
         assert!(trash_entries(&root).is_empty());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trashing_same_name_repeatedly_does_not_wait_for_the_clock() {
+        let root = temp_vault();
+        let started = std::time::Instant::now();
+        let mut names = std::collections::HashSet::new();
+        for dir in ["a", "b", "c", "d"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
+            let note = root.join(dir).join("README.md");
+            std::fs::write(&note, dir).unwrap();
+            assert!(names.insert(move_to_trash(&root, &note).unwrap()));
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(trash_entries(&root).len(), 4);
         let _ = std::fs::remove_dir_all(&root);
     }
 
