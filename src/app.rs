@@ -5116,39 +5116,58 @@ impl Workspace {
             return;
         };
         // Sources in date order, each with its picked `(line, text)` pairs.
-        type Source = (PathBuf, PathBuf, Vec<(usize, String)>);
+        type Source = (PathBuf, PathBuf, Vec<(usize, String)>, String);
         let mut sources: Vec<Source> = Vec::new();
         let mut lines = Vec::new();
+        let mut definitions = Vec::new();
         for task in &picked {
             let path = canonical(&task.path);
-            let index = sources
-                .iter()
-                .position(|(existing, _, _)| *existing == path)
-                .unwrap_or_else(|| {
-                    sources.push((path, task.path.clone(), Vec::new()));
+            let index = match sources.iter().position(|(existing, ..)| *existing == path) {
+                Some(index) => index,
+                None => {
+                    let Some(before) = read(&path) else {
+                        self.note_status(cancelled, cx);
+                        return;
+                    };
+                    sources.push((path.clone(), task.path.clone(), Vec::new(), before));
                     sources.len() - 1
-                });
+                }
+            };
             sources[index].2.push((task.line, task.text.clone()));
+            let prepared = match daily_carryover::prepare_task(
+                &sources[index].3,
+                task.line,
+                &path,
+                &today_path,
+                &root,
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.note_status(error.message(norwegian), cx);
+                    return;
+                }
+            };
             let back = self.wikilink_target(&task.path, &today_link_path, cx);
-            lines.push(daily_carryover::carried_line(&task.text, &back));
+            lines.push(daily_carryover::carried_line(&prepared.text, &back));
+            definitions.extend(prepared.definitions);
         }
+        let Some(lines) = daily_carryover::with_definitions(lines, definitions) else {
+            self.note_status(cancelled, cx);
+            return;
+        };
         let today_after = daily_carryover::insert_carried(&today_before, &lines, norwegian);
         let mut changes = vec![(
             today_path.clone(),
             today_before.clone().into_bytes(),
             today_after.clone().into_bytes(),
         )];
-        for (path, link_path, tasks) in &sources {
-            let moved = self.wikilink_target(&today_link_path, link_path, cx);
-            let Some(before) = read(path) else {
+        for (path, link_path, tasks, before) in sources {
+            let moved = self.wikilink_target(&today_link_path, &link_path, cx);
+            let Some(after) = daily_carryover::mark_migrated(&before, &tasks, &moved) else {
                 self.note_status(cancelled, cx);
                 return;
             };
-            let Some(after) = daily_carryover::mark_migrated(&before, tasks, &moved) else {
-                self.note_status(cancelled, cx);
-                return;
-            };
-            changes.push((path.clone(), before.into_bytes(), after.into_bytes()));
+            changes.push((path, before.into_bytes(), after.into_bytes()));
         }
         let peers = cx.global::<crate::windows::WindowManager>().records.clone();
         let peer_conflict = peers
