@@ -176,32 +176,8 @@ fn value_from_text(kind: PropKind, raw: &str) -> Value {
 }
 
 // ------------------------------------------------------------------
-// Vault tag index — frontmatter `tags:` plus inline `#tags`.
+// Note tags — frontmatter `tags:` plus inline `#tags`.
 // ------------------------------------------------------------------
-
-/// `(tag, notes_containing_it)` pairs, sorted by tag name.
-pub fn vault_tags(notes: &[PathBuf]) -> Vec<(String, usize)> {
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for path in notes {
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let mut found = std::collections::BTreeSet::new();
-        for tag in frontmatter_tags(&text) {
-            found.insert(tag);
-        }
-        for tag in inline_tags(&text) {
-            found.insert(tag);
-        }
-        for tag in found {
-            *counts.entry(tag).or_default() += 1;
-        }
-    }
-    counts.into_iter().collect()
-}
 
 /// All of one note's tags — `tags:` frontmatter plus inline `#tag`s,
 /// deduplicated, bare names (no `#`). Bases expose this as `file.tags`.
@@ -254,55 +230,43 @@ pub struct VaultTask {
     pub text: String,
 }
 
-/// All open `- [ ]` checkboxes across the vault, in file order —
-/// the sidebar Tasks index. Skips fenced blocks and `%%` comment
+/// All open `- [ ]` checkboxes in one note's text as `(1-based line,
+/// text)` pairs, in file order. Skips fenced blocks and `%%` comment
 /// regions like the tag scan; done markers (`[x]`, `[/]`, …) don't
-/// count.
-pub fn vault_tasks(notes: &[PathBuf]) -> Vec<VaultTask> {
+/// count. The vault caches this per note for the sidebar Tasks index.
+pub fn open_task_lines(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    for path in notes {
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+    let mut in_fence = false;
+    let mut fence_marker = "";
+    let mut in_comment = false;
+    for (ix, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let marker = &trimmed[..3];
+            if !in_fence {
+                in_fence = true;
+                fence_marker = marker;
+            } else if marker == fence_marker {
+                in_fence = false;
+            }
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(path) else {
+        if in_fence {
             continue;
-        };
-        let mut in_fence = false;
-        let mut fence_marker = "";
-        let mut in_comment = false;
-        for (ix, line) in text.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                let marker = &trimmed[..3];
-                if !in_fence {
-                    in_fence = true;
-                    fence_marker = marker;
-                } else if marker == fence_marker {
-                    in_fence = false;
-                }
-                continue;
+        }
+        // Inside a `%%` region a `%%` closes it; nothing else counts.
+        if in_comment {
+            if trimmed.contains("%%") {
+                in_comment = false;
             }
-            if in_fence {
-                continue;
-            }
-            // Inside a `%%` region a `%%` closes it; nothing else counts.
-            if in_comment {
-                if trimmed.contains("%%") {
-                    in_comment = false;
-                }
-                continue;
-            }
-            if let Some(text) = task_line_text(trimmed) {
-                out.push(VaultTask {
-                    path: path.clone(),
-                    line: ix + 1,
-                    text,
-                });
-            }
-            // An odd number of `%%` on the line leaves a comment open.
-            if trimmed.matches("%%").count() % 2 == 1 {
-                in_comment = true;
-            }
+            continue;
+        }
+        if let Some(text) = task_line_text(trimmed) {
+            out.push((ix + 1, text));
+        }
+        // An odd number of `%%` on the line leaves a comment open.
+        if trimmed.matches("%%").count() % 2 == 1 {
+            in_comment = true;
         }
     }
     out
@@ -540,7 +504,7 @@ pub enum PropertyControl {
 }
 
 /// Per-key controls and value suggestions, inferred from the vault's notes.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PropertySchema {
     /// Every key seen in frontmatter, sorted.
     pub keys: Vec<String>,
@@ -573,19 +537,26 @@ impl PropertySchema {
     }
 }
 
-/// Controls and suggestions inferred from the notes' frontmatter.
+/// Controls and suggestions inferred from the notes' frontmatter. The
+/// vault builds its schema from cached properties; this reads from disk
+/// and serves as the reference for tests.
+#[cfg(test)]
 pub fn vault_schema(notes: &[PathBuf]) -> PropertySchema {
+    schema_from_properties(
+        notes
+            .iter()
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("md"))
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .flat_map(|text| properties(&text)),
+    )
+}
+
+/// Builds the schema from `(key, value)` pairs already read from
+/// frontmatter, so callers with cached properties skip the disk.
+pub fn schema_from_properties(pairs: impl IntoIterator<Item = (String, Value)>) -> PropertySchema {
     let mut tallies: BTreeMap<String, KindTally> = BTreeMap::new();
-    for path in notes {
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for (key, value) in properties(&text) {
-            tallies.entry(key).or_default().observe(&value);
-        }
+    for (key, value) in pairs {
+        tallies.entry(key).or_default().observe(&value);
     }
     let mut schema = PropertySchema::default();
     for (key, tally) in tallies {

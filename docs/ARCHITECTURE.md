@@ -30,7 +30,7 @@ On macOS, settings are stored at `~/Library/Application Support/no.ogard.rista/s
 
 Users can open a vault with **⌘⇧O** or a standalone Markdown file with **⌘O**. The app registers `.md` and `.markdown` documents for native opening. Application-level URL handling accepts file-open events, and Finder/Dock reopen events recreate a workspace after the final window has closed; no recovery click is required.
 
-A vault watcher observes filesystem changes with a 250 ms debounce. The standalone-document poll runs every 500 ms but invalidates only when the observed file metadata changes; it does not force an unconditional full content read or render each interval.
+A vault watcher observes filesystem changes with a 250 ms debounce. Watcher bursts route by path: content edits refresh only the touched notes through a per-note stamp cache (mtime + size) that also feeds the tag, task, alias, and backlink indexes, while new, removed, or renamed files trigger a full tree and index rebuild. The standalone-document poll runs every 500 ms but invalidates only when the observed file metadata changes; it does not force an unconditional full content read or render each interval.
 
 Folder dashboards are workspace destinations, not document tabs. They
 participate in navigation history and restore from `active_folder`; open document

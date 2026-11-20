@@ -181,6 +181,9 @@ pub struct Document {
     /// The file on disk changed while we hold unsaved edits.
     pub conflict: bool,
     disk_bytes: Option<Vec<u8>>,
+    /// Stamp (mtime, size) of the bytes last seen on disk — lets
+    /// `check_external` skip the full read when nothing changed.
+    disk_stamp: Option<(SystemTime, u64)>,
     reloading: bool,
     mtime: Option<SystemTime>,
     pub(crate) revision: u64,
@@ -267,6 +270,53 @@ pub(crate) struct InitialDocument {
     mtime: Option<SystemTime>,
     is_image: bool,
     file_preview: Option<crate::file_preview::Preview>,
+}
+
+/// `(modified, len)` of a file on disk — the cheap "did the bytes
+/// change" check for `check_external`. Size backs up mtime so a
+/// same-timestamp write that changed length still re-reads.
+fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Whether a vault path can change what a document's preview resolves
+/// — any non-note, non-base file (images, PDFs, attachments).
+fn is_embed_source_path(path: &Path) -> bool {
+    !matches!(
+        crate::file_preview::extension(path).as_str(),
+        "md" | "markdown" | "canvas" | "base"
+    )
+}
+
+/// Whether a vault path is note content whose `[[links]]` can change —
+/// markdown notes and canvases.
+fn is_note_like_path(path: &Path) -> bool {
+    matches!(
+        crate::file_preview::extension(path).as_str(),
+        "md" | "markdown" | "canvas"
+    )
+}
+
+/// Separate preview preprocessing from link resolution after a vault
+/// change. Returns `(preview, outgoing, mentions)` refresh decisions.
+fn vault_change_effects(
+    source: &Path,
+    outgoing: &[PathBuf],
+    changed: Option<&[PathBuf]>,
+) -> (bool, bool, bool) {
+    match changed {
+        None => (true, true, true),
+        Some(paths) => {
+            let preview = paths.iter().any(|path| {
+                path == source || is_embed_source_path(path) || outgoing.contains(path)
+            });
+            let mentions = paths.iter().any(|path| is_note_like_path(path));
+            // Any note may gain or lose an alias. Re-resolve outgoing
+            // links even if that note wasn't a resolved target before.
+            (preview, preview || mentions, mentions)
+        }
+    }
 }
 
 impl Document {
@@ -373,6 +423,7 @@ impl Document {
             .then(|| preview::banner_spec(&content, &doc_dir, &*image_resolver))
             .flatten();
         let spell_checker = spellcheck::create_checker(cx);
+        let disk_stamp = file_stamp(&path);
         let pdf = (crate::file_preview::extension(&path) == "pdf").then(|| {
             cx.new(|cx| crate::pdf::PdfView::new(path.clone(), 0, settings.language, window, cx))
         });
@@ -406,6 +457,7 @@ impl Document {
             dirty: false,
             conflict: false,
             disk_bytes,
+            disk_stamp,
             reloading: false,
             mtime,
             revision: 0,
@@ -456,9 +508,10 @@ impl Document {
             vim_insert_keystroke_pending: false,
         };
 
-        this.refresh_decorations(cx);
+        let initial_text = this.editor.read(cx).value();
+        this.refresh_decorations(&initial_text, cx);
         this.refresh_linked_mentions(cx);
-        this.refresh_outgoing(cx);
+        this.refresh_outgoing(&initial_text, cx);
         let weak_document = cx.weak_entity();
         let vim_subscription = cx.intercept_keystrokes(move |event, window, cx| {
             let modifiers = &event.keystroke.modifiers;
@@ -598,7 +651,8 @@ impl Document {
                 // Skipping unchanged positions breaks the set→notify loop.
                 if this.focus_mode && !this.is_canvas && this.focus_cursor != Some(cursor) {
                     this.focus_cursor = Some(cursor);
-                    this.refresh_decorations(cx);
+                    let raw = this.editor.read(cx).value();
+                    this.refresh_decorations(&raw, cx);
                 }
                 if this.typewriter_mode && !this.is_canvas {
                     this.center_caret(cx);
@@ -612,7 +666,8 @@ impl Document {
                 }
             }),
             cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
-                this.refresh_decorations(cx);
+                let raw = this.editor.read(cx).value();
+                this.refresh_decorations(&raw, cx);
                 this.refresh_spell_decorations(cx);
                 this.schedule_spellcheck(cx);
                 cx.notify();
@@ -998,6 +1053,9 @@ impl Document {
     }
 
     fn sync_preview(&mut self, cx: &mut Context<Self>) {
+        // One buffer snapshot per sync — `value()` materialises the
+        // whole rope, and a burst used to take three separate copies.
+        let raw = self.editor.read(cx).value();
         if self.is_canvas {
             self.banner = None;
             self.stats = (0, 0);
@@ -1006,7 +1064,7 @@ impl Document {
             self.preview_blocks.clear();
             self.preview_locations.clear();
             self.mapped_preview = None;
-            self.refresh_outgoing(cx);
+            self.refresh_outgoing(&raw, cx);
             return;
         }
         if let Ok(mut views) = self.pdf_embeds.lock() {
@@ -1018,10 +1076,7 @@ impl Document {
             }
             views.clear();
         }
-        let (raw, resolver, doc_dir) = {
-            let raw = self.editor.read(cx).value();
-            (raw, self.image_resolver.clone(), self.doc_dir())
-        };
+        let (resolver, doc_dir) = (self.image_resolver.clone(), self.doc_dir());
         let (text, offsets, image_spans) = preview::preprocess_with_images(
             &raw,
             &self.path,
@@ -1039,21 +1094,20 @@ impl Document {
         self.refresh_style(cx);
         self.preview
             .update(cx, |state, cx| state.set_text(&text, cx));
-        self.refresh_decorations(cx);
-        self.refresh_outgoing(cx);
+        self.refresh_decorations(&raw, cx);
+        self.refresh_outgoing(&raw, cx);
     }
 
     /// Re-resolve this note's outgoing links (editor content → vault
     /// paths) — runs on the preview debounce so typing updates the
     /// sidebar pane without scanning on every keystroke.
-    fn refresh_outgoing(&mut self, cx: &mut Context<Self>) {
+    fn refresh_outgoing(&mut self, raw: &str, cx: &mut Context<Self>) {
         let Some(vault) = self.vault.clone() else {
             return;
         };
         let (links, unresolved) = {
-            let raw = self.editor.read(cx).value().to_string();
             if self.is_canvas {
-                match crate::canvas::CanvasDocument::parse(&raw) {
+                match crate::canvas::CanvasDocument::parse(raw) {
                     Ok(canvas) => vault.read(cx).canvas_outgoing_targets(
                         &canvas.vault_file_references(),
                         &canvas.text_link_targets(),
@@ -1062,7 +1116,7 @@ impl Document {
                     Err(_) => (Vec::new(), Vec::new()),
                 }
             } else {
-                vault.read(cx).outgoing_from(&raw, &self.doc_dir())
+                vault.read(cx).outgoing_from(raw, &self.doc_dir())
             }
         };
         if self.outgoing_links != links || self.outgoing_unresolved != unresolved {
@@ -1078,7 +1132,8 @@ impl Document {
     pub fn set_focus_mode(&mut self, on: bool, cx: &mut Context<Self>) {
         self.focus_mode = on;
         self.focus_cursor = None;
-        self.refresh_decorations(cx);
+        let raw = self.editor.read(cx).value();
+        self.refresh_decorations(&raw, cx);
     }
 
     /// Typewriter mode: keep the caret vertically centred while typing.
@@ -1118,15 +1173,14 @@ impl Document {
         });
     }
 
-    fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
+    fn refresh_decorations(&mut self, raw: &str, cx: &mut Context<Self>) {
         if self.is_canvas {
             return;
         }
         let focus = self.focus_mode;
         let items = self.editor.update(cx, |state, cx| {
-            let text = state.value().to_string();
             let cursor = focus.then(|| state.cursor());
-            crate::decorations::markdown_decorations(&text, cx.theme(), cursor)
+            crate::decorations::markdown_decorations(raw, cx.theme(), cursor)
         });
         match &self.decorations {
             Some(collection) => collection.set(items, cx),
@@ -1358,13 +1412,32 @@ impl Document {
         self.refresh_linked_mentions(cx);
     }
 
+    /// Apply one vault change to this document. The changed set keeps
+    /// untouched docs from re-parsing per watcher burst: the preview
+    /// re-syncs for this file, for embed/banner sources, and for notes
+    /// this document links at. Any note-content change re-resolves
+    /// outgoing links and linked mentions because aliases may change.
+    pub fn on_vault_files_changed(&mut self, changed: Option<&[PathBuf]>, cx: &mut Context<Self>) {
+        let (resync, outgoing, mentions) =
+            vault_change_effects(&self.path, &self.outgoing_links, changed);
+        if resync {
+            self.sync_preview(cx);
+        } else if outgoing {
+            let raw = self.editor.read(cx).value();
+            self.refresh_outgoing(&raw, cx);
+        }
+        if mentions {
+            self.refresh_linked_mentions(cx);
+        }
+    }
+
     pub fn refresh_preview_style(&mut self, cx: &mut Context<Self>) {
         self.sync_preview(cx);
     }
 
     /// Notes that `[[link]]` here — drives the preview's mentions footer.
-    /// Only runs on open/vault events, not the typing debounce: the scan
-    /// reads every note and inbound links only change elsewhere.
+    /// Only runs on open/vault events, not the typing debounce. Uses
+    /// cached targets because inbound links only change elsewhere.
     fn refresh_linked_mentions(&mut self, cx: &mut Context<Self>) {
         let Some(vault) = self.vault.clone() else {
             return;
@@ -1566,6 +1639,7 @@ impl Document {
                 self.mtime = std::fs::metadata(&self.path)
                     .and_then(|m| m.modified())
                     .ok();
+                self.disk_stamp = file_stamp(&self.path);
                 self.dirty = false;
                 self.conflict = false;
                 self.revision += 1;
@@ -1654,6 +1728,7 @@ impl Document {
         self.mtime = std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
             .ok();
+        self.disk_stamp = file_stamp(&self.path);
         self.dirty = false;
         self.conflict = false;
         self.revision += 1;
@@ -2341,6 +2416,12 @@ impl Document {
         })
     }
 
+    /// A watcher event names this file: forget the stamp so the next
+    /// `check_external` compares bytes even when mtime and size match.
+    pub fn invalidate_disk_stamp(&mut self) {
+        self.disk_stamp = None;
+    }
+
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pdf) = &self.pdf {
@@ -2371,13 +2452,23 @@ impl Document {
         let Some(baseline) = self.disk_bytes.as_deref() else {
             return;
         };
+        // Cheap path: the stamp is unchanged, so the bytes are too —
+        // skip the full read. Watcher bursts fire often; an untouched
+        // tab then costs one `stat` per burst.
+        if let (Some(known), Some(current)) = (self.disk_stamp, file_stamp(&self.path)) {
+            if known == current {
+                return;
+            }
+        }
         let current = match std::fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(_) => {
+                self.disk_stamp = None;
                 self.mark_conflict(cx);
                 return;
             }
         };
+        self.disk_stamp = file_stamp(&self.path);
         if current == baseline {
             if self.conflict {
                 self.conflict = false;
@@ -2419,6 +2510,7 @@ impl Document {
         self.mtime = std::fs::metadata(&self.path)
             .and_then(|meta| meta.modified())
             .ok();
+        self.disk_stamp = file_stamp(&self.path);
         self.reschedule_spellcheck_for_revision(true, cx);
         self.sync_preview(cx);
         self.dirty = false;
@@ -3481,6 +3573,7 @@ impl Document {
         self.mtime = std::fs::metadata(&self.path)
             .and_then(|metadata| metadata.modified())
             .ok();
+        self.disk_stamp = file_stamp(&self.path);
         self.dirty = false;
         self.conflict = false;
         self.revision += 1;
@@ -4647,6 +4740,24 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn unrelated_note_alias_changes_refresh_outgoing_without_preview() {
+        use super::vault_change_effects;
+        let source = std::path::Path::new("/vault/source.md");
+        let changed = vec![PathBuf::from("/vault/alias-owner.md")];
+        // No resolved outgoing targets yet: the changed note can gain
+        // an alias that resolves an existing [[Alias]] in the source.
+        assert_eq!(
+            vault_change_effects(source, &[], Some(&changed)),
+            (false, true, true)
+        );
+        assert_eq!(
+            vault_change_effects(source, &[], Some(&[])),
+            (false, false, false)
+        );
+        assert_eq!(vault_change_effects(source, &[], None), (true, true, true));
+    }
+
+    #[test]
     fn vim_named_keys_take_precedence_over_control_characters() {
         use super::{normalize_vim_key, Keystroke, VimKey};
         for (name, character, expected) in [
@@ -4672,8 +4783,9 @@ mod tests {
 
     use super::{
         block_anchor, block_candidates, block_link_targets, composer_history_boundary_matches,
-        composer_history_buffer_conflicts, format_table_md, guarded_write, highlight_color_edit,
-        linked_block_id_edit, new_block_id, ComposerHistoryDirection,
+        composer_history_buffer_conflicts, file_stamp, format_table_md, guarded_write,
+        highlight_color_edit, is_embed_source_path, is_note_like_path, linked_block_id_edit,
+        new_block_id, ComposerHistoryDirection,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4685,6 +4797,34 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn disk_stamp_changes_when_the_file_changes() {
+        let path = test_path();
+        std::fs::write(&path, "first").unwrap();
+        let first = file_stamp(&path).unwrap();
+        std::fs::write(&path, "second").unwrap();
+        let second = file_stamp(&path).unwrap();
+        assert_ne!(first, second, "a rewrite must invalidate the stamp");
+        assert_eq!(file_stamp(&path), Some(second), "stats are stable");
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(file_stamp(&path), None, "a removed file has no stamp");
+    }
+
+    #[test]
+    fn vault_change_classification_separates_notes_embeds_and_bases() {
+        for note in ["a.md", "b.markdown", "board.canvas"] {
+            assert!(is_note_like_path(std::path::Path::new(note)), "{note}");
+            assert!(!is_embed_source_path(std::path::Path::new(note)), "{note}");
+        }
+        for embed in ["img.png", "doc.pdf", "notes.txt"] {
+            assert!(is_embed_source_path(std::path::Path::new(embed)), "{embed}");
+            assert!(!is_note_like_path(std::path::Path::new(embed)), "{embed}");
+        }
+        // A `.base` spec belongs to its own view, neither list.
+        assert!(!is_note_like_path(std::path::Path::new("db.base")));
+        assert!(!is_embed_source_path(std::path::Path::new("db.base")));
     }
 
     #[test]

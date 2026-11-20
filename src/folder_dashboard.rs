@@ -7,6 +7,10 @@ pub(super) struct FolderPage {
     pub scroll: ScrollHandle,
     contents: std::io::Result<folder::Contents>,
     introduction: Option<Entity<TextViewState>>,
+    /// What `introduction` was built from — reused across reloads and
+    /// watcher refreshes so the markdown re-parse only happens when the
+    /// note, its text, the active theme, or the vault index changed.
+    introduction_source: Option<IntroductionSource>,
     introduction_error: bool,
     banner: Option<preview::BannerSpec>,
     folds: preview::CalloutFolds,
@@ -17,6 +21,29 @@ pub(super) struct FolderPage {
     config: folder::Dashboard,
     cards: Vec<FolderCard>,
     pub pages: [usize; 7],
+}
+
+#[derive(Clone)]
+struct IntroductionSource {
+    note: PathBuf,
+    raw: String,
+    theme: (String, String, bool),
+    index_epoch: u64,
+}
+
+impl IntroductionSource {
+    fn can_reuse(
+        &self,
+        note: &Path,
+        raw: &str,
+        theme: &(String, String, bool),
+        index_epoch: u64,
+    ) -> bool {
+        self.note == note
+            && self.raw == raw
+            && &self.theme == theme
+            && self.index_epoch == index_epoch
+    }
 }
 
 impl FolderPage {
@@ -70,11 +97,18 @@ impl Workspace {
             contents
         });
         let mut introduction = None;
+        let mut introduction_source = None;
         let mut introduction_error = false;
         let mut banner = None;
         let mut metadata =
             folder::Metadata::parse("", &path.file_name().unwrap_or_default().to_string_lossy());
         let mut config = folder::Dashboard::default();
+        let theme_key = (
+            self.settings.dark_theme.clone(),
+            self.settings.light_theme.clone(),
+            // The active appearance picks which palette `MarkColors` bakes in.
+            cx.theme().is_dark(),
+        );
         if let Some(note) = contents.as_ref().ok().and_then(|c| c.introduction.as_ref()) {
             // Prefer the open buffer; navigating away must never show stale saved text.
             let raw = self
@@ -95,12 +129,39 @@ impl Workspace {
                     config = folder::dashboard(&raw);
                     let vault = self.vault.read(cx);
                     let resolver = vault.image_resolver();
+                    let index_epoch = vault.index_epoch();
                     banner = preview::banner_spec(&raw, &path, &*resolver);
-                    let body = folder::introduction_body(&raw, &metadata.title);
-                    let marks = preview::MarkColors::from_theme(cx.theme());
-                    let text =
-                        preview::preprocess(body, note, vault.root.as_deref(), &*resolver, &marks);
-                    introduction = Some(cx.new(|cx| TextViewState::markdown(&text, cx)));
+                    // A structural index change may resolve a missing
+                    // image or remove an existing one even when the raw
+                    // introduction is unchanged.
+                    let reused = self.folder.as_ref().and_then(|page| {
+                        let source = page.introduction_source.as_ref()?;
+                        let entity = page.introduction.as_ref()?;
+                        source
+                            .can_reuse(note, &raw, &theme_key, index_epoch)
+                            .then(|| (source.clone(), entity.clone()))
+                    });
+                    if let Some((source, entity)) = reused {
+                        introduction = Some(entity);
+                        introduction_source = Some(source);
+                    } else {
+                        let body = folder::introduction_body(&raw, &metadata.title);
+                        let marks = preview::MarkColors::from_theme(cx.theme());
+                        let text = preview::preprocess(
+                            body,
+                            note,
+                            vault.root.as_deref(),
+                            &*resolver,
+                            &marks,
+                        );
+                        introduction = Some(cx.new(|cx| TextViewState::markdown(&text, cx)));
+                        introduction_source = Some(IntroductionSource {
+                            note: note.clone(),
+                            raw,
+                            theme: theme_key.clone(),
+                            index_epoch,
+                        });
+                    }
                 }
                 Err(_) => introduction_error = true,
             }
@@ -184,6 +245,7 @@ impl Workspace {
             scroll,
             contents,
             introduction,
+            introduction_source,
             introduction_error,
             banner,
             folds: preview::CalloutFolds::default(),
@@ -1492,5 +1554,37 @@ impl Workspace {
                     )
                     .vertical_scrollbar(&self.sidebar_details_scroll),
             )
+    }
+}
+
+#[cfg(test)]
+mod introduction_cache_tests {
+    use super::IntroductionSource;
+    use std::path::PathBuf;
+
+    #[test]
+    fn introduction_reprocesses_when_the_resolver_index_changes() {
+        let source = IntroductionSource {
+            note: PathBuf::from("/vault/README.md"),
+            raw: "![[photo.png]]".into(),
+            theme: ("Graphite".into(), "Graphite Day".into(), true),
+            index_epoch: 1,
+        };
+        assert!(source.can_reuse(&source.note, &source.raw, &source.theme, 1));
+        // Creation, removal, or a move changes the vault index even
+        // though the introduction itself remains unchanged.
+        assert!(!source.can_reuse(&source.note, &source.raw, &source.theme, 2));
+    }
+
+    #[test]
+    fn introduction_reprocesses_when_the_appearance_flips() {
+        let source = IntroductionSource {
+            note: PathBuf::from("/vault/README.md"),
+            raw: "==marked==".into(),
+            theme: ("Graphite".into(), "Graphite Day".into(), true),
+            index_epoch: 1,
+        };
+        let light = ("Graphite".into(), "Graphite Day".into(), false);
+        assert!(!source.can_reuse(&source.note, &source.raw, &light, 1));
     }
 }

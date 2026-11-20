@@ -84,6 +84,11 @@ libc = "0.2"
 lto = "thin"
 codegen-units = 1
 
+# Dependencies keep optimized code in debug builds — GPUI and the
+# markdown/PDF/diagram crates are unusably slow otherwise.
+[profile.dev.package."*"]
+opt-level = 2
+
 # Inline `<mark>` highlights in Markdown previews (colored highlights).
 # Pinned to longbridge/gpui-kit#3425 until it ships in a release.
 [patch.crates-io]
