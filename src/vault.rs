@@ -467,6 +467,12 @@ impl Vault {
         }
     }
 
+    /// Vault-wide broken links and orphan notes for the Markdown notes.
+    /// Scans note bodies — O(vault); callers should cache the result.
+    pub fn link_health(&self) -> crate::link_health::LinkHealth {
+        crate::link_health::analyze(&self.notes, |text, dir| self.outgoing_from(text, dir))
+    }
+
     /// Every note containing a `[[wikilink]]` that resolves to `target`.
     /// Scans note bodies — O(vault); callers should cache the result.
     pub fn backlinks_to(&self, target: &Path) -> Vec<PathBuf> {
