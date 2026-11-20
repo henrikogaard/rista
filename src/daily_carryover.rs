@@ -220,14 +220,26 @@ fn vault_relative(dir: &Path, target: &str, root: &Path) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
+/// Whether a definition is a link reference or a footnote, so their labels
+/// never collide.
+#[derive(PartialEq)]
+enum Kind {
+    Link,
+    Footnote,
+}
+
+/// A definition's kind and normalized label.
+#[derive(PartialEq)]
+struct Key(Kind, String);
+
 /// The reference and footnote definitions in `text`, as a normalized label
 /// (lowercase, whitespace collapsed) and what it points to: URL and title for
 /// a link, the body for a footnote. `None` when `text` does not parse.
-fn definitions_in(text: &str) -> Option<Vec<(String, String)>> {
+fn definitions_in(text: &str) -> Option<Vec<(Key, String)>> {
     fn collapse(text: &str) -> String {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
-    fn walk(node: &Node, text: &str, found: &mut Vec<(String, String)>) {
+    fn walk(node: &Node, text: &str, found: &mut Vec<(Key, String)>) {
         match node {
             Node::Definition(definition) => {
                 let label = definition
@@ -235,7 +247,7 @@ fn definitions_in(text: &str) -> Option<Vec<(String, String)>> {
                     .as_deref()
                     .unwrap_or(&definition.identifier);
                 found.push((
-                    collapse(label).to_lowercase(),
+                    Key(Kind::Link, collapse(label).to_lowercase()),
                     format!(
                         "{}\n{}",
                         definition.url,
@@ -254,7 +266,7 @@ fn definitions_in(text: &str) -> Option<Vec<(String, String)>> {
                     .and_then(|source| source.split_once("]:"))
                     .map(|(_, body)| body.replace("\r\n", "\n").trim().to_string())
                     .unwrap_or_default();
-                found.push((format!("footnote:{}", collapse(label).to_lowercase()), body));
+                found.push((Key(Kind::Footnote, collapse(label).to_lowercase()), body));
             }
             _ => {}
         }
@@ -278,7 +290,7 @@ pub fn with_definitions(
     today: &str,
 ) -> Option<Vec<String>> {
     let existing = definitions_in(today)?;
-    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut seen: Vec<(Key, String)> = Vec::new();
     for definition in definitions {
         let (label, target) = definitions_in(&definition)?.into_iter().next()?;
         if let Some((_, known)) = existing.iter().find(|(known, _)| *known == label) {
@@ -826,6 +838,20 @@ mod tests {
         assert_eq!(
             with_definitions(lines.clone(), carried, "[^n]: `a  b`\n"),
             Some(lines)
+        );
+    }
+
+    #[test]
+    fn footnote_and_link_labels_do_not_clash() {
+        let lines = vec!["- [ ] a[^n]".to_string()];
+        let carried = vec!["[^n]: note".to_string()];
+        assert_eq!(
+            with_definitions(lines.clone(), carried, "[footnote:n]: /a\n"),
+            Some(vec![
+                "- [ ] a[^n]".into(),
+                String::new(),
+                "[^n]: note".into()
+            ])
         );
     }
 
