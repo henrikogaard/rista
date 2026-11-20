@@ -8,6 +8,7 @@ mod about;
 mod actions;
 mod agent;
 mod app;
+mod attachments;
 mod bases;
 mod bookmarks;
 mod canvas;
