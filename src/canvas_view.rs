@@ -285,6 +285,35 @@ fn edge_curve_controls(from: Point<Pixels>, to: Point<Pixels>) -> (Point<Pixels>
     )
 }
 
+/// Whether `screen` is within reach of an edge: the straight segment, or the
+/// cubic curve that is painted above the LOD zoom.
+fn edge_hit(screen: Point<Pixels>, from: Point<Pixels>, to: Point<Pixels>, straight: bool) -> bool {
+    if straight {
+        return segment_distance(screen, from, to) <= 7.;
+    }
+    let (control1, control2) = edge_curve_controls(from, to);
+    let mut previous = from;
+    for step in 1..=24 {
+        let t = step as f32 / 24.;
+        let inverse = 1. - t;
+        let next = point(
+            px(inverse.powi(3) * f32::from(from.x)
+                + 3. * inverse.powi(2) * t * f32::from(control1.x)
+                + 3. * inverse * t.powi(2) * f32::from(control2.x)
+                + t.powi(3) * f32::from(to.x)),
+            px(inverse.powi(3) * f32::from(from.y)
+                + 3. * inverse.powi(2) * t * f32::from(control1.y)
+                + 3. * inverse * t.powi(2) * f32::from(control2.y)
+                + t.powi(3) * f32::from(to.y)),
+        );
+        if segment_distance(screen, previous, next) <= 7. {
+            return true;
+        }
+        previous = next;
+    }
+    false
+}
+
 fn segment_distance(point: Point<Pixels>, from: Point<Pixels>, to: Point<Pixels>) -> f32 {
     let (px, py) = (f32::from(point.x), f32::from(point.y));
     let (ax, ay) = (f32::from(from.x), f32::from(from.y));
@@ -1963,6 +1992,8 @@ impl CanvasView {
 
     fn hit_edge(&self, screen: Point<Pixels>) -> Option<String> {
         let model = self.model.as_ref()?;
+        // Below the LOD zoom every edge is painted straight, so hit that.
+        let lod = self.zoom < crate::canvas_lod::LOD_ZOOM;
         let mut edges = model.edges().iter().rev();
         edges.find_map(|edge| {
             let id = edge["id"].as_str()?;
@@ -1980,34 +2011,8 @@ impl CanvasView {
                 px(self.world_to_screen(b.x)),
                 px(self.world_to_screen_y(b.y)),
             );
-            let selected = if edge["curve"].as_str() == Some("straight") {
-                segment_distance(screen, from, to) <= 7.
-            } else {
-                let (control1, control2) = edge_curve_controls(from, to);
-                let mut previous = from;
-                let mut hit = false;
-                for step in 1..=24 {
-                    let t = step as f32 / 24.;
-                    let inverse = 1. - t;
-                    let next = point(
-                        px(inverse.powi(3) * f32::from(from.x)
-                            + 3. * inverse.powi(2) * t * f32::from(control1.x)
-                            + 3. * inverse * t.powi(2) * f32::from(control2.x)
-                            + t.powi(3) * f32::from(to.x)),
-                        px(inverse.powi(3) * f32::from(from.y)
-                            + 3. * inverse.powi(2) * t * f32::from(control1.y)
-                            + 3. * inverse * t.powi(2) * f32::from(control2.y)
-                            + t.powi(3) * f32::from(to.y)),
-                    );
-                    if segment_distance(screen, previous, next) <= 7. {
-                        hit = true;
-                        break;
-                    }
-                    previous = next;
-                }
-                hit
-            };
-            selected.then(|| id.to_string())
+            let straight = lod || edge["curve"].as_str() == Some("straight");
+            edge_hit(screen, from, to, straight).then(|| id.to_string())
         })
     }
 
@@ -3699,10 +3704,23 @@ impl Drop for CanvasView {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas_file_reference, canvas_markdown_excerpt, canvas_node_matches_search,
+        canvas_file_reference, canvas_markdown_excerpt, canvas_node_matches_search, edge_hit,
         take_finished_drag, Drag, FinishedDrag,
     };
     use gpui_kit::{point, px};
+
+    #[test]
+    fn edge_hit_tests_the_straight_segment_in_lod_and_the_curve_above() {
+        let from = point(px(0.), px(0.));
+        let to = point(px(200.), px(100.));
+        // A quarter along the straight line, well off the S-shaped curve.
+        let on_line = point(px(50.), px(25.));
+        assert!(edge_hit(on_line, from, to, true));
+        assert!(!edge_hit(on_line, from, to, false));
+        // The curve's own start is hit in both modes.
+        assert!(edge_hit(from, from, to, false));
+        assert!(edge_hit(from, from, to, true));
+    }
 
     #[test]
     fn canvas_completed_move_resize_and_marquee_drags_are_consumed_once() {
