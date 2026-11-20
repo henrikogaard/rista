@@ -5116,7 +5116,7 @@ impl Workspace {
             return;
         };
         // Sources in date order, each with its picked `(line, text)` pairs.
-        type Source = (PathBuf, PathBuf, Vec<(usize, String)>, String);
+        type Source = (PathBuf, Vec<(usize, String)>, String);
         let mut sources: Vec<Source> = Vec::new();
         let mut lines = Vec::new();
         let mut definitions = Vec::new();
@@ -5129,13 +5129,13 @@ impl Workspace {
                         self.note_status(cancelled, cx);
                         return;
                     };
-                    sources.push((path.clone(), task.path.clone(), Vec::new(), before));
+                    sources.push((path.clone(), Vec::new(), before));
                     sources.len() - 1
                 }
             };
-            sources[index].2.push((task.line, task.text.clone()));
+            sources[index].1.push((task.line, task.text.clone()));
             let prepared = match daily_carryover::prepare_task(
-                &sources[index].3,
+                &sources[index].2,
                 task.line,
                 &path,
                 &today_path,
@@ -5161,8 +5161,11 @@ impl Workspace {
             today_before.clone().into_bytes(),
             today_after.clone().into_bytes(),
         )];
-        for (path, link_path, tasks, before) in sources {
-            let moved = self.wikilink_target(&today_link_path, &link_path, cx);
+        // Today's note may be new and missing from the vault index, so a
+        // shortest link could resolve to a same-named note elsewhere; the
+        // vault-relative path cannot.
+        let moved = self.vault_wikilink_target(&today_link_path, cx);
+        for (path, tasks, before) in sources {
             let Some(after) = daily_carryover::mark_migrated(&before, &tasks, &moved) else {
                 self.note_status(cancelled, cx);
                 return;
