@@ -198,6 +198,8 @@ pub struct Settings {
     /// the reference-editor style: reveal markup around the cursor (live preview).
     /// Kept off — the raw buffer stays honest.
     pub focus_mode: bool,
+    /// Typewriter mode: keep the caret vertically centred while typing.
+    pub typewriter_mode: bool,
     /// The folder that was open last — reopened on launch.
     pub last_vault: Option<std::path::PathBuf>,
     /// Recently opened vaults, most recent first — the "Open recent vault" list.
@@ -480,6 +482,7 @@ impl Default for Settings {
             dock_width: None,
             dock_heights: Default::default(),
             focus_mode: false,
+            typewriter_mode: false,
             last_vault: None,
             recent_vaults: Vec::new(),
             attachments_dir: "attachments".to_string(),
