@@ -1476,6 +1476,13 @@ impl Workspace {
         })?;
         // Refuse before the first write, so a refusal never leaves a partial undo.
         for change in changes {
+            if let Some(doc) = self.open_doc_at(&change.path, cx) {
+                let doc = doc.entity.read(cx);
+                if doc.is_read_only() || doc.conflict || !doc.disk_matches_loaded() {
+                    let stale = language.text("changed on disk", "endret på disk");
+                    return Err(format!("{}: {stale}", name(&change.path)));
+                }
+            }
             if change.before.is_none() && self.open_doc_at(&change.path, cx).is_some() {
                 let close = language.text("close the note first", "lukk notatet først");
                 return Err(format!("{}: {close}", name(&change.path)));
