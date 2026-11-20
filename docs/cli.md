@@ -13,6 +13,8 @@ rista daily ~/Notes
 rista append ~/Notes "Río plan.md" "Follow up tomorrow"
 printf '%s' "Exact text" | rista append ~/Notes "Río plan.md" -
 cat change.md | rista append ~/Notes "Río plan.md"
+rista inbox ~/Notes "Call Río about the plan"
+pbpaste | rista inbox ~/Notes
 rista search ~/Notes "project status"
 rista links "Río plan.md" [--vault ~/Notes]
 rista backlinks "Río plan.md" [--vault ~/Notes]
@@ -28,6 +30,19 @@ uses the vault's configured daily folder and date format, with an optional
 resolves the template inside that configured folder. Templates requiring
 interactive prompts, clipboard, or selection context are not supported by the
 CLI.
+
+`inbox` creates one new note per capture in `Inbox/` at the vault root,
+creating the folder on first use. The note is named
+`YYYY-MM-DD HHmm <first words>.md` from the first line of the text, with
+characters that are invalid in file names or break wikilinks removed and the
+words cut to about 40 characters. An empty first line gives the time alone,
+and a taken name gets a ` 2`, ` 3`, … suffix. The note holds a `created:`
+frontmatter timestamp (local ISO 8601) followed by the text exactly as given,
+plus a newline when the text does not already end with one.
+Like `append`, an omitted text argument or `-` reads standard input; empty
+text is rejected. The command prints the new note's path, which suits Raycast
+script commands or a macOS Shortcuts **Run Shell Script** action. In the app,
+**Quick capture** (`⌘⇧I`) writes the same kind of note.
 
 `search` prints matching filesystem paths using the vault's existing search
 behavior, which may include non-Markdown files. `links` prints resolved local
@@ -51,6 +66,7 @@ rista://open?vault=%2FUsers%2Fyou%2FNotes&file=R%C3%ADo%20plan.md
 rista://new?vault=%2FUsers%2Fyou%2FNotes&name=Draft%20notes
 rista://daily?vault=%2FUsers%2Fyou%2FNotes
 rista://append?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md&text=More%20text
+rista://inbox?vault=%2FUsers%2Fyou%2FNotes&text=Call%20R%C3%ADo
 rista://search?vault=%2FUsers%2Fyou%2FNotes&query=project%20status
 rista://links?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md
 rista://backlinks?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md
@@ -58,7 +74,7 @@ rista://backlinks?vault=%2FUsers%2Fyou%2FNotes&file=Draft.md
 
 URL fields must be unique and known for the selected action; malformed
 percent-encoding, credentials, ports, fragments, and non-local vault paths are
-rejected. URL writes (`new`, `daily`, and `append`) require native confirmation
+rejected. URL writes (`new`, `daily`, `append`, and `inbox`) require native confirmation
 before any file or directory is changed. Cancel is the keyboard default.
 Dirty, conflicted, or externally changed open notes are not silently
 overwritten.
