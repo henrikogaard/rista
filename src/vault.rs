@@ -396,17 +396,8 @@ impl Vault {
             return;
         };
         let tpl_root = root.join(&self.templates_dir);
-        let mut content_changed = false;
-        for path in paths {
-            let is_md = matches!(
-                crate::file_preview::extension(path).as_str(),
-                "md" | "markdown"
-            );
-            if is_md || crate::canvas::is_canvas(path) {
-                content_changed |=
-                    Self::refresh_note_content(&mut self.content_cache, path, &tpl_root);
-            }
-        }
+        let content_changed =
+            Self::refresh_watched_content(&mut self.content_cache, paths, &tpl_root);
         if content_changed {
             Self::aggregate_content(
                 &self.notes,
@@ -422,6 +413,28 @@ impl Vault {
             changed: Some(paths.to_vec()),
         });
         cx.notify();
+    }
+
+    /// Re-read notes the watcher reported. A watcher event is evidence of
+    /// change even when the stamp matches (sync tools can preserve mtime),
+    /// so each cached parse is dropped before re-reading.
+    fn refresh_watched_content(
+        cache: &mut std::collections::HashMap<PathBuf, (ContentStamp, NoteContent)>,
+        paths: &[PathBuf],
+        tpl_root: &Path,
+    ) -> bool {
+        let mut changed = false;
+        for path in paths {
+            let is_md = matches!(
+                crate::file_preview::extension(path).as_str(),
+                "md" | "markdown"
+            );
+            if is_md || crate::canvas::is_canvas(path) {
+                let dropped = cache.remove(path).is_some();
+                changed |= Self::refresh_note_content(cache, path, tpl_root) || dropped;
+            }
+        }
+        changed
     }
 
     /// Re-read one note's cached parse when its stamp changed. Returns
@@ -1992,6 +2005,29 @@ mod content_index_tests {
             &root.join("old-templates")
         ));
         assert!(cache.contains_key(&note));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn watched_path_is_reread_even_when_the_stamp_matches() {
+        let root = temp_root("watched-stamp");
+        let note = root.join("a.md");
+        std::fs::write(&note, "#one\n").unwrap();
+        let tpl = root.join("templates");
+        let mut cache = HashMap::new();
+        Vault::refresh_note_content(&mut cache, &note, &tpl);
+        // Same size, and a forged equal stamp: the stamp check alone
+        // would call this unchanged.
+        std::fs::write(&note, "#two\n").unwrap();
+        let (_, content) = cache.remove(&note).unwrap();
+        cache.insert(note.clone(), (content_stamp(&note).unwrap(), content));
+        assert!(!Vault::refresh_note_content(&mut cache, &note, &tpl));
+        assert!(Vault::refresh_watched_content(
+            &mut cache,
+            std::slice::from_ref(&note),
+            &tpl
+        ));
+        assert_eq!(cache[&note].1.tags, vec!["two".to_string()]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

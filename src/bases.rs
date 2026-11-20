@@ -4325,6 +4325,14 @@ fn row_stamp(path: &Path) -> Option<RowStamp> {
     Some((meta.modified().ok()?, meta.len()))
 }
 
+/// Watcher-reported paths are evidence of change even when the stamp
+/// matches (sync tools can preserve mtime), so drop their cached rows.
+fn forget_rows(cache: &mut RowCache, paths: &[PathBuf]) {
+    for path in paths {
+        cache.remove(path);
+    }
+}
+
 /// `row_data` with a stamp cache — unchanged notes are cloned from the
 /// cache instead of re-read and re-parsed.
 fn cached_row(
@@ -4430,6 +4438,12 @@ impl BaseView {
             // Sidebar disclosure changes don't touch the row set —
             // only file index events and star flips invalidate rows.
             if matches!(event, VaultEvent::Files { .. } | VaultEvent::Starred) {
+                if let VaultEvent::Files {
+                    changed: Some(paths),
+                } = event
+                {
+                    forget_rows(&mut this.row_cache, paths);
+                }
                 this.notes_epoch += 1;
                 cx.notify();
             }
@@ -8314,6 +8328,11 @@ mod tests {
             Some(&Lit::Str("stale".into())),
             "an unchanged stamp must serve the cached row"
         );
+
+        // A watcher report forces a re-read despite the matching stamp.
+        super::forget_rows(&mut cache, std::slice::from_ref(&note));
+        let (row, _, _) = cached_row(&root, &note, &resolve, &mut cache);
+        assert_eq!(row.props.get("title"), Some(&Lit::Str("first".into())));
 
         // A rewrite changes the stamp → the file is re-read for real.
         std::fs::write(&note, "---\ntitle: second-and-longer\n---\n\nBody\n").unwrap();

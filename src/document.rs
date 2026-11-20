@@ -2416,6 +2416,12 @@ impl Document {
         })
     }
 
+    /// A watcher event names this file: forget the stamp so the next
+    /// `check_external` compares bytes even when mtime and size match.
+    pub fn invalidate_disk_stamp(&mut self) {
+        self.disk_stamp = None;
+    }
+
     /// Called when the watcher noticed a filesystem change under this path.
     pub fn check_external(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pdf) = &self.pdf {

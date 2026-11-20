@@ -14898,6 +14898,9 @@ impl Render for Workspace {
             for doc in &self.docs {
                 doc.entity.update(cx, |doc, cx| {
                     if doc.vault_root.is_some() {
+                        if paths.contains(&doc.path) {
+                            doc.invalidate_disk_stamp();
+                        }
                         doc.check_external(window, cx);
                         // Embeds/banners resolve against the vault index — a
                         // newly added image should light up open previews.
