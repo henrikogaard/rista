@@ -55,6 +55,8 @@ mod bookmarks_panel;
 mod explorer_panel;
 #[path = "folder_dashboard.rs"]
 mod folder_dashboard;
+#[path = "inbox_panel.rs"]
+mod inbox_panel;
 #[path = "pdf_export_ui.rs"]
 mod pdf_export_ui;
 #[path = "saved_workspaces.rs"]
@@ -193,6 +195,7 @@ pub struct Workspace {
     folder_search: Entity<InputState>,
     explorer_search: Entity<InputState>,
     move_undo: Vec<(PathBuf, PathBuf)>,
+    inbox_undo: Vec<crate::inbox::InboxUndo>,
     terminals: Vec<tools_panel::TerminalTab>,
     active_terminal: Option<usize>,
     next_terminal_id: usize,
@@ -233,6 +236,7 @@ pub struct Workspace {
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
+    typewriter_mode: bool,
     /// Back/forward navigation: paths in visit order, `nav_pos` = the
     /// current entry. Recorded on every `open_document` activation and
     /// truncated past `nav_pos` like a browser history.
@@ -387,6 +391,7 @@ pub(crate) enum PaletteCmd {
     NewFolder,
     OpenFile,
     OpenFolder,
+    RecentVaults,
     DailyNote,
     WeeklyNote,
     MonthlyNote,
@@ -396,6 +401,8 @@ pub(crate) enum PaletteCmd {
     NextPeriodic,
     NewFromTemplate,
     AppendDaily,
+    QuickCapture,
+    Inbox,
     CloseFolder,
     Save,
     SaveAs,
@@ -451,6 +458,7 @@ pub(crate) enum PaletteCmd {
     Backlinks,
     Outline,
     ToggleFocus,
+    ToggleTypewriter,
     GoBack,
     GoForward,
     FollowLink,
@@ -502,8 +510,11 @@ impl PaletteCmd {
         Self::PrevPeriodic,
         Self::NextPeriodic,
         Self::AppendDaily,
+        Self::QuickCapture,
+        Self::Inbox,
         Self::OpenFile,
         Self::OpenFolder,
+        Self::RecentVaults,
         Self::NewFolder,
         Self::Save,
         Self::SaveAs,
@@ -562,6 +573,7 @@ impl PaletteCmd {
         Self::Backlinks,
         Self::Outline,
         Self::ToggleFocus,
+        Self::ToggleTypewriter,
         Self::GoBack,
         Self::GoForward,
         Self::FollowLink,
@@ -610,8 +622,11 @@ impl PaletteCmd {
             PrevPeriodic => "previous_periodic_note",
             NextPeriodic => "next_periodic_note",
             AppendDaily => "append_daily_note",
+            QuickCapture => "quick_capture",
+            Inbox => "open_inbox",
             OpenFile => "open_file",
             OpenFolder => "open_folder",
+            RecentVaults => "open_recent_vault",
             NewFolder => "new_folder",
             Save => "save",
             SaveAs => "save_as",
@@ -670,6 +685,7 @@ impl PaletteCmd {
             Backlinks => "open_backlinks",
             Outline => "open_outline",
             ToggleFocus => "toggle_focus_mode",
+            ToggleTypewriter => "toggle_typewriter_mode",
             GoBack => "navigate_back",
             GoForward => "navigate_forward",
             FollowLink => "follow_link",
@@ -723,8 +739,11 @@ impl PaletteCmd {
             PrevPeriodic => "Forrige periodiske notat",
             NextPeriodic => "Neste periodiske notat",
             AppendDaily => "Legg til i dagsnotat",
+            QuickCapture => "Hurtignotat",
+            Inbox => "Innboks",
             OpenFile => "Åpne fil…",
             OpenFolder => "Åpne mappe…",
+            RecentVaults => "Åpne nylig brukt hvelv…",
             NewFolder => "Ny mappe",
             Save => "Lagre",
             SaveAs => "Lagre som",
@@ -783,6 +802,7 @@ impl PaletteCmd {
             Backlinks => "Åpne tilbakekoblinger",
             Outline => "Åpne disposisjon",
             ToggleFocus => "Veksle fokusmodus",
+            ToggleTypewriter => "Veksle skrivemaskinmodus",
             GoBack => "Gå tilbake",
             GoForward => "Gå frem",
             FollowLink => "Åpne lenke under markøren",
@@ -873,6 +893,11 @@ impl PaletteCmd {
                 "Open folder…",
                 &["vault", "workspace"],
             ),
+            RecentVaults => (
+                assets::IconName::FolderOpen,
+                "Open recent vault…",
+                &["vault", "switch", "recent"],
+            ),
             DailyNote => (
                 assets::IconName::BookOpen,
                 "Open daily note",
@@ -917,6 +942,16 @@ impl PaletteCmd {
                 assets::IconName::SquarePen,
                 "Append to daily note…",
                 &["today", "journal", "log", "quick"],
+            ),
+            QuickCapture => (
+                assets::IconName::SquarePen,
+                "Quick capture",
+                &["inbox", "capture", "jot", "quick"],
+            ),
+            Inbox => (
+                assets::IconName::FolderOpen,
+                "Inbox",
+                &["capture", "triage", "review"],
             ),
             CloseFolder => (
                 assets::IconName::FolderClosed,
@@ -1176,6 +1211,11 @@ impl PaletteCmd {
                 "Toggle focus mode",
                 &["focus", "dim", "paragraph", "distraction", "writing"],
             ),
+            ToggleTypewriter => (
+                assets::IconName::Frame,
+                "Toggle typewriter mode",
+                &["typewriter", "centre", "cursor", "writing"],
+            ),
             GoBack => (
                 assets::IconName::ChevronLeft,
                 "Navigate back",
@@ -1434,6 +1474,7 @@ impl Workspace {
             folder_search,
             explorer_search,
             move_undo: Vec::new(),
+            inbox_undo: Vec::new(),
             terminals: Vec::new(),
             active_terminal: None,
             next_terminal_id: 0,
@@ -1454,6 +1495,7 @@ impl Workspace {
             tab_menu_token: None,
             compact_mode_panes: HashSet::new(),
             focus_mode: settings.focus_mode,
+            typewriter_mode: settings.typewriter_mode,
             nav_stack: Vec::new(),
             nav_pos: 0,
             nav_suppress: false,
@@ -1716,6 +1758,7 @@ impl Workspace {
         self.nav_pos = 0;
         self.nav_suppress = false;
         self.move_undo.clear();
+        self.inbox_undo.clear();
         self.explorer_search
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.vault.update(cx, |vault, cx| {
@@ -1738,6 +1781,7 @@ impl Workspace {
         self.active_terminal = None;
         self.terminal_visible = false;
         self.settings.last_vault = Some(root.clone());
+        self.remember_vault(&root);
         self.persist_settings(cx);
         self.status_note = None;
         self.open_folder_page(root, window, cx);
@@ -2242,6 +2286,10 @@ impl Workspace {
             crate::cli::Command::Append { .. } => (
                 language.text("Append to this note?", "Legge til tekst i dette notatet?"),
                 language.text("Append", "Legg til"),
+            ),
+            crate::cli::Command::Inbox { .. } => (
+                language.text("Capture to Inbox?", "Legge i innboksen?"),
+                language.text("Capture", "Legg i innboksen"),
             ),
             _ => return,
         };
@@ -3212,6 +3260,9 @@ impl Workspace {
             })
         });
         doc.update(cx, |doc, cx| doc.set_focus_mode(self.focus_mode, cx));
+        doc.update(cx, |doc, cx| {
+            doc.set_typewriter_mode(self.typewriter_mode, cx)
+        });
         let preview_group = self.layout.focused();
         let replacement = preview
             .then(|| {
@@ -4471,6 +4522,81 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// Remember `root` as a recently opened vault, most recent first.
+    fn remember_vault(&mut self, root: &Path) {
+        crate::settings::push_recent_vault(&mut self.settings.recent_vaults, root);
+    }
+
+    /// List recent vaults; choosing one switches the workspace to it.
+    fn show_recent_vaults(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vaults = self.settings.recent_vaults.clone();
+        let language = self.settings.language;
+        let view = cx.entity();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let mut list = v_flex().w_full().py_1();
+            if vaults.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(
+                            language
+                                .text("No recent vaults yet.", "Ingen nylig brukte hvelv ennå."),
+                        ),
+                );
+            }
+            for (index, vault) in vaults.iter().enumerate() {
+                let name = vault
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| vault.display().to_string());
+                let path = vault.display().to_string();
+                let view = view.clone();
+                let chosen = vault.clone();
+                list = list.child(
+                    div()
+                        .id(("recent-vault", index))
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .rounded(theme.radius)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.muted))
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .child(div().text_sm().text_color(theme.foreground).child(name))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(path),
+                                ),
+                        )
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            view.update(cx, |this, cx| {
+                                this.open_vault_at(chosen.clone(), window, cx);
+                            });
+                        }),
+                );
+            }
+            dialog
+                .title(language.text("Recent vaults", "Nylig brukte hvelv"))
+                .w(px(460.))
+                .overlay_closable(true)
+                .child(
+                    gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
+                        list.max_h(px(360.)),
+                    ),
+                )
+        });
     }
 
     fn on_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -6681,6 +6807,26 @@ impl Workspace {
         cx.notify();
     }
 
+    fn toggle_typewriter_mode(&mut self, cx: &mut Context<Self>) {
+        self.typewriter_mode = !self.typewriter_mode;
+        let on = self.typewriter_mode;
+        for doc in &self.docs {
+            doc.entity
+                .update(cx, |doc, cx| doc.set_typewriter_mode(on, cx));
+        }
+        self.settings.typewriter_mode = on;
+        self.persist_settings(cx);
+        self.note_status(
+            if on {
+                "Typewriter mode on"
+            } else {
+                "Typewriter mode off"
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
     /// Star/unstar a note — pinned group at the top of the sidebar,
     /// persisted in settings (absolute paths).
     fn toggle_star(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -7267,6 +7413,7 @@ impl Workspace {
             PaletteCmd::NewFolder => self.on_new_folder(&NewFolder, window, cx),
             PaletteCmd::OpenFile => self.on_open_file(&OpenFile, window, cx),
             PaletteCmd::OpenFolder => self.on_open_folder(&OpenFolder, window, cx),
+            PaletteCmd::RecentVaults => self.defer_dialog(Self::show_recent_vaults, window, cx),
             PaletteCmd::DailyNote => self.on_open_daily(&OpenDailyNote, window, cx),
             PaletteCmd::WeeklyNote => self.open_period_today(Period::Week, window, cx),
             PaletteCmd::MonthlyNote => self.open_period_today(Period::Month, window, cx),
@@ -7277,6 +7424,8 @@ impl Workspace {
             PaletteCmd::NewFromTemplate => {
                 self.defer_dialog(Self::show_new_from_template, window, cx)
             }
+            PaletteCmd::QuickCapture => self.defer_dialog(Self::show_quick_capture, window, cx),
+            PaletteCmd::Inbox => self.on_open_inbox(&OpenInbox, window, cx),
             PaletteCmd::AppendDaily => {
                 self.defer_dialog(Self::show_append_daily_dialog, window, cx)
             }
@@ -7436,6 +7585,7 @@ impl Workspace {
             PaletteCmd::Backlinks => self.defer_dialog(Self::show_backlinks, window, cx),
             PaletteCmd::Outline => self.defer_dialog(Self::show_outline, window, cx),
             PaletteCmd::ToggleFocus => self.toggle_focus_mode(cx),
+            PaletteCmd::ToggleTypewriter => self.toggle_typewriter_mode(cx),
             PaletteCmd::GoBack => self.nav_back(window, cx),
             PaletteCmd::GoForward => self.nav_forward(window, cx),
             PaletteCmd::FollowLink => self.on_follow_link(&FollowLink, window, cx),
@@ -8225,9 +8375,12 @@ impl Workspace {
             self.settings.user_ignore_filters != settings.user_ignore_filters;
         let focus_mode_changed = self.focus_mode != settings.focus_mode
             || self.settings.focus_mode != settings.focus_mode;
+        let typewriter_mode_changed = self.typewriter_mode != settings.typewriter_mode
+            || self.settings.typewriter_mode != settings.typewriter_mode;
         let language_changed = self.settings.language != settings.language;
         let starred_changed = self.settings.starred != settings.starred;
         self.focus_mode = settings.focus_mode;
+        self.typewriter_mode = settings.typewriter_mode;
         self.settings = settings.clone();
         if starred_changed {
             self.vault.update(cx, |vault, cx| {
@@ -8285,6 +8438,9 @@ impl Workspace {
                 doc.apply_settings(&settings, window, cx);
                 if focus_mode_changed {
                     doc.set_focus_mode(settings.focus_mode, cx);
+                }
+                if typewriter_mode_changed {
+                    doc.set_typewriter_mode(settings.typewriter_mode, cx);
                 }
             });
         }
@@ -8388,8 +8544,20 @@ impl Workspace {
             };
             dir.join(name)
         };
+        self.move_with_links(path, new_path, window, cx);
+    }
+
+    /// Rename or move `path` to `new_path`, retargeting inbound links and
+    /// the moved note's own relative links. Returns whether it moved.
+    pub(super) fn move_with_links(
+        &mut self,
+        path: PathBuf,
+        new_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if new_path == path || new_path.exists() {
-            return;
+            return false;
         }
         if crate::canvas::rejects_canvas_kind_change(&path, &new_path, path.is_dir()) {
             self.note_status(
@@ -8399,7 +8567,7 @@ impl Workspace {
                 ),
                 cx,
             );
-            return;
+            return false;
         }
         let canvas_rewrites = match self.vault.read(cx).root.clone() {
             Some(root) if path.starts_with(&root) && new_path.starts_with(&root) => {
@@ -8413,16 +8581,14 @@ impl Workspace {
                             ),
                             cx,
                         );
-                        return;
+                        return false;
                     }
                 }
             }
             _ => Vec::new(),
         };
-        if name.contains('/') {
-            if let Some(parent) = new_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
+        if let Some(parent) = new_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
         // Collect inbound `[[link]]`/`![[embed]]` targets resolving to the
         // file *before* it moves — resolution uses the pre-rename index.
@@ -8626,8 +8792,9 @@ impl Workspace {
             );
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
             self.persist_tabs(cx);
+            return true;
         }
-        let _ = window;
+        false
     }
 
     /// Edit `prop` on the active document — the preview's Properties
@@ -11878,6 +12045,7 @@ impl Workspace {
                     ),
             )
             .child(self.render_explorer_controls(cx))
+            .children(self.render_inbox_link(cx))
             // The header stays even when empty: its "+" menu is the only way to
             // bookmark a heading or view, make a group, or import bookmarks.
             .child(self.render_starred(cx))
@@ -14533,6 +14701,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_file))
             .on_action(cx.listener(Self::on_open_folder))
             .on_action(cx.listener(Self::on_open_daily))
+            .on_action(cx.listener(Self::on_quick_capture))
+            .on_action(cx.listener(Self::on_open_inbox))
             .on_action(cx.listener(Self::on_close_folder))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))

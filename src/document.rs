@@ -228,6 +228,11 @@ pub struct Document {
     /// itself notifies the editor, so without this guard refresh → notify
     /// → refresh would spin forever.
     focus_cursor: Option<usize>,
+    /// Typewriter mode: keep the caret vertically centred while typing.
+    pub typewriter_mode: bool,
+    /// The scroll offset typewriter mode last requested — a request clamped
+    /// at the document's top or bottom must not be re-requested forever.
+    typewriter_target: Option<f32>,
     /// Last caret offset broadcast as `DocumentEvent::Selection` —
     /// dedupes so unchanged cursors don't re-render the workspace.
     status_cursor: Option<usize>,
@@ -435,6 +440,8 @@ impl Document {
             native_history_action: None,
             focus_mode: false,
             focus_cursor: None,
+            typewriter_mode: false,
+            typewriter_target: None,
             status_cursor: None,
             source_scroll_offset: Point::default(),
             vault,
@@ -592,6 +599,9 @@ impl Document {
                 if this.focus_mode && !this.is_canvas && this.focus_cursor != Some(cursor) {
                     this.focus_cursor = Some(cursor);
                     this.refresh_decorations(cx);
+                }
+                if this.typewriter_mode && !this.is_canvas {
+                    this.center_caret(cx);
                 }
                 if this.status_cursor != Some(cursor) {
                     this.status_cursor = Some(cursor);
@@ -1069,6 +1079,43 @@ impl Document {
         self.focus_mode = on;
         self.focus_cursor = None;
         self.refresh_decorations(cx);
+    }
+
+    /// Typewriter mode: keep the caret vertically centred while typing.
+    pub fn set_typewriter_mode(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.typewriter_mode = on;
+        self.typewriter_target = None;
+        if on && !self.is_canvas {
+            self.center_caret(cx);
+        }
+    }
+
+    /// Scroll so the caret sits at the vertical middle of the viewport.
+    ///
+    /// The editor lays the caret out in content space, so its position on
+    /// screen is `scroll_offset.y + content_y`; centre that and let the
+    /// editor clamp at the document's edges. One request is remembered so a
+    /// clamped one does not repeat and spin the editor's notify loop.
+    fn center_caret(&mut self, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            let Some((caret, _)) = editor.cursor_layout() else {
+                return;
+            };
+            let viewport = editor.input_bounds();
+            if f32::from(viewport.size.height) <= 0. {
+                return;
+            }
+            let content_y = f32::from(caret.origin.y) - f32::from(viewport.origin.y);
+            let desired = f32::from(viewport.size.height) * 0.5 - content_y;
+            let current = editor.scroll_offset();
+            if self.typewriter_target == Some(desired)
+                || (f32::from(current.y) - desired).abs() <= 0.5
+            {
+                return;
+            }
+            self.typewriter_target = Some(desired);
+            editor.set_scroll_offset(point(current.x, px(desired)), cx);
+        });
     }
 
     fn refresh_decorations(&mut self, cx: &mut Context<Self>) {
