@@ -52,7 +52,8 @@ the look and feel of the Mac.
   and gentle warnings for links that point nowhere.
 - Tabs that behave like a code editor's: single-click to preview, double-click or
   start typing to keep it open.
-- Autosave, session restore, local page history, and a zen mode for focused writing.
+- Autosave, session restore, local page history, and a zen mode for focused
+  writing. A typewriter mode keeps the caret vertically centred as you type.
 
 ### Folders that feel like pages
 
