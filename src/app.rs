@@ -5209,7 +5209,8 @@ impl Workspace {
             lines.push(daily_carryover::carried_line(&prepared.text, &back));
             definitions.extend(prepared.definitions);
         }
-        let Some(lines) = daily_carryover::with_definitions(lines, definitions) else {
+        let Some(lines) = daily_carryover::with_definitions(lines, definitions, &today_before)
+        else {
             self.note_status(cancelled, cx);
             return;
         };

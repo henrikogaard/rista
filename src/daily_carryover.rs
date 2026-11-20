@@ -11,6 +11,7 @@
 
 use crate::date_phrase;
 use crate::note_composer::{extract_reference_definitions, rebase_markdown_links, ComposeError};
+use crate::properties::FenceTracker;
 use crate::settings::Language;
 use chrono::{Duration, NaiveDate};
 use gpui_kit::component::checkbox::Checkbox;
@@ -145,16 +146,25 @@ pub fn prepare_task(
 fn rebase_relative_wikilinks(text: &str, source_path: &Path, root: &Path) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find("[[") {
+    while let Some(start) = rest.find(['`', '[']) {
         let (before, tail) = rest.split_at(start);
         out.push_str(before);
-        let Some(end) = tail.find("]]") else {
-            break;
+        if tail.starts_with('`') {
+            // A code span is copied as written; an unmatched run is literal.
+            let run = tail.len() - tail.trim_start_matches('`').len();
+            let end = code_span_end(tail, run).unwrap_or(run);
+            out.push_str(&tail[..end]);
+            rest = &tail[end..];
+            continue;
+        }
+        let Some(end) = tail.find("]]").filter(|_| tail.starts_with("[[")) else {
+            out.push('[');
+            rest = &tail[1..];
+            continue;
         };
         let inner = &tail[2..end];
-        let in_code = text[..text.len() - tail.len()].matches('`').count() % 2 == 1;
         let (target, suffix) = inner.split_at(inner.find(['#', '|']).unwrap_or(inner.len()));
-        let rebased = (!in_code && (target.starts_with("./") || target.starts_with("../")))
+        let rebased = (target.starts_with("./") || target.starts_with("../"))
             .then(|| vault_relative(source_path.parent()?, target, root))
             .flatten();
         match rebased {
@@ -165,6 +175,21 @@ fn rebase_relative_wikilinks(text: &str, source_path: &Path, root: &Path) -> Str
     }
     out.push_str(rest);
     out
+}
+
+/// Where the code span opened by the `run` backticks at the start of `tail`
+/// ends: after the next backtick run of exactly the same length.
+fn code_span_end(tail: &str, run: usize) -> Option<usize> {
+    let mut at = run;
+    while let Some(offset) = tail[at..].find('`') {
+        let start = at + offset;
+        let len = tail[start..].len() - tail[start..].trim_start_matches('`').len();
+        if len == run {
+            return Some(start + len);
+        }
+        at = start + len;
+    }
+    None
 }
 
 /// `target` resolved from `dir` as a path under `root`, with `/` separators.
@@ -192,17 +217,37 @@ fn vault_relative(dir: &Path, target: &str, root: &Path) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
+/// A definition line split into its lowercased `[label` and trimmed target.
+fn definition_parts(definition: &str) -> (String, String) {
+    let (label, target) = definition.split_once("]:").unwrap_or((definition, ""));
+    (label.trim_start().to_lowercase(), target.trim().to_string())
+}
+
 /// `lines` followed by `definitions` (blank-line separated, identical ones
-/// once), ready for `insert_carried`. `None` when two different definitions
-/// share a label, because one would silently take over the other's links.
-pub fn with_definitions(mut lines: Vec<String>, definitions: Vec<String>) -> Option<Vec<String>> {
+/// once), ready for `insert_carried`. A definition `today` already has is not
+/// added again. `None` when two different definitions share a label, because
+/// one would silently take over the other's links.
+pub fn with_definitions(
+    mut lines: Vec<String>,
+    definitions: Vec<String>,
+    today: &str,
+) -> Option<Vec<String>> {
+    let mut fences = FenceTracker::default();
+    let existing = today
+        .lines()
+        .filter(|line| !fences.in_fence(line))
+        .filter(|line| line.trim_start().starts_with('[') && line.contains("]:"))
+        .map(definition_parts)
+        .collect::<Vec<_>>();
     let mut seen: Vec<(String, String)> = Vec::new();
     for definition in definitions {
-        let label = definition
-            .split("]:")
-            .next()
-            .unwrap_or_default()
-            .to_lowercase();
+        let (label, target) = definition_parts(&definition);
+        if let Some((_, known)) = existing.iter().find(|(known, _)| *known == label) {
+            if *known == target {
+                continue;
+            }
+            return None;
+        }
         match seen.iter().find(|(known, _)| *known == label) {
             Some((_, text)) if *text == definition => {}
             Some(_) => return None,
@@ -245,23 +290,11 @@ pub fn insert_under(note: &str, lines: &[String], names: &[&str], new_heading: &
         })
         .collect::<Vec<_>>();
     // A line inside a fenced code block is never a heading.
-    let mut fenced = Vec::with_capacity(segments.len());
-    let mut fence: Option<&str> = None;
-    for (_, segment) in &segments {
-        let trimmed = segment.trim_start();
-        let marker = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m));
-        match (fence, marker) {
-            (None, Some(m)) => {
-                fence = Some(m);
-                fenced.push(true);
-            }
-            (Some(open), Some(m)) if open == m => {
-                fence = None;
-                fenced.push(true);
-            }
-            _ => fenced.push(fence.is_some()),
-        }
-    }
+    let mut fences = FenceTracker::default();
+    let fenced = segments
+        .iter()
+        .map(|(_, segment)| fences.in_fence(segment))
+        .collect::<Vec<_>>();
     let is_heading = |segment: &str| {
         let line = segment.trim_end();
         line.strip_prefix("## ")
@@ -483,7 +516,7 @@ mod tests {
     // Not `super::*`: the GPUI glob import there shadows `#[test]`.
     use super::{
         carried_line, heading, insert_carried, lookback_dates, mark_migrated, open_tasks,
-        prepare_task, with_definitions,
+        prepare_task, rebase_relative_wikilinks, with_definitions,
     };
     use chrono::NaiveDate;
     use std::path::PathBuf;
@@ -575,6 +608,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_tracks_fence_length_and_info_strings() {
+        let lines = vec!["- [ ] a".to_string()];
+        let note = "````\n```\n## Carried over\n````\n\n## Carried over\n\n- [ ] b\n";
+        assert_eq!(
+            insert_carried(note, &lines, false),
+            "````\n```\n## Carried over\n````\n\n## Carried over\n\n- [ ] b\n- [ ] a\n"
+        );
+        // A line with an info string never closes the fence.
+        let open = "```rust\n```js\n## Carried over\n```\n";
+        assert!(insert_carried(open, &lines, false).ends_with("\n## Carried over\n\n- [ ] a\n"));
+        assert!(insert_carried(open, &lines, false).starts_with(open));
+    }
+
+    #[test]
     fn insert_keeps_crlf_endings() {
         let lines = vec!["- [ ] a".to_string()];
         assert_eq!(
@@ -653,6 +700,28 @@ mod tests {
     }
 
     #[test]
+    fn rebase_keeps_text_before_an_unclosed_wikilink_once() {
+        let root = PathBuf::from("/v");
+        let from = root.join("2026/10/31.md");
+        let text = "see [[./plan]] then [[./plan";
+        assert_eq!(
+            rebase_relative_wikilinks(text, &from, &root),
+            "see [[2026/10/plan]] then [[./plan"
+        );
+    }
+
+    #[test]
+    fn rebase_skips_code_spans_of_any_backtick_length() {
+        let root = PathBuf::from("/v");
+        let from = root.join("2026/10/31.md");
+        let text = "``a ` [[./plan]] b`` [[./plan]] `x [[./plan]]";
+        assert_eq!(
+            rebase_relative_wikilinks(text, &from, &root),
+            "``a ` [[./plan]] b`` [[2026/10/plan]] `x [[2026/10/plan]]"
+        );
+    }
+
+    #[test]
     fn prepare_leaves_same_folder_links_and_brings_definitions() {
         let root = vault("defs");
         let from = root.join("2026/10/30.md");
@@ -672,13 +741,34 @@ mod tests {
         let lines = vec!["- [ ] a".to_string()];
         let same = vec!["[p]: /a".to_string(), "[P]: /a".to_string()];
         assert_eq!(
-            with_definitions(lines.clone(), vec!["[p]: /a".into(), "[p]: /a".into()]),
+            with_definitions(lines.clone(), vec!["[p]: /a".into(), "[p]: /a".into()], ""),
             Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()])
         );
-        assert_eq!(with_definitions(lines.clone(), same), None);
+        assert_eq!(with_definitions(lines.clone(), same, ""), None);
         assert_eq!(
-            with_definitions(lines, vec!["[p]: /a".into(), "[p]: /b".into()]),
+            with_definitions(lines, vec!["[p]: /a".into(), "[p]: /b".into()], ""),
             None
+        );
+    }
+
+    #[test]
+    fn definitions_check_the_destination_note() {
+        let lines = vec!["- [ ] a".to_string()];
+        let same = Some(lines.clone());
+        let carried = vec!["[p]: /a".to_string()];
+        assert_eq!(
+            with_definitions(lines.clone(), carried.clone(), "[P]:  /a\n"),
+            same
+        );
+        assert_eq!(
+            with_definitions(lines.clone(), carried.clone(), "[p]: /b\n"),
+            None
+        );
+        // A definition inside a fence is not one.
+        let fenced = "```\n[p]: /b\n```\n";
+        assert_eq!(
+            with_definitions(lines, carried, fenced),
+            Some(vec!["- [ ] a".into(), String::new(), "[p]: /a".into()])
         );
     }
 
