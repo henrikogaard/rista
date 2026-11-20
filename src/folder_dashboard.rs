@@ -46,6 +46,12 @@ impl IntroductionSource {
     }
 }
 
+impl FolderPage {
+    pub(super) fn contents(&self) -> Option<&folder::Contents> {
+        self.contents.as_ref().ok()
+    }
+}
+
 struct FolderCard {
     path: PathBuf,
     kind: Kind,
@@ -365,6 +371,9 @@ impl Workspace {
         page: &FolderPage,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.is_inbox_page(page, cx) {
+            return self.render_inbox_page(page, cx);
+        }
         if self.settings.folder_file_list {
             return self.render_folder_files(page, cx);
         }
