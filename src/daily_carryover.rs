@@ -542,6 +542,11 @@ impl GoToDateView {
         input.update(cx, |input, cx| input.focus(window, cx));
     }
 
+    /// `Some(0)` / `Some(1)` when the input says this / next week.
+    pub fn week_offset(&self, cx: &App) -> Option<i64> {
+        date_phrase::week_offset(self.input.read(cx).value().as_ref())
+    }
+
     /// The date the input names right now.
     pub fn resolve(&self, cx: &App) -> Option<NaiveDate> {
         date_phrase::parse(self.input.read(cx).value().as_ref(), self.today)

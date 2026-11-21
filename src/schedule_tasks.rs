@@ -129,7 +129,12 @@ impl ScheduleView {
 
     /// The typed date, once it reads as one (Enter in the dialog).
     pub fn typed(&self, cx: &App) -> Option<Choice> {
-        self.date.read(cx).resolve(cx).map(Choice::Date)
+        let date = self.date.read(cx);
+        match date.week_offset(cx) {
+            Some(0) => Some(Choice::ThisWeek),
+            Some(_) => Some(Choice::NextWeek),
+            None => date.resolve(cx).map(Choice::Date),
+        }
     }
 }
 
