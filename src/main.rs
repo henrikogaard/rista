@@ -47,6 +47,7 @@ mod pdf_export;
 mod preview;
 mod properties;
 mod query_embed;
+mod schedule_tasks;
 mod search;
 pub mod search_query;
 pub mod search_service;

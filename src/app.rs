@@ -9,6 +9,7 @@ use crate::document::{Document, DocumentEvent, ImageResolver};
 use crate::editor_layout::{Axis, EditorLayout, GroupId, Node, PaneMode, TabToken};
 use crate::preview;
 use crate::properties;
+use crate::schedule_tasks;
 use crate::search;
 use crate::search_service::SearchService;
 use crate::settings::{Appearance, Language, Period, Settings, TreeSort, ViewMode};
@@ -437,6 +438,7 @@ pub(crate) enum PaletteCmd {
     NewFromTemplate,
     AppendDaily,
     CarryOverTasks,
+    ScheduleTask,
     GoToDate,
     QuickCapture,
     Inbox,
@@ -550,6 +552,7 @@ impl PaletteCmd {
         Self::NextPeriodic,
         Self::AppendDaily,
         Self::CarryOverTasks,
+        Self::ScheduleTask,
         Self::GoToDate,
         Self::QuickCapture,
         Self::Inbox,
@@ -666,6 +669,7 @@ impl PaletteCmd {
             NextPeriodic => "next_periodic_note",
             AppendDaily => "append_daily_note",
             CarryOverTasks => "carry_over_tasks",
+            ScheduleTask => "schedule_task",
             GoToDate => "go_to_date",
             QuickCapture => "quick_capture",
             Inbox => "open_inbox",
@@ -787,6 +791,7 @@ impl PaletteCmd {
             NextPeriodic => "Neste periodiske notat",
             AppendDaily => "Legg til i dagsnotat",
             CarryOverTasks => "Overfør uferdige oppgaver",
+            ScheduleTask => "Planlegg oppgave…",
             GoToDate => "Gå til dato…",
             QuickCapture => "Hurtignotat",
             Inbox => "Innboks",
@@ -998,6 +1003,13 @@ impl PaletteCmd {
                 assets::IconName::CalendarDays,
                 "Carry over unfinished tasks",
                 &["daily", "todo", "migrate", "yesterday", "overfør"],
+            ),
+            ScheduleTask => (
+                assets::IconName::CalendarDays,
+                "Schedule task…",
+                &[
+                    "task", "todo", "plan", "move", "tomorrow", "week", "planlegg",
+                ],
             ),
             GoToDate => (
                 assets::IconName::Calendar,
@@ -4814,7 +4826,7 @@ impl Workspace {
     fn template_seed(
         &self,
         path: &Path,
-        template: &str,
+        period: Period,
         date: chrono::NaiveDateTime,
         cx: &App,
     ) -> Result<String, ()> {
@@ -4825,16 +4837,17 @@ impl Workspace {
             ))
         };
         let Some(template_path) = self.vault.read(cx).root.as_ref().and_then(|root| {
-            let selected = self.settings.period_templates.get("daily");
+            let selected = self.settings.period_templates.get(period.name());
             let template_path = match selected {
                 Some(selected) if selected.is_empty() => None,
                 Some(selected) => crate::vault_settings_import::checked_vault_path(root, selected),
                 None => {
                     let folder = self.settings.templates_dir.trim_matches('/');
+                    let filename = format!("{}.md", period.name());
                     let relative = if folder.is_empty() {
-                        template.to_string()
+                        filename
                     } else {
-                        format!("{folder}/{template}")
+                        format!("{folder}/{filename}")
                     };
                     crate::vault_settings_import::checked_vault_path(root, &relative)
                 }
@@ -5068,23 +5081,68 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.commit_task_move(Period::Day, today, false, picked, window, cx);
+    }
+
+    /// Moves `picked` tasks to the end of the `period` note holding `date`
+    /// — carry-over (`scheduled` false: today's note, opened, owns the undo)
+    /// or "Schedule task…" (`scheduled` true: a note that may not exist yet,
+    /// left closed; the source note owns the undo).
+    fn commit_task_move(
+        &mut self,
+        period: Period,
+        date: NaiveDate,
+        scheduled: bool,
+        picked: Vec<daily_carryover::Candidate>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let norwegian = self.settings.language == Language::Norwegian;
-        let cancelled = self.tr(
-            "A daily note changed; no tasks were moved.",
-            "Et dagsnotat ble endret; ingen oppgaver ble flyttet.",
-        );
+        let cancelled = if scheduled {
+            self.tr(
+                "A note changed; no tasks were scheduled.",
+                "Et notat ble endret; ingen oppgaver ble planlagt.",
+            )
+        } else {
+            self.tr(
+                "A daily note changed; no tasks were moved.",
+                "Et dagsnotat ble endret; ingen oppgaver ble flyttet.",
+            )
+        };
         let (Some(root), Some(today_link_path)) = (
             self.vault.read(cx).root.clone(),
-            self.daily_path_for(today, cx),
+            self.period_path(period, date, cx),
         ) else {
             return;
         };
-        if picked.is_empty() || !self.ensure_daily_note(&today_link_path, cx) {
+        let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if scheduled
+            && picked
+                .iter()
+                .any(|task| canonical(&task.path) == canonical(&today_link_path))
+        {
+            self.note_status(
+                self.tr(
+                    "The task is already in that note.",
+                    "Oppgaven ligger allerede i det notatet.",
+                ),
+                cx,
+            );
             return;
         }
-        self.open_document(today_link_path.clone(), window, cx);
-        let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if picked.is_empty() || !self.ensure_period_note(period, date, &today_link_path, cx) {
+            return;
+        }
+        if !scheduled {
+            self.open_document(today_link_path.clone(), window, cx);
+        }
         let today_path = canonical(&today_link_path);
+        // The note whose editor takes the edit and keeps the undo entry.
+        let owner_path = if scheduled {
+            canonical(&picked[0].path)
+        } else {
+            today_path.clone()
+        };
         let mut touched = vec![today_path.clone()];
         touched.extend(picked.iter().map(|task| canonical(&task.path)));
         let open_docs = self
@@ -5101,7 +5159,7 @@ impl Workspace {
         }
         let Some(owner) = open_docs
             .iter()
-            .find(|doc| canonical(&doc.read(cx).path) == today_path)
+            .find(|doc| canonical(&doc.read(cx).path) == owner_path)
             .cloned()
         else {
             return;
@@ -5156,7 +5214,11 @@ impl Workspace {
             self.note_status(cancelled, cx);
             return;
         };
-        let today_after = daily_carryover::insert_carried(&today_before, &lines, norwegian);
+        let today_after = if scheduled {
+            schedule_tasks::insert_scheduled(&today_before, &lines, norwegian)
+        } else {
+            daily_carryover::insert_carried(&today_before, &lines, norwegian)
+        };
         let mut changes = vec![(
             today_path.clone(),
             today_before.clone().into_bytes(),
@@ -5197,12 +5259,18 @@ impl Workspace {
             self.note_status(error.message(norwegian), cx);
             return;
         }
+        let Some((_, owner_before, owner_after)) =
+            changes.iter().find(|(path, _, _)| *path == owner_path)
+        else {
+            return;
+        };
+        let owner_text = String::from_utf8_lossy(owner_after).into_owned();
         owner.update(cx, |doc, cx| {
-            doc.replace_range(0..today_before.len(), today_after.clone(), window, cx);
-            doc.mark_composer_written(today_after.clone().into_bytes(), cx);
+            doc.replace_range(0..owner_before.len(), owner_text, window, cx);
+            doc.mark_composer_written(owner_after.clone(), cx);
             doc.record_composer_edit(
-                today_before.clone().into_bytes(),
-                today_after.clone().into_bytes(),
+                owner_before.clone(),
+                owner_after.clone(),
                 history_changes.clone(),
                 crate::document::ComposerPathReferenceDelta::default(),
             );
@@ -5217,42 +5285,172 @@ impl Workspace {
             });
         }
         self.vault.update(cx, |vault, cx| vault.refresh(cx));
+        let name = today_link_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         self.note_status(
-            if norwegian {
-                format!("Overførte {} oppgaver til dagsnotatet", picked.len())
-            } else {
-                format!("Carried over {} tasks to today's note", picked.len())
+            match (scheduled, norwegian) {
+                (false, true) => format!("Overførte {} oppgaver til dagsnotatet", picked.len()),
+                (false, false) => format!("Carried over {} tasks to today's note", picked.len()),
+                (true, true) => format!("Planla {} oppgaver i {name}", picked.len()),
+                (true, false) => format!("Scheduled {} tasks in {name}", picked.len()),
             },
             cx,
         );
     }
 
-    /// Creates the daily note at `path` from its template when it doesn't
-    /// exist, without opening it. False after a status note on failure.
+    /// ⌘⇧M / palette "Schedule task…" — pick a day or week for the open
+    /// tasks on the caret line or in the selection.
+    fn on_schedule_task(&mut self, _: &ScheduleTask, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_schedule_dialog(window, cx);
+    }
+
+    fn show_schedule_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.active_doc().cloned() else {
+            self.note_status("No note open", cx);
+            return;
+        };
+        let (path, read_only, tasks) = {
+            let doc = doc.read(cx);
+            (
+                doc.path.clone(),
+                doc.is_read_only() || doc.is_canvas || doc.conflict,
+                doc.selected_task_lines(cx),
+            )
+        };
+        if self.vault.read(cx).root.is_none() {
+            self.note_status("Open a folder first", cx);
+            return;
+        }
+        if read_only || !path.exists() {
+            self.note_status(
+                self.tr(
+                    "Save this note first, then schedule its tasks.",
+                    "Lagre notatet først, og planlegg så oppgavene.",
+                ),
+                cx,
+            );
+            return;
+        }
+        if tasks.is_empty() {
+            self.note_status(
+                self.tr(
+                    "Put the caret on an open task (- [ ]) first.",
+                    "Sett markøren på en åpen oppgave (- [ ]) først.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let language = self.settings.language;
+        let today = chrono::Local::now().date_naive();
+        let view = cx.entity();
+        // `picked` is rescanned on commit: the editor may have changed
+        // while the picker was open, and the dirty note is saved first.
+        let pick = {
+            let view = view.clone();
+            let path = path.clone();
+            let doc = doc.clone();
+            move |choice: schedule_tasks::Choice, window: &mut Window, cx: &mut App| {
+                let view = view.clone();
+                let path = path.clone();
+                let doc = doc.clone();
+                window.defer(cx, move |window, cx| {
+                    let (period, date) = choice.target(today);
+                    let picked = doc
+                        .read(cx)
+                        .selected_task_lines(cx)
+                        .into_iter()
+                        .map(|(line, text)| daily_carryover::Candidate {
+                            date: today,
+                            path: path.clone(),
+                            line,
+                            text,
+                        })
+                        .collect::<Vec<_>>();
+                    view.update(cx, |this, cx| {
+                        this.commit_task_move(period, date, true, picked, window, cx)
+                    });
+                });
+            }
+        };
+        let body = cx
+            .new(|cx| schedule_tasks::ScheduleView::new(today, language, pick.clone(), window, cx));
+        let dialog_body = body.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title(language.text("Schedule task", "Planlegg oppgave"))
+                .w(px(400.))
+                .child(dialog_body.clone())
+                .on_ok({
+                    let body = dialog_body.clone();
+                    let pick = pick.clone();
+                    move |_, window, cx| {
+                        let Some(choice) = body.read(cx).typed(cx) else {
+                            return false;
+                        };
+                        pick(choice, window, cx);
+                        true
+                    }
+                })
+        });
+        window.defer(cx, move |window, cx| {
+            schedule_tasks::ScheduleView::focus(&body, window, cx)
+        });
+    }
+
+    /// Creates today's daily note at `path` from its template when it
+    /// doesn't exist, without opening it. False after a status note on failure.
     fn ensure_daily_note(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        self.ensure_period_note(Period::Day, chrono::Local::now().date_naive(), path, cx)
+    }
+
+    /// Creates the `period` note holding `date` at `path` from its template
+    /// when it doesn't exist, without opening it. False after a status note
+    /// on failure.
+    fn ensure_period_note(
+        &mut self,
+        period: Period,
+        date: NaiveDate,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if path.exists() {
             return true;
         }
-        let seed =
-            match self.template_seed(path, "daily.md", chrono::Local::now().naive_local(), cx) {
-                Ok(seed) => seed,
-                Err(()) => {
-                    self.note_status(
-                        self.tr(
-                            "Template output exceeded the size limit; the note was not created.",
-                            "Malutdata overskred størrelsesgrensen; notatet ble ikke opprettet.",
-                        ),
-                        cx,
-                    );
-                    return false;
-                }
-            };
+        let seed = match self.template_seed(
+            path,
+            period,
+            date.and_time(chrono::Local::now().time()),
+            cx,
+        ) {
+            Ok(seed) => seed,
+            Err(()) => {
+                self.note_status(
+                    self.tr(
+                        "Template output exceeded the size limit; the note was not created.",
+                        "Malutdata overskred størrelsesgrensen; notatet ble ikke opprettet.",
+                    ),
+                    cx,
+                );
+                return false;
+            }
+        };
         if path
             .parent()
             .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
             || std::fs::write(path, seed).is_err()
         {
-            self.note_status("Could not create daily note", cx);
+            self.note_status(
+                if period == Period::Day {
+                    "Could not create daily note"
+                } else {
+                    "Could not create periodic note"
+                },
+                cx,
+            );
             return false;
         }
         true
@@ -7830,6 +8028,7 @@ impl Workspace {
             PaletteCmd::CarryOverTasks => {
                 self.defer_dialog(Self::show_carryover_dialog, window, cx)
             }
+            PaletteCmd::ScheduleTask => self.defer_dialog(Self::show_schedule_dialog, window, cx),
             PaletteCmd::GoToDate => self.defer_dialog(Self::show_go_to_date, window, cx),
             PaletteCmd::CloseFolder => {
                 self.close_vault(window, cx);
@@ -14487,7 +14686,8 @@ impl Workspace {
                             menu =
                                 menu.submenu(language.text("Spelling", "Stavekontroll"), spelling);
                         }
-                        menu.menu("Cut", Box::new(input::Cut))
+                        menu = menu
+                            .menu("Cut", Box::new(input::Cut))
                             .menu("Copy", Box::new(input::Copy))
                             .menu("Paste", Box::new(input::Paste))
                             .menu("Select All", Box::new(input::SelectAll))
@@ -14509,8 +14709,15 @@ impl Workspace {
                                     .separator()
                                     .menu("No color", Box::new(SetHighlightColor { emoji: "" })),
                             )
-                            .menu("Task checkbox", Box::new(ToggleCheckbox))
-                            .menu("Toggle comment", Box::new(ToggleComment))
+                            .menu("Task checkbox", Box::new(ToggleCheckbox));
+                        // Only offered when the caret or selection is on an open task.
+                        if !spell_doc.read(cx).selected_task_lines(cx).is_empty() {
+                            menu = menu.menu(
+                                language.text("Schedule task…", "Planlegg oppgave…"),
+                                Box::new(ScheduleTask),
+                            );
+                        }
+                        menu.menu("Toggle comment", Box::new(ToggleComment))
                             .separator()
                             .menu("Move line up", Box::new(MoveLineUp))
                             .menu("Move line down", Box::new(MoveLineDown))
@@ -15338,6 +15545,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_folder))
             .on_action(cx.listener(Self::on_open_daily))
             .on_action(cx.listener(Self::on_quick_capture))
+            .on_action(cx.listener(Self::on_schedule_task))
             .on_action(cx.listener(Self::on_open_inbox))
             .on_action(cx.listener(Self::on_close_folder))
             .on_action(cx.listener(Self::on_save))

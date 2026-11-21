@@ -770,6 +770,131 @@ fn tool_contents(content: Option<&Value>) -> Vec<ToolCallContent> {
         .collect()
 }
 
+/// One file an accepted agent write changed. `before` is `None` when the
+/// write created the file; `after` is the exact bytes written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppliedChange {
+    pub path: PathBuf,
+    pub before: Option<Vec<u8>>,
+    pub after: Vec<u8>,
+}
+
+/// Re-checks, at undo time, that every recorded path still resolves to
+/// itself inside the vault. A file or parent folder swapped for a symlink
+/// since the edit was accepted fails here, before any write.
+pub fn guard_undo_paths(root: &Path, changes: &[AppliedChange]) -> Result<(), PathBuf> {
+    for change in changes {
+        match guard_vault_path(root, &change.path) {
+            Ok(resolved) if resolved == change.path => {}
+            _ => return Err(change.path.clone()),
+        }
+    }
+    Ok(())
+}
+
+/// Checks that every change of one agent turn can be undone. Changes are
+/// replayed newest first against the current content of each file (`current`
+/// returns `None` for a missing file). On success the result is the undo
+/// order; otherwise it lists the files that changed since, so nothing is
+/// clobbered.
+pub fn plan_undo(
+    changes: &[AppliedChange],
+    current: impl Fn(&Path) -> Option<Vec<u8>>,
+) -> Result<Vec<usize>, Vec<PathBuf>> {
+    let mut simulated: std::collections::HashMap<&Path, Option<Vec<u8>>> = Default::default();
+    let mut blocked: Vec<PathBuf> = Vec::new();
+    let mut order = Vec::new();
+    for (index, change) in changes.iter().enumerate().rev() {
+        let state = simulated
+            .entry(change.path.as_path())
+            .or_insert_with(|| current(&change.path));
+        if state.as_deref() != Some(change.after.as_slice()) && !blocked.contains(&change.path) {
+            blocked.push(change.path.clone());
+        }
+        *state = change.before.clone();
+        order.push(index);
+    }
+    if blocked.is_empty() {
+        Ok(order)
+    } else {
+        Err(blocked)
+    }
+}
+
+/// `812 B`, `3.4 KB`, `1.2 MB`: a rough size for a context chip.
+pub fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / KB)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (KB * KB))
+    }
+}
+
+/// The common ways an agent fails to start, each with one short bilingual
+/// line that names the fix. The raw stderr or protocol message stays in
+/// the details.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind {
+    Exited,
+    Auth,
+    Handshake,
+}
+
+impl FailureKind {
+    pub fn text(self, language: crate::settings::Language) -> &'static str {
+        match self {
+            Self::Exited => language.text(
+                "The agent closed right away. Check that it is installed, then sign in to it.",
+                "Agenten stoppet med en gang. Sjekk at den er installert, og logg inn i den.",
+            ),
+            Self::Auth => language.text(
+                "The agent needs you to sign in. Log in from a terminal, then start a new conversation.",
+                "Agenten krever innlogging. Logg inn i et terminalvindu, og start en ny samtale.",
+            ),
+            Self::Handshake => language.text(
+                "Could not connect to the agent. Update it, and check that it speaks ACP.",
+                "Kunne ikke koble til agenten. Oppdater den, og sjekk at den støtter ACP.",
+            ),
+        }
+    }
+}
+
+/// True when `text` hints that the agent wants a login.
+pub fn looks_like_auth(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "login",
+        "log in",
+        "log-in",
+        "sign in",
+        "sign-in",
+        "authenticat",
+        "unauthorized",
+        "auth required",
+        "auth_required",
+    ]
+    .iter()
+    .any(|hint| text.contains(hint))
+}
+
+/// Picks the failure kind for a process that exited, or a handshake that
+/// failed. `connecting` is true until the session exists. Returns `None`
+/// for failures with no friendly line.
+pub fn classify_failure(connecting: bool, handshake: bool, raw: &str) -> Option<FailureKind> {
+    if looks_like_auth(raw) {
+        Some(FailureKind::Auth)
+    } else if handshake {
+        Some(FailureKind::Handshake)
+    } else if connecting {
+        Some(FailureKind::Exited)
+    } else {
+        None
+    }
+}
+
 pub fn guard_vault_path(root: &Path, candidate: &Path) -> io::Result<PathBuf> {
     if !candidate.is_absolute() {
         return Err(io::Error::new(
@@ -1377,5 +1502,87 @@ mod tests {
             simple_diff("note.md", "before\nkeep\n", "after\nkeep\n"),
             "--- note.md\n+++ note.md\n@@ -1,1 +1,1 @@\n-before\n+after\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undo_refuses_paths_swapped_for_symlinks() {
+        use std::os::unix::fs::symlink;
+        let temp = TempDir::new();
+        let root = temp.0.join("vault");
+        fs::create_dir_all(root.join("dir")).expect("create vault");
+        let root = root.canonicalize().expect("canonical root");
+        let outside = temp.0.join("outside");
+        fs::create_dir_all(&outside).expect("create outside");
+        fs::write(outside.join("n.md"), "after").expect("write outside");
+        let note = root.join("dir").join("n.md");
+        fs::write(&note, "after").expect("write note");
+        let changes = [AppliedChange {
+            path: note.clone(),
+            before: Some(b"before".to_vec()),
+            after: b"after".to_vec(),
+        }];
+        assert_eq!(guard_undo_paths(&root, &changes), Ok(()));
+        fs::remove_dir_all(root.join("dir")).expect("remove dir");
+        symlink(&outside, root.join("dir")).expect("symlink parent");
+        assert_eq!(guard_undo_paths(&root, &changes), Err(note));
+    }
+
+    #[test]
+    fn undo_plan_replays_newest_first_and_refuses_changed_files() {
+        let a = PathBuf::from("a.md");
+        let b = PathBuf::from("b.md");
+        let change = |path: &PathBuf, before: Option<&[u8]>, after: &[u8]| AppliedChange {
+            path: path.clone(),
+            before: before.map(<[u8]>::to_vec),
+            after: after.to_vec(),
+        };
+        let changes = vec![
+            change(&a, Some(b"1"), b"2"),
+            change(&b, None, b"new"),
+            change(&a, Some(b"2"), b"3"),
+        ];
+        let files = |a_text: &'static [u8]| {
+            let (a, b) = (a.clone(), b.clone());
+            move |path: &Path| {
+                if path == a {
+                    Some(a_text.to_vec())
+                } else if path == b {
+                    Some(b"new".to_vec())
+                } else {
+                    None
+                }
+            }
+        };
+        assert_eq!(plan_undo(&changes, files(b"3")), Ok(vec![2, 1, 0]));
+        assert_eq!(plan_undo(&changes, files(b"edited")), Err(vec![a.clone()]));
+        assert_eq!(plan_undo(&changes, |_| None), Err(vec![a, b]));
+    }
+
+    #[test]
+    fn formats_sizes_roughly() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(812), "812 B");
+        assert_eq!(format_size(3482), "3.4 KB");
+        assert_eq!(format_size(1_300_000), "1.2 MB");
+    }
+
+    #[test]
+    fn classifies_start_up_failures() {
+        use FailureKind::*;
+        assert_eq!(
+            classify_failure(true, false, "Please run `codex login`"),
+            Some(Auth)
+        );
+        assert_eq!(
+            classify_failure(false, true, "Not authenticated"),
+            Some(Auth)
+        );
+        assert_eq!(classify_failure(true, true, "bad version"), Some(Handshake));
+        assert_eq!(classify_failure(true, false, "boom"), Some(Exited));
+        assert_eq!(classify_failure(true, false, ""), Some(Exited));
+        assert_eq!(classify_failure(false, false, "boom"), None);
+        let nb = crate::settings::Language::Norwegian;
+        assert!(Auth.text(nb).contains("innlogging"));
     }
 }
