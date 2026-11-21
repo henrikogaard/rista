@@ -4988,6 +4988,21 @@ impl Workspace {
                     .title(language.text("Go to date", "Gå til dato"))
                     .w(px(400.))
                     .child(body.clone())
+                    .footer(
+                        DialogFooter::new()
+                            .child(
+                                DialogClose::new().trigger(|button| {
+                                    button.label(language.text("Cancel", "Avbryt"))
+                                }),
+                            )
+                            .child(
+                                DialogAction::new().child(
+                                    Button::new("go-to-date-confirm")
+                                        .label(language.text("Go", "Gå"))
+                                        .primary(),
+                                ),
+                            ),
+                    )
                     .on_ok({
                         let view = view.clone();
                         let body = body.clone();
@@ -5053,6 +5068,20 @@ impl Workspace {
                 .title(language.text("Carry over unfinished tasks", "Overfør uferdige oppgaver"))
                 .w(px(520.))
                 .child(body.clone())
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new()
+                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("carryover-confirm")
+                                    .label(language.text("Carry over", "Overfør"))
+                                    .primary(),
+                            ),
+                        ),
+                )
                 .on_ok({
                     let view = view.clone();
                     let body = body.clone();
@@ -5384,6 +5413,20 @@ impl Workspace {
                 .title(language.text("Schedule task", "Planlegg oppgave"))
                 .w(px(400.))
                 .child(dialog_body.clone())
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new()
+                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new("schedule-confirm")
+                                    .label(language.text("Schedule", "Planlegg"))
+                                    .primary(),
+                            ),
+                        ),
+                )
                 .on_ok({
                     let body = dialog_body.clone();
                     let pick = pick.clone();
