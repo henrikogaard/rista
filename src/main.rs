@@ -18,6 +18,8 @@ mod cli;
 #[cfg(target_os = "macos")]
 mod cli_install;
 mod cli_ipc;
+mod daily_carryover;
+mod date_phrase;
 mod decorations;
 mod document;
 mod editor_layout;

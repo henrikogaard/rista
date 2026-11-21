@@ -5,6 +5,8 @@
 - Show the size of each attached context file on its chip in the Agent panel.
 - Add Accept all and Reject all for several proposed file changes, and one Undo agent changes action that reverts every file accepted in the last turn, or refuses when a file changed since.
 - Replace raw agent errors with one short English or Norwegian line with the fix, for an agent that exits at once, a missing login, or a failed handshake; the raw output stays behind Details.
+- Add **Carry over unfinished tasks** to the command palette: pick open tasks from the last seven daily notes, copy them to today's note under `## Carried over` (`## Overført`) with a link back, and mark them `- [x] … (moved to [[today]])` in their sources, as one undoable transaction.
+- Add **Go to date…** to the command palette: type an ISO date, `today`, `next friday`, `3 days ago`, `in 2 weeks`, or the Norwegian equivalents, see the resolved day, and open or create its daily note.
 
 ## v0.2.0 — 2026-10-16
 

@@ -59,6 +59,12 @@ the look and feel of the Mac.
   terminal, Raycast, or Shortcuts. The **Inbox** view lists captures oldest
   first, with **Open**, **Move to…** (links follow the note), and **Done**
   (moves it to the vault trash), each undoable.
+- **Daily notes** carry yesterday's loose ends forward: **Carry over unfinished
+  tasks** lists the open `- [ ]` tasks from the last seven daily notes, copies
+  the ones you keep under `## Carried over` in today's note with a link back,
+  and marks them `- [x] … (moved to [[today]])` at the source, as one undoable
+  step. **Go to date…** opens a day's note from a typed date: `2026-11-18`,
+  `next friday`, `3 days ago`, `i morgen`, `forrige mandag`.
 
 ### Folders that feel like pages
 
