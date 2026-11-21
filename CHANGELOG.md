@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add Quick Capture (`⌘⇧I`) and an Inbox view to triage captured notes. `rista inbox` captures from the command line.
+- Open recent vaults from the command palette.
+- Add typewriter mode, which keeps the caret at the vertical middle of the editor.
+- Add a timeline view for `.base` files, with dated items on a month-labelled axis.
+- Preview a history snapshot as a diff against the current note before restoring it.
+- Add a link health report for broken links and orphan notes, from the command palette.
+- Show type-aware controls in the properties dialog: toggles for booleans, date pickers, and chips for recurring values and existing keys.
+- Find unused image attachments from the command palette, largest first.
+- Replace text across the project from the find dialog, with a confirmation step and a history snapshot for each changed file.
+- Make the local graph readable: it shows only notes within the depth setting, labels every note, and can colour nodes by folder or tag.
+- List only installed agents in the agent panel.
+- Speed up large vaults: saves and file changes now refresh only the notes that changed.
 - Keep large Canvas boards smooth when zoomed out: below 35% zoom, cards paint as flat shapes and edges as straight lines from a cached plan, with no dot grid, arrowheads or labels. Selecting and moving cards works as before.
 - Show the size of each attached context file on its chip in the Agent panel.
 - Add Accept all and Reject all for several proposed file changes, and one Undo agent changes action that reverts every file accepted in the last turn, or refuses when a file changed since.
