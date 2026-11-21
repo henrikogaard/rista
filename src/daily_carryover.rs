@@ -518,12 +518,12 @@ impl GoToDateView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(language.text(
-                "2026-11-18, next friday, 3 days ago…",
-                "2026-11-18, neste fredag, for 3 dager siden…",
-            ))
-        });
+        let example = today.format("%Y-%m-%d");
+        let placeholder = match language {
+            Language::Norwegian => format!("{example}, neste fredag, for 3 dager siden…"),
+            _ => format!("{example}, next friday, 3 days ago…"),
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let change = cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
