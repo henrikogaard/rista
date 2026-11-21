@@ -59,6 +59,16 @@ the look and feel of the Mac.
   terminal, Raycast, or Shortcuts. The **Inbox** view lists captures oldest
   first, with **Open**, **Move to…** (links follow the note), and **Done**
   (moves it to the vault trash), each undoable.
+- **Daily notes** carry yesterday's loose ends forward: **Carry over unfinished
+  tasks** lists the open `- [ ]` tasks from the last seven daily notes, copies
+  the ones you keep under `## Carried over` in today's note with a link back,
+  and marks them `- [x] … (moved to [[today]])` at the source, as one undoable
+  step. **Go to date…** opens a day's note from a typed date: `2026-11-18`,
+  `next friday`, `3 days ago`, `i morgen`, `forrige mandag`.
+  **Schedule task…** (`⌘⇧M`, or right-click a task) sends the task under the
+  caret, or the tasks you selected, to today, tomorrow, this week, next week,
+  or a typed date: they land under `## Scheduled` in that daily or weekly note
+  with a link back, and are marked moved at the source, as one undoable step.
 
 ### Folders that feel like pages
 
@@ -93,6 +103,8 @@ the look and feel of the Mac.
   a calendar, or a timeline.
 - Filters, formulas, relations, and rollups — with every value still living in
   the notes themselves.
+- `.canvas` boards stay smooth when zoomed out: below 35% zoom, cards draw as
+  flat shapes and edges as straight lines.
 
 ### An agent that works with you
 
@@ -102,7 +114,11 @@ the look and feel of the Mac.
 - ACP-requested file writes arrive as a diff you **Accept** or **Reject**.
   Accepted edits to open notes go through the editor, so autosave and conflict
   checks still apply. This review does not cover changes made directly by an
-  agent or its tools.
+  agent or its tools. **Accept all** and **Reject all** settle several files at
+  once, and **Undo agent changes** reverts everything accepted in the last turn
+  unless a file changed since.
+- Context chips show each attached file's size, and a failed start shows one
+  short line with the fix, with the raw output behind **Details**.
 - Five presets launch ACP adapters: Vibe (`vibe-acp`), Codex (`codex-acp`),
   Claude (`claude-agent-acp`), OpenCode (`opencode acp`), and Grok via OpenCode.
   Install tools separately: Vibe uses `uv tool install mistral-vibe`; Codex
@@ -255,6 +271,7 @@ not a promise of complete compatibility with other tools.
 | Toggle sidebar / Zen mode | `⌘B` / `⌘⇧Enter` |
 | Daily note / Graph | `⌘⇧D` / `⌘G` |
 | Quick capture | `⌘⇧I` |
+| Schedule task | `⌘⇧M` |
 | Settings | `⌘,` |
 
 ## Build from source

@@ -26,15 +26,10 @@ These are merged on `main` and not yet in a release:
 - Incremental vault indexing.
 - A readable local graph with optional coloured nodes.
 - A list of installed agents in the agent panel.
-
-## In review
-
-These pull requests are open and not merged:
-
-- #360: daily note carry-over and go-to-date.
-- #361: agent change review, with accept all, reject all, and undo.
-- #362: level-of-detail rendering for boards.
-- #363: schedule tasks to a future daily note.
+- Daily note carry-over and Go to date.
+- Schedule tasks to a later daily or weekly note.
+- Agent change review, with accept all, reject all, and undo.
+- Faster drawing of large boards when zoomed out.
 
 ## Open validation gaps
 

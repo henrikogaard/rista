@@ -135,6 +135,12 @@ pub(super) struct AgentPanel {
     stopping: bool,
     status: AgentStatus,
     error: Option<String>,
+    /// Raw stderr or protocol text behind the short `error` line.
+    error_details: Option<String>,
+    details_open: bool,
+    /// Writes accepted since the last prompt; undone together.
+    applied: Vec<agent::AppliedChange>,
+    review_notice: Option<String>,
     update: UpdateState,
     pending_permissions: Vec<PendingPermission>,
     pending_writes: Vec<PendingWrite>,
@@ -183,6 +189,10 @@ impl AgentPanel {
             stopping: false,
             status: AgentStatus::Idle,
             error: None,
+            error_details: None,
+            details_open: false,
+            applied: Vec::new(),
+            review_notice: None,
             update: UpdateState::default(),
             pending_permissions: Vec::new(),
             pending_writes: Vec::new(),
@@ -292,6 +302,8 @@ impl AgentPanel {
 
     pub(super) fn vault_changed(&mut self, cx: &mut Context<Self>) {
         self.stop(cx);
+        self.applied.clear();
+        self.review_notice = None;
         self.context.clear();
         self.explicit_context.clear();
         self.dismissed_context.clear();
@@ -507,6 +519,8 @@ impl AgentPanel {
         self.update = UpdateState::default();
         self.pending_permissions.clear();
         self.pending_writes.clear();
+        self.applied.clear();
+        self.review_notice = None;
         self.error = None;
         self.status = AgentStatus::Connecting;
         let process = match AgentProcess::spawn(&choice.agent.program, &choice.agent.args, &root) {
@@ -571,7 +585,8 @@ impl AgentPanel {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    self.set_process_error(error, cx);
+                    let connecting = self.status == AgentStatus::Connecting;
+                    self.set_failure(connecting, error, cx);
                     let process = process.clone();
                     std::thread::spawn(move || process.stop());
                     return false;
@@ -586,16 +601,8 @@ impl AgentPanel {
                 if self.stopping {
                     self.finish_stop(cx);
                 } else if self.status != AgentStatus::Idle && self.status != AgentStatus::Error {
-                    let tail = process.stderr_tail();
-                    self.set_error(
-                        if tail.is_empty() {
-                            let text = self.tr(cx, "Agent exited with", "Agenten avsluttet med");
-                            format!("{text} {status}")
-                        } else {
-                            tail
-                        },
-                        cx,
-                    );
+                    let text = self.tr(cx, "Agent exited with", "Agenten avsluttet med");
+                    self.set_failure(false, format!("{text} {status}"), cx);
                 }
                 false
             }
@@ -647,7 +654,7 @@ impl AgentPanel {
         if self.initialize_id == Some(id) {
             self.initialize_id = None;
             if let Some(error) = message.get("error") {
-                self.set_protocol_error(error, cx);
+                self.set_protocol_error(error, true, cx);
                 return;
             }
             let version = message
@@ -655,7 +662,8 @@ impl AgentPanel {
                 .and_then(|result| result.get("protocolVersion"))
                 .and_then(Value::as_u64);
             if version != Some(1) {
-                self.set_error(
+                self.set_failure(
+                    true,
                     self.tr(
                         cx,
                         "The agent does not support ACP protocol version 1.",
@@ -721,7 +729,7 @@ impl AgentPanel {
         } else if self.session_id_request == Some(id) {
             self.session_id_request = None;
             if let Some(error) = message.get("error") {
-                self.set_protocol_error(error, cx);
+                self.set_protocol_error(error, true, cx);
                 return;
             }
             let result = message.get("result").unwrap_or(&Value::Null);
@@ -751,7 +759,7 @@ impl AgentPanel {
             if self.stopping {
                 self.finish_cancel(cx);
             } else if let Some(error) = message.get("error") {
-                self.set_protocol_error(error, cx);
+                self.set_protocol_error(error, false, cx);
             } else {
                 self.status = AgentStatus::Ready;
                 cx.notify();
@@ -961,20 +969,41 @@ impl AgentPanel {
         }
     }
 
-    fn set_protocol_error(&mut self, error: &Value, cx: &mut Context<Self>) {
+    fn set_protocol_error(&mut self, error: &Value, handshake: bool, cx: &mut Context<Self>) {
         let message = error
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or(self.tr(cx, "Agent setup failed", "Agentoppsettet mislyktes"));
-        if message.to_ascii_lowercase().contains("auth") {
-            let hint = self.tr(
-                cx,
-                "Authentication may be required. Complete it in the agent's own setup, then start a new conversation.",
-                "Autentisering kan være nødvendig. Fullfør den i agentens eget oppsett, og start deretter en ny samtale.",
-            );
-            self.set_error(format!("{hint}\n{message}"), cx);
-        } else {
-            self.set_process_error(message.to_string(), cx);
+            .unwrap_or(self.tr(cx, "Agent setup failed", "Agentoppsettet mislyktes"))
+            .to_string();
+        self.set_failure(handshake, message, cx);
+    }
+
+    /// Shows one short line with the fix for a known failure and keeps the
+    /// raw message and stderr tail behind "Details". Unknown failures keep
+    /// the raw text as the line.
+    fn set_failure(&mut self, handshake: bool, raw: String, cx: &mut Context<Self>) {
+        let tail = self
+            .process
+            .as_ref()
+            .map(|process| process.stderr_tail())
+            .unwrap_or_default();
+        let connecting = self.status == AgentStatus::Connecting;
+        let hints = format!("{raw}\n{tail}");
+        match agent::classify_failure(connecting, handshake, &hints) {
+            Some(kind) => {
+                let details = if tail.is_empty() {
+                    raw
+                } else {
+                    format!("{raw}\n{tail}")
+                };
+                self.set_error(kind.text(self.language(cx)).to_string(), cx);
+                self.error_details = Some(details);
+            }
+            None if tail.is_empty() => self.set_process_error(raw, cx),
+            None => {
+                self.set_process_error(raw, cx);
+                self.error_details = Some(tail);
+            }
         }
     }
 
@@ -986,6 +1015,8 @@ impl AgentPanel {
     fn set_error(&mut self, error: String, cx: &mut Context<Self>) {
         self.status = AgentStatus::Error;
         self.error = Some(error);
+        self.error_details = None;
+        self.details_open = false;
         cx.notify();
     }
 
@@ -1053,6 +1084,8 @@ impl AgentPanel {
             return;
         }
         self.prompt_id = Some(id);
+        self.applied.clear();
+        self.review_notice = None;
         self.update
             .transcript
             .push(TranscriptItem::User(prompt.to_string()));
@@ -1108,6 +1141,26 @@ impl AgentPanel {
             return;
         };
         let pending = self.pending_writes.remove(index);
+        self.resolve_write(pending, accept, window, cx);
+        cx.notify();
+    }
+
+    /// Accepts or rejects every pending file in order. Each accepted file
+    /// goes through the same guarded write as a single Accept.
+    fn answer_all_writes(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        for pending in std::mem::take(&mut self.pending_writes) {
+            self.resolve_write(pending, accept, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn resolve_write(
+        &mut self,
+        pending: PendingWrite,
+        accept: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !accept {
             self.respond_error(&pending.id, -32800, "Proposed change rejected");
         } else if let Some(workspace) = self.workspace.upgrade() {
@@ -1121,12 +1174,38 @@ impl AgentPanel {
                 )
             });
             match result {
-                Ok(()) => self.respond_result(&pending.id, Value::Null),
+                Ok(change) => {
+                    self.applied.push(change);
+                    self.review_notice = None;
+                    self.respond_result(&pending.id, Value::Null);
+                }
                 Err(error) => self.respond_error(&pending.id, -32000, &error),
             }
         } else {
             self.respond_error(&pending.id, -32000, "Workspace is unavailable");
         }
+    }
+
+    /// Reverts every file accepted since the last prompt, or refuses and
+    /// says why when a file changed since.
+    fn undo_agent_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let changes = self.applied.clone();
+        let result = workspace.update(cx, |workspace, cx| {
+            workspace.undo_agent_changes(&changes, window, cx)
+        });
+        let language = self.language(cx);
+        self.review_notice = Some(match result {
+            Ok(()) => {
+                self.applied.clear();
+                language
+                    .text("Agent changes undone.", "Agentens endringer er angret.")
+                    .to_string()
+            }
+            Err(files) => format!("{} {}", language.text("Not undone:", "Ikke angret:"), files),
+        });
         cx.notify();
     }
 
@@ -1297,7 +1376,7 @@ impl Workspace {
         content: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<(), String> {
+    ) -> Result<agent::AppliedChange, String> {
         let root = self
             .vault
             .read(cx)
@@ -1305,16 +1384,13 @@ impl Workspace {
             .clone()
             .ok_or_else(|| "No vault is open".to_string())?;
         let guarded = agent::guard_vault_path(&root, path).map_err(|error| error.to_string())?;
-        if let Some(doc) = self.docs.iter().find(|doc| {
-            doc.entity
-                .read(cx)
-                .path
-                .canonicalize()
-                .unwrap_or_else(|_| doc.entity.read(cx).path.clone())
-                == guarded
-        }) {
+        let mut created = false;
+        if let Some(doc) = self.open_doc_at(&guarded, cx) {
             if doc.entity.read(cx).is_read_only() {
                 return Err("The open file is read-only".into());
+            }
+            if doc.entity.read(cx).conflict {
+                return Err("The open file has a save conflict".into());
             }
             if doc.entity.read(cx).editor.read(cx).value() != before {
                 return Err("The open file changed after the proposed edit".into());
@@ -1330,12 +1406,116 @@ impl Workspace {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound && before.is_empty() => {
+                    created = true;
                 }
                 Err(error) => return Err(error.to_string()),
             }
             std::fs::write(&guarded, content).map_err(|error| error.to_string())?;
             self.vault.update(cx, |vault, cx| vault.refresh(cx));
         }
+        Ok(agent::AppliedChange {
+            path: guarded,
+            before: (!created).then(|| before.as_bytes().to_vec()),
+            after: content.as_bytes().to_vec(),
+        })
+    }
+
+    fn open_doc_at(&self, guarded: &Path, cx: &App) -> Option<&OpenDoc> {
+        self.docs.iter().find(|doc| {
+            let path = &doc.entity.read(cx).path;
+            path.canonicalize().unwrap_or_else(|_| path.clone()) == guarded
+        })
+    }
+
+    /// Reverts one agent turn. Nothing is written unless every file still
+    /// holds what the agent wrote; otherwise the error names the files that
+    /// changed. Open notes go through the editor and its guarded save;
+    /// created files move to the vault trash.
+    fn undo_agent_changes(
+        &mut self,
+        changes: &[agent::AppliedChange],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let root = self
+            .vault
+            .read(cx)
+            .root
+            .clone()
+            .ok_or_else(|| "No vault is open".to_string())?;
+        let name = |path: &Path| {
+            path.strip_prefix(&root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        };
+        if let Err(path) = agent::guard_undo_paths(&root, changes) {
+            return Err(format!("{}: outside the vault", name(&path)));
+        }
+        let current = |path: &Path| match self.open_doc_at(path, cx) {
+            Some(doc) => Some(
+                doc.entity
+                    .read(cx)
+                    .editor
+                    .read(cx)
+                    .value()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            None => std::fs::read(path).ok(),
+        };
+        let language = self.settings.language;
+        let order = agent::plan_undo(changes, current).map_err(|files| {
+            let files = files
+                .iter()
+                .map(|path| name(path))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let changed = language.text("changed since:", "endret siden:");
+            format!("{changed} {files}")
+        })?;
+        // Refuse before the first write, so a refusal never leaves a partial undo.
+        for change in changes {
+            if let Some(doc) = self.open_doc_at(&change.path, cx) {
+                let doc = doc.entity.read(cx);
+                if doc.is_read_only() || doc.conflict || !doc.disk_matches_loaded() {
+                    let stale = language.text("changed on disk", "endret på disk");
+                    return Err(format!("{}: {stale}", name(&change.path)));
+                }
+            }
+            if change.before.is_none() && self.open_doc_at(&change.path, cx).is_some() {
+                let close = language.text("close the note first", "lukk notatet først");
+                return Err(format!("{}: {close}", name(&change.path)));
+            }
+        }
+        for index in order {
+            let change = &changes[index];
+            let failed = |error: String| format!("{}: {error}", name(&change.path));
+            let open = self
+                .open_doc_at(&change.path, cx)
+                .map(|doc| doc.entity.clone());
+            match (&change.before, open) {
+                (Some(before), Some(doc)) => {
+                    let text =
+                        String::from_utf8(before.clone()).map_err(|e| failed(e.to_string()))?;
+                    doc.update(cx, |doc, cx| {
+                        doc.restore_text(text, window, cx);
+                        doc.save(cx)
+                    })
+                    .map_err(|error| failed(error.to_string()))?;
+                }
+                (None, Some(_)) => unreachable!("checked before the first write"),
+                (Some(before), None) => {
+                    crate::document::guarded_write(&change.path, &change.after, before)
+                        .map_err(|error| failed(error.to_string()))?;
+                }
+                (None, None) => {
+                    crate::history::move_to_trash(&root, &change.path)
+                        .map_err(|error| failed(error.to_string()))?;
+                }
+            }
+        }
+        self.vault.update(cx, |vault, cx| vault.refresh(cx));
         Ok(())
     }
 }
@@ -1811,6 +1991,20 @@ impl Render for AgentPanel {
                                     .bg(cx.theme().group_box)
                                     .rounded(cx.theme().radius)
                                     .child(div().max_w(px(150.)).truncate().text_xs().child(label))
+                                    .when_some(
+                                        std::fs::metadata(path)
+                                            .ok()
+                                            .filter(|meta| meta.is_file())
+                                            .map(|meta| agent::format_size(meta.len())),
+                                        |chip, size| {
+                                            chip.child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(size),
+                                            )
+                                        },
+                                    )
                                     .child(
                                         Button::new(("remove-agent-context", index))
                                             .ghost()
@@ -1955,6 +2149,31 @@ impl Render for AgentPanel {
                                 ))
                         },
                     ))
+                    .when(self.pending_writes.len() > 1, |content| {
+                        content.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("agent-write-accept-all")
+                                        .primary()
+                                        .xsmall()
+                                        .label(self.tr(cx, "Accept all", "Godta alle"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.answer_all_writes(true, window, cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("agent-write-reject-all")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(self.tr(cx, "Reject all", "Avvis alle"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.answer_all_writes(false, window, cx)
+                                        })),
+                                ),
+                        )
+                    })
                     .children(
                         self.pending_writes
                             .iter()
@@ -2042,12 +2261,41 @@ impl Render for AgentPanel {
                                     )
                             }),
                     )
+                    .when(!self.applied.is_empty(), |content| {
+                        content.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("agent-undo-changes")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(self.tr(
+                                            cx,
+                                            "Undo agent changes",
+                                            "Angre agentens endringer",
+                                        ))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.undo_agent_changes(window, cx)
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{}", self.applied.len())),
+                                ),
+                        )
+                    })
+                    .when_some(self.review_notice.clone(), |content, notice| {
+                        content.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(notice),
+                        )
+                    })
                     .when_some(self.error.clone(), |content, error| {
-                        let tail = self
-                            .process
-                            .as_ref()
-                            .map(|process| process.stderr_tail())
-                            .unwrap_or_default();
                         content.child(
                             v_flex()
                                 .gap_1()
@@ -2056,10 +2304,24 @@ impl Render for AgentPanel {
                                 .rounded(cx.theme().radius)
                                 .text_xs()
                                 .child(error)
-                                .when(!tail.is_empty(), |this| {
+                                .when_some(self.error_details.clone(), |this, details| {
                                     this.child(
-                                        div().text_color(cx.theme().muted_foreground).child(tail),
+                                        Button::new("agent-error-details")
+                                            .ghost()
+                                            .xsmall()
+                                            .label(self.tr(cx, "Details", "Detaljer"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.details_open = !this.details_open;
+                                                cx.notify();
+                                            })),
                                     )
+                                    .when(self.details_open, |this| {
+                                        this.child(
+                                            div()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(details),
+                                        )
+                                    })
                                 }),
                         )
                     })
