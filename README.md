@@ -103,6 +103,8 @@ the look and feel of the Mac.
   a calendar, or a timeline.
 - Filters, formulas, relations, and rollups — with every value still living in
   the notes themselves.
+- `.canvas` boards stay smooth when zoomed out: below 35% zoom, cards draw as
+  flat shapes and edges as straight lines.
 
 ### An agent that works with you
 

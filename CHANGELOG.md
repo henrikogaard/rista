@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep large Canvas boards smooth when zoomed out: below 35% zoom, cards paint as flat shapes and edges as straight lines from a cached plan, with no dot grid, arrowheads or labels. Selecting and moving cards works as before.
 - Show the size of each attached context file on its chip in the Agent panel.
 - Add Accept all and Reject all for several proposed file changes, and one Undo agent changes action that reverts every file accepted in the last turn, or refuses when a file changed since.
 - Replace raw agent errors with one short English or Norwegian line with the fix, for an agent that exits at once, a missing login, or a failed handshake; the raw output stays behind Details.
