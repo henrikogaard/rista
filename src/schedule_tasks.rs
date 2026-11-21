@@ -46,7 +46,7 @@ impl Choice {
         }
     }
 
-    fn label(self, norwegian: bool) -> &'static str {
+    pub(crate) fn label(self, norwegian: bool) -> &'static str {
         match (self, norwegian) {
             (Choice::Today, false) => "Today",
             (Choice::Today, true) => "I dag",
@@ -59,6 +59,16 @@ impl Choice {
             (Choice::Date(_), false) => "Pick date…",
             (Choice::Date(_), true) => "Velg dato…",
         }
+    }
+}
+
+/// What typed `text` schedules to: a week phrase picks the weekly note, a
+/// date or day phrase picks that day.
+fn typed_choice(text: &str, today: NaiveDate) -> Option<Choice> {
+    match date_phrase::week_offset(text) {
+        Some(0) => Some(Choice::ThisWeek),
+        Some(_) => Some(Choice::NextWeek),
+        None => date_phrase::parse(text, today).map(Choice::Date),
     }
 }
 
@@ -115,7 +125,7 @@ impl ScheduleView {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            date: cx.new(|cx| GoToDateView::new(today, language, window, cx)),
+            date: cx.new(|cx| GoToDateView::new(today, language, window, cx).with_weekly_notes()),
             today,
             language,
             on_pick: Rc::new(on_pick),
@@ -129,7 +139,7 @@ impl ScheduleView {
 
     /// The typed date, once it reads as one (Enter in the dialog).
     pub fn typed(&self, cx: &App) -> Option<Choice> {
-        self.date.read(cx).resolve(cx).map(Choice::Date)
+        typed_choice(&self.date.read(cx).text(cx), self.today)
     }
 }
 
@@ -192,7 +202,7 @@ impl Render for ScheduleView {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: the GPUI glob import there shadows `#[test]`.
-    use super::{heading, insert_scheduled, tasks_in_selection, Choice};
+    use super::{heading, insert_scheduled, tasks_in_selection, typed_choice, Choice};
     use crate::daily_carryover::{carried_line, mark_migrated};
     use crate::settings::{Period, Settings};
     use chrono::NaiveDate;
@@ -209,6 +219,23 @@ mod tests {
     }
 
     const NOTE: &str = "# Day\n- [ ] one\n- [x] done\n- [ ] two\nplain\n- [ ] three\n";
+
+    #[test]
+    fn typed_week_phrases_pick_weeks_and_dates_pick_days() {
+        assert_eq!(typed_choice("this week", today()), Some(Choice::ThisWeek));
+        assert_eq!(typed_choice("denne uka", today()), Some(Choice::ThisWeek));
+        assert_eq!(typed_choice("next week", today()), Some(Choice::NextWeek));
+        assert_eq!(typed_choice("neste uke", today()), Some(Choice::NextWeek));
+        assert_eq!(
+            typed_choice("2026-12-01", today()),
+            Some(Choice::Date(d(2026, 12, 1)))
+        );
+        assert_eq!(
+            typed_choice("next friday", today()),
+            Some(Choice::Date(d(2026, 11, 27)))
+        );
+        assert_eq!(typed_choice("nonsense", today()), None);
+    }
 
     #[test]
     fn a_caret_picks_only_its_own_task_line() {

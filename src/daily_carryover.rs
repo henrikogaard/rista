@@ -14,6 +14,7 @@ use crate::note_composer::{
     extract_reference_definitions, parse, rebase_markdown_links, ComposeError,
 };
 use crate::properties::FenceTracker;
+use crate::schedule_tasks::Choice;
 use crate::settings::Language;
 use chrono::{Duration, NaiveDate};
 use gpui_kit::component::checkbox::Checkbox;
@@ -508,6 +509,7 @@ pub struct GoToDateView {
     input: Entity<InputState>,
     today: NaiveDate,
     language: Language,
+    weekly_notes: bool,
     _change: Subscription,
 }
 
@@ -518,12 +520,12 @@ impl GoToDateView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(language.text(
-                "2026-11-18, next friday, 3 days ago…",
-                "2026-11-18, neste fredag, for 3 dager siden…",
-            ))
-        });
+        let example = today.format("%Y-%m-%d");
+        let placeholder = match language {
+            Language::Norwegian => format!("{example}, neste fredag, for 3 dager siden…"),
+            _ => format!("{example}, next friday, 3 days ago…"),
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let change = cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -533,6 +535,7 @@ impl GoToDateView {
             input,
             today,
             language,
+            weekly_notes: false,
             _change: change,
         }
     }
@@ -540,6 +543,18 @@ impl GoToDateView {
     pub fn focus(this: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let input = this.read(cx).input.clone();
         input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Week phrases name the weekly note, so the preview says so
+    /// instead of showing a day (Schedule task…).
+    pub fn with_weekly_notes(mut self) -> Self {
+        self.weekly_notes = true;
+        self
+    }
+
+    /// The text typed so far.
+    pub fn text(&self, cx: &App) -> String {
+        self.input.read(cx).value().to_string()
     }
 
     /// The date the input names right now.
@@ -552,16 +567,33 @@ impl Render for GoToDateView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let typed = !self.input.read(cx).value().trim().is_empty();
-        let note = match (self.resolve(cx), typed) {
-            (Some(date), _) => div().text_color(theme.foreground).child(date_phrase::label(
+        let norwegian = self.language == Language::Norwegian;
+        let week = self
+            .weekly_notes
+            .then(|| date_phrase::week_offset(self.input.read(cx).value().as_ref()))
+            .flatten();
+        let note = match (week, self.resolve(cx), typed) {
+            (Some(offset), _, _) => {
+                let choice = if offset == 0 {
+                    Choice::ThisWeek
+                } else {
+                    Choice::NextWeek
+                };
+                div().text_color(theme.foreground).child(format!(
+                    "{} — {}",
+                    choice.label(norwegian),
+                    self.language.text("weekly note", "ukenotat")
+                ))
+            }
+            (None, Some(date), _) => div().text_color(theme.foreground).child(date_phrase::label(
                 date,
                 self.language == Language::Norwegian,
             )),
-            (None, true) => div().text_color(theme.muted_foreground).child(
+            (None, None, true) => div().text_color(theme.muted_foreground).child(
                 self.language
                     .text("Not a date I can read", "Kan ikke lese dette som en dato"),
             ),
-            (None, false) => div(),
+            (None, None, false) => div(),
         };
         v_flex()
             .w_full()

@@ -74,6 +74,13 @@ fn resolve(input: &str, today: NaiveDate) -> Option<NaiveDate> {
         ["today" | "idag"] | ["i", "dag"] => Some(today),
         ["yesterday" | "igår"] | ["i", "går"] => today.checked_sub_signed(Duration::days(1)),
         ["tomorrow" | "imorgen"] | ["i", "morgen"] => today.checked_add_signed(Duration::days(1)),
+        // A week names no single day. Like the Schedule dialog's "This week"
+        // and "Next week" rows, it stands for today and today + 7 days; the
+        // Schedule dialog turns these phrases into its weekly-note choices.
+        [..] if week_offset_words(&words).is_some() => {
+            let weeks = week_offset_words(&words)?;
+            today.checked_add_signed(Duration::weeks(weeks))
+        }
         [iso] if iso.contains('-') => iso_date(iso),
         [day] => weekday(day).and_then(|day| nearest(today, day, Direction::OnOrAfter)),
         ["next" | "neste", day] => {
@@ -85,6 +92,24 @@ fn resolve(input: &str, today: NaiveDate) -> Option<NaiveDate> {
         ["in" | "om", n, unit] => shift(today, n, unit, 1),
         [n, unit, "ago"] => shift(today, n, unit, -1),
         ["for", n, unit, "siden"] => shift(today, n, unit, -1),
+        _ => None,
+    }
+}
+
+/// Weeks from the current one for `this week` / `next week` (and the
+/// Norwegian forms): 0 or 1. `None` for any other text.
+pub fn week_offset(input: &str) -> Option<i64> {
+    let words = input
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    week_offset_words(&words.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn week_offset_words(words: &[&str]) -> Option<i64> {
+    match words {
+        ["this", "week"] | ["denne", "uka" | "uken"] => Some(0),
+        ["next", "week"] | ["neste", "uke"] => Some(1),
         _ => None,
     }
 }
@@ -277,6 +302,21 @@ mod tests {
         assert_eq!(p("i morgen"), Some(d(2026, 11, 21)));
         assert_eq!(p("imorgen"), Some(d(2026, 11, 21)));
         assert_eq!(p("I   Morgen"), Some(d(2026, 11, 21)));
+    }
+
+    #[test]
+    fn week_phrases_match_the_schedule_rows() {
+        assert_eq!(p("this week"), Some(today()));
+        assert_eq!(p("denne uka"), Some(today()));
+        assert_eq!(p("denne uken"), Some(today()));
+        assert_eq!(p("next week"), Some(d(2026, 11, 27)));
+        assert_eq!(p("Neste  Uke"), Some(d(2026, 11, 27)));
+        assert_eq!(week_offset("this week"), Some(0));
+        assert_eq!(week_offset("denne uka"), Some(0));
+        assert_eq!(week_offset("next week"), Some(1));
+        assert_eq!(week_offset("neste uke"), Some(1));
+        assert_eq!(week_offset("next friday"), None);
+        assert_eq!(p("next weeks"), None);
     }
 
     #[test]
