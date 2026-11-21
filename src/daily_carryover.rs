@@ -136,12 +136,25 @@ pub fn prepare_task(
         .to_string();
     Ok(Prepared {
         text,
-        definitions: definitions
-            .split("\n\n")
-            .filter(|definition| !definition.trim().is_empty())
-            .map(|definition| definition.trim_end().to_string())
-            .collect(),
+        definitions: definition_blocks(definitions)?,
     })
+}
+
+/// Each top-level definition in `text`, whole: a footnote with several
+/// paragraphs stays one block.
+fn definition_blocks(text: &str) -> Result<Vec<String>, ComposeError> {
+    let root = parse(text)?;
+    Ok(root
+        .children()
+        .into_iter()
+        .flatten()
+        .filter(|node| matches!(node, Node::Definition(_) | Node::FootnoteDefinition(_)))
+        .filter_map(|node| {
+            let at = node.position()?;
+            text.get(at.start.offset..at.end.offset)
+        })
+        .map(|definition| definition.trim_end().to_string())
+        .collect())
 }
 
 /// `[[./plan]]` and `[[../plan]]` mean "next to this note", so they are
@@ -784,6 +797,26 @@ mod tests {
         let other = root.join("2026/11/01.md");
         let moved = prepare_task(source, 1, &from, &other, &root).unwrap();
         assert_eq!(moved.definitions, vec!["[p]: ../10/plan.md".to_string()]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepare_keeps_multi_paragraph_footnotes_whole() {
+        let root = vault("multi");
+        let from = root.join("2026/10/30.md");
+        let to = root.join("2026/11/01.md");
+        let source = "- [ ] Review the brief[^brief]\n\n[^brief]: Read the summary.\n\n    Check the figures too.\n";
+        let prepared = prepare_task(source, 1, &from, &to, &root).unwrap();
+        assert_eq!(
+            prepared.definitions,
+            vec!["[^brief]: Read the summary.\n\n    Check the figures too.".to_string()]
+        );
+        let lines = vec![carried_line(&prepared.text, "2026-10-30")];
+        let out = with_definitions(lines, prepared.definitions, "# Today\n").unwrap();
+        assert_eq!(
+            out.last().unwrap(),
+            "[^brief]: Read the summary.\n\n    Check the figures too."
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
