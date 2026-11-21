@@ -26,6 +26,7 @@ actions!(
         MoveLineUp,
         MoveLineDown,
         ToggleCheckbox,
+        ScheduleTask,
         ToggleItalic,
         DuplicateBlock,
         DeleteLine,

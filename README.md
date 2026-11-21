@@ -65,6 +65,10 @@ the look and feel of the Mac.
   and marks them `- [x] … (moved to [[today]])` at the source, as one undoable
   step. **Go to date…** opens a day's note from a typed date: `2026-11-18`,
   `next friday`, `3 days ago`, `i morgen`, `forrige mandag`.
+  **Schedule task…** (`⌘⇧M`, or right-click a task) sends the task under the
+  caret, or the tasks you selected, to today, tomorrow, this week, next week,
+  or a typed date: they land under `## Scheduled` in that daily or weekly note
+  with a link back, and are marked moved at the source, as one undoable step.
 
 ### Folders that feel like pages
 
@@ -261,6 +265,7 @@ not a promise of complete compatibility with other tools.
 | Toggle sidebar / Zen mode | `⌘B` / `⌘⇧Enter` |
 | Daily note / Graph | `⌘⇧D` / `⌘G` |
 | Quick capture | `⌘⇧I` |
+| Schedule task | `⌘⇧M` |
 | Settings | `⌘,` |
 
 ## Build from source
