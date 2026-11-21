@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add Quick Capture and an Inbox view to triage captured notes, also available from the `rista` command-line tool.
+- Add Quick Capture (`⌘⇧I`) and an Inbox view to triage captured notes. `rista inbox` captures from the command line.
 - Open recent vaults from the command palette.
 - Add typewriter mode, which keeps the caret at the vertical middle of the editor.
 - Add a timeline view for `.base` files, with dated items on a month-labelled axis.
