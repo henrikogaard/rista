@@ -230,28 +230,50 @@ pub struct VaultTask {
     pub text: String,
 }
 
+/// Follows fenced code blocks line by line. A fence closes only on the same
+/// character, at least as long as the opener, with no info string.
+#[derive(Default)]
+pub struct FenceTracker {
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    /// Feed the next line; true when it is a fence line or inside a fence.
+    pub fn in_fence(&mut self, line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let marker = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'));
+        let run = marker.map_or(0, |m| trimmed.chars().take_while(|c| *c == m).count());
+        let (Some(marker), true) = (marker, run >= 3) else {
+            return self.open.is_some();
+        };
+        let rest = trimmed[run..].trim();
+        match self.open {
+            None if marker == '`' && rest.contains('`') => false,
+            None => {
+                self.open = Some((marker, run));
+                true
+            }
+            Some((open, len)) => {
+                if marker == open && run >= len && rest.is_empty() {
+                    self.open = None;
+                }
+                true
+            }
+        }
+    }
+}
+
 /// All open `- [ ]` checkboxes in one note's text as `(1-based line,
 /// text)` pairs, in file order. Skips fenced blocks and `%%` comment
 /// regions like the tag scan; done markers (`[x]`, `[/]`, …) don't
 /// count. The vault caches this per note for the sidebar Tasks index.
 pub fn open_task_lines(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    let mut in_fence = false;
-    let mut fence_marker = "";
+    let mut fences = FenceTracker::default();
     let mut in_comment = false;
     for (ix, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let marker = &trimmed[..3];
-            if !in_fence {
-                in_fence = true;
-                fence_marker = marker;
-            } else if marker == fence_marker {
-                in_fence = false;
-            }
-            continue;
-        }
-        if in_fence {
+        if fences.in_fence(line) {
             continue;
         }
         // Inside a `%%` region a `%%` closes it; nothing else counts.

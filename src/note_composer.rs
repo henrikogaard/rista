@@ -676,6 +676,16 @@ pub fn extract_transaction(
         (destination.to_path_buf(), None, Some(payload.to_vec())),
     ];
     changes.extend(additional.iter().cloned());
+    edit_transaction(root, &changes)
+}
+
+/// Install several guarded edits as one filesystem operation, with the
+/// history snapshots the Composer's undo needs. A `None` before means the
+/// file is created.
+pub(crate) fn edit_transaction(
+    root: &Path,
+    changes: &[ComposerTransactionChange],
+) -> Result<(), ComposeError> {
     let mut transaction = changes
         .iter()
         .map(|(path, before, after)| TransactionChange {
@@ -685,7 +695,7 @@ pub fn extract_transaction(
         })
         .collect::<Vec<_>>();
     transaction.extend(
-        crate::history::prepare_composer_snapshots(root, &changes)
+        crate::history::prepare_composer_snapshots(root, changes)
             .map_err(|_| ComposeError::TransactionFailed)?
             .into_iter()
             .map(|(path, before, after)| TransactionChange {
