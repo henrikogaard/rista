@@ -70,6 +70,38 @@ mod saved_workspaces;
 #[path = "tools_panel.rs"]
 mod tools_panel;
 
+/// What a dialog's main button and its Enter key both run; false keeps the
+/// dialog open.
+type DialogConfirm = Rc<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) -> bool>;
+
+/// A footer of plain buttons: Cancel closes the dialog, the main button runs
+/// `confirm` and closes on true. Neither is a Tab stop, so keyboard focus stays
+/// in the body input where Enter confirms through the dialog's own binding.
+fn dialog_footer(
+    cancel: &'static str,
+    (confirm_id, confirm_label): (&'static str, &'static str),
+    confirm: DialogConfirm,
+) -> DialogFooter {
+    DialogFooter::new()
+        .child(
+            Button::new("dialog-cancel")
+                .label(cancel)
+                .tab_stop(false)
+                .on_click(|_, window, cx| window.close_dialog(cx)),
+        )
+        .child(
+            Button::new(confirm_id)
+                .label(confirm_label)
+                .primary()
+                .tab_stop(false)
+                .on_click(move |event, window, cx| {
+                    if confirm(event, window, cx) {
+                        window.close_dialog(cx);
+                    }
+                }),
+        )
+}
+
 /// Below this pane tab-strip width the view-mode control shows icons
 /// instead of labels, so a narrow split pane keeps room for its tabs.
 const PANE_MODE_LABELS_MIN_WIDTH: Pixels = px(420.);
@@ -4981,6 +5013,19 @@ impl Workspace {
         let today = chrono::Local::now().date_naive();
         let body = cx.new(|cx| GoToDateView::new(today, language, window, cx));
         let view = cx.entity();
+        let confirm: DialogConfirm = Rc::new({
+            let body = body.clone();
+            move |_, window, cx| {
+                let Some(date) = body.read(cx).resolve(cx) else {
+                    return false;
+                };
+                let view = view.clone();
+                window.defer(cx, move |window, cx| {
+                    view.update(cx, |this, cx| this.open_daily_at(date, window, cx));
+                });
+                true
+            }
+        });
         window.open_dialog(cx, {
             let body = body.clone();
             move |dialog, _window, _cx| {
@@ -4988,34 +5033,14 @@ impl Workspace {
                     .title(language.text("Go to date", "Gå til dato"))
                     .w(px(400.))
                     .child(body.clone())
-                    .footer(
-                        DialogFooter::new()
-                            .child(
-                                DialogClose::new().trigger(|button| {
-                                    button.label(language.text("Cancel", "Avbryt"))
-                                }),
-                            )
-                            .child(
-                                DialogAction::new().child(
-                                    Button::new("go-to-date-confirm")
-                                        .label(language.text("Go", "Gå"))
-                                        .primary(),
-                                ),
-                            ),
-                    )
+                    .footer(dialog_footer(
+                        language.text("Cancel", "Avbryt"),
+                        ("go-to-date-confirm", language.text("Go", "Gå")),
+                        confirm.clone(),
+                    ))
                     .on_ok({
-                        let view = view.clone();
-                        let body = body.clone();
-                        move |_, window, cx| {
-                            let Some(date) = body.read(cx).resolve(cx) else {
-                                return false;
-                            };
-                            let view = view.clone();
-                            window.defer(cx, move |window, cx| {
-                                view.update(cx, |this, cx| this.open_daily_at(date, window, cx));
-                            });
-                            true
-                        }
+                        let confirm = confirm.clone();
+                        move |event, window, cx| confirm(event, window, cx)
                     })
             }
         });
@@ -5063,38 +5088,32 @@ impl Workspace {
         let language = self.settings.language;
         let body = cx.new(|_| CarryoverView::new(candidates, language));
         let view = cx.entity();
+        let confirm: DialogConfirm = Rc::new({
+            let body = body.clone();
+            move |_, window, cx| {
+                let picked = body.read(cx).selected();
+                let view = view.clone();
+                window.defer(cx, move |window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.commit_carryover(today, picked, window, cx)
+                    });
+                });
+                true
+            }
+        });
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title(language.text("Carry over unfinished tasks", "Overfør uferdige oppgaver"))
                 .w(px(520.))
                 .child(body.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            DialogClose::new()
-                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
-                        )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new("carryover-confirm")
-                                    .label(language.text("Carry over", "Overfør"))
-                                    .primary(),
-                            ),
-                        ),
-                )
+                .footer(dialog_footer(
+                    language.text("Cancel", "Avbryt"),
+                    ("carryover-confirm", language.text("Carry over", "Overfør")),
+                    confirm.clone(),
+                ))
                 .on_ok({
-                    let view = view.clone();
-                    let body = body.clone();
-                    move |_, window, cx| {
-                        let picked = body.read(cx).selected();
-                        let view = view.clone();
-                        window.defer(cx, move |window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.commit_carryover(today, picked, window, cx)
-                            });
-                        });
-                        true
-                    }
+                    let confirm = confirm.clone();
+                    move |event, window, cx| confirm(event, window, cx)
                 })
         });
     }
@@ -5408,35 +5427,29 @@ impl Workspace {
         let body = cx
             .new(|cx| schedule_tasks::ScheduleView::new(today, language, pick.clone(), window, cx));
         let dialog_body = body.clone();
+        let confirm: DialogConfirm = Rc::new({
+            let body = body.clone();
+            move |_, window, cx| {
+                let Some(choice) = body.read(cx).typed(cx) else {
+                    return false;
+                };
+                pick(choice, window, cx);
+                true
+            }
+        });
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title(language.text("Schedule task", "Planlegg oppgave"))
                 .w(px(400.))
                 .child(dialog_body.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            DialogClose::new()
-                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
-                        )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new("schedule-confirm")
-                                    .label(language.text("Schedule", "Planlegg"))
-                                    .primary(),
-                            ),
-                        ),
-                )
+                .footer(dialog_footer(
+                    language.text("Cancel", "Avbryt"),
+                    ("schedule-confirm", language.text("Schedule", "Planlegg")),
+                    confirm.clone(),
+                ))
                 .on_ok({
-                    let body = dialog_body.clone();
-                    let pick = pick.clone();
-                    move |_, window, cx| {
-                        let Some(choice) = body.read(cx).typed(cx) else {
-                            return false;
-                        };
-                        pick(choice, window, cx);
-                        true
-                    }
+                    let confirm = confirm.clone();
+                    move |event, window, cx| confirm(event, window, cx)
                 })
         });
         window.defer(cx, move |window, cx| {
