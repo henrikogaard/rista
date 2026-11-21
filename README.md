@@ -112,7 +112,11 @@ the look and feel of the Mac.
 - ACP-requested file writes arrive as a diff you **Accept** or **Reject**.
   Accepted edits to open notes go through the editor, so autosave and conflict
   checks still apply. This review does not cover changes made directly by an
-  agent or its tools.
+  agent or its tools. **Accept all** and **Reject all** settle several files at
+  once, and **Undo agent changes** reverts everything accepted in the last turn
+  unless a file changed since.
+- Context chips show each attached file's size, and a failed start shows one
+  short line with the fix, with the raw output behind **Details**.
 - Five presets launch ACP adapters: Vibe (`vibe-acp`), Codex (`codex-acp`),
   Claude (`claude-agent-acp`), OpenCode (`opencode acp`), and Grok via OpenCode.
   Install tools separately: Vibe uses `uv tool install mistral-vibe`; Codex
