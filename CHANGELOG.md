@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Keep large Canvas boards smooth when zoomed out: below 35% zoom, cards paint as flat shapes and edges as straight lines from a cached plan, with no dot grid, arrowheads or labels. Selecting and moving cards works as before.
+- Add **Carry over unfinished tasks** to the command palette: pick open tasks from the last seven daily notes, copy them to today's note under `## Carried over` (`## Overført`) with a link back, and mark them `- [x] … (moved to [[today]])` in their sources, as one undoable transaction.
+- Add **Go to date…** to the command palette: type an ISO date, `today`, `next friday`, `3 days ago`, `in 2 weeks`, or the Norwegian equivalents, see the resolved day, and open or create its daily note.
 
 ## v0.2.0 — 2026-10-16
 
