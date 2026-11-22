@@ -76,6 +76,21 @@ fn split_block_anchor(text: &str) -> (&str, &str) {
     (text, "")
 }
 
+/// Byte index of the `)` that closes a URL whose `(` is already consumed,
+/// counting nested pairs: `Mercury_(planet))` closes at the last one.
+fn closing_paren(url: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, c) in url.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(at),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `text` as a dialog row shows it: link text instead of `[t](url)`, the
 /// alias or note name instead of `[[target|alias]]`, no footnote markers and
 /// no trailing block anchor. Display only; the files keep the original.
@@ -91,7 +106,11 @@ pub fn display_text(text: &str) -> String {
                 let link = &inner[..end];
                 let shown = match link.split_once('|') {
                     Some((_, alias)) => alias,
-                    None => link.split('#').next().unwrap_or(link),
+                    None => match link.split_once('#') {
+                        Some(("", heading)) => heading,
+                        Some((note, _)) => note,
+                        None => link,
+                    },
                 };
                 let shown = shown.rsplit('/').next().unwrap_or(shown);
                 out.push_str(shown.strip_suffix(".md").unwrap_or(shown));
@@ -108,7 +127,7 @@ pub fn display_text(text: &str) -> String {
             let open = &rest[usize::from(bang)..];
             if let Some(label_and_url) = open.strip_prefix('[') {
                 if let Some(mid) = label_and_url.find("](") {
-                    if let Some(end) = label_and_url[mid + 2..].find(')') {
+                    if let Some(end) = closing_paren(&label_and_url[mid + 2..]) {
                         out.push_str(&label_and_url[..mid]);
                         rest = &label_and_url[mid + 2 + end + 1..];
                         continue;
@@ -685,6 +704,12 @@ mod tests {
         assert_eq!(display_text("Call Ada ^abc123"), "Call Ada");
         assert_eq!(display_text("See ![logo](a.png) [odd"), "See logo [odd");
         assert_eq!(display_text("plain text"), "plain text");
+        assert_eq!(display_text("[[#Book train]]"), "Book train");
+        assert_eq!(display_text("[[#Book train|train]]"), "train");
+        assert_eq!(
+            display_text("See [Mercury](https://en.wikipedia.org/wiki/Mercury_(planet)) now"),
+            "See Mercury now"
+        );
     }
 
     #[test]
