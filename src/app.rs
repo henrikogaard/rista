@@ -14387,8 +14387,8 @@ impl Workspace {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| name.to_string());
         let view = cx.entity();
-        // The same readable-width rule as the text column below, so the
-        // crumbs start where the text does when the pane is wider than it.
+        // Zen mode centres the text column; use the same readable-width
+        // rule so the crumbs start where the text does.
         let (classes, style) = {
             let doc = doc.read(cx);
             (doc.css_classes.clone(), doc.resolved_style.clone())
@@ -14407,7 +14407,9 @@ impl Workspace {
             .h_8()
             .flex_shrink_0()
             .w_full()
-            .when(readable, |this| this.max_w(px(readable_width)).mx_auto())
+            .when(self.zen && readable, |this| {
+                this.max_w(px(readable_width)).mx_auto()
+            })
             // Same left edge as the preview text column (px_6).
             .px_6()
             .gap_1()
