@@ -1170,8 +1170,8 @@ impl Render for SettingsView {
                             .child(settings.language.text("STYLE SNIPPETS", "STILUTDRAG")),
                     )
                     .child(
-                        v_flex()
-                            .gap_1()
+                        h_flex()
+                            .gap_2()
                             .child(
                                 Button::new("open-style-snippets")
                                     .small()
