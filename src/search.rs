@@ -7,6 +7,7 @@ use crate::{
     actions::{SearchNextResult, SearchPreviousResult},
     app::Workspace,
 };
+use gpui_kit::base::Selectable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
@@ -341,17 +342,13 @@ impl Render for ProjectSearch {
                         Button::new("search-match-case")
                             .ghost()
                             .xsmall()
-                            .label(if match_case {
-                                if norwegian {
-                                    "Skil store/små"
-                                } else {
-                                    "Match case"
-                                }
-                            } else if norwegian {
-                                "Ignorer store/små"
+                            .label(if norwegian {
+                                "Skil store/små"
                             } else {
-                                "Ignore case"
+                                "Match case"
                             })
+                            .selected(match_case)
+                            .toggled(match_case)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.match_case = !this.match_case;
                                 this.schedule_search(cx);
@@ -586,24 +583,26 @@ impl Render for ProjectSearch {
                     v_flex()
                         .gap_1()
                         .child(
-                            Button::new("search-explain")
-                                .ghost()
-                                .xsmall()
-                                .label(if explanation_open {
-                                    if norwegian {
-                                        "Skjul forklaring"
+                            h_flex().child(
+                                Button::new("search-explain")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(if explanation_open {
+                                        if norwegian {
+                                            "Skjul forklaring"
+                                        } else {
+                                            "Hide explanation"
+                                        }
+                                    } else if norwegian {
+                                        "Forklar søket"
                                     } else {
-                                        "Hide explanation"
-                                    }
-                                } else if norwegian {
-                                    "Forklar søket"
-                                } else {
-                                    "Explain query"
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.explanation_open = !this.explanation_open;
-                                    cx.notify();
-                                })),
+                                        "Explain query"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.explanation_open = !this.explanation_open;
+                                        cx.notify();
+                                    })),
+                            ),
                         )
                         .when(explanation_open, |this| {
                             this.child(

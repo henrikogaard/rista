@@ -25,7 +25,7 @@ use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::date_picker::{DatePicker, DatePickerEvent, DatePickerState, DateTime};
-use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
+use gpui_kit::component::dialog::{DialogClose, DialogFooter};
 use gpui_kit::component::input::{self, Editor, Input, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::list::ListItem;
@@ -5832,53 +5832,47 @@ impl Workspace {
         });
         let view = cx.entity();
 
+        let confirm: DialogConfirm = Rc::new({
+            let view = view.clone();
+            move |_, window, cx| {
+                let committed = view.update(cx, |this, cx| {
+                    this.commit_extract(
+                        doc.clone(),
+                        source_before.clone(),
+                        range.clone(),
+                        body.clone(),
+                        window,
+                        cx,
+                    )
+                });
+                if committed {
+                    window.close_dialog(cx);
+                    let deferred_view = view.clone();
+                    window.defer(cx, move |window, cx| {
+                        deferred_view.update(cx, |this, cx| {
+                            this.focus_active_pane_after_mount(window, cx)
+                        });
+                    });
+                }
+                false
+            }
+        });
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title(language.text("Extract to new note", "Trekk ut til nytt notat"))
                 .w(px(400.))
                 .child(div().w_full().child(Input::new(&input).appearance(true)))
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            DialogClose::new()
-                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
-                        )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new("composer-extract-confirm")
-                                    .label(language.text("Extract", "Trekk ut"))
-                                    .primary(),
-                            ),
-                        ),
-                )
+                .footer(dialog_footer(
+                    language.text("Cancel", "Avbryt"),
+                    (
+                        "composer-extract-confirm",
+                        language.text("Extract", "Trekk ut"),
+                    ),
+                    confirm.clone(),
+                ))
                 .on_ok({
-                    let view = view.clone();
-                    let doc = doc.clone();
-                    let range = range.clone();
-                    let body = body.clone();
-                    let source_before = source_before.clone();
-                    move |_, window, cx| {
-                        let committed = view.update(cx, |this, cx| {
-                            this.commit_extract(
-                                doc.clone(),
-                                source_before.clone(),
-                                range.clone(),
-                                body.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                        if committed {
-                            window.close_dialog(cx);
-                            let deferred_view = view.clone();
-                            window.defer(cx, move |window, cx| {
-                                deferred_view.update(cx, |this, cx| {
-                                    this.focus_active_pane_after_mount(window, cx)
-                                });
-                            });
-                        }
-                        false
-                    }
+                    let confirm = confirm.clone();
+                    move |event, window, cx| confirm(event, window, cx)
                 })
         });
 
@@ -5926,53 +5920,47 @@ impl Workspace {
             input.set_value("", window, cx);
         });
         let view = cx.entity();
+        let confirm: DialogConfirm = Rc::new({
+            let view = view.clone();
+            move |_, window, cx| {
+                let committed = view.update(cx, |this, cx| {
+                    this.commit_extract(
+                        doc.clone(),
+                        source_before.clone(),
+                        range.clone(),
+                        body.clone(),
+                        window,
+                        cx,
+                    )
+                });
+                if committed {
+                    window.close_dialog(cx);
+                    let deferred_view = view.clone();
+                    window.defer(cx, move |window, cx| {
+                        deferred_view.update(cx, |this, cx| {
+                            this.focus_active_pane_after_mount(window, cx)
+                        });
+                    });
+                }
+                false
+            }
+        });
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title(language.text("Extract to new note", "Trekk ut til nytt notat"))
                 .w(px(400.))
                 .child(div().w_full().child(Input::new(&input).appearance(true)))
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            DialogClose::new()
-                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
-                        )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new("composer-extract-confirm")
-                                    .label(language.text("Extract", "Trekk ut"))
-                                    .primary(),
-                            ),
-                        ),
-                )
+                .footer(dialog_footer(
+                    language.text("Cancel", "Avbryt"),
+                    (
+                        "composer-extract-confirm",
+                        language.text("Extract", "Trekk ut"),
+                    ),
+                    confirm.clone(),
+                ))
                 .on_ok({
-                    let view = view.clone();
-                    let doc = doc.clone();
-                    let range = range.clone();
-                    let body = body.clone();
-                    let source_before = source_before.clone();
-                    move |_, window, cx| {
-                        let committed = view.update(cx, |this, cx| {
-                            this.commit_extract(
-                                doc.clone(),
-                                source_before.clone(),
-                                range.clone(),
-                                body.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                        if committed {
-                            window.close_dialog(cx);
-                            let deferred_view = view.clone();
-                            window.defer(cx, move |window, cx| {
-                                deferred_view.update(cx, |this, cx| {
-                                    this.focus_active_pane_after_mount(window, cx)
-                                });
-                            });
-                        }
-                        false
-                    }
+                    let confirm = confirm.clone();
+                    move |event, window, cx| confirm(event, window, cx)
                 })
         });
         let input = self.rename_input.clone();
@@ -6016,6 +6004,67 @@ impl Workspace {
             input.set_value("", window, cx);
         });
         let view = cx.entity();
+        let confirm: DialogConfirm = Rc::new({
+            let view = view.clone();
+            let dialog_input = input.clone();
+            let dialog_source = source.clone();
+            let order = order.clone();
+            move |_, window, cx| {
+                let target = dialog_input.read(cx).value().to_string();
+                if target.trim().is_empty() {
+                    return false;
+                }
+                let order = *order.borrow();
+                let title = language.text(
+                    "Merge this note into the selected target?",
+                    "Slå sammen dette notatet med det valgte målet?",
+                );
+                let description = language.text(
+                    "The source note will be moved to the vault trash.",
+                    "Kildenotatet flyttes til hvelvets papirkurv.",
+                );
+                let deferred_view = view.clone();
+                let deferred_source = dialog_source.clone();
+                let deferred_target = target.clone();
+                window.close_dialog(cx);
+                window.defer(cx, move |window, cx| {
+                    deferred_view.update(cx, |this, cx| this.refocus(window, cx));
+                    window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+                        let view = deferred_view.clone();
+                        let dialog_source = deferred_source.clone();
+                        let target = deferred_target.clone();
+                        dialog
+                            .title(title)
+                            .description(description)
+                            .show_cancel(true)
+                            .cancel_text(language.text("Cancel", "Avbryt"))
+                            .ok_text(language.text("Merge", "Slå sammen"))
+                            .on_ok(move |_, window, cx| {
+                                // Animated dismissal would later restore focus to
+                                // the source editor that this merge closes.
+                                window.close_dialog(cx);
+                                view.update(cx, |this, cx| {
+                                    this.commit_merge(
+                                        dialog_source.clone(),
+                                        target.clone(),
+                                        order,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                let deferred_view = view.clone();
+                                window.defer(cx, move |window, cx| {
+                                    deferred_view.update(cx, |this, cx| {
+                                        this.focus_active_pane_after_mount(window, cx)
+                                    });
+                                });
+                                false
+                            })
+                    });
+                });
+                false
+            }
+        });
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let target_rows = targets
                 .iter()
@@ -6093,80 +6142,17 @@ impl Workspace {
                                 }),
                         ),
                 )
-                .footer(
-                    DialogFooter::new()
-                        .child(
-                            DialogClose::new()
-                                .trigger(|button| button.label(language.text("Cancel", "Avbryt"))),
-                        )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new("composer-merge-confirm")
-                                    .label(language.text("Merge", "Slå sammen"))
-                                    .primary(),
-                            ),
-                        ),
-                )
+                .footer(dialog_footer(
+                    language.text("Cancel", "Avbryt"),
+                    (
+                        "composer-merge-confirm",
+                        language.text("Merge", "Slå sammen"),
+                    ),
+                    confirm.clone(),
+                ))
                 .on_ok({
-                    let view = view.clone();
-                    let dialog_input = input.clone();
-                    let dialog_source = source.clone();
-                    let order = order.clone();
-                    move |_, window, cx| {
-                        let target = dialog_input.read(cx).value().to_string();
-                        if target.trim().is_empty() {
-                            return false;
-                        }
-                        let order = *order.borrow();
-                        let title = language.text(
-                            "Merge this note into the selected target?",
-                            "Slå sammen dette notatet med det valgte målet?",
-                        );
-                        let description = language.text(
-                            "The source note will be moved to the vault trash.",
-                            "Kildenotatet flyttes til hvelvets papirkurv.",
-                        );
-                        let deferred_view = view.clone();
-                        let deferred_source = dialog_source.clone();
-                        let deferred_target = target.clone();
-                        window.close_dialog(cx);
-                        window.defer(cx, move |window, cx| {
-                            deferred_view.update(cx, |this, cx| this.refocus(window, cx));
-                            window.open_alert_dialog(cx, move |dialog, _window, _cx| {
-                                let view = deferred_view.clone();
-                                let dialog_source = deferred_source.clone();
-                                let target = deferred_target.clone();
-                                dialog
-                                    .title(title)
-                                    .description(description)
-                                    .show_cancel(true)
-                                    .cancel_text(language.text("Cancel", "Avbryt"))
-                                    .ok_text(language.text("Merge", "Slå sammen"))
-                                    .on_ok(move |_, window, cx| {
-                                        // Animated dismissal would later restore focus to
-                                        // the source editor that this merge closes.
-                                        window.close_dialog(cx);
-                                        view.update(cx, |this, cx| {
-                                            this.commit_merge(
-                                                dialog_source.clone(),
-                                                target.clone(),
-                                                order,
-                                                window,
-                                                cx,
-                                            )
-                                        });
-                                        let deferred_view = view.clone();
-                                        window.defer(cx, move |window, cx| {
-                                            deferred_view.update(cx, |this, cx| {
-                                                this.focus_active_pane_after_mount(window, cx)
-                                            });
-                                        });
-                                        false
-                                    })
-                            });
-                        });
-                        false
-                    }
+                    let confirm = confirm.clone();
+                    move |event, window, cx| confirm(event, window, cx)
                 })
         });
         let input = self.rename_input.clone();
@@ -14182,7 +14168,7 @@ impl Workspace {
                 )
                 .into_any_element(),
         };
-        let content = match self.render_breadcrumb(doc, cx) {
+        let content = match self.render_breadcrumb(doc, mode == ViewMode::Split, cx) {
             Some(crumb) => v_flex()
                 .size_full()
                 .child(crumb)
@@ -14368,7 +14354,7 @@ impl Workspace {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .when_some(self.render_breadcrumb(doc, cx), |this, crumb| {
+            .when_some(self.render_breadcrumb(doc, false, cx), |this, crumb| {
                 this.child(crumb)
             })
             .child(div().flex_1().min_h_0().child(picture))
@@ -14386,7 +14372,12 @@ impl Workspace {
     /// Breadcrumb row above the editor: `folder / sub / name` — each
     /// folder segment opens its dashboard; the filename
     /// opens the rename dialog, like the inline title.
-    fn render_breadcrumb(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Option<Div> {
+    fn render_breadcrumb(
+        &self,
+        doc: &Entity<Document>,
+        split: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let path = doc.read(cx).path.clone();
         let root = self.vault.read(cx).root.clone()?;
         let rel = path
@@ -14401,10 +14392,30 @@ impl Workspace {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| name.to_string());
         let view = cx.entity();
+        // Zen mode centres the text column; use the same readable-width
+        // rule so the crumbs start where the text does.
+        let (classes, style) = {
+            let doc = doc.read(cx);
+            (doc.css_classes.clone(), doc.resolved_style.clone())
+        };
+        let readable = if classes.iter().any(|c| c == "wide") {
+            false
+        } else if classes.iter().any(|c| c == "narrow" || c == "readable")
+            || style.readable_width.is_some()
+        {
+            true
+        } else {
+            self.settings.readable_width
+        };
+        let readable_width = style.readable_width.unwrap_or(READABLE_WIDTH);
         let mut row = h_flex()
             .h_8()
             .flex_shrink_0()
             .w_full()
+            // Split shows two columns, so there is no single one to centre on.
+            .when(self.zen && readable && !split, |this| {
+                this.max_w(px(readable_width)).mx_auto()
+            })
             // Same left edge as the preview text column (px_6).
             .px_6()
             .gap_1()
