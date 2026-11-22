@@ -23,7 +23,7 @@
 - Add **Go to date…** to the command palette: type an ISO date, `today`, `next friday`, `3 days ago`, `in 2 weeks`, or the Norwegian equivalents, see the resolved day, and open or create its daily note.
 - Give the Carry over, Schedule and Go to date dialogs Cancel and confirm buttons, read `this week`/`next week` (and `denne uka`/`neste uke`) in the date box, and show today's date as its example.
 - Polish dialogs and views: Cancel never confirms in the Extract and Merge dialogs, `.base` table headers and summaries line up with their columns, Find in project shows Match case as a toggle, the carry-over list shows readable task text, Canvas edge labels sit above cards, and the Zen breadcrumb lines up with the text.
-- Tested on Apple Silicon with macOS 27. macOS 13 remains the declared minimum but is not tested.
+- Release-candidate builds were tested on Apple Silicon with macOS 27; the published update path is checked after release. macOS 13 remains the declared minimum but is not tested.
 
 ## v0.2.0 — 2026-10-16
 
