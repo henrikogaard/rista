@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-11-22
 
 - Add Quick Capture (`⌘⇧I`) and an Inbox view to triage captured notes. `rista inbox` captures from the command line.
 - Open recent vaults from the command palette.
@@ -21,6 +21,9 @@
 - Add **Carry over unfinished tasks** to the command palette: pick open tasks from the last seven daily notes, copy them to today's note under `## Carried over` (`## Overført`) with a link back, and mark them `- [x] … (moved to [[today]])` in their sources, as one undoable transaction.
 - Add **Schedule task…** (`⌘⇧M`, the command palette, and the editor's right-click menu on a task): move the open task on the caret line, or the tasks in a selection, to today, tomorrow, this week, next week, or a typed date. They land under `## Scheduled` (`## Planlagt`) in the daily or weekly note, created from its template if missing, with a link back, and are marked `- [x] … (moved to [[note]])` in the source, as one undoable transaction.
 - Add **Go to date…** to the command palette: type an ISO date, `today`, `next friday`, `3 days ago`, `in 2 weeks`, or the Norwegian equivalents, see the resolved day, and open or create its daily note.
+- Give the Carry over, Schedule and Go to date dialogs Cancel and confirm buttons, read `this week`/`next week` (and `denne uka`/`neste uke`) in the date box, and show today's date as its example.
+- Polish dialogs and views: Cancel never confirms in the Extract and Merge dialogs, `.base` table headers and summaries line up with their columns, Find in project shows Match case as a toggle, the carry-over list shows readable task text, Canvas edge labels sit above cards, and the Zen breadcrumb lines up with the text.
+- Tested on Apple Silicon with macOS 27. macOS 13 remains the declared minimum but is not tested.
 
 ## v0.2.0 — 2026-10-16
 

@@ -10,9 +10,9 @@ The package was tested on Apple Silicon macOS and declares macOS 13 as its minim
 
 The verified native baseline does not include WYSIWYG editing, PDF/DOCX export, a terminal, AI features, or cloud services.
 
-## Shipped since v0.2.0
+## Shipped in v0.3.0
 
-These are merged on `main` and not yet in a release:
+Released in v0.3.0 on 2026-11-22:
 
 - Quick Capture and an Inbox triage view.
 - Recent vaults in the command palette.
