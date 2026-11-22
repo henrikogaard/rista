@@ -7990,7 +7990,11 @@ impl Render for BaseView {
                                 cell.map(|(_, name, val)| format!("{name}: {val}"))
                                     .unwrap_or_default(),
                             )
-                    })),
+                    }))
+                    .when(matches!(self.spec_src, SpecSrc::Doc(_)), |row| {
+                        // Same width as the header's `+` cell, so columns line up.
+                        row.child(div().w(px(28.)).flex_none())
+                    }),
             );
         }
 
