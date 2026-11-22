@@ -7845,64 +7845,59 @@ impl Render for BaseView {
                         .border_color(theme.border.opacity(0.5))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                        .child(h_flex().w_full().children(row.cells.iter().enumerate().map(
-                            |(cix, cell)| {
-                                if let Some(target) = &cell.link {
-                                    let target = target.clone();
-                                    let workspace = self.workspace.clone();
-                                    sized_cell(
-                                        div().id(("base-cell-link", ix * 4096 + cix)),
-                                        &eff_sizes,
-                                        cix,
-                                    )
-                                    .text_sm()
-                                    .truncate()
-                                    .text_color(theme.accent)
-                                    .cursor_pointer()
-                                    .on_click(move |ev, window, cx| {
-                                        cx.stop_propagation();
-                                        open_path_click(&workspace, target.clone(), ev, window, cx)
-                                    })
-                                    .child(cell.text.clone())
-                                    .into_any_element()
-                                } else if let Some(prop) = editable_prop(cix) {
-                                    let path = row.path.clone();
-                                    let current = cell.text.clone();
-                                    let workspace = self.workspace.clone();
-                                    sized_cell(
-                                        div().id(("base-cell", ix * 4096 + cix)),
-                                        &eff_sizes,
-                                        cix,
-                                    )
-                                    .text_sm()
-                                    .truncate()
-                                    .text_color(theme.foreground)
-                                    .cursor_pointer()
-                                    .on_click(move |_, window, cx| {
-                                        cx.stop_propagation();
-                                        let _ = workspace.update(cx, |ws, cx| {
-                                            ws.edit_note_property(
-                                                path.clone(),
-                                                prop.clone(),
-                                                current.clone(),
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .children(row.cells.iter().enumerate().map(|(cix, cell)| {
+                                    if let Some(target) = &cell.link {
+                                        let target = target.clone();
+                                        let workspace = self.workspace.clone();
+                                        sized_cell(
+                                            div().id(("base-cell-link", ix * 4096 + cix)),
+                                            &eff_sizes,
+                                            cix,
+                                        )
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(theme.accent)
+                                        .cursor_pointer()
+                                        .on_click(move |ev, window, cx| {
+                                            cx.stop_propagation();
+                                            open_path_click(
+                                                &workspace,
+                                                target.clone(),
+                                                ev,
                                                 window,
                                                 cx,
-                                            );
-                                        });
-                                    })
-                                    .when(matches!(cell.lit, Lit::Num(_)), |d| d.text_right())
-                                    .child(match &cell.lit {
-                                        Lit::Bool(b) => {
-                                            bool_icon(*b, theme.muted_foreground, theme.accent)
-                                        }
-                                        _ => cell.text.clone().into_any_element(),
-                                    })
-                                    .into_any_element()
-                                } else {
-                                    sized_cell(div(), &eff_sizes, cix)
+                                            )
+                                        })
+                                        .child(cell.text.clone())
+                                        .into_any_element()
+                                    } else if let Some(prop) = editable_prop(cix) {
+                                        let path = row.path.clone();
+                                        let current = cell.text.clone();
+                                        let workspace = self.workspace.clone();
+                                        sized_cell(
+                                            div().id(("base-cell", ix * 4096 + cix)),
+                                            &eff_sizes,
+                                            cix,
+                                        )
                                         .text_sm()
                                         .truncate()
                                         .text_color(theme.foreground)
+                                        .cursor_pointer()
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            let _ = workspace.update(cx, |ws, cx| {
+                                                ws.edit_note_property(
+                                                    path.clone(),
+                                                    prop.clone(),
+                                                    current.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        })
                                         .when(matches!(cell.lit, Lit::Num(_)), |d| d.text_right())
                                         .child(match &cell.lit {
                                             Lit::Bool(b) => {
@@ -7911,9 +7906,30 @@ impl Render for BaseView {
                                             _ => cell.text.clone().into_any_element(),
                                         })
                                         .into_any_element()
-                                }
-                            },
-                        )))
+                                    } else {
+                                        sized_cell(div(), &eff_sizes, cix)
+                                            .text_sm()
+                                            .truncate()
+                                            .text_color(theme.foreground)
+                                            .when(matches!(cell.lit, Lit::Num(_)), |d| {
+                                                d.text_right()
+                                            })
+                                            .child(match &cell.lit {
+                                                Lit::Bool(b) => bool_icon(
+                                                    *b,
+                                                    theme.muted_foreground,
+                                                    theme.accent,
+                                                ),
+                                                _ => cell.text.clone().into_any_element(),
+                                            })
+                                            .into_any_element()
+                                    }
+                                }))
+                                .when(matches!(self.spec_src, SpecSrc::Doc(_)), |row| {
+                                    // Same width as the header's `+` cell, so columns line up.
+                                    row.child(div().w(px(28.)).flex_none())
+                                }),
+                        )
                         .on_click(move |ev, window, cx| {
                             open_path_click(&workspace, path.clone(), ev, window, cx)
                         })
