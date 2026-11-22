@@ -285,6 +285,20 @@ fn edge_curve_controls(from: Point<Pixels>, to: Point<Pixels>) -> (Point<Pixels>
     )
 }
 
+/// Where an edge's label sits: the middle of the painted line, which is the
+/// chord's middle for a straight edge and the curve's `t = 0.5` point for a
+/// curved one. Both ends are on card borders, so it is between the cards.
+fn edge_label_center(from: (f32, f32), to: (f32, f32), curved: bool) -> (f32, f32) {
+    if !curved {
+        return ((from.0 + to.0) * 0.5, (from.1 + to.1) * 0.5);
+    }
+    let (c1, c2) = edge_curve_controls(point(px(from.0), px(from.1)), point(px(to.0), px(to.1)));
+    (
+        (from.0 + 3. * f32::from(c1.x) + 3. * f32::from(c2.x) + to.0) / 8.,
+        (from.1 + 3. * f32::from(c1.y) + 3. * f32::from(c2.y) + to.1) / 8.,
+    )
+}
+
 /// Zoomed out, cards are painted from the LOD plan. The card being edited
 /// stays a real element so its editor is mounted, drawn over the plan.
 fn card_is_element(lod: bool, editing_id: Option<&str>, id: &str) -> bool {
@@ -3212,15 +3226,33 @@ impl Render for CanvasView {
             .iter()
             .filter_map(|edge| {
                 let label = edge.label.as_ref()?;
+                let (x, y) = edge_label_center(
+                    (edge.from.x as f32, edge.from.y as f32),
+                    (edge.to.x as f32, edge.to.y as f32),
+                    edge.curved,
+                );
+                // A wide, empty row centres the label on the edge's midpoint,
+                // which lies between the card borders the edge is anchored to.
                 Some(
                     div()
-                        .id(format!("canvas-edge-label-{}", edge.id))
                         .absolute()
-                        .left(px(((edge.from.x + edge.to.x) * 0.5) as f32))
-                        .top(px(((edge.from.y + edge.to.y) * 0.5) as f32))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(label.clone()),
+                        .left(px(x - 100.))
+                        .top(px(y - 9.))
+                        .w(px(200.))
+                        .h(px(18.))
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .child(
+                            div()
+                                .id(format!("canvas-edge-label-{}", edge.id))
+                                .px_1()
+                                .rounded(theme.radius)
+                                .bg(theme.background)
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(label.clone()),
+                        ),
                 )
             })
             .collect::<Vec<_>>();
@@ -3619,8 +3651,8 @@ impl Render for CanvasView {
             .child(grid_canvas.absolute().size_full())
             .children(group_cards)
             .child(edge_canvas.absolute().size_full())
-            .children(edge_labels)
             .children(cards)
+            .children(edge_labels)
             .when_some(
                 match &self.drag {
                     Some(Drag::Marquee { start, end, .. }) => Some((
@@ -3717,9 +3749,20 @@ impl Drop for CanvasView {
 mod tests {
     use super::{
         canvas_file_reference, canvas_markdown_excerpt, canvas_node_matches_search,
-        card_is_element, edge_hit, take_finished_drag, Drag, FinishedDrag,
+        card_is_element, edge_hit, edge_label_center, take_finished_drag, Drag, FinishedDrag,
     };
     use gpui_kit::{point, px};
+
+    #[test]
+    fn edge_label_sits_on_the_middle_of_the_line() {
+        assert_eq!(
+            edge_label_center((0., 0.), (200., 100.), false),
+            (100., 50.)
+        );
+        // The S-curve is symmetric, so its middle is the chord's middle.
+        let (x, y) = edge_label_center((0., 0.), (200., 100.), true);
+        assert!((x - 100.).abs() < 0.01 && (y - 50.).abs() < 0.01);
+    }
 
     #[test]
     fn only_the_edited_card_stays_an_element_in_lod() {
