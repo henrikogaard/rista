@@ -348,6 +348,7 @@ impl Render for ProjectSearch {
                                 "Match case"
                             })
                             .selected(match_case)
+                            .toggled(match_case)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.match_case = !this.match_case;
                                 this.schedule_search(cx);
