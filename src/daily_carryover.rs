@@ -76,6 +76,55 @@ fn split_block_anchor(text: &str) -> (&str, &str) {
     (text, "")
 }
 
+/// `text` as a dialog row shows it: link text instead of `[t](url)`, the
+/// alias or note name instead of `[[target|alias]]`, no footnote markers and
+/// no trailing block anchor. Display only; the files keep the original.
+pub fn display_text(text: &str) -> String {
+    let (text, _) = split_block_anchor(text);
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(['[', '!']) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if let Some(inner) = rest.strip_prefix("[[") {
+            if let Some(end) = inner.find("]]") {
+                let link = &inner[..end];
+                let shown = match link.split_once('|') {
+                    Some((_, alias)) => alias,
+                    None => link.split('#').next().unwrap_or(link),
+                };
+                let shown = shown.rsplit('/').next().unwrap_or(shown);
+                out.push_str(shown.strip_suffix(".md").unwrap_or(shown));
+                rest = &inner[end + 2..];
+                continue;
+            }
+        } else if let Some(inner) = rest.strip_prefix("[^") {
+            if let Some(end) = inner.find(']') {
+                rest = &inner[end + 1..];
+                continue;
+            }
+        } else {
+            let bang = rest.starts_with('!');
+            let open = &rest[usize::from(bang)..];
+            if let Some(label_and_url) = open.strip_prefix('[') {
+                if let Some(mid) = label_and_url.find("](") {
+                    if let Some(end) = label_and_url[mid + 2..].find(')') {
+                        out.push_str(&label_and_url[..mid]);
+                        rest = &label_and_url[mid + 2 + end + 1..];
+                        continue;
+                    }
+                }
+            }
+        }
+        // Not a link after all: keep the character and move on.
+        let len = rest.chars().next().map_or(1, char::len_utf8);
+        out.push_str(&rest[..len]);
+        rest = &rest[len..];
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// `- [ ] text ([[2026-11-18]])` — the task and a link back to its source.
 /// A trailing block anchor stays with the source line, so the copy drops it.
 pub fn carried_line(text: &str, source_link: &str) -> String {
@@ -487,7 +536,7 @@ impl Render for CarryoverView {
                 div().px_3().py_0p5().child(
                     Checkbox::new(("carry-task", index))
                         .checked(row.selected)
-                        .label(row.candidate.text.clone())
+                        .label(display_text(&row.candidate.text))
                         .on_click(cx.listener(move |this, checked: &bool, _, cx| {
                             this.rows[index].selected = *checked;
                             cx.notify();
@@ -611,14 +660,31 @@ impl Render for GoToDateView {
 mod tests {
     // Not `super::*`: the GPUI glob import there shadows `#[test]`.
     use super::{
-        carried_line, heading, insert_carried, lookback_dates, mark_migrated, open_tasks,
-        prepare_task, rebase_relative_wikilinks, with_definitions,
+        carried_line, display_text, heading, insert_carried, lookback_dates, mark_migrated,
+        open_tasks, prepare_task, rebase_relative_wikilinks, with_definitions,
     };
     use chrono::NaiveDate;
     use std::path::PathBuf;
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn display_text_hides_markdown_syntax() {
+        assert_eq!(
+            display_text("Review [spec](projects/spec.md) today"),
+            "Review spec today"
+        );
+        assert_eq!(display_text("Read [[./daily/notes|notes]]"), "Read notes");
+        assert_eq!(display_text("Read [[projects/spec#Goals]]"), "Read spec");
+        assert_eq!(
+            display_text("Check the brief[^brief] now"),
+            "Check the brief now"
+        );
+        assert_eq!(display_text("Call Ada ^abc123"), "Call Ada");
+        assert_eq!(display_text("See ![logo](a.png) [odd"), "See logo [odd");
+        assert_eq!(display_text("plain text"), "plain text");
     }
 
     #[test]
