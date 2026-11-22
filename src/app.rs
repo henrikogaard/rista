@@ -14387,10 +14387,27 @@ impl Workspace {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| name.to_string());
         let view = cx.entity();
+        // The same readable-width rule as the text column below, so the
+        // crumbs start where the text does when the pane is wider than it.
+        let (classes, style) = {
+            let doc = doc.read(cx);
+            (doc.css_classes.clone(), doc.resolved_style.clone())
+        };
+        let readable = if classes.iter().any(|c| c == "wide") {
+            false
+        } else if classes.iter().any(|c| c == "narrow" || c == "readable")
+            || style.readable_width.is_some()
+        {
+            true
+        } else {
+            self.settings.readable_width
+        };
+        let readable_width = style.readable_width.unwrap_or(READABLE_WIDTH);
         let mut row = h_flex()
             .h_8()
             .flex_shrink_0()
             .w_full()
+            .when(readable, |this| this.max_w(px(readable_width)).mx_auto())
             // Same left edge as the preview text column (px_6).
             .px_6()
             .gap_1()
