@@ -78,10 +78,16 @@ fn split_block_anchor(text: &str) -> (&str, &str) {
 
 /// Byte index of the `)` that closes a URL whose `(` is already consumed,
 /// counting nested pairs: `Mercury_(planet))` closes at the last one.
+/// A backslash-escaped paren is literal and does not count.
 fn closing_paren(url: &str) -> Option<usize> {
     let mut depth = 0usize;
+    let mut escaped = false;
     for (at, c) in url.char_indices() {
+        if std::mem::take(&mut escaped) {
+            continue;
+        }
         match c {
+            '\\' => escaped = true,
             '(' => depth += 1,
             ')' if depth == 0 => return Some(at),
             ')' => depth -= 1,
@@ -104,15 +110,20 @@ pub fn display_text(text: &str) -> String {
         if let Some(inner) = rest.strip_prefix("[[") {
             if let Some(end) = inner.find("]]") {
                 let link = &inner[..end];
-                let shown = match link.split_once('|') {
-                    Some((_, alias)) => alias,
+                let (shown, is_path) = match link.split_once('|') {
+                    Some((_, alias)) => (alias, true),
                     None => match link.split_once('#') {
-                        Some(("", heading)) => heading,
-                        Some((note, _)) => note,
-                        None => link,
+                        // A heading is plain text: `/` is not a path separator.
+                        Some(("", heading)) => (heading, false),
+                        Some((note, _)) => (note, true),
+                        None => (link, true),
                     },
                 };
-                let shown = shown.rsplit('/').next().unwrap_or(shown);
+                let shown = if is_path {
+                    shown.rsplit('/').next().unwrap_or(shown)
+                } else {
+                    shown
+                };
                 out.push_str(shown.strip_suffix(".md").unwrap_or(shown));
                 rest = &inner[end + 2..];
                 continue;
@@ -706,6 +717,12 @@ mod tests {
         assert_eq!(display_text("plain text"), "plain text");
         assert_eq!(display_text("[[#Book train]]"), "Book train");
         assert_eq!(display_text("[[#Book train|train]]"), "train");
+        assert_eq!(display_text("[[#Q1/Q2 handoff]]"), "Q1/Q2 handoff");
+        assert_eq!(display_text("[[plans/Q1/Q2 handoff#Goals]]"), "Q2 handoff");
+        assert_eq!(
+            display_text(r"See [spec](https://example.com/a\(b) now"),
+            "See spec now"
+        );
         assert_eq!(
             display_text("See [Mercury](https://en.wikipedia.org/wiki/Mercury_(planet)) now"),
             "See Mercury now"
