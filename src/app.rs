@@ -14168,7 +14168,7 @@ impl Workspace {
                 )
                 .into_any_element(),
         };
-        let content = match self.render_breadcrumb(doc, cx) {
+        let content = match self.render_breadcrumb(doc, mode == ViewMode::Split, cx) {
             Some(crumb) => v_flex()
                 .size_full()
                 .child(crumb)
@@ -14354,7 +14354,7 @@ impl Workspace {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .when_some(self.render_breadcrumb(doc, cx), |this, crumb| {
+            .when_some(self.render_breadcrumb(doc, false, cx), |this, crumb| {
                 this.child(crumb)
             })
             .child(div().flex_1().min_h_0().child(picture))
@@ -14372,7 +14372,12 @@ impl Workspace {
     /// Breadcrumb row above the editor: `folder / sub / name` — each
     /// folder segment opens its dashboard; the filename
     /// opens the rename dialog, like the inline title.
-    fn render_breadcrumb(&self, doc: &Entity<Document>, cx: &mut Context<Self>) -> Option<Div> {
+    fn render_breadcrumb(
+        &self,
+        doc: &Entity<Document>,
+        split: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let path = doc.read(cx).path.clone();
         let root = self.vault.read(cx).root.clone()?;
         let rel = path
@@ -14407,7 +14412,8 @@ impl Workspace {
             .h_8()
             .flex_shrink_0()
             .w_full()
-            .when(self.zen && readable, |this| {
+            // Split shows two columns, so there is no single one to centre on.
+            .when(self.zen && readable && !split, |this| {
                 this.max_w(px(readable_width)).mx_auto()
             })
             // Same left edge as the preview text column (px_6).
