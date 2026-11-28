@@ -157,7 +157,9 @@ impl Workspace {
     }
 
     pub(super) fn render_explorer_controls(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
         let selected = self.vault.read(cx).explorer_filter;
+        let has_query = !self.vault.read(cx).explorer_query.is_empty();
         let mut filters = h_flex().gap_0p5();
         for (ix, (filter, en, nb)) in [
             (FileFilter::All, "All", "Alle"),
@@ -184,20 +186,23 @@ impl Workspace {
             );
         }
         v_flex()
-            .px_2()
-            .gap_1()
+            .px_2p5()
+            .gap_1p5()
             .pb_2()
             .child(
                 h_flex()
+                    .h(px(28.))
                     .items_center()
-                    .gap_2()
+                    .gap_1p5()
                     .px_2()
-                    .bg(cx.theme().muted)
-                    .rounded(cx.theme().radius)
+                    .bg(theme.group_box)
+                    .border_1()
+                    .border_color(theme.border.opacity(0.65))
+                    .rounded(px(6.))
                     .child(
                         Icon::new(assets::IconName::Search)
                             .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
+                            .text_color(theme.muted_foreground),
                     )
                     .child(
                         Input::new(&self.explorer_search)
@@ -207,7 +212,24 @@ impl Workspace {
                             .focus_bordered(false)
                             .flex_1()
                             .min_w_0(),
-                    ),
+                    )
+                    .when(has_query, |row| {
+                        row.child(
+                            Button::new("explorer-clear-search")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::Close)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.explorer_search
+                                        .update(cx, |input, cx| input.set_value("", window, cx));
+                                    this.vault.update(cx, |vault, cx| {
+                                        vault.explorer_query.clear();
+                                        vault.filter_tree(cx);
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             // Filters left, sort and reveal right, on one row; it wraps
             // only when the sidebar is too narrow for both.
@@ -402,22 +424,84 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let state = cx.new(|cx| CommandState::new(window, cx));
+        let language = self.settings.language;
+        let can_create_note = self.vault.read(cx).root.is_some();
         let items: Vec<_> = paths
             .iter()
             .map(|path| {
+                let is_dir = path.is_dir();
+                let icon = if is_dir {
+                    assets::IconName::Folder
+                } else {
+                    assets::IconName::File
+                };
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                let title_text = path
+                    .file_stem()
+                    .or_else(|| path.file_name())
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| rel.clone());
+                let folder_hint = path
+                    .strip_prefix(&root)
+                    .ok()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty());
+                let snippet = (!is_dir).then(|| note_preview_snippet(path)).flatten();
                 CommandItem::new()
-                    .icon(if path.is_dir() {
-                        assets::IconName::Folder
-                    } else {
-                        assets::IconName::File
+                    .icon(icon)
+                    .label(rel.clone())
+                    .keywords([path.to_string_lossy().to_string(), title_text.clone()])
+                    .child(move |_, cx| {
+                        let theme = cx.theme();
+                        v_flex()
+                            .w_full()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(icon)
+                                            .size_3p5()
+                                            .flex_shrink_0()
+                                            .text_color(theme.muted_foreground),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .truncate()
+                                            .text_color(theme.foreground)
+                                            .child(title_text.clone()),
+                                    )
+                                    .when_some(folder_hint.clone(), |row, folder| {
+                                        row.child(
+                                            div()
+                                                .ml_auto()
+                                                .text_xs()
+                                                .truncate()
+                                                .text_color(theme.muted_foreground.opacity(0.75))
+                                                .child(folder),
+                                        )
+                                    }),
+                            )
+                            .when_some(snippet.clone(), |col, snip| {
+                                col.child(
+                                    div()
+                                        .pl(px(22.))
+                                        .text_xs()
+                                        .truncate()
+                                        .text_color(theme.muted_foreground.opacity(0.8))
+                                        .child(snip),
+                                )
+                            })
                     })
-                    .label(
-                        path.strip_prefix(&root)
-                            .unwrap_or(path)
-                            .to_string_lossy()
-                            .to_string(),
-                    )
-                    .keywords([path.to_string_lossy().to_string()])
             })
             .collect();
         let view = cx.entity();
@@ -426,13 +510,110 @@ impl Workspace {
             let paths = paths.clone();
             let view = view.clone();
             let on_pick = on_pick.clone();
-            dialog.w(px(580.)).close_button(false).child(
+            let empty_view = view.clone();
+            let footer_view = view.clone();
+            dialog.w(px(600.)).close_button(false).child(
                 Command::new(&state)
                     .placeholder(title)
                     .searchable(true)
                     .filterable(true)
                     .group(CommandGroup::new().items(items.clone()))
                     .max_h(px(420.))
+                    .empty(move |cmd_state, _window, cx| {
+                        let q = cmd_state.query(cx).trim().to_string();
+                        if can_create_note && !q.is_empty() && !q.starts_with('#') {
+                            let create_target = q.clone();
+                            let ws = empty_view.clone();
+                            return h_flex()
+                                .w_full()
+                                .px_3()
+                                .py_3()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} “{}”",
+                                            language.text("Create note", "Opprett notat"),
+                                            q
+                                        )),
+                                )
+                                .child(
+                                    Button::new("quick-open-create-empty")
+                                        .primary()
+                                        .xsmall()
+                                        .icon(assets::IconName::FilePlus)
+                                        .label(language.text("Create", "Opprett"))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            let target = create_target.clone();
+                                            let ws = ws.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                ws.update(cx, |this, cx| {
+                                                    this.open_wikilink(&target, window, cx);
+                                                });
+                                            });
+                                        }),
+                                )
+                                .into_any_element();
+                        }
+                        div()
+                            .w_full()
+                            .px_3()
+                            .py_4()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.text("No matching files", "Ingen samsvarende filer"))
+                            .into_any_element()
+                    })
+                    .footer(move |cmd_state, _window, cx| {
+                        let q = cmd_state.query(cx).trim().to_string();
+                        let theme = cx.theme();
+                        if can_create_note && !q.is_empty() && !q.starts_with('#') {
+                            let target = q.clone();
+                            let ws = footer_view.clone();
+                            return h_flex()
+                                .w_full()
+                                .px_3()
+                                .py_1p5()
+                                .border_t_1()
+                                .border_color(theme.border.opacity(0.6))
+                                .items_center()
+                                .justify_between()
+                                .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                    language.text(
+                                        "Enter to open · Click to create",
+                                        "Enter for å åpne · Klikk for å opprette",
+                                    ),
+                                ))
+                                .child(
+                                    Button::new("quick-open-create-footer")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(assets::IconName::FilePlus)
+                                        .label(format!(
+                                            "{} “{}”",
+                                            language.text("New note", "Nytt notat"),
+                                            q
+                                        ))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            let target = target.clone();
+                                            let ws = ws.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                ws.update(cx, |this, cx| {
+                                                    this.open_wikilink(&target, window, cx);
+                                                });
+                                            });
+                                        }),
+                                )
+                                .into_any_element();
+                        }
+                        div().into_any_element()
+                    })
                     .on_confirm(move |index, window, cx| {
                         window.close_dialog(cx);
                         if let Some(path) = paths.get(index.row) {

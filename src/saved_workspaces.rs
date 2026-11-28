@@ -423,6 +423,7 @@ impl Workspace {
                 .map(PathBuf::from)
                 .collect::<Vec<_>>();
             let mode = match session.view_mode {
+                ViewMode::Live => PaneMode::Live,
                 ViewMode::Source => PaneMode::Source,
                 ViewMode::Split => PaneMode::Split,
                 ViewMode::Preview => PaneMode::Preview,
@@ -506,6 +507,7 @@ impl Workspace {
             session.editor_session.clone(),
             session.active_tab.as_deref().map(Path::new),
             match session.view_mode {
+                ViewMode::Live => PaneMode::Live,
                 ViewMode::Source => PaneMode::Source,
                 ViewMode::Split => PaneMode::Split,
                 ViewMode::Preview => PaneMode::Preview,

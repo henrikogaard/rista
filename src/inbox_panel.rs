@@ -12,8 +12,8 @@ impl Workspace {
             .map(|root| root.join(INBOX_DIR))
     }
 
-    /// Notes waiting in `Inbox/`, for the sidebar's "Inbox · N".
-    fn inbox_count(&self, cx: &App) -> usize {
+    /// Notes waiting in `Inbox/`, for the sidebar Workspace strip badge.
+    pub(super) fn inbox_count(&self, cx: &App) -> usize {
         let Some(dir) = self.inbox_dir(cx) else {
             return 0;
         };
@@ -131,26 +131,6 @@ impl Workspace {
             return;
         }
         self.open_folder_page(dir, window, cx);
-    }
-
-    /// Quiet sidebar link, shown only while the Inbox holds notes.
-    pub(super) fn render_inbox_link(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let count = self.inbox_count(cx);
-        (count > 0).then(|| {
-            div()
-                .id("sidebar-inbox")
-                .px_3()
-                .py_0p5()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .cursor_pointer()
-                .hover(|row| row.text_color(cx.theme().foreground))
-                .child(format!("{} · {count}", self.tr("Inbox", "Innboks")))
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.on_open_inbox(&OpenInbox, window, cx)),
-                )
-                .into_any_element()
-        })
     }
 
     /// The `Inbox/` folder page: oldest capture first, each row with

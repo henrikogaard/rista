@@ -261,6 +261,20 @@ impl AgentPanel {
             .update(cx, |composer, cx| composer.focus(window, cx));
     }
 
+    pub(super) fn prefill_prompt(
+        &mut self,
+        prompt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer.update(cx, |composer, cx| {
+            composer.set_value(prompt, window, cx);
+            composer.focus(window, cx);
+        });
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
     pub(super) fn sync_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         let next = path.map(|path| normalize_context_path(&path));
         if self.active_context == next {
@@ -1576,9 +1590,224 @@ impl Render for AgentPanel {
                 Some(TranscriptItem::Message(_))
             );
 
+        let theme = cx.theme().colors;
+        let can_add_current_note = self
+            .active_context
+            .as_ref()
+            .filter(|active| !self.context.contains(*active))
+            .cloned();
+
+        let picker_drawer = show_picker.then(|| {
+            let mut content = v_flex()
+                .gap_1p5()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(theme.border.opacity(0.55))
+                .when(installed.is_empty(), |content| {
+                    content.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(self.tr(
+                                cx,
+                                "No installed agents were found. See setup for other agents below.",
+                                "Fant ingen installerte agenter. Se oppsett for andre agenter nedenfor.",
+                            )),
+                    )
+                })
+                .when(!installed.is_empty() && !has_configured_agents, |content| {
+                    content.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(self.tr(
+                                cx,
+                                "Built-in presets need their agent tools installed separately. Add custom agents with a manifest.",
+                                "Innebygde forhåndsvalg krever at agentverktøy installeres separat. Legg til egendefinerte agenter med et manifest.",
+                            )),
+                    )
+                })
+                .when(!installed.is_empty(), |content| {
+                    content.child(
+                        v_flex()
+                            .gap_0p5()
+                            .max_h(px(150.))
+                            .overflow_y_scrollbar()
+                            .bg(theme.group_box)
+                            .border_1()
+                            .border_color(theme.border.opacity(0.65))
+                            .rounded(px(8.))
+                            .p_1()
+                            .children(installed.iter().enumerate().map(|(index, choice)| {
+                                let source = choice
+                                    .manifest_id
+                                    .as_deref()
+                                    .unwrap_or(self.tr(cx, "Built-in", "Innebygd"));
+                                let name = choice.agent.name.text(language).to_string();
+                                let is_selected = current_choice
+                                    .is_some_and(|selected| selected.same_agent(choice));
+                                Button::new(("agent-choice", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .w_full()
+                                    .accessibility_label(name.clone())
+                                    .child(
+                                        h_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .justify_between()
+                                            .items_center()
+                                            .child(div().truncate().child(name))
+                                            .when(is_selected, |row| {
+                                                row.child(
+                                                    Icon::new(assets::IconName::Check)
+                                                        .size_3()
+                                                        .text_color(theme.muted_foreground),
+                                                )
+                                            }),
+                                    )
+                                    .tooltip(format!("{source} · {}", choice.agent.id))
+                                    .disabled(self.process.is_some())
+                                    .on_click(cx.listener({
+                                        let choice = choice.clone();
+                                        move |this, _, _, cx| {
+                                            if agent::can_select_agent(this.process.is_some()) {
+                                                if this.selected_unavailable() {
+                                                    this.status = AgentStatus::Idle;
+                                                    this.error = None;
+                                                }
+                                                this.selected = Some(choice.clone());
+                                                this.model_selection.reset();
+                                                this.model_selector_open = false;
+                                                this.model_error = None;
+                                                this.picker_open = false;
+                                                cx.notify();
+                                            }
+                                        }
+                                    }))
+                            })),
+                    )
+                })
+                .when(has_missing, |content| {
+                    content.child(
+                        Button::new("agent-other-setup")
+                            .ghost()
+                            .xsmall()
+                            .self_start()
+                            .label(self.tr(
+                                cx,
+                                "Show setup for other agents",
+                                "Vis oppsett for andre agenter",
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_other_setup(window, cx)
+                            })),
+                    )
+                });
+            for error in errors.iter().take(6) {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child(error.clone()),
+                );
+            }
+            if !has_configured_agents {
+                let extensions_dir = self
+                    .workspace
+                    .upgrade()
+                    .and_then(|workspace| workspace.read(cx).vault.read(cx).root.clone())
+                    .map(|root| root.join(".rista/plugins"))
+                    .unwrap_or_else(extensions::user_dir);
+                content = content.child(
+                    Button::new("agent-open-extensions")
+                        .ghost()
+                        .xsmall()
+                        .self_start()
+                        .icon(assets::IconName::FolderOpen)
+                        .label(self.tr(cx, "Open extensions folder", "Åpne utvidelsesmappen"))
+                        .on_click(move |_, _, cx| {
+                            if std::fs::create_dir_all(&extensions_dir).is_ok() {
+                                cx.reveal_path(&extensions_dir);
+                            }
+                        }),
+                );
+            }
+            content
+        });
+
+        let model_drawer = (show_model_picker && (self.model_selector_open || self.model_error.is_some() || (is_grok && (!grok_model_selected || model_choices.is_empty())))).then(|| {
+            v_flex()
+                .gap_1()
+                .px_3()
+                .pt_2()
+                .when(self.model_selector_open, |selector| {
+                    selector.child(
+                        v_flex()
+                            .gap_0p5()
+                            .max_h(px(140.))
+                            .overflow_y_scrollbar()
+                            .bg(theme.group_box)
+                            .border_1()
+                            .border_color(theme.border.opacity(0.65))
+                            .rounded(px(8.))
+                            .p_1()
+                            .children(model_choices.iter().enumerate().map(|(index, choice)| {
+                                let value = choice.value.clone();
+                                Button::new(("agent-model-choice", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .w_full()
+                                    .justify_start()
+                                    .label(choice.name.clone())
+                                    .disabled(!can_select_model)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.select_model(value.clone(), cx);
+                                    }))
+                            })),
+                    )
+                })
+                .when(is_grok && model_choices.is_empty(), |model_ui| {
+                    model_ui.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(self.tr(
+                                cx,
+                                "No xAI models available. Configure xAI in OpenCode and restart the conversation.",
+                                "Ingen xAI-modeller er tilgjengelige. Konfigurer xAI i OpenCode og start samtalen på nytt.",
+                            )),
+                    )
+                })
+                .when(
+                    is_grok && !model_choices.is_empty() && !grok_model_selected,
+                    |model_ui| {
+                        model_ui.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(self.tr(
+                                    cx,
+                                    "Choose an available xAI model to continue; the current model is from another provider.",
+                                    "Velg en tilgjengelig xAI-modell for å fortsette; den gjeldende modellen kommer fra en annen leverandør.",
+                                )),
+                        )
+                    },
+                )
+                .when(self.model_error.is_some(), |model_ui| {
+                    model_ui.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.warning)
+                            .child(self.model_error.clone().unwrap_or_default()),
+                    )
+                })
+        });
+
         v_flex()
             .size_full()
-            .bg(cx.theme().sidebar)
+            .bg(theme.group_box)
             .rounded(cx.theme().radius_lg)
             .overflow_hidden()
             .track_focus(&self.focus_handle)
@@ -1591,28 +1820,33 @@ impl Render for AgentPanel {
                     }
                 },
             ))
+            // ── Header ──
             .child(
                 h_flex()
                     .h_10()
+                    .flex_shrink_0()
                     .px_3()
-                    .gap_2()
+                    .gap_1p5()
                     .items_center()
                     .child(
                         Icon::new(assets::IconName::MessageSquareQuote)
                             .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
+                            .text_color(theme.muted_foreground),
                     )
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .text_sm()
-                            .font_medium()
+                            .font_semibold()
+                            .text_color(theme.foreground)
                             .child(self.tr(cx, "Agent", "Agent")),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
+                            .text_color(theme.muted_foreground.opacity(0.8))
                             .child(self.render_status(cx)),
                     )
                     .child(
@@ -1657,227 +1891,653 @@ impl Render for AgentPanel {
                             }),
                     ),
             )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .px_3()
-                    .pb_2()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                Button::new("agent-picker")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(assets::IconName::ChevronDown)
-                                    .label(current_name)
-                                    .tooltip(if self.process.is_some() {
-                                        self.tr(
-                                            cx,
-                                            "Stop the agent before choosing another",
-                                            "Stopp agenten før du velger en annen",
+            // ── Collapsible Agent Picker Drawer ──
+            .when_some(picker_drawer, |panel, drawer| panel.child(drawer))
+            // ── Context References Row (when notes are attached) ──
+            .when(!self.context.is_empty(), |panel| {
+                panel.child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .px_3()
+                        .pt_2()
+                        .pb_1()
+                        .justify_end()
+                        .children(self.context.iter().enumerate().map(|(index, path)| {
+                            let label = path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| {
+                                    path.strip_prefix(
+                                        context_root.as_deref().unwrap_or(Path::new("")),
+                                    )
+                                    .unwrap_or(path)
+                                    .display()
+                                    .to_string()
+                                });
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .px_2()
+                                .py_0p5()
+                                .bg(theme.background.opacity(0.65))
+                                .border_1()
+                                .border_color(theme.border.opacity(0.5))
+                                .rounded(px(6.))
+                                .child(
+                                    div()
+                                        .max_w(px(160.))
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(theme.red.opacity(0.85))
+                                        .child(label),
+                                )
+                                .when_some(
+                                    std::fs::metadata(path)
+                                        .ok()
+                                        .filter(|meta| meta.is_file())
+                                        .map(|meta| agent::format_size(meta.len())),
+                                    |chip, size| {
+                                        chip.child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(theme.muted_foreground.opacity(0.7))
+                                                .child(size),
                                         )
-                                    } else {
-                                        self.tr(cx, "Choose an agent", "Velg en agent")
-                                    })
-                                    .disabled(self.process.is_some())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if agent::can_select_agent(this.process.is_some()) {
-                                            // Refresh first: clearing a missing-agent
-                                            // notice closes the picker it opened.
-                                            let open = !this.picker_open;
-                                            if open {
-                                                this.refresh_agents(cx);
-                                            }
-                                            this.picker_open = open;
-                                            cx.notify();
-                                        }
-                                    })),
-                            )
-                            .child(
-                                Button::new("agent-setup")
-                                    .ghost()
-                                    .xsmall()
-                                    .label(self.tr(cx, "Setup", "Oppsett"))
-                                    .tooltip(self.tr(
-                                        cx,
-                                        "Show setup instructions",
-                                        "Vis oppsettinstruksjoner",
-                                    ))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_setup(window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("agent-add-context")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(assets::IconName::Paperclip)
-                                    .label(self.tr(cx, "Add context", "Legg til kontekst"))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.add_files(window, cx)
-                                    })),
-                            ),
-                    )
-                    .when(show_picker, |content| {
-                        let mut content = content
-                            .when(installed.is_empty(), |content| {
-                                content.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(self.tr(
-                                            cx,
-                                            "No installed agents were found. See setup for other agents below.",
-                                            "Fant ingen installerte agenter. Se oppsett for andre agenter nedenfor.",
-                                        )),
+                                    },
                                 )
-                            })
-                            .when(!installed.is_empty() && !has_configured_agents, |content| {
-                                content.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(self.tr(
-                                            cx,
-                                            "Built-in presets need their agent tools installed separately. Add custom agents with a manifest.",
-                                            "Innebygde forhåndsvalg krever at agentverktøy installeres separat. Legg til egendefinerte agenter med et manifest.",
-                                        )),
-                                )
-                            })
-                            .when(!installed.is_empty(), |content| content.child(
-                                v_flex()
-                                    .gap_0p5()
-                                    .max_h(px(150.))
-                                    .overflow_y_scrollbar()
-                                    .bg(cx.theme().group_box)
-                                    .rounded(cx.theme().radius)
-                                    .p_1()
-                                    .children(installed.iter().enumerate().map(|(index, choice)| {
-                                        let source = choice
-                                            .manifest_id
-                                            .as_deref()
-                                            .unwrap_or(self.tr(cx, "Built-in", "Innebygd"));
-                                        let name = choice.agent.name.text(language).to_string();
-                                        let is_selected = current_choice
-                                            .is_some_and(|selected| selected.same_agent(choice));
-                                        Button::new(("agent-choice", index))
-                                            .ghost()
-                                            .xsmall()
-                                            .w_full()
-                                            .accessibility_label(name.clone())
-                                            .child(
-                                                h_flex()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .justify_between()
-                                                    .items_center()
-                                                    .child(
-                                                        div()
-                                                            .truncate()
-                                                            .child(name),
-                                                    )
-                                                    .when(is_selected, |row| {
-                                                        row.child(
-                                                            Icon::new(assets::IconName::Check)
-                                                                .size_3()
-                                                                .text_color(cx.theme().muted_foreground),
-                                                        )
-                                                    }),
-                                            )
-                                            .tooltip(format!(
-                                                "{source} · {}",
-                                                choice.agent.id
-                                            ))
-                                            .disabled(self.process.is_some())
-                                            .on_click(cx.listener({
-                                                let choice = choice.clone();
-                                                move |this, _, _, cx| {
-                                                    if agent::can_select_agent(this.process.is_some()) {
-                                                        if this.selected_unavailable() {
-                                                            this.status = AgentStatus::Idle;
-                                                            this.error = None;
-                                                        }
-                                                        this.selected = Some(choice.clone());
-                                                        this.model_selection.reset();
-                                                        this.model_selector_open = false;
-                                                        this.model_error = None;
-                                                        this.picker_open = false;
-                                                        cx.notify();
-                                                    }
-                                                }
-                                            }))
-                                    })),
-                            ))
-                            .when(has_missing, |content| {
-                                content.child(
-                                    Button::new("agent-other-setup")
+                                .child(
+                                    Button::new(("remove-agent-context", index))
                                         .ghost()
                                         .xsmall()
-                                        .self_start()
-                                        .label(self.tr(
-                                            cx,
-                                            "Show setup for other agents",
-                                            "Vis oppsett for andre agenter",
-                                        ))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.show_other_setup(window, cx)
+                                        .icon(assets::IconName::Close)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if index < this.context.len() {
+                                                this.remove_context(index);
+                                                cx.notify();
+                                            }
                                         })),
                                 )
-                            });
-                        for error in errors.iter().take(6) {
-                            content = content.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().warning)
-                                    .child(error.clone()),
-                            );
-                        }
-                        if !has_configured_agents {
-                            let extensions_dir = self
-                                .workspace
-                                .upgrade()
-                                .and_then(|workspace| {
-                                    workspace.read(cx).vault.read(cx).root.clone()
-                                })
-                                .map(|root| root.join(".rista/plugins"))
-                                .unwrap_or_else(extensions::user_dir);
-                            content = content.child(
-                                Button::new("agent-open-extensions")
-                                    .ghost()
-                                    .xsmall()
-                                    .self_start()
-                                    .icon(assets::IconName::FolderOpen)
-                                    .label(self.tr(
-                                        cx,
-                                        "Open extensions folder",
-                                        "Åpne utvidelsesmappen",
-                                    ))
-                                    .on_click(move |_, _, cx| {
-                                        if std::fs::create_dir_all(&extensions_dir).is_ok() {
-                                            cx.reveal_path(&extensions_dir);
+                        })),
+                )
+            })
+            // ── Transcript ──
+            .child(
+                div()
+                    .id("agent-transcript")
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.transcript_scroll)
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .min_h_full()
+                            .px_3()
+                            .py_3()
+                            .gap_3()
+                            .when(show_empty_state, |transcript| {
+                                transcript.child(self.render_empty_state(cx))
+                            })
+                            .children(self.update.transcript.iter().enumerate().map(
+                                |(ix, item)| {
+                                    match item {
+                                        TranscriptItem::User(text) => div()
+                                            .self_flex_end()
+                                            .max_w(px(280.))
+                                            .px_3()
+                                            .py_2()
+                                            .bg(theme.muted.opacity(0.6))
+                                            .border_1()
+                                            .border_color(theme.border.opacity(0.55))
+                                            .rounded(px(10.))
+                                            .text_sm()
+                                            .text_color(theme.foreground)
+                                            .child(text.clone())
+                                            .into_any_element(),
+                                        TranscriptItem::Message(text) => {
+                                            let copy_text = text.clone();
+                                            let md_style = gpui_kit::base::TextViewStyle::default()
+                                                .with_foreground(theme.foreground.opacity(0.92))
+                                                .with_muted_foreground(theme.muted_foreground)
+                                                .with_link(theme.link)
+                                                .with_selection(theme.selection)
+                                                .with_code_background(theme.muted)
+                                                .with_border(theme.border)
+                                                .with_dark(cx.theme().is_dark());
+                                            v_flex()
+                                                .w_full()
+                                                .gap_1()
+                                                .child(
+                                                    div().w_full().child(
+                                                        gpui_kit::base::TextView::markdown(
+                                                            ("agent-msg", ix),
+                                                            text.clone(),
+                                                        )
+                                                        .style(md_style)
+                                                        .text_sm()
+                                                        .line_height(relative(1.5))
+                                                        .selectable(true),
+                                                    ),
+                                                )
+                                                .child(
+                                                    h_flex().items_center().child(
+                                                        Button::new(("agent-copy-msg", ix))
+                                                            .ghost()
+                                                            .xsmall()
+                                                            .icon(assets::IconName::Copy)
+                                                            .tooltip(self.tr(
+                                                                cx,
+                                                                "Copy response",
+                                                                "Kopier svar",
+                                                            ))
+                                                            .on_click(move |_, _, cx| {
+                                                                cx.write_to_clipboard(
+                                                                    ClipboardItem::new_string(
+                                                                        copy_text.clone(),
+                                                                    ),
+                                                                );
+                                                            }),
+                                                    ),
+                                                )
+                                                .into_any_element()
                                         }
-                                    }),
-                            );
-                        }
-                        content
-                    })
-                    .when(show_model_picker, |content| {
-                        content.child(
-                            v_flex()
-                                .gap_1()
-                                .child(
+                                        TranscriptItem::Thought(text) => {
+                                            let label = if self.thoughts_expanded {
+                                                self.tr(cx, "Hide thinking", "Skjul tenking")
+                                            } else {
+                                                self.tr(cx, "Thought process", "Tankeprosess")
+                                            };
+                                            v_flex()
+                                                .w_full()
+                                                .gap_1p5()
+                                                .child(
+                                                    h_flex()
+                                                        .id(("agent-thought", text.len()))
+                                                        .w_full()
+                                                        .px_2p5()
+                                                        .py_1p5()
+                                                        .gap_1p5()
+                                                        .items_center()
+                                                        .rounded(px(7.))
+                                                        .bg(theme.group_box.opacity(0.65))
+                                                        .border_1()
+                                                        .border_color(theme.border.opacity(0.55))
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.bg(theme.muted.opacity(0.45)))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.thoughts_expanded =
+                                                                !this.thoughts_expanded;
+                                                            cx.notify();
+                                                        }))
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(theme.muted_foreground)
+                                                                .child(label),
+                                                        )
+                                                        .child(
+                                                            Icon::new(if self.thoughts_expanded {
+                                                                assets::IconName::ChevronDown
+                                                            } else {
+                                                                assets::IconName::ChevronRight
+                                                            })
+                                                            .size_3()
+                                                            .text_color(theme.muted_foreground),
+                                                        ),
+                                                )
+                                                .when(self.thoughts_expanded, |card| {
+                                                    card.child(
+                                                        div()
+                                                            .px_2p5()
+                                                            .py_1p5()
+                                                            .rounded(px(6.))
+                                                            .bg(theme.group_box.opacity(0.4))
+                                                            .text_xs()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(text.clone()),
+                                                    )
+                                                })
+                                                .into_any_element()
+                                        }
+                                        TranscriptItem::Tool(id) => self.render_tool(id, cx),
+                                        TranscriptItem::Plan => {
+                                            self.render_plan(cx).into_any_element()
+                                        }
+                                    }
+                                },
+                            ))
+                            .children(self.pending_permissions.iter().enumerate().map(
+                                |(request_index, pending)| {
+                                    let request_id = pending.id.clone();
+                                    let options = pending.options.clone();
+                                    v_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .p_3()
+                                        .bg(theme.group_box)
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(theme.border.opacity(0.7))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_medium()
+                                                .child(pending.title.clone()),
+                                        )
+                                        .child(h_flex().flex_wrap().gap_1p5().children(
+                                            options.into_iter().enumerate().map(
+                                                |(option_index, option)| {
+                                                    let request_id = request_id.clone();
+                                                    let option_id = option.id.clone();
+                                                    let button_id = ((request_index as u64) << 32)
+                                                        | option_index as u64;
+                                                    let label = if option.name.is_empty() {
+                                                        match option.kind.as_str() {
+                                                            "allow_once" => self.tr(
+                                                                cx,
+                                                                "Allow once",
+                                                                "Tillat én gang",
+                                                            ),
+                                                            "reject_once" => {
+                                                                self.tr(cx, "Reject", "Avvis")
+                                                            }
+                                                            "allow_always" => self.tr(
+                                                                cx,
+                                                                "Always allow",
+                                                                "Tillat alltid",
+                                                            ),
+                                                            "reject_always" => self.tr(
+                                                                cx,
+                                                                "Always reject",
+                                                                "Avvis alltid",
+                                                            ),
+                                                            _ => self.tr(cx, "Choose", "Velg"),
+                                                        }
+                                                        .to_string()
+                                                    } else {
+                                                        option.name
+                                                    };
+                                                    Button::new(("agent-permission", button_id))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .label(label)
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                this.answer_permission(
+                                                                    &request_id,
+                                                                    Some(&option_id),
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                },
+                                            ),
+                                        ))
+                                },
+                            ))
+                            .when(self.pending_writes.len() > 1, |content| {
+                                content.child(
                                     h_flex()
                                         .gap_2()
                                         .items_center()
                                         .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(self.tr(cx, "Model", "Modell")),
+                                            Button::new("agent-write-accept-all")
+                                                .primary()
+                                                .xsmall()
+                                                .label(self.tr(cx, "Accept all", "Godta alle"))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.answer_all_writes(true, window, cx)
+                                                })),
                                         )
                                         .child(
+                                            Button::new("agent-write-reject-all")
+                                                .ghost()
+                                                .xsmall()
+                                                .label(self.tr(cx, "Reject all", "Avvis alle"))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.answer_all_writes(false, window, cx)
+                                                })),
+                                        ),
+                                )
+                            })
+                            .children(self.pending_writes.iter().enumerate().map(
+                                |(index, pending)| {
+                                    let request_id = pending.id.clone();
+                                    let path = pending.path.clone();
+                                    let before = pending.before.clone();
+                                    let after = pending.after.clone();
+                                    let diff = agent::simple_diff(
+                                        &path.display().to_string(),
+                                        &before,
+                                        &after,
+                                    );
+                                    v_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .p_3()
+                                        .bg(theme.group_box)
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(theme.border.opacity(0.7))
+                                        .child(div().text_xs().font_semibold().child(self.tr(
+                                            cx,
+                                            "Proposed file change",
+                                            "Foreslått filendring",
+                                        )))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .child(
+                                                    path.strip_prefix(
+                                                        self.conversation_root
+                                                            .as_deref()
+                                                            .unwrap_or(Path::new("")),
+                                                    )
+                                                    .unwrap_or(&path)
+                                                    .display()
+                                                    .to_string(),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .max_h(px(150.))
+                                                .overflow_y_scrollbar()
+                                                .child(Self::render_diff(&diff, cx)),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new(("agent-write-accept", index))
+                                                        .primary()
+                                                        .xsmall()
+                                                        .label(self.tr(cx, "Accept", "Godta"))
+                                                        .on_click(cx.listener({
+                                                            let request_id = request_id.clone();
+                                                            move |this, _, window, cx| {
+                                                                this.answer_write(
+                                                                    &request_id,
+                                                                    true,
+                                                                    window,
+                                                                    cx,
+                                                                )
+                                                            }
+                                                        })),
+                                                )
+                                                .child(
+                                                    Button::new(("agent-write-reject", index))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .label(self.tr(cx, "Reject", "Avvis"))
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.answer_write(
+                                                                    &request_id,
+                                                                    false,
+                                                                    window,
+                                                                    cx,
+                                                                )
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                },
+                            ))
+                            .when(!self.applied.is_empty(), |content| {
+                                content.child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(
+                                            Button::new("agent-undo-changes")
+                                                .ghost()
+                                                .xsmall()
+                                                .label(self.tr(
+                                                    cx,
+                                                    "Undo agent changes",
+                                                    "Angre agentens endringer",
+                                                ))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.undo_agent_changes(window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .child(format!("{}", self.applied.len())),
+                                        ),
+                                )
+                            })
+                            .when_some(self.review_notice.clone(), |content, notice| {
+                                content.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(notice),
+                                )
+                            })
+                            .when_some(self.error.clone(), |content, error| {
+                                content.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .p_2p5()
+                                        .bg(theme.group_box)
+                                        .border_1()
+                                        .border_color(theme.danger.opacity(0.35))
+                                        .rounded(px(8.))
+                                        .text_xs()
+                                        .child(error)
+                                        .when_some(self.error_details.clone(), |this, details| {
+                                            this.child(
+                                                Button::new("agent-error-details")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .label(self.tr(cx, "Details", "Detaljer"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.details_open = !this.details_open;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .when(
+                                                self.details_open,
+                                                |this| {
+                                                    this.child(
+                                                        div()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(details),
+                                                    )
+                                                },
+                                            )
+                                        }),
+                                )
+                            })
+                            .when(show_working, |content| {
+                                content.child(
+                                    h_flex()
+                                        .px_2p5()
+                                        .py_1p5()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .rounded(px(7.))
+                                        .bg(theme.group_box.opacity(0.65))
+                                        .border_1()
+                                        .border_color(theme.border.opacity(0.55))
+                                        .child(
+                                            Icon::new(assets::IconName::Loader)
+                                                .size_3()
+                                                .text_color(theme.muted_foreground),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground)
+                                                .child(self.tr(cx, "Working…", "Arbeider…")),
+                                        ),
+                                )
+                            }),
+                    )
+                    .vertical_scrollbar(&self.transcript_scroll),
+            )
+            // ── Model Selector Drawer (when open) ──
+            .when_some(model_drawer, |panel, drawer| panel.child(drawer))
+            // ── Bottom Composer ──
+            .child(
+                v_flex()
+                    .gap_2()
+                    .px_3()
+                    .pt_2()
+                    .pb_2p5()
+                    .when_some(can_add_current_note, |box_area, active_path| {
+                        box_area.child(
+                            h_flex().items_center().child(
+                                div()
+                                    .id("agent-add-current-note")
+                                    .px_2p5()
+                                    .py_1()
+                                    .rounded(px(6.))
+                                    .bg(theme.background.opacity(0.6))
+                                    .border_1()
+                                    .border_color(theme.border.opacity(0.55))
+                                    .cursor_pointer()
+                                    .hover(|s| {
+                                        s.bg(theme.muted.opacity(0.5)).text_color(theme.foreground)
+                                    })
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(self.tr(
+                                        cx,
+                                        "+ Add current note as context",
+                                        "+ Legg til aktivt notat som kontekst",
+                                    ))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.add_context(active_path.clone(), cx);
+                                    })),
+                            ),
+                        )
+                    })
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .rounded(px(10.))
+                            .bg(theme.background.opacity(0.7))
+                            .border_1()
+                            .border_color(theme.border.opacity(0.65))
+                            .overflow_hidden()
+                            .child(
+                                div().px_2().pt_1p5().child(
+                                    Textarea::new(&self.composer)
+                                        .h(px(64.))
+                                        .appearance(false)
+                                        .bordered(false)
+                                        .disabled(
+                                            self.process.is_none()
+                                                || self.session_id.is_none()
+                                                || self.stopping,
+                                        ),
+                                ),
+                            )
+                            .child(
+                                h_flex()
+                                    .px_2()
+                                    .pb_1p5()
+                                    .pt_0p5()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .child(
+                                                Button::new("agent-add-context")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(assets::IconName::Plus)
+                                                    .tooltip(self.tr(
+                                                        cx,
+                                                        "Add context files",
+                                                        "Legg til kontekstfiler",
+                                                    ))
+                                                    .on_click(cx.listener(
+                                                        |this, _, window, cx| {
+                                                            this.add_files(window, cx)
+                                                        },
+                                                    )),
+                                            )
+                                            .child(
+                                                Button::new("agent-setup")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .label(self.tr(cx, "Setup", "Oppsett"))
+                                                    .tooltip(self.tr(
+                                                        cx,
+                                                        "Show setup instructions",
+                                                        "Vis oppsettinstruksjoner",
+                                                    ))
+                                                    .on_click(cx.listener(
+                                                        |this, _, window, cx| {
+                                                            this.show_setup(window, cx)
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("agent-send")
+                                            .primary()
+                                            .xsmall()
+                                            .icon(assets::IconName::ArrowUp)
+                                            .tooltip(self.tr(cx, "Send (Enter)", "Send (Enter)"))
+                                            .disabled(!can_send)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.send_from_composer(window, cx)
+                                            })),
+                                    ),
+                            ),
+                    )
+                    // ── Quiet Footer Selector Bar ──
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .min_w_0()
+                                    .child(
+                                        Button::new("agent-picker")
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(assets::IconName::ChevronDown)
+                                            .label(current_name)
+                                            .tooltip(if self.process.is_some() {
+                                                self.tr(
+                                                    cx,
+                                                    "Stop the agent before choosing another",
+                                                    "Stopp agenten før du velger en annen",
+                                                )
+                                            } else {
+                                                self.tr(cx, "Choose an agent", "Velg en agent")
+                                            })
+                                            .disabled(self.process.is_some())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if agent::can_select_agent(this.process.is_some()) {
+                                                    let open = !this.picker_open;
+                                                    if open {
+                                                        this.refresh_agents(cx);
+                                                    }
+                                                    this.picker_open = open;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .when(show_model_picker, |row| {
+                                        row.child(
                                             Button::new("agent-model-picker")
                                                 .ghost()
                                                 .xsmall()
@@ -1898,484 +2558,8 @@ impl Render for AgentPanel {
                                                         cx.notify();
                                                     }
                                                 })),
-                                        ),
-                                )
-                                .when(self.model_selector_open, |selector| {
-                                    selector.child(
-                                        v_flex()
-                                            .gap_1()
-                                            .max_h(px(120.))
-                                            .overflow_y_scrollbar()
-                                            .bg(cx.theme().group_box)
-                                            .rounded(cx.theme().radius)
-                                            .p_1()
-                                            .children(model_choices.iter().enumerate().map(
-                                                |(index, choice)| {
-                                                    let value = choice.value.clone();
-                                                    Button::new(("agent-model-choice", index))
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .w_full()
-                                                        .justify_start()
-                                                        .label(choice.name.clone())
-                                                        .disabled(!can_select_model)
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.select_model(
-                                                                    value.clone(),
-                                                                    cx,
-                                                                );
-                                                            },
-                                                        ))
-                                                },
-                                            )),
-                                    )
-                                })
-                                .when(is_grok && model_choices.is_empty(), |model_ui| {
-                                    model_ui.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(self.tr(
-                                                cx,
-                                                "No xAI models available. Configure xAI in OpenCode and restart the conversation.",
-                                                "Ingen xAI-modeller er tilgjengelige. Konfigurer xAI i OpenCode og start samtalen på nytt.",
-                                            )),
-                                    )
-                                })
-                                .when(is_grok && !model_choices.is_empty() && !grok_model_selected, |model_ui| {
-                                    model_ui.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(self.tr(
-                                                cx,
-                                                "Choose an available xAI model to continue; the current model is from another provider.",
-                                                "Velg en tilgjengelig xAI-modell for å fortsette; den gjeldende modellen kommer fra en annen leverandør.",
-                                            )),
-                                    )
-                                })
-                                .when(self.model_error.is_some(), |model_ui| {
-                                    model_ui.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().warning)
-                                            .child(self.model_error.clone().unwrap_or_default()),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(self.tr(
-                                            cx,
-                                            "Model choices come from the agent. For Grok, only advertised xAI models can be selected.",
-                                            "Modellvalg kommer fra agenten. For Grok kan bare oppgitte xAI-modeller velges.",
-                                        )),
-                                ),
-                        )
-                    })
-                    .when(!self.context.is_empty(), |content| {
-                        content.child(h_flex().flex_wrap().gap_1().children(
-                            self.context.iter().enumerate().map(|(index, path)| {
-                                let label = path
-                                    .strip_prefix(context_root.as_deref().unwrap_or(Path::new("")))
-                                    .unwrap_or(path)
-                                    .display()
-                                    .to_string();
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .px_2()
-                                    .py_1()
-                                    .bg(cx.theme().group_box)
-                                    .rounded(cx.theme().radius)
-                                    .child(div().max_w(px(150.)).truncate().text_xs().child(label))
-                                    .when_some(
-                                        std::fs::metadata(path)
-                                            .ok()
-                                            .filter(|meta| meta.is_file())
-                                            .map(|meta| agent::format_size(meta.len())),
-                                        |chip, size| {
-                                            chip.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(size),
-                                            )
-                                        },
-                                    )
-                                    .child(
-                                        Button::new(("remove-agent-context", index))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(assets::IconName::Close)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if index < this.context.len() {
-                                                    this.remove_context(index);
-                                                    cx.notify();
-                                                }
-                                            })),
-                                    )
-                            }),
-                        ))
-                    }),
-            )
-            .child(
-                div()
-                    .id("agent-transcript")
-                    .flex_1()
-                    .min_h_0()
-                    .relative()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.transcript_scroll)
-                    .child(
-                v_flex()
-                    .w_full()
-                    .min_h_full()
-                    .p_3()
-                    .gap_2()
-                    .when(show_empty_state, |transcript| {
-                        transcript.child(self.render_empty_state(cx))
-                    })
-                    .children(self.update.transcript.iter().map(|item| {
-                        match item {
-                            TranscriptItem::User(text) => div()
-                                .self_flex_end()
-                                .max_w_full()
-                                .p_2()
-                                .bg(cx.theme().group_box)
-                                .rounded(cx.theme().radius)
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(self.tr(cx, "You", "Du")),
-                                        )
-                                        .child(div().text_sm().child(text.clone())),
-                                )
-                                .into_any_element(),
-                            TranscriptItem::Message(text) => div()
-                                .w_full()
-                                .text_sm()
-                                .child(text.clone())
-                                .into_any_element(),
-                            TranscriptItem::Thought(text) => {
-                                let label = self.tr(cx, "Thinking", "Tenker");
-                                div()
-                                    .w_full()
-                                    .child(
-                                        Button::new(("agent-thought", text.len()))
-                                            .ghost()
-                                            .xsmall()
-                                            .label(if self.thoughts_expanded {
-                                                self.tr(cx, "Hide thinking", "Skjul tenking")
-                                            } else {
-                                                label
-                                            })
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.thoughts_expanded = !this.thoughts_expanded;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .when(self.thoughts_expanded, |card| {
-                                        card.child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(text.clone()),
-                                        )
-                                    })
-                                    .into_any_element()
-                            }
-                            TranscriptItem::Tool(id) => self.render_tool(id, cx),
-                            TranscriptItem::Plan => self.render_plan(cx).into_any_element(),
-                        }
-                    }))
-                    .children(self.pending_permissions.iter().enumerate().map(
-                        |(request_index, pending)| {
-                            let request_id = pending.id.clone();
-                            let options = pending.options.clone();
-                            v_flex()
-                                .w_full()
-                                .gap_2()
-                                .p_3()
-                                .bg(cx.theme().group_box)
-                                .rounded(cx.theme().radius)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .child(div().text_sm().font_medium().child(pending.title.clone()))
-                                .child(h_flex().gap_2().children(
-                                    options.into_iter().enumerate().map(
-                                        |(option_index, option)| {
-                                            let request_id = request_id.clone();
-                                            let option_id = option.id.clone();
-                                            let button_id = ((request_index as u64) << 32)
-                                                | option_index as u64;
-                                            let label = if option.name.is_empty() {
-                                                match option.kind.as_str() {
-                                                    "allow_once" => {
-                                                        self.tr(cx, "Allow once", "Tillat én gang")
-                                                    }
-                                                    "reject_once" => self.tr(cx, "Reject", "Avvis"),
-                                                    "allow_always" => {
-                                                        self.tr(cx, "Always allow", "Tillat alltid")
-                                                    }
-                                                    "reject_always" => {
-                                                        self.tr(cx, "Always reject", "Avvis alltid")
-                                                    }
-                                                    _ => self.tr(cx, "Choose", "Velg"),
-                                                }
-                                                .to_string()
-                                            } else {
-                                                option.name
-                                            };
-                                            Button::new(("agent-permission", button_id))
-                                                .ghost()
-                                                .xsmall()
-                                                .label(label)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.answer_permission(
-                                                        &request_id,
-                                                        Some(&option_id),
-                                                        cx,
-                                                    );
-                                                }))
-                                        },
-                                    ),
-                                ))
-                        },
-                    ))
-                    .when(self.pending_writes.len() > 1, |content| {
-                        content.child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    Button::new("agent-write-accept-all")
-                                        .primary()
-                                        .xsmall()
-                                        .label(self.tr(cx, "Accept all", "Godta alle"))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.answer_all_writes(true, window, cx)
-                                        })),
-                                )
-                                .child(
-                                    Button::new("agent-write-reject-all")
-                                        .ghost()
-                                        .xsmall()
-                                        .label(self.tr(cx, "Reject all", "Avvis alle"))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.answer_all_writes(false, window, cx)
-                                        })),
-                                ),
-                        )
-                    })
-                    .children(
-                        self.pending_writes
-                            .iter()
-                            .enumerate()
-                            .map(|(index, pending)| {
-                                let request_id = pending.id.clone();
-                                let path = pending.path.clone();
-                                let before = pending.before.clone();
-                                let after = pending.after.clone();
-                                let diff = agent::simple_diff(
-                                    &path.display().to_string(),
-                                    &before,
-                                    &after,
-                                );
-                                v_flex()
-                                    .w_full()
-                                    .gap_2()
-                                    .p_3()
-                                    .bg(cx.theme().group_box)
-                                    .rounded(cx.theme().radius)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .child(div().text_sm().font_medium().child(self.tr(
-                                        cx,
-                                        "Proposed file change",
-                                        "Foreslått filendring",
-                                    )))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(
-                                                path.strip_prefix(
-                                                    self.conversation_root
-                                                        .as_deref()
-                                                        .unwrap_or(Path::new("")),
-                                                )
-                                                .unwrap_or(&path)
-                                                .display()
-                                                .to_string(),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .max_h(px(150.))
-                                            .overflow_y_scrollbar()
-                                            .child(Self::render_diff(&diff, cx)),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                Button::new(("agent-write-accept", index))
-                                                    .primary()
-                                                    .xsmall()
-                                                    .label(self.tr(cx, "Accept", "Godta"))
-                                                    .on_click(cx.listener({
-                                                        let request_id = request_id.clone();
-                                                        move |this, _, window, cx| {
-                                                            this.answer_write(
-                                                                &request_id,
-                                                                true,
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        }
-                                                    })),
-                                            )
-                                            .child(
-                                                Button::new(("agent-write-reject", index))
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .label(self.tr(cx, "Reject", "Avvis"))
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.answer_write(
-                                                                &request_id,
-                                                                false,
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            ),
-                                    )
-                            }),
-                    )
-                    .when(!self.applied.is_empty(), |content| {
-                        content.child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    Button::new("agent-undo-changes")
-                                        .ghost()
-                                        .xsmall()
-                                        .label(self.tr(
-                                            cx,
-                                            "Undo agent changes",
-                                            "Angre agentens endringer",
-                                        ))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.undo_agent_changes(window, cx)
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{}", self.applied.len())),
-                                ),
-                        )
-                    })
-                    .when_some(self.review_notice.clone(), |content, notice| {
-                        content.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(notice),
-                        )
-                    })
-                    .when_some(self.error.clone(), |content, error| {
-                        content.child(
-                            v_flex()
-                                .gap_1()
-                                .p_2()
-                                .bg(cx.theme().group_box)
-                                .rounded(cx.theme().radius)
-                                .text_xs()
-                                .child(error)
-                                .when_some(self.error_details.clone(), |this, details| {
-                                    this.child(
-                                        Button::new("agent-error-details")
-                                            .ghost()
-                                            .xsmall()
-                                            .label(self.tr(cx, "Details", "Detaljer"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.details_open = !this.details_open;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .when(self.details_open, |this| {
-                                        this.child(
-                                            div()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(details),
-                                        )
-                                    })
-                                }),
-                        )
-                    })
-                    .when(show_working, |content| {
-                        content.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(self.tr(cx, "Working…", "Arbeider…")),
-                        )
-                    }),
-                    )
-                    .vertical_scrollbar(&self.transcript_scroll),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .p_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(Textarea::new(&self.composer).h(px(84.)).appearance(true)
-                        .disabled(self.process.is_none() || self.session_id.is_none() || self.stopping))
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if self.process.is_some() {
-                                        self.tr(
-                                            cx,
-                                            "Enter to send · Shift+Enter for a new line",
-                                            "Enter for å sende · Shift+Enter for ny linje",
-                                        )
-                                    } else {
-                                        self.tr(
-                                            cx,
-                                            "Start an agent to send messages",
-                                            "Start en agent for å sende meldinger",
                                         )
                                     }),
-                            )
-                            .child(
-                                Button::new("agent-send")
-                                    .primary()
-                                    .xsmall()
-                                    .icon(assets::IconName::ArrowUp)
-                                    .label(self.tr(cx, "Send", "Send"))
-                                    .disabled(!can_send)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.send_from_composer(window, cx)
-                                    })),
                             ),
                     ),
             )
@@ -2484,14 +2668,21 @@ impl AgentPanel {
             "failed" | "cancelled" => (assets::IconName::X, self.tr(cx, "Failed", "Feilet")),
             _ => (assets::IconName::Circle, self.tr(cx, "Pending", "Venter")),
         };
+        let theme = cx.theme();
         v_flex()
             .w_full()
             .gap_1()
             .child(
                 h_flex()
                     .w_full()
+                    .px_2()
+                    .py_1()
                     .gap_2()
                     .items_center()
+                    .rounded(px(7.))
+                    .bg(theme.group_box.opacity(0.6))
+                    .border_1()
+                    .border_color(theme.border.opacity(0.55))
                     .child(
                         Button::new(("agent-tool", tool_index))
                             .ghost()
@@ -2517,14 +2708,14 @@ impl AgentPanel {
                     )
                     .child(
                         Icon::new(status_icon)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground),
+                            .size_3()
+                            .text_color(theme.muted_foreground),
                     )
                     .child(
                         div()
                             .flex_shrink_0()
                             .text_xs()
-                            .text_color(cx.theme().muted_foreground)
+                            .text_color(theme.muted_foreground)
                             .child(status_label),
                     ),
             )

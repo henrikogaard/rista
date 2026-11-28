@@ -45,6 +45,7 @@ pub(crate) enum Axis {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum PaneMode {
     #[default]
+    Live,
     Source,
     Split,
     Preview,
@@ -118,7 +119,7 @@ impl EditorLayout {
                 id: group,
                 tabs: Vec::new(),
                 selected: None,
-                mode: PaneMode::Source,
+                mode: PaneMode::Live,
             }),
             paths: BTreeMap::new(),
             focused: group,

@@ -124,12 +124,14 @@ impl Workspace {
         };
         let row = div()
             .id(("bookmark-row", id))
-            .w_full()
+            .mx_2()
             .min_h(px(26.))
             .px_2()
-            .pl(px(8. + depth as f32 * 16.))
+            .pl(px(8. + depth as f32 * 14.))
             .py_0p5()
-            .when(drop_into, |this| this.bg(theme.muted.opacity(0.35)))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .when(drop_into, |this| this.bg(theme.muted.opacity(0.45)))
             .on_prepaint({
                 let bounds = bounds.clone();
                 move |resolved, _, _| bounds.set(resolved)
@@ -226,7 +228,7 @@ impl Workspace {
                     })
                     .child(
                         h_flex()
-                            .gap_1()
+                            .gap_2()
                             .items_center()
                             .child(
                                 Icon::new(if is_group {
@@ -238,21 +240,23 @@ impl Workspace {
                                 } else {
                                     Self::bookmark_icon(item)
                                 })
-                                .size_4()
+                                .size_3p5()
                                 .text_color(if missing {
                                     theme.danger
                                 } else {
-                                    theme.muted_foreground
+                                    theme.muted_foreground.opacity(0.8)
                                 }),
                             )
                             .child(
                                 div()
-                                    .text_sm()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
                                     .truncate()
                                     .text_color(if missing {
                                         theme.danger
                                     } else {
-                                        theme.foreground
+                                        theme.sidebar_foreground
                                     })
                                     .child(title),
                             )
@@ -266,16 +270,17 @@ impl Workspace {
                             })
                             .when(is_group, |this| {
                                 this.child(
-                                    div().text_xs().text_color(theme.muted_foreground).child(
-                                        format!(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground.opacity(0.65))
+                                        .child(format!(
                                             "{}",
                                             match &item.kind {
                                                 BookmarkKind::Group { items, .. } =>
                                                     Self::bookmark_count(items),
                                                 _ => 0,
                                             }
-                                        ),
-                                    ),
+                                        )),
                                 )
                             }),
                     )
@@ -315,33 +320,39 @@ impl Workspace {
             }));
         v_flex()
             .w_full()
+            .pb_1()
             .child(
                 h_flex()
                     .w_full()
-                    .px_2()
-                    .py_1p5()
+                    .px_3()
+                    .pt_1p5()
+                    .pb_1()
                     .gap_1()
                     .items_center()
                     .child(
                         div()
                             .id("bookmark-toggle")
                             .flex_grow(1.)
+                            .cursor_pointer()
                             .child(
                                 h_flex()
                                     .gap_1()
                                     .items_center()
                                     .child(
-                                        Icon::new(if self.starred_open {
-                                            assets::IconName::ChevronDown
-                                        } else {
-                                            assets::IconName::ChevronRight
-                                        })
-                                        .size_4()
-                                        .text_color(muted_foreground),
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(muted_foreground.opacity(0.8))
+                                            .child(self.tr("Pinned", "Festet")),
                                     )
-                                    .child(div().text_xs().text_color(muted_foreground).child(
-                                        format!("{} · {count}", self.tr("Bookmarks", "Bokmerker")),
-                                    )),
+                                    .when(count > 0, |row| {
+                                        row.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted_foreground.opacity(0.55))
+                                                .child(format!("{count}")),
+                                        )
+                                    }),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.starred_open = !this.starred_open;
@@ -382,29 +393,31 @@ impl Workspace {
                 self.bookmark_drop_target == Some(DropTarget::Root),
                 |this| this.child(div().h(px(1.)).w_full().bg(cx.theme().accent.opacity(0.7))),
             )
-            .when(self.starred_open, |this| {
-                this.child(
-                    v_flex()
-                        .w_full()
-                        .children(
-                            self.settings
-                                .bookmarks
-                                .items
-                                .iter()
-                                .map(|item| self.render_bookmark_item(item, 0, view.clone(), cx)),
-                        )
-                        .capture_any_mouse_up({
-                            let view = view.clone();
-                            move |_, _, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.dragged_bookmark = None;
-                                    this.bookmark_drop_target = None;
-                                    cx.notify();
-                                });
-                            }
-                        }),
-                )
-            })
+            .when(
+                self.starred_open && !self.settings.bookmarks.items.is_empty(),
+                |this| {
+                    this.child(
+                        v_flex()
+                            .w_full()
+                            .gap_0p5()
+                            .children(
+                                self.settings.bookmarks.items.iter().map(|item| {
+                                    self.render_bookmark_item(item, 0, view.clone(), cx)
+                                }),
+                            )
+                            .capture_any_mouse_up({
+                                let view = view.clone();
+                                move |_, _, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.dragged_bookmark = None;
+                                        this.bookmark_drop_target = None;
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                },
+            )
     }
 
     fn show_bookmark_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {

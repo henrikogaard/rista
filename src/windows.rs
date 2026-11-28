@@ -799,6 +799,7 @@ fn create_workspace(
         app_id: Some("no.ogard.rista".to_string()),
         titlebar: Some(TitlebarOptions {
             title: linux.then(|| "Rísta".into()),
+            traffic_light_position: Some(point(px(12.), px(13.))),
             ..TitleBar::title_bar_options()
         }),
         // Rísta draws its own title bar with window controls; without this

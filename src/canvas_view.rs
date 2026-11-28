@@ -417,6 +417,8 @@ impl CanvasView {
                     images: None,
                     doc_path: Some(doc.path.clone()),
                     depth: 0,
+                    line_offset: 0,
+                    live_mode: false,
                     style: doc.resolved_style.clone(),
                     catalog,
                     enabled_style_snippets: doc.enabled_style_snippets().to_vec(),

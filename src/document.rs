@@ -231,6 +231,8 @@ pub struct Document {
     /// itself notifies the editor, so without this guard refresh → notify
     /// → refresh would spin forever.
     focus_cursor: Option<usize>,
+    /// Line byte-start decorations were last computed for (cursor-aware reveal).
+    caret_line_start: Option<usize>,
     /// Typewriter mode: keep the caret vertically centred while typing.
     pub typewriter_mode: bool,
     /// The scroll offset typewriter mode last requested — a request clamped
@@ -492,6 +494,7 @@ impl Document {
             native_history_action: None,
             focus_mode: false,
             focus_cursor: None,
+            caret_line_start: None,
             typewriter_mode: false,
             typewriter_target: None,
             status_cursor: None,
@@ -647,12 +650,31 @@ impl Document {
                     editor.present_completion_items(cursor, "", vec![], cx);
                     cursor
                 });
-                // Focus mode follows the caret — arrow keys notify too.
+                // Focus mode & cursor-aware syntax reveal follow the caret.
                 // Skipping unchanged positions breaks the set→notify loop.
-                if this.focus_mode && !this.is_canvas && this.focus_cursor != Some(cursor) {
-                    this.focus_cursor = Some(cursor);
-                    let raw = this.editor.read(cx).value();
-                    this.refresh_decorations(&raw, cx);
+                if !this.is_canvas {
+                    if this.focus_mode && this.focus_cursor != Some(cursor) {
+                        this.focus_cursor = Some(cursor);
+                        let raw = this.editor.read(cx).value();
+                        let line_start = raw
+                            .as_ref()
+                            .get(..cursor.min(raw.len()))
+                            .and_then(|prefix| prefix.rfind('\n').map(|i| i + 1))
+                            .unwrap_or(0);
+                        this.caret_line_start = Some(line_start);
+                        this.refresh_decorations(&raw, cx);
+                    } else if !this.focus_mode {
+                        let raw = this.editor.read(cx).value();
+                        let line_start = raw
+                            .as_ref()
+                            .get(..cursor.min(raw.len()))
+                            .and_then(|prefix| prefix.rfind('\n').map(|i| i + 1))
+                            .unwrap_or(0);
+                        if this.caret_line_start != Some(line_start) {
+                            this.caret_line_start = Some(line_start);
+                            this.refresh_decorations(&raw, cx);
+                        }
+                    }
                 }
                 if this.typewriter_mode && !this.is_canvas {
                     this.center_caret(cx);
@@ -793,6 +815,20 @@ impl Document {
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_string()
+    }
+
+    /// Replace the canonical buffer text from Live Preview history restoration
+    /// without pushing the full-buffer replacement onto `editor`'s native undo stack.
+    pub(crate) fn replace_without_history(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_value(text, window, cx);
+        });
+        self.on_edited(window, cx);
     }
 
     fn on_edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1179,8 +1215,14 @@ impl Document {
         }
         let focus = self.focus_mode;
         let items = self.editor.update(cx, |state, cx| {
-            let cursor = focus.then(|| state.cursor());
-            crate::decorations::markdown_decorations(raw, cx.theme(), cursor)
+            let caret = state.cursor();
+            let cursor = focus.then_some(caret);
+            crate::decorations::markdown_decorations_with_caret(
+                raw,
+                cx.theme(),
+                cursor,
+                Some(caret),
+            )
         });
         match &self.decorations {
             Some(collection) => collection.set(items, cx),
@@ -1610,6 +1652,51 @@ impl Document {
 
     pub(crate) fn save_without_history(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
         self.save_inner(cx, false)
+    }
+
+    /// Overwrite the file on disk with the local buffer after the user
+    /// explicitly chooses "Keep local" in the conflict diff viewer.
+    /// Snapshots the existing disk bytes to `.rista/history/` first when in a vault.
+    pub fn force_save_over_conflict(&mut self, cx: &mut Context<Self>) -> io::Result<()> {
+        let text = self.editor.read(cx).value().to_string();
+        if let Some(root) = &self.vault_root {
+            history::snapshot_before_write(root, &self.path, &text);
+        }
+        std::fs::write(&self.path, text.as_bytes())?;
+        self.disk_bytes = Some(text.as_bytes().to_vec());
+        self.mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        self.disk_stamp = file_stamp(&self.path);
+        self.dirty = false;
+        self.conflict = false;
+        self.revision += 1;
+        self.reschedule_spellcheck_for_revision(false, cx);
+        self.save_task.take();
+        self.sync_preview(cx);
+        cx.emit(DocumentEvent::Saved);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Move the Markdown heading section starting at 1-based `heading_line`
+    /// past its adjacent sibling section (up when `!down`, down when `down`).
+    /// Returns the new 1-based line number of the moved heading on success.
+    pub fn move_heading_section_in_editor(
+        &mut self,
+        heading_line: usize,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let raw = self.editor.read(cx).value().to_string();
+        let (updated, next_line) = move_heading_section(&raw, heading_line, down)?;
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(0..raw.len(), cx);
+            editor.replace(updated, window, cx);
+        });
+        self.jump_to_line(next_line, window, cx);
+        Some(next_line)
     }
 
     fn save_inner(
@@ -4744,6 +4831,161 @@ fn canonical_save_path(path: &Path) -> io::Result<PathBuf> {
     Ok(parent.canonicalize()?.join(file_name))
 }
 
+/// Summary of line-level differences between disk bytes and local buffer edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictDiffSummary {
+    pub added: usize,
+    pub removed: usize,
+    pub patch: String,
+}
+
+/// Compute a unified diff + line change counts comparing `disk` (base) against `local` (edits).
+pub fn build_conflict_diff(label: &str, disk: &str, local: &str) -> ConflictDiffSummary {
+    let patch = crate::agent::simple_diff(label, disk, local);
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in patch.lines().skip(3) {
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    ConflictDiffSummary {
+        added,
+        removed,
+        patch,
+    }
+}
+
+fn markdown_heading_level(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+    if (1..=6).contains(&hashes)
+        && trimmed
+            .as_bytes()
+            .get(hashes)
+            .is_none_or(|&b| b == b' ' || b == b'\t')
+    {
+        Some(hashes)
+    } else {
+        None
+    }
+}
+
+/// Reorder a Markdown heading section (heading + all body & child subheadings
+/// until the next heading of equal or shallower level) past its adjacent
+/// sibling heading section at the same level within the same parent scope.
+///
+/// `heading_line` is 1-based. Returns `(updated_text, new_1based_heading_line)`.
+pub fn move_heading_section(
+    text: &str,
+    heading_line: usize,
+    down: bool,
+) -> Option<(String, usize)> {
+    if heading_line == 0 {
+        return None;
+    }
+    let trailing_newline = text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+    let target_idx = heading_line.checked_sub(1)?;
+    if target_idx >= lines.len() {
+        return None;
+    }
+
+    // Ignore frontmatter and fenced code blocks when locating headings.
+    let fm_end_line = crate::properties::frontmatter_span(text)
+        .map(|span| text[..span.end].bytes().filter(|&b| b == b'\n').count())
+        .unwrap_or(0);
+    let mut headings: Vec<(usize, usize)> = Vec::new();
+    let mut in_fence = false;
+    for (idx, line) in lines.iter().enumerate() {
+        if idx < fm_end_line {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            if let Some(level) = markdown_heading_level(line) {
+                headings.push((idx, level));
+            }
+        }
+    }
+
+    let pos = headings.iter().position(|(idx, _)| *idx == target_idx)?;
+    let target_level = headings[pos].1;
+
+    let section_end = |h_pos: usize| -> usize {
+        let level = headings[h_pos].1;
+        for &(next_idx, next_level) in &headings[h_pos + 1..] {
+            if next_level <= level {
+                return next_idx;
+            }
+        }
+        lines.len()
+    };
+
+    let (first_start, first_end, second_start, second_end, moved_start_after) = if down {
+        // Find immediate next sibling at the same level without crossing a shallower heading.
+        let mut next_pos = None;
+        for (i, &(_, lvl)) in headings.iter().enumerate().skip(pos + 1) {
+            if lvl < target_level {
+                break;
+            }
+            if lvl == target_level {
+                next_pos = Some(i);
+                break;
+            }
+        }
+        let next_pos = next_pos?;
+        let s1 = headings[pos].0;
+        let e1 = section_end(pos);
+        let s2 = headings[next_pos].0;
+        let e2 = section_end(next_pos);
+        if e1 != s2 {
+            return None;
+        }
+        (s1, e1, s2, e2, s1 + (e2 - s2))
+    } else {
+        // Find immediate preceding sibling at the same level without crossing a shallower heading.
+        let mut prev_pos = None;
+        for i in (0..pos).rev() {
+            let lvl = headings[i].1;
+            if lvl < target_level {
+                break;
+            }
+            if lvl == target_level {
+                prev_pos = Some(i);
+                break;
+            }
+        }
+        let prev_pos = prev_pos?;
+        let s1 = headings[prev_pos].0;
+        let e1 = section_end(prev_pos);
+        let s2 = headings[pos].0;
+        let e2 = section_end(pos);
+        if e1 != s2 {
+            return None;
+        }
+        (s1, e1, s2, e2, s1)
+    };
+
+    let mut reordered: Vec<&str> = Vec::with_capacity(lines.len());
+    reordered.extend_from_slice(&lines[..first_start]);
+    reordered.extend_from_slice(&lines[second_start..second_end]);
+    reordered.extend_from_slice(&lines[first_start..first_end]);
+    reordered.extend_from_slice(&lines[second_end..]);
+
+    let mut out = reordered.join("\n");
+    if trailing_newline {
+        out.push('\n');
+    }
+    Some((out, moved_start_after + 1))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5155,5 +5397,35 @@ mod tests {
                 (String::new(), "two".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn move_heading_section_reorders_siblings_with_nested_children() {
+        let doc = "# Doc\n\n## Alpha\nBody A\n\n### Alpha Sub\nSub A\n\n## Beta\nBody B\n";
+        let (moved_down, new_line) = super::move_heading_section(doc, 3, true).unwrap();
+        assert_eq!(
+            moved_down,
+            "# Doc\n\n## Beta\nBody B\n## Alpha\nBody A\n\n### Alpha Sub\nSub A\n\n"
+        );
+        assert_eq!(new_line, 5);
+
+        let (moved_back, back_line) =
+            super::move_heading_section(&moved_down, new_line, false).unwrap();
+        assert_eq!(moved_back, doc);
+        assert_eq!(back_line, 3);
+        // First sibling cannot move above its parent heading.
+        assert_eq!(super::move_heading_section(doc, 3, false), None);
+    }
+
+    #[test]
+    fn conflict_diff_summary_counts_added_and_removed_lines() {
+        let disk = "# Plan\n\nLine one\nDisk change\n";
+        let local = "# Plan\n\nLine one\nLocal edit\nExtra line\n";
+        let summary = super::build_conflict_diff("Plan.md", disk, local);
+        assert_eq!(summary.removed, 1);
+        assert_eq!(summary.added, 2);
+        assert!(summary.patch.contains("-Disk change"));
+        assert!(summary.patch.contains("+Local edit"));
+        assert!(summary.patch.contains("+Extra line"));
     }
 }
