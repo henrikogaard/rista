@@ -37,6 +37,7 @@ mod http;
 mod image_resize;
 mod inbox;
 mod link_health;
+mod live_editor;
 mod math;
 mod mermaid;
 mod note_composer;
@@ -478,25 +479,25 @@ fn apply_ui_settings(settings: &settings::Settings, cx: &mut App) {
 }
 
 pub(crate) fn internal_keymap() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new(
-            if cfg!(target_os = "macos") {
-                "cmd-z"
-            } else {
-                "ctrl-z"
-            },
-            input::Undo,
-            Some("RistaPreview"),
-        ),
-        KeyBinding::new(
-            if cfg!(target_os = "macos") {
-                "cmd-shift-z"
-            } else {
-                "ctrl-y"
-            },
-            input::Redo,
-            Some("RistaPreview"),
-        ),
+    let undo_key = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    let redo_key = if cfg!(target_os = "macos") {
+        "cmd-shift-z"
+    } else {
+        "ctrl-y"
+    };
+    let mut bindings = vec![
+        KeyBinding::new(undo_key, input::Undo, Some("RistaPreview")),
+        KeyBinding::new(redo_key, input::Redo, Some("RistaPreview")),
+        KeyBinding::new(undo_key, input::Undo, Some("RistaLivePreview")),
+        KeyBinding::new(redo_key, input::Redo, Some("RistaLivePreview")),
+        KeyBinding::new(undo_key, input::Undo, Some("RistaLiveBlock")),
+        KeyBinding::new(redo_key, input::Redo, Some("RistaLiveBlock")),
+        KeyBinding::new(undo_key, input::Undo, Some("Rista")),
+        KeyBinding::new(redo_key, input::Redo, Some("Rista")),
         // Auto-pairs — "RistaEditor" scopes them to the document
         // editor so search/dialog inputs still type the plain characters.
         KeyBinding::new("(", PairInsert { pair: "()" }, Some("RistaEditor")),
@@ -512,7 +513,18 @@ pub(crate) fn internal_keymap() -> Vec<KeyBinding> {
         KeyBinding::new(")", PairClose { pair: "()" }, Some("RistaEditor")),
         KeyBinding::new("]", PairClose { pair: "[]" }, Some("RistaEditor")),
         KeyBinding::new("}", PairClose { pair: "{}" }, Some("RistaEditor")),
-    ]
+    ];
+    if !cfg!(target_os = "macos") {
+        for ctx in [
+            "RistaPreview",
+            "RistaLivePreview",
+            "RistaLiveBlock",
+            "Rista",
+        ] {
+            bindings.push(KeyBinding::new("ctrl-shift-z", input::Redo, Some(ctx)));
+        }
+    }
+    bindings
 }
 
 fn menus(language: settings::Language) -> Vec<Menu> {
@@ -747,6 +759,15 @@ fn menus(language: settings::Language) -> Vec<Menu> {
             },
         ]),
         Menu::new("View").items([
+            MenuItem::Action {
+                name: language
+                    .text("Live Preview", "Direkteforhåndsvisning")
+                    .into(),
+                action: Box::new(ViewLive),
+                os_action: None,
+                checked: false,
+                disabled: false,
+            },
             MenuItem::Action {
                 name: "Source".into(),
                 action: Box::new(ViewSource),

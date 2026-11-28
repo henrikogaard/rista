@@ -502,6 +502,8 @@ impl Workspace {
                     .ok()
                     .and_then(|c| c.introduction.clone()),
                 depth: 0,
+                line_offset: 0,
+                live_mode: false,
                 style: std::sync::Arc::new(style),
                 catalog,
                 enabled_style_snippets: self.settings.enabled_style_snippets.clone(),
@@ -1378,12 +1380,15 @@ impl Workspace {
             .when(list, |d| d.w_full())
             .when(!list, |d| d.w(px(228.)).flex_grow(1.).max_w(px(320.)))
             .border_1()
-            .border_color(cx.theme().border)
+            .border_color(cx.theme().border.opacity(0.65))
             .rounded(cx.theme().radius_lg)
             .overflow_hidden()
-            .bg(cx.theme().background)
+            .bg(cx.theme().background.opacity(0.55))
             .cursor_pointer()
-            .hover(|s| s.bg(cx.theme().accent))
+            .hover(|s| {
+                s.bg(cx.theme().muted.opacity(0.45))
+                    .border_color(cx.theme().border)
+            })
             .when(
                 page.config.layout == folder::Layout::Gallery && card.banner.is_some(),
                 |d| {
@@ -1452,7 +1457,7 @@ impl Workspace {
             .size_full()
             .child(
                 h_flex()
-                    .h_11()
+                    .h_10()
                     .px_3()
                     .justify_between()
                     .items_center()
@@ -1549,7 +1554,6 @@ impl Workspace {
                             .child(self.render_backlinks_pane(cx))
                             .child(self.render_outgoing_pane(cx))
                             .child(self.render_tasks(cx))
-                            .child(self.render_calendar_pane(cx))
                             .child(self.render_tags(cx)),
                     )
                     .vertical_scrollbar(&self.sidebar_details_scroll),

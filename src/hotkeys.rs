@@ -339,10 +339,18 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         ToggleZen
     ),
     action_command!(
+        "view_live",
+        "Live preview",
+        "Direkteforhåndsvisning",
+        Some("secondary-1"),
+        None,
+        ViewLive
+    ),
+    action_command!(
         "view_source",
         "Source mode",
         "Kildemodus",
-        Some("secondary-1"),
+        Some("secondary-2"),
         None,
         ViewSource
     ),
@@ -350,7 +358,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "view_split",
         "Split mode",
         "Delt visning",
-        Some("secondary-2"),
+        Some("secondary-3"),
         None,
         ViewSplit
     ),
@@ -358,7 +366,7 @@ const ACTION_COMMANDS: &[CommandSpec] = &[
         "view_preview",
         "Preview mode",
         "Forhåndsvisning",
-        Some("secondary-3"),
+        Some("secondary-4"),
         None,
         ViewPreview
     ),

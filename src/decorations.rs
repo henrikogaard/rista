@@ -14,12 +14,38 @@ use std::ops::Range;
 
 /// Syntax-marker fade — `**`, `#`, `>`, `[](…)`, `---` delimiters.
 const MARKER_FADE: f32 = 0.55;
+/// Syntax-marker fade when cursor-aware reveal is active and the marker is on the caret line.
+const ACTIVE_LINE_MARKER_FADE: f32 = 0.32;
+/// Syntax-marker fade when cursor-aware reveal is active and the marker is off the caret line.
+const OFF_LINE_MARKER_FADE: f32 = 0.80;
 /// Whole-node fades — YAML frontmatter, images, thematic breaks.
 const BLOCK_FADE: f32 = 0.45;
 /// Text of a completed `- [x]` task.
 const DONE_FADE: f32 = 0.4;
 /// Focus mode: whole blocks away from the cursor.
 const FOCUS_FADE: f32 = 0.6;
+
+fn line_span_at(text: &str, offset: usize) -> Range<usize> {
+    let clamped = offset.min(text.len());
+    let start = text[..clamped].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[clamped..]
+        .find('\n')
+        .map_or(text.len(), |i| clamped + i);
+    start..end
+}
+
+fn marker_fade_for(range: &Range<usize>, active_line: Option<&Range<usize>>) -> f32 {
+    match active_line {
+        None => MARKER_FADE,
+        Some(line) => {
+            if range.start <= line.end && range.end >= line.start {
+                ACTIVE_LINE_MARKER_FADE
+            } else {
+                OFF_LINE_MARKER_FADE
+            }
+        }
+    }
+}
 
 fn fade(amount: f32) -> HighlightStyle {
     HighlightStyle {
@@ -100,9 +126,36 @@ fn mark_spans(out: &mut Vec<TextDecoration>, spans: Vec<Range<usize>>, style: Hi
     }
 }
 
+fn mark_affix(
+    out: &mut Vec<TextDecoration>,
+    range: Range<usize>,
+    active_line: Option<&Range<usize>>,
+) {
+    if !range.is_empty() {
+        let amount = marker_fade_for(&range, active_line);
+        mark(out, range, fade(amount));
+    }
+}
+
+fn mark_affixes(
+    out: &mut Vec<TextDecoration>,
+    spans: Vec<Range<usize>>,
+    active_line: Option<&Range<usize>>,
+) {
+    for span in spans {
+        mark_affix(out, span, active_line);
+    }
+}
+
 /// `[[note]]` / `![[image]]` inside a Text node (CommonMark doesn't
 /// know them) — accent the whole span, dim the bracket pairs.
-fn wikilinks(text: &str, base: usize, out: &mut Vec<TextDecoration>, accent: HighlightStyle) {
+fn wikilinks(
+    text: &str,
+    base: usize,
+    out: &mut Vec<TextDecoration>,
+    accent: HighlightStyle,
+    active_line: Option<&Range<usize>>,
+) {
     let mut i = 0;
     let bytes = text.as_bytes();
     while i + 1 < bytes.len() {
@@ -118,41 +171,56 @@ fn wikilinks(text: &str, base: usize, out: &mut Vec<TextDecoration>, accent: Hig
         let start = base + i;
         let end = base + close + 2;
         mark(out, start..end, accent);
-        mark(out, start..base + at + 2, fade(MARKER_FADE));
-        mark(out, base + close..end, fade(MARKER_FADE));
+        mark_affix(out, start..base + at + 2, active_line);
+        mark_affix(out, base + close..end, active_line);
         i = close + 2;
     }
 }
 
-fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &component::Theme) {
+fn walk(
+    node: &mdast::Node,
+    text: &str,
+    out: &mut Vec<TextDecoration>,
+    theme: &component::Theme,
+    active_line: Option<&Range<usize>>,
+) {
     match node {
-        mdast::Node::Strong(_) => mark_spans(
-            out,
-            content_spans(node),
-            HighlightStyle {
-                font_weight: Some(FontWeight::SEMIBOLD),
-                ..Default::default()
-            },
-        ),
-        mdast::Node::Emphasis(_) => mark_spans(
-            out,
-            content_spans(node),
-            HighlightStyle {
-                font_style: Some(FontStyle::Italic),
-                ..Default::default()
-            },
-        ),
-        mdast::Node::Delete(_) => mark_spans(
-            out,
-            content_spans(node),
-            HighlightStyle {
-                strikethrough: Some(StrikethroughStyle {
-                    thickness: px(1.),
-                    color: None,
-                }),
-                ..Default::default()
-            },
-        ),
+        mdast::Node::Strong(_) => {
+            mark_spans(
+                out,
+                content_spans(node),
+                HighlightStyle {
+                    font_weight: Some(FontWeight::SEMIBOLD),
+                    ..Default::default()
+                },
+            );
+            mark_affixes(out, affixes(node), active_line);
+        }
+        mdast::Node::Emphasis(_) => {
+            mark_spans(
+                out,
+                content_spans(node),
+                HighlightStyle {
+                    font_style: Some(FontStyle::Italic),
+                    ..Default::default()
+                },
+            );
+            mark_affixes(out, affixes(node), active_line);
+        }
+        mdast::Node::Delete(_) => {
+            mark_spans(
+                out,
+                content_spans(node),
+                HighlightStyle {
+                    strikethrough: Some(StrikethroughStyle {
+                        thickness: px(1.),
+                        color: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+            mark_affixes(out, affixes(node), active_line);
+        }
         mdast::Node::InlineCode(_) => {
             if let Some(range) = node_range(node) {
                 mark(
@@ -167,8 +235,8 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
                 let seg = &text[range.clone()];
                 let head = seg.len() - seg.trim_start_matches('`').len();
                 let tail = seg.len() - seg.trim_end_matches('`').len();
-                mark(out, range.start..range.start + head, fade(MARKER_FADE));
-                mark(out, range.end - tail..range.end, fade(MARKER_FADE));
+                mark_affix(out, range.start..range.start + head, active_line);
+                mark_affix(out, range.end - tail..range.end, active_line);
             }
         }
         mdast::Node::Link(_) | mdast::Node::LinkReference(_) => {
@@ -185,7 +253,7 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
                             ..Default::default()
                         },
                     );
-                    mark_spans(out, affixes(node), fade(MARKER_FADE));
+                    mark_affixes(out, affixes(node), active_line);
                 }
             }
         }
@@ -205,7 +273,7 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
                     },
                 );
             }
-            mark_spans(out, affixes(node), fade(MARKER_FADE));
+            mark_affixes(out, affixes(node), active_line);
         }
         mdast::Node::Yaml(_) | mdast::Node::Toml(_) => {
             if let Some(range) = node_range(node) {
@@ -233,14 +301,14 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
                 if let Some(b) = seg.find('[') {
                     match seg.as_bytes().get(b + 1..b + 3) {
                         Some(b" ]") | Some(b"x]") | Some(b"X]") => {
-                            mark(out, affix.start..affix.start + b, fade(MARKER_FADE));
-                            mark(out, affix.start + b + 3..affix.end, fade(MARKER_FADE));
+                            mark_affix(out, affix.start..affix.start + b, active_line);
+                            mark_affix(out, affix.start + b + 3..affix.end, active_line);
                             continue;
                         }
                         _ => {}
                     }
                 }
-                mark(out, affix, fade(MARKER_FADE));
+                mark_affix(out, affix, active_line);
             }
         }
         mdast::Node::Blockquote(_) => {
@@ -273,18 +341,18 @@ fn walk(node: &mdast::Node, text: &str, out: &mut Vec<TextDecoration>, theme: &c
                     );
                 }
             }
-            mark_spans(out, affixes(node), fade(MARKER_FADE));
+            mark_affixes(out, affixes(node), active_line);
         }
         mdast::Node::ThematicBreak(_) | mdast::Node::Break(_) => {
             if let Some(range) = node_range(node) {
-                mark(out, range, fade(MARKER_FADE));
+                mark_affix(out, range, active_line);
             }
         }
         _ => {}
     }
     if let Some(children) = node.children() {
         for child in children {
-            walk(child, text, out, theme);
+            walk(child, text, out, theme, active_line);
         }
     }
 }
@@ -511,11 +579,25 @@ fn focus_zone(children: &[mdast::Node], cursor: usize) -> Option<(usize, &mdast:
 /// All decorations for `text`, styled against the active theme. When
 /// `cursor` is given (focus mode), only the block under the caret gets
 /// the full treatment — every other top-level block fades wholesale.
+#[allow(dead_code)]
 pub fn markdown_decorations(
     text: &str,
     theme: &component::Theme,
     cursor: Option<usize>,
 ) -> Vec<TextDecoration> {
+    markdown_decorations_with_caret(text, theme, cursor, None)
+}
+
+/// Cursor-aware decorations: when `active_caret` is supplied, syntax affixes
+/// (`**`, `# `, `[[`, `]]`, etc.) fade strongly off the active line and reveal
+/// crisply on the line currently holding the caret.
+pub fn markdown_decorations_with_caret(
+    text: &str,
+    theme: &component::Theme,
+    cursor: Option<usize>,
+    active_caret: Option<usize>,
+) -> Vec<TextDecoration> {
+    let active_line = active_caret.map(|offset| line_span_at(text, offset));
     let mut constructs = markdown::Constructs::gfm();
     constructs.frontmatter = true;
     let options = markdown::ParseOptions {
@@ -538,9 +620,15 @@ pub fn markdown_decorations(
                             // The lit block: full passes inside its span.
                             let zone_text = &text[range.clone()];
                             task_markers(zone_text, range.start, &mut out, accent);
-                            wikilinks(zone_text, range.start, &mut out, accent);
+                            wikilinks(
+                                zone_text,
+                                range.start,
+                                &mut out,
+                                accent,
+                                active_line.as_ref(),
+                            );
                         }
-                        walk(&child, text, &mut out, theme);
+                        walk(&child, text, &mut out, theme, active_line.as_ref());
                     } else if let Some(range) = node_range(&child) {
                         mark(&mut out, range, fade(FOCUS_FADE));
                     }
@@ -555,8 +643,8 @@ pub fn markdown_decorations(
                 task_markers(text, 0, &mut out, accent);
                 // `[[wikilink]]` spans live inside mdast Text nodes —
                 // one textual pass covers them wherever they appear.
-                wikilinks(text, 0, &mut out, accent);
-                walk(&root, text, &mut out, theme);
+                wikilinks(text, 0, &mut out, accent, active_line.as_ref());
+                walk(&root, text, &mut out, theme, active_line.as_ref());
             }
         }
     }
@@ -577,4 +665,22 @@ pub fn markdown_decorations(
         &crate::preview::highlight_palette(theme),
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{line_span_at, marker_fade_for};
+
+    #[test]
+    fn active_line_syntax_reveals_crisper_than_inactive_lines() {
+        let text = "# Heading\n\nSecond **bold** line";
+        let line0 = line_span_at(text, 2);
+        let line2 = line_span_at(text, text.len() - 2);
+        assert_eq!(&text[line0.clone()], "# Heading");
+        assert_eq!(&text[line2.clone()], "Second **bold** line");
+        assert!(marker_fade_for(&(0..2), Some(&line0)) < marker_fade_for(&(0..2), Some(&line2)));
+        assert!(
+            marker_fade_for(&(18..20), Some(&line2)) < marker_fade_for(&(18..20), Some(&line0))
+        );
+    }
 }

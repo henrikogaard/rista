@@ -995,6 +995,7 @@ impl SettingsView {
     fn row(cx: &App, label: impl Into<SharedString>, control: impl IntoElement) -> gpui_kit::Div {
         h_flex()
             .w_full()
+            .gap_3()
             .items_center()
             .justify_between()
             .child(
@@ -1024,9 +1025,10 @@ impl Render for SettingsView {
             Appearance::System => 2,
         };
         let mode_ix = match settings.view_mode {
-            ViewMode::Source => 0,
-            ViewMode::Split => 1,
-            ViewMode::Preview => 2,
+            ViewMode::Live => 0,
+            ViewMode::Source => 1,
+            ViewMode::Split => 2,
+            ViewMode::Preview => 3,
         };
         let language_query = self
             .spell_language_search
@@ -1384,6 +1386,7 @@ impl Render for SettingsView {
                             .segmented()
                             .selected_index(mode_ix)
                             .children([
+                                Tab::new().label(settings.language.text("Live", "Direkte")),
                                 Tab::new().label("Source"),
                                 Tab::new().label("Split"),
                                 Tab::new().label("Preview"),
@@ -1393,9 +1396,10 @@ impl Render for SettingsView {
                                     cx,
                                     |s| {
                                         s.view_mode = match ix {
-                                            1 => ViewMode::Split,
-                                            2 => ViewMode::Preview,
-                                            _ => ViewMode::Source,
+                                            1 => ViewMode::Source,
+                                            2 => ViewMode::Split,
+                                            3 => ViewMode::Preview,
+                                            _ => ViewMode::Live,
                                         }
                                     },
                                     window,

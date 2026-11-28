@@ -107,6 +107,7 @@ pub enum Appearance {
 #[serde(rename_all = "snake_case")]
 pub enum ViewMode {
     #[default]
+    Live,
     Source,
     Split,
     Preview,
@@ -470,13 +471,13 @@ impl Default for Settings {
             editor_font_size: 14.0,
             ui_font_size: 13.0,
             soft_wrap: true,
-            show_line_numbers: true,
+            show_line_numbers: false,
             vim_mode: false,
             spellcheck_enabled: cfg!(target_os = "macos"),
             spellcheck_languages: Vec::new(),
             extract_behavior: crate::note_composer::ExtractBehavior::default(),
             tab_size: 4,
-            view_mode: ViewMode::Source,
+            view_mode: ViewMode::Live,
             sidebar_collapsed: false,
             sidebar_width: None,
             dock_width: None,
@@ -661,6 +662,10 @@ pub fn resolve_editor_font<'a>(requested: &'a str, installed: &[String]) -> &'a 
 
 /// Editor font candidates for the settings picker.
 pub const EDITOR_FONTS: &[&str] = &[
+    "SF Pro Text",
+    "Inter",
+    "Georgia",
+    "iA Writer Duo",
     "SF Mono",
     "Menlo",
     "JetBrains Mono",

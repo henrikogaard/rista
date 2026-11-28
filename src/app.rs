@@ -35,7 +35,6 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IndexPath, Sizable, TitleBar, WindowExt,
 };
@@ -102,10 +101,6 @@ fn dialog_footer(
         )
 }
 
-/// Below this pane tab-strip width the view-mode control shows icons
-/// instead of labels, so a narrow split pane keeps room for its tabs.
-const PANE_MODE_LABELS_MIN_WIDTH: Pixels = px(420.);
-
 /// The command palette's default shortcut as shown in the title bar.
 const PALETTE_SHORTCUT: &str = if cfg!(target_os = "macos") {
     "⌘K"
@@ -118,7 +113,7 @@ const READABLE_WIDTH: f32 = 720.;
 
 /// Preview body text sits this many points above the UI size: chrome stays
 /// compact while notes read at a comfortable size (16 pt by default).
-const PREVIEW_BODY_STEP: f32 = 3.;
+const PREVIEW_BODY_STEP: f32 = 1.5;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileMetadataSnapshot {
@@ -232,6 +227,7 @@ pub struct Workspace {
     folder: Option<folder_dashboard::FolderPage>,
     folder_search: Entity<InputState>,
     explorer_search: Entity<InputState>,
+    explorer_search_open: bool,
     move_undo: Vec<(PathBuf, PathBuf)>,
     inbox_undo: Vec<crate::inbox::InboxUndo>,
     terminals: Vec<tools_panel::TerminalTab>,
@@ -268,9 +264,6 @@ pub struct Workspace {
     /// Right mouse-down handler (the strip-level context menu reads it
     /// when it builds its items on the next frame).
     tab_menu_token: Option<TabToken>,
-    /// Panes whose tab strip is too narrow for the labelled view-mode
-    /// control — they show icons instead. Measured on prepaint.
-    compact_mode_panes: HashSet<GroupId>,
     /// Focus mode: dim every editor block except the one under the
     /// caret. Toggled via the palette; applies to all open docs.
     focus_mode: bool,
@@ -326,6 +319,10 @@ pub struct Workspace {
     pending_preview_history: Vec<(Entity<Document>, Box<dyn Action>)>,
     preview_history_scheduled: bool,
     hotkey_warning: Option<crate::hotkeys::HotkeyNotice>,
+    /// Exact left X of the titlebar's left slot, captured on prepaint so the
+    /// floating tab strip aligns pixel-for-pixel with the floating editor card.
+    titlebar_left_x: Rc<std::cell::Cell<Option<f32>>>,
+    measured_tab_inset: Option<f32>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -356,6 +353,8 @@ struct OpenDoc {
     preview: bool,
     /// Present when the file is a `.base` — a live view over the vault.
     base: Option<Entity<bases::BaseView>>,
+    /// Present for Markdown documents — block-level Live Preview (WYSIWYG) view.
+    live: Option<Entity<crate::live_editor::LiveView>>,
     _sub: Subscription,
     _focus_sub: Subscription,
 }
@@ -441,8 +440,128 @@ type PromptsDone = Rc<
 #[derive(Clone)]
 enum PaletteEntry {
     File(PathBuf),
+    Heading(usize),
     Command(PaletteCmd),
     Tool(crate::extensions::Launcher),
+}
+
+/// Extract a clean 1-line body snippet for Quick Switcher / Command Palette items
+/// without reading entire large files (reads at most the first 1.5 KB).
+pub(super) fn note_preview_snippet(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    if !matches!(ext.as_str(), "md" | "markdown") {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str());
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = String::new();
+    let _ = file.take(1536).read_to_string(&mut buf);
+    extract_note_preview_snippet(&buf, stem)
+}
+
+fn extract_note_preview_snippet(raw: &str, note_stem: Option<&str>) -> Option<String> {
+    let body = match crate::properties::frontmatter_span(raw) {
+        Some(span) => &raw[span.end..],
+        None => raw,
+    };
+    let mut first_heading_fallback: Option<String> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("---")
+            || trimmed.starts_with("```")
+            || trimmed.starts_with("![[")
+            || trimmed.starts_with("![")
+        {
+            continue;
+        }
+        // Skip callout header lines like `> [!info] Title` so we pick the actual body text below.
+        if let Some(after_gt) = trimmed.strip_prefix('>') {
+            let after_gt = after_gt.trim_start();
+            if after_gt.starts_with("[!") && after_gt.contains(']') {
+                continue;
+            }
+        }
+        let is_heading = trimmed.starts_with('#');
+        let cleaned = trimmed
+            .trim_start_matches('#')
+            .trim_start_matches('>')
+            .trim()
+            .trim_start_matches("- [ ] ")
+            .trim_start_matches("- [x] ")
+            .trim_start_matches("- [X] ")
+            .trim_start_matches("- ")
+            .trim_start_matches("* ")
+            .trim()
+            .replace("**", "")
+            .replace("~~", "")
+            .replace("[[", "")
+            .replace("]]", "");
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        // Skip a leading heading that simply repeats the note's own title.
+        if is_heading && note_stem.is_some_and(|stem| cleaned.eq_ignore_ascii_case(stem.trim())) {
+            continue;
+        }
+        if is_heading && first_heading_fallback.is_none() {
+            first_heading_fallback = Some(cleaned.to_string());
+            continue;
+        }
+        if cleaned.chars().count() > 86 {
+            let mut out: String = cleaned.chars().take(85).collect();
+            out.push('…');
+            return Some(out);
+        }
+        return Some(cleaned.to_string());
+    }
+    first_heading_fallback.map(|s| {
+        if s.chars().count() > 86 {
+            let mut out: String = s.chars().take(85).collect();
+            out.push('…');
+            out
+        } else {
+            s
+        }
+    })
+}
+
+/// Build Command Palette search keywords so both direct queries (`local graph`)
+/// and `>` command queries (`>`, `>local graph`, `> local graph`, `>agent`)
+/// match reliably under substring filtering.
+fn command_palette_keywords(filter_label: &str, label: &str, keywords: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push_prefixed = |text: &str| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        out.push(trimmed.to_string());
+        out.push(format!(">{trimmed}"));
+        out.push(format!("> {trimmed}"));
+        for (idx, ch) in trimmed.char_indices() {
+            if ch.is_whitespace() {
+                let rest = trimmed[idx + ch.len_utf8()..].trim_start();
+                if !rest.is_empty() {
+                    out.push(format!(">{rest}"));
+                    out.push(format!("> {rest}"));
+                }
+            }
+        }
+    };
+    push_prefixed(filter_label);
+    if !label.eq_ignore_ascii_case(filter_label) {
+        push_prefixed(label);
+    }
+    for kw in keywords {
+        push_prefixed(kw);
+    }
+    out
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -481,6 +600,7 @@ pub(crate) enum PaletteCmd {
     SplitDown,
     NextPane,
     PrevPane,
+    LiveMode,
     SourceMode,
     SplitMode,
     PreviewMode,
@@ -598,6 +718,7 @@ impl PaletteCmd {
         Self::SplitDown,
         Self::NextPane,
         Self::PrevPane,
+        Self::LiveMode,
         Self::SourceMode,
         Self::SplitMode,
         Self::PreviewMode,
@@ -715,6 +836,7 @@ impl PaletteCmd {
             SplitDown => "split_pane_down",
             NextPane => "next_pane",
             PrevPane => "previous_pane",
+            LiveMode => "view_live",
             SourceMode => "view_source",
             SplitMode => "view_split",
             PreviewMode => "view_preview",
@@ -837,6 +959,7 @@ impl PaletteCmd {
             SplitDown => "Del ned",
             NextPane => "Neste redigeringsfelt",
             PrevPane => "Forrige redigeringsfelt",
+            LiveMode => "Direkteforhåndsvisning",
             SourceMode => "Kildemodus",
             SplitMode => "Delt visning",
             PreviewMode => "Forhåndsvisning",
@@ -1085,10 +1208,15 @@ impl PaletteCmd {
                 "Focus previous editor pane",
                 &["pane", "focus", "previous"],
             ),
-            SourceMode => (
+            LiveMode => (
                 assets::IconName::SquarePen,
+                "View: live preview",
+                &["wysiwyg", "live", "preview", "editor", "mode"],
+            ),
+            SourceMode => (
+                assets::IconName::Code,
                 "View: source",
-                &["editor", "mode"],
+                &["editor", "markdown", "raw", "mode"],
             ),
             SplitMode => (
                 assets::IconName::SquareSplitHorizontal,
@@ -1596,6 +1724,7 @@ impl Workspace {
             folder: None,
             folder_search,
             explorer_search,
+            explorer_search_open: false,
             move_undo: Vec::new(),
             inbox_undo: Vec::new(),
             terminals: Vec::new(),
@@ -1616,7 +1745,6 @@ impl Workspace {
             recent: Vec::new(),
             closed_tabs: Vec::new(),
             tab_menu_token: None,
-            compact_mode_panes: HashSet::new(),
             focus_mode: settings.focus_mode,
             typewriter_mode: settings.typewriter_mode,
             nav_stack: Vec::new(),
@@ -1656,6 +1784,8 @@ impl Workspace {
             pending_preview_history: Vec::new(),
             preview_history_scheduled: false,
             hotkey_warning: crate::hotkeys::warning(cx),
+            titlebar_left_x: Rc::new(std::cell::Cell::new(None)),
+            measured_tab_inset: None,
             focus_handle,
             settings_baseline: settings.clone(),
             settings,
@@ -1687,6 +1817,7 @@ impl Workspace {
             .map(PathBuf::from)
             .map(|path| path.canonicalize().unwrap_or(path));
         let legacy_mode = match this.settings.view_mode {
+            ViewMode::Live => PaneMode::Live,
             ViewMode::Source => PaneMode::Source,
             ViewMode::Split => PaneMode::Split,
             ViewMode::Preview => PaneMode::Preview,
@@ -2575,8 +2706,19 @@ impl Workspace {
         // In Preview (and on image docs) no editor is mounted — its
         // focus handle is dead weight and ⌘ bindings go nowhere, so
         // the workspace itself takes focus.
-        let editor_alive =
-            self.settings.view_mode != ViewMode::Preview && !self.active_doc_is_image(cx);
+        if self.settings.view_mode == ViewMode::Live && !self.active_doc_is_image(cx) {
+            if let Some(live) = self
+                .active
+                .and_then(|i| self.docs.get(i))
+                .and_then(|d| d.live.clone())
+            {
+                live.update(cx, |lv, cx| lv.focus_active_or_first(window, cx));
+                cx.notify();
+                return;
+            }
+        }
+        let editor_alive = !matches!(self.settings.view_mode, ViewMode::Preview | ViewMode::Live)
+            && !self.active_doc_is_image(cx);
         if editor_alive {
             if let Some(doc) = self.active_doc() {
                 let doc = doc.clone();
@@ -2728,6 +2870,13 @@ impl Workspace {
         // In Preview the editor is unmounted — forwarding would bounce
         // the action straight back here, so stop instead.
         if self.settings.view_mode == ViewMode::Preview {
+            return;
+        }
+        if self.settings.view_mode == ViewMode::Live {
+            self.set_view_mode(ViewMode::Source, window, cx);
+            window.defer(cx, |window, cx| {
+                window.dispatch_action(input::Search.boxed_clone(), cx);
+            });
             return;
         }
         if let Some(doc) = self.active_doc().cloned() {
@@ -3053,7 +3202,27 @@ impl Workspace {
         self.peek_at(PeekKind::Footnote(label, body), pos, cx);
     }
 
-    fn open_document(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn queue_preview_history_pub(
+        &mut self,
+        doc: Entity<Document>,
+        redo: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let action: Box<dyn Action> = if redo {
+            Box::new(input::Redo)
+        } else {
+            Box::new(input::Undo)
+        };
+        self.pending_preview_history.push((doc, action));
+        cx.notify();
+    }
+
+    pub(crate) fn open_document(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_document_impl(path, false, false, window, cx);
     }
 
@@ -3452,10 +3621,32 @@ impl Workspace {
                 })
             })
             .flatten();
+        let live = (!doc.read(cx).is_image
+            && !doc.read(cx).is_canvas
+            && doc.read(cx).pdf.is_none()
+            && doc.read(cx).file_preview.is_none()
+            && base.is_none())
+        .then(|| {
+            let workspace = cx.weak_entity();
+            let vault = Some(self.vault.clone());
+            let tab_size = self.settings.tab_size;
+            let doc_for_live = doc.clone();
+            cx.new(|cx| {
+                crate::live_editor::LiveView::new(
+                    workspace,
+                    vault,
+                    tab_size,
+                    doc_for_live,
+                    window,
+                    cx,
+                )
+            })
+        });
         let opened = OpenDoc {
             entity: doc.clone(),
             preview,
             base,
+            live,
             _sub: sub,
             _focus_sub: focus_sub,
         };
@@ -3783,6 +3974,7 @@ impl Workspace {
             .find(|(group, _, _, _)| *group == focused)
         {
             self.settings.view_mode = match mode {
+                PaneMode::Live => ViewMode::Live,
                 PaneMode::Source => ViewMode::Source,
                 PaneMode::Split => ViewMode::Split,
                 PaneMode::Preview => ViewMode::Preview,
@@ -5714,6 +5906,260 @@ impl Workspace {
                     });
                     true
                 })
+                .on_close(move |_, window, cx| {
+                    close_view.update(cx, |this, cx| {
+                        this.focus_active_pane_after_mount(window, cx);
+                    });
+                })
+        });
+    }
+
+    /// Side-by-side / unified Conflict Diff Viewer comparing the version currently
+    /// on disk against unsaved local edits, with one-click resolution options.
+    fn show_conflict_diff_dialog(
+        &mut self,
+        doc: Entity<Document>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (path, title, local_text) = {
+            let d = doc.read(cx);
+            (
+                d.path.clone(),
+                d.title(),
+                d.editor.read(cx).value().to_string(),
+            )
+        };
+        let disk_text = std::fs::read_to_string(&path).unwrap_or_default();
+        let file_label = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| title.clone());
+        let summary = crate::document::build_conflict_diff(&file_label, &disk_text, &local_text);
+        let identical = disk_text == local_text;
+        let language = self.settings.language;
+        let view = cx.entity();
+        self.refocus(window, cx);
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let theme = cx.theme();
+            let view_keep = view.clone();
+            let view_disk = view.clone();
+            let view_copy = view.clone();
+            let close_view = view.clone();
+            let doc_keep = doc.clone();
+            let doc_disk = doc.clone();
+            let patch_lines: Vec<String> = summary
+                .patch
+                .lines()
+                .skip(3)
+                .map(str::to_string)
+                .collect();
+            let dialog_title = match language {
+                Language::Norwegian => format!("Konflikt i «{title}»"),
+                Language::English => format!("Conflict in “{title}”"),
+            };
+            dialog
+                .title(dialog_title)
+                .w(px(700.))
+                .overlay_closable(true)
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_3()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(language.text(
+                                            "Red (-) = only on disk · Green (+) = your local edits",
+                                            "Rød (-) = bare på disk · Grønn (+) = dine lokale endringer",
+                                        )),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .px_1p5()
+                                                .py(px(1.))
+                                                .rounded(px(999.))
+                                                .bg(theme.success.opacity(0.14))
+                                                .text_xs()
+                                                .text_color(theme.success)
+                                                .child(format!("+{}", summary.added)),
+                                        )
+                                        .child(
+                                            div()
+                                                .px_1p5()
+                                                .py(px(1.))
+                                                .rounded(px(999.))
+                                                .bg(theme.danger.opacity(0.14))
+                                                .text_xs()
+                                                .text_color(theme.danger)
+                                                .child(format!("-{}", summary.removed)),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("conflict-diff-scroll")
+                                .w_full()
+                                .max_h(px(360.))
+                                .overflow_y_scroll()
+                                .p_2()
+                                .rounded(theme.radius)
+                                .bg(theme.muted.opacity(0.32))
+                                .border_1()
+                                .border_color(theme.border.opacity(0.65))
+                                .child(if identical {
+                                    div()
+                                        .p_2()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(language.text(
+                                            "Disk and local buffer have identical text.",
+                                            "Disk og lokal buffer har identisk tekst.",
+                                        ))
+                                        .into_any_element()
+                                } else if patch_lines.is_empty() {
+                                    div()
+                                        .p_2()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(language.text(
+                                            "Only line endings or trailing whitespace differ.",
+                                            "Bare linjeskift eller etterfølgende mellomrom skiller.",
+                                        ))
+                                        .into_any_element()
+                                } else {
+                                    v_flex()
+                                        .w_full()
+                                        .font_family("monospace")
+                                        .text_xs()
+                                        .gap_0p5()
+                                        .children(patch_lines.into_iter().map(|line| {
+                                            let display = match line.split_at_checked(1) {
+                                                Some((sign @ ("+" | "-"), rest)) => {
+                                                    format!("{sign} {rest}")
+                                                }
+                                                _ => line.clone(),
+                                            };
+                                            let row = div()
+                                                .w_full()
+                                                .px_1p5()
+                                                .py(px(1.))
+                                                .rounded(px(4.))
+                                                .child(display);
+                                            if line.starts_with('+') {
+                                                row.text_color(theme.success)
+                                                    .bg(theme.success.opacity(0.1))
+                                            } else if line.starts_with('-') {
+                                                row.text_color(theme.danger)
+                                                    .bg(theme.danger.opacity(0.1))
+                                            } else {
+                                                row.text_color(theme.muted_foreground)
+                                            }
+                                        }))
+                                        .into_any_element()
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("conflict-diff-save-copy")
+                                        .ghost()
+                                        .small()
+                                        .label(language.text("Save copy…", "Lagre kopi…"))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            let ws = view_copy.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                ws.update(cx, |this, cx| {
+                                                    this.on_save_as(&SaveFileAs, window, cx);
+                                                });
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("conflict-diff-use-disk")
+                                        .danger()
+                                        .small()
+                                        .label(language.text(
+                                            "Use disk version",
+                                            "Bruk diskversjon",
+                                        ))
+                                        .on_click(move |_, window, cx| {
+                                            let result = doc_disk
+                                                .update(cx, |doc, cx| doc.reload(window, cx));
+                                            view_disk.update(cx, |this, cx| match result {
+                                                Ok(()) => this.note_status(
+                                                    this.tr(
+                                                        "Reloaded from disk",
+                                                        "Lastet inn fra disk",
+                                                    ),
+                                                    cx,
+                                                ),
+                                                Err(err) => this.note_status(
+                                                    format!(
+                                                        "{}: {err}",
+                                                        this.tr(
+                                                            "Could not reload",
+                                                            "Kunne ikke laste inn på nytt"
+                                                        )
+                                                    ),
+                                                    cx,
+                                                ),
+                                            });
+                                            window.close_dialog(cx);
+                                        }),
+                                )
+                                .child(
+                                    Button::new("conflict-diff-keep-local")
+                                        .primary()
+                                        .small()
+                                        .label(language.text(
+                                            "Keep local (overwrite disk)",
+                                            "Behold lokal (overskriv disk)",
+                                        ))
+                                        .on_click(move |_, window, cx| {
+                                            let result = doc_keep.update(cx, |doc, cx| {
+                                                doc.force_save_over_conflict(cx)
+                                            });
+                                            view_keep.update(cx, |this, cx| match result {
+                                                Ok(()) => this.note_status(
+                                                    this.tr(
+                                                        "Saved local version to disk",
+                                                        "Lagret lokal versjon til disk",
+                                                    ),
+                                                    cx,
+                                                ),
+                                                Err(err) => this.note_status(
+                                                    format!(
+                                                        "{}: {err}",
+                                                        this.tr(
+                                                            "Could not save",
+                                                            "Kunne ikke lagre"
+                                                        )
+                                                    ),
+                                                    cx,
+                                                ),
+                                            });
+                                            window.close_dialog(cx);
+                                        }),
+                                ),
+                        ),
+                )
                 .on_close(move |_, window, cx| {
                     close_view.update(cx, |this, cx| {
                         this.focus_active_pane_after_mount(window, cx);
@@ -7663,6 +8109,7 @@ impl Workspace {
 
     fn set_view_mode(&mut self, mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
         let pane_mode = match mode {
+            ViewMode::Live => PaneMode::Live,
             ViewMode::Source => PaneMode::Source,
             ViewMode::Split => PaneMode::Split,
             ViewMode::Preview => PaneMode::Preview,
@@ -7683,6 +8130,7 @@ impl Workspace {
         }
         self.layout.set_mode(group, mode);
         self.settings.view_mode = match mode {
+            PaneMode::Live => ViewMode::Live,
             PaneMode::Source => ViewMode::Source,
             PaneMode::Split => ViewMode::Split,
             PaneMode::Preview => ViewMode::Preview,
@@ -7691,6 +8139,9 @@ impl Workspace {
         self.focus_active_pane_after_mount(window, cx);
     }
 
+    fn on_view_live(&mut self, _: &ViewLive, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_view_mode(ViewMode::Live, w, cx);
+    }
     fn on_view_source(&mut self, _: &ViewSource, w: &mut Window, cx: &mut Context<Self>) {
         self.set_view_mode(ViewMode::Source, w, cx);
     }
@@ -7701,8 +8152,8 @@ impl Workspace {
         self.set_view_mode(ViewMode::Preview, w, cx);
     }
 
-    /// ⌘E — the edit/read toggle: Preview ⇄ Source (Split
-    /// counts as editing → jumps to Preview).
+    /// ⌘E — the edit/read toggle: Preview ⇄ Live Preview (Source/Split
+    /// count as editing → jumps to Preview).
     fn on_toggle_edit_preview(
         &mut self,
         _: &ToggleEditPreview,
@@ -7710,7 +8161,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let mode = if self.settings.view_mode == ViewMode::Preview {
-            ViewMode::Source
+            ViewMode::Live
         } else {
             ViewMode::Preview
         };
@@ -7810,6 +8261,9 @@ impl Workspace {
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let commands = PaletteCmd::ALL;
+        let vault_root = self.vault.read(cx).root.clone();
+        let can_create_note = vault_root.is_some();
+        let language = self.settings.language;
         let notes: Vec<PaletteEntry> = self
             .vault
             .read(cx)
@@ -7818,8 +8272,8 @@ impl Workspace {
             .cloned()
             .map(PaletteEntry::File)
             .collect();
-        // Recently opened notes come first — the reference editor quick-switcher
-        // style — but only ones still on disk.
+        // Recently opened notes come first — quick-switcher style —
+        // but only ones still on disk.
         let recent: Vec<PaletteEntry> = self
             .recent
             .iter()
@@ -7827,12 +8281,20 @@ impl Workspace {
             .cloned()
             .map(PaletteEntry::File)
             .collect();
+        let active_headings = self.doc_headings(cx);
 
-        // Section order must match the dialog's group order below: recent
-        // notes lead, since reopening a note is the most common use.
+        // Section order must match the dialog's group order below.
         self.palette_sections = Vec::new();
         if !recent.is_empty() {
             self.palette_sections.push(recent.clone());
+        }
+        if !active_headings.is_empty() {
+            self.palette_sections.push(
+                active_headings
+                    .iter()
+                    .map(|(line, _, _)| PaletteEntry::Heading(*line))
+                    .collect(),
+            );
         }
         self.palette_sections.push(
             commands
@@ -7844,20 +8306,117 @@ impl Workspace {
         self.palette_sections.push(notes);
 
         let file_item = |path: &std::path::Path| {
+            let title_text = path
+                .file_stem()
+                .or_else(|| path.file_name())
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let folder_hint = vault_root
+                .as_deref()
+                .and_then(|root| path.strip_prefix(root).ok())
+                .and_then(|rel| rel.parent())
+                .map(|p| p.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty());
+            let snippet = note_preview_snippet(path);
+            let label = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| title_text.clone());
             CommandItem::new()
                 .icon(assets::IconName::File)
-                .label(
-                    path.file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                )
-                .keywords([path.to_string_lossy().to_string()])
+                .label(label)
+                .keywords([path.to_string_lossy().to_string(), title_text.clone()])
+                .child(move |_, cx| {
+                    let theme = cx.theme();
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    Icon::new(assets::IconName::File)
+                                        .size_3p5()
+                                        .flex_shrink_0()
+                                        .text_color(theme.muted_foreground),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(theme.foreground)
+                                        .child(title_text.clone()),
+                                )
+                                .when_some(folder_hint.clone(), |row, folder| {
+                                    row.child(
+                                        div()
+                                            .ml_auto()
+                                            .text_xs()
+                                            .truncate()
+                                            .text_color(theme.muted_foreground.opacity(0.75))
+                                            .child(folder),
+                                    )
+                                }),
+                        )
+                        .when_some(snippet.clone(), |col, snip| {
+                            col.child(
+                                div()
+                                    .pl(px(22.))
+                                    .text_xs()
+                                    .truncate()
+                                    .text_color(theme.muted_foreground.opacity(0.8))
+                                    .child(snip),
+                            )
+                        })
+                })
         };
         let recent_items: Vec<CommandItem> = recent
             .iter()
             .filter_map(|entry| match entry {
                 PaletteEntry::File(path) => Some(file_item(path)),
                 _ => None,
+            })
+            .collect();
+        let heading_items: Vec<CommandItem> = active_headings
+            .iter()
+            .map(|(line, level, text)| {
+                let prefix = "#".repeat((*level).min(6));
+                let display = format!("{prefix} {text}");
+                let line_label = format!("L{line}");
+                CommandItem::new()
+                    .icon(assets::IconName::Hash)
+                    .label(display.clone())
+                    .keywords([format!("#{text}"), text.clone()])
+                    .child(move |_, cx| {
+                        let theme = cx.theme();
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Icon::new(assets::IconName::Hash)
+                                    .size_3p5()
+                                    .flex_shrink_0()
+                                    .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(display.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground.opacity(0.75))
+                                    .child(line_label.clone()),
+                            )
+                    })
             })
             .collect();
 
@@ -7870,10 +8429,11 @@ impl Workspace {
                     .map(|spec| spec.label(self.settings.language))
                     .unwrap_or(filter_label)
                     .to_string();
+                let cmd_keywords = command_palette_keywords(filter_label, &label, keywords);
                 CommandItem::new()
                     .icon(icon)
                     .label(label.clone())
-                    .keywords(std::iter::once(filter_label).chain(keywords.iter().copied()))
+                    .keywords(cmd_keywords)
                     .child(move |_, cx| {
                         let mut row = h_flex()
                             .w_full()
@@ -7904,10 +8464,13 @@ impl Workspace {
         let tool_items: Vec<_> = tools
             .iter()
             .map(|tool| {
+                let name = tool.name.text(self.settings.language).to_string();
+                let tool_keywords =
+                    command_palette_keywords(&name, &name, &[tool.program.as_str()]);
                 CommandItem::new()
                     .icon(assets::IconName::Terminal)
-                    .label(tool.name.text(self.settings.language).to_string())
-                    .keywords([tool.program.clone()])
+                    .label(name)
+                    .keywords(tool_keywords)
             })
             .collect();
         self.palette_sections
@@ -7915,13 +8478,19 @@ impl Workspace {
         let tools_label = self.tr("Tools", "Verktøy");
         let commands_label = self.tr("Commands", "Kommandoer");
         let recent_label = self.tr("Recent", "Nylige");
+        let headings_label = self.tr("Headings (#)", "Overskrifter (#)");
         let notes_label = self.tr("Notes", "Notater");
-        let placeholder = self.tr("Notes and commands…", "Notater og kommandoer…");
+        let placeholder = self.tr(
+            "Notes, #headings, and commands…",
+            "Notater, #overskrifter og kommandoer…",
+        );
 
         let state = self.palette_state.clone();
         let view = cx.entity();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let empty_view = view.clone();
+            let footer_view = view.clone();
             let mut palette = Command::new(&state)
                 .placeholder(placeholder)
                 .searchable(true)
@@ -7931,6 +8500,13 @@ impl Workspace {
                     CommandGroup::new()
                         .label(recent_label)
                         .items(recent_items.clone()),
+                );
+            }
+            if !heading_items.is_empty() {
+                palette = palette.group(
+                    CommandGroup::new()
+                        .label(headings_label)
+                        .items(heading_items.clone()),
                 );
             }
             palette = palette
@@ -7949,9 +8525,116 @@ impl Workspace {
                         .label(tools_label)
                         .items(tool_items.clone()),
                 )
-                .max_h(px(440.));
+                .empty(move |cmd_state, _window, cx| {
+                    let q = cmd_state.query(cx).trim().to_string();
+                    if can_create_note
+                        && !q.is_empty()
+                        && !q.starts_with('#')
+                        && !q.starts_with('>')
+                    {
+                        let target = q.clone();
+                        let ws = empty_view.clone();
+                        return h_flex()
+                            .w_full()
+                            .px_3()
+                            .py_3()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{} “{}”",
+                                        language.text(
+                                            "No match — create note",
+                                            "Ingen treff — opprett notat"
+                                        ),
+                                        q
+                                    )),
+                            )
+                            .child(
+                                Button::new("palette-create-note-empty")
+                                    .primary()
+                                    .xsmall()
+                                    .icon(assets::IconName::FilePlus)
+                                    .label(language.text("Create note", "Opprett notat"))
+                                    .on_click(move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        let target = target.clone();
+                                        let ws = ws.clone();
+                                        window.defer(cx, move |window, cx| {
+                                            ws.update(cx, |this, cx| {
+                                                this.open_wikilink(&target, window, cx);
+                                            });
+                                        });
+                                    }),
+                            )
+                            .into_any_element();
+                    }
+                    div()
+                        .w_full()
+                        .px_3()
+                        .py_4()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(language.text("No matching results", "Ingen treff"))
+                        .into_any_element()
+                })
+                .footer(move |cmd_state, _window, cx| {
+                    let q = cmd_state.query(cx).trim().to_string();
+                    let has_matches = cmd_state.matched_count() > 0;
+                    let theme = cx.theme();
+                    let show_create = can_create_note
+                        && has_matches
+                        && !q.is_empty()
+                        && !q.starts_with('#')
+                        && !q.starts_with('>');
+                    h_flex()
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .border_t_1()
+                        .border_color(theme.border.opacity(0.6))
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_xs().text_color(theme.muted_foreground).child(
+                            language.text(
+                                "# headings · > commands · Enter to open",
+                                "# overskrifter · > kommandoer · Enter for å åpne",
+                            ),
+                        ))
+                        .when(show_create, |row| {
+                            let target = q.clone();
+                            let ws = footer_view.clone();
+                            row.child(
+                                Button::new("palette-create-note-footer")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::FilePlus)
+                                    .label(format!(
+                                        "{} “{}”",
+                                        language.text("Create", "Opprett"),
+                                        q
+                                    ))
+                                    .on_click(move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        let target = target.clone();
+                                        let ws = ws.clone();
+                                        window.defer(cx, move |window, cx| {
+                                            ws.update(cx, |this, cx| {
+                                                this.open_wikilink(&target, window, cx);
+                                            });
+                                        });
+                                    }),
+                            )
+                        })
+                        .into_any_element()
+                })
+                .max_h(px(460.));
             dialog
-                .w(px(560.))
+                .w(px(600.))
                 .overlay_closable(true)
                 .close_button(false)
                 .child(
@@ -7996,6 +8679,24 @@ impl Workspace {
             .cloned();
         match entry {
             Some(PaletteEntry::File(path)) => self.open_document(path, window, cx),
+            Some(PaletteEntry::Heading(line)) => {
+                if self.settings.view_mode == ViewMode::Live {
+                    if let Some(live) = self
+                        .active
+                        .and_then(|i| self.docs.get(i))
+                        .and_then(|d| d.live.clone())
+                    {
+                        live.update(cx, |lv, cx| lv.focus_block_for_line(line, window, cx));
+                        return;
+                    }
+                }
+                if let Some(doc) = self.active_doc().cloned() {
+                    doc.update(cx, |doc, cx| {
+                        doc.jump_to_line(line, window, cx);
+                        doc.reveal_preview_line(line.saturating_sub(1), cx);
+                    });
+                }
+            }
             Some(PaletteEntry::Command(cmd)) => self.run_command(cmd, window, cx),
             Some(PaletteEntry::Tool(tool)) => self.confirm_tool(tool, window, cx),
             None => {}
@@ -8081,6 +8782,7 @@ impl Workspace {
             PaletteCmd::SplitDown => self.on_split_pane_down(&SplitPaneDown, window, cx),
             PaletteCmd::NextPane => self.on_next_pane(&NextPane, window, cx),
             PaletteCmd::PrevPane => self.on_prev_pane(&PrevPane, window, cx),
+            PaletteCmd::LiveMode => self.set_view_mode(ViewMode::Live, window, cx),
             PaletteCmd::SourceMode => self.set_view_mode(ViewMode::Source, window, cx),
             PaletteCmd::SplitMode => self.set_view_mode(ViewMode::Split, window, cx),
             PaletteCmd::PreviewMode => self.set_view_mode(ViewMode::Preview, window, cx),
@@ -8361,7 +9063,7 @@ impl Workspace {
     fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         let view = self.settings_view.clone();
         window.open_sheet_at(Placement::Right, cx, move |sheet, _window, _cx| {
-            sheet.title("Settings").w(px(360.)).child(view.clone())
+            sheet.title("Settings").size(px(420.)).child(view.clone())
         });
     }
 
@@ -9192,6 +9894,72 @@ impl Workspace {
             dir.join(name)
         };
         self.move_with_links(path, new_path, window, cx);
+    }
+
+    /// Inline rename from Live Preview's editable title — preserves the file's
+    /// directory and `.md` extension while retargeting inbound wikilinks.
+    pub(crate) fn rename_note_inline(
+        &mut self,
+        path: PathBuf,
+        new_stem: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let trimmed = new_stem.trim();
+        let bad_name = trimmed.is_empty()
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || trimmed.contains("..")
+            || trimmed
+                .chars()
+                .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*'));
+        if bad_name {
+            self.note_status(self.tr("Invalid note title", "Ugyldig notattittel"), cx);
+            return;
+        }
+        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else {
+            return;
+        };
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("md");
+        let file_name = if trimmed
+            .to_lowercase()
+            .ends_with(&format!(".{}", ext.to_lowercase()))
+        {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}.{ext}")
+        };
+        let new_path = dir.join(file_name);
+        if new_path != path {
+            self.move_with_links(path, new_path, window, cx);
+        }
+    }
+
+    /// Open the Agent panel and prefill its composer with the user's selected
+    /// passage so they can ask for edits, summaries, or explanations inline.
+    pub(crate) fn ask_agent_about_selection(
+        &mut self,
+        selection: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let trimmed = selection.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.settings.agent_open = true;
+        self.persist_settings(cx);
+        let prompt = format!(
+            "{}\n\n> {}\n\n",
+            self.tr(
+                "Help with this excerpt from the current note:",
+                "Hjelp med dette utdraget fra gjeldende notat:"
+            ),
+            trimmed.replace('\n', "\n> ")
+        );
+        self.agent_panel
+            .update(cx, |panel, cx| panel.prefill_prompt(prompt, window, cx));
+        cx.notify();
     }
 
     /// Rename or move `path` to `new_path`, retargeting inbound links and
@@ -11681,7 +12449,21 @@ impl Workspace {
     // Render
     // ------------------------------------------------------------------
 
-    fn render_title_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn single_editor_group(&self) -> bool {
+        self.layout.group_specs().len() <= 1
+    }
+
+    fn effective_sidebar_width(&self) -> f32 {
+        self.settings
+            .sidebar_width
+            .filter(|width| crate::settings::valid_sidebar_width(*width))
+            .unwrap_or(260.)
+    }
+
+    fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().colors;
+        let vault_open = self.vault.read(cx).is_open();
+        let has_workspace = vault_open || !self.docs.is_empty();
         let vault_name = self
             .vault
             .read(cx)
@@ -11689,28 +12471,76 @@ impl Workspace {
             .as_ref()
             .and_then(|r| r.file_name().map(|n| n.to_string_lossy().to_string()))
             .unwrap_or_else(|| "Rísta".to_string());
-
+        let monogram = vault_monogram(&vault_name);
         let collapsed = self.settings.sidebar_collapsed;
+        let sidebar_visible = vault_open && !collapsed && !self.zen;
         let dark = matches!(self.settings.appearance, Appearance::Dark);
+        let can_back = self.nav_pos > 0;
+        let can_forward = self.nav_pos + 1 < self.nav_stack.len();
+        let left_pad = if cfg!(target_os = "macos") {
+            if window.is_fullscreen() {
+                92.
+            } else {
+                80.
+            }
+        } else {
+            12.
+        };
+        // Align the floating tabs pixel-for-pixel with the left edge of the floating editor card.
+        let sidebar_slot_width = self
+            .measured_tab_inset
+            .unwrap_or_else(|| (self.effective_sidebar_width() + 12. - left_pad).max(96.));
+        let titlebar_left_x = self.titlebar_left_x.clone();
+        let search_tip = format!(
+            "{} ({PALETTE_SHORTCUT})",
+            self.tr("Search commands and notes", "Søk i kommandoer og notater")
+        );
 
-        let workspace = cx.entity();
-        TitleBar::new()
-            .border_0()
-            // Linux client-side decorations: the title bar's close button would
-            // otherwise remove the window without saving (see prepare_to_close).
-            .on_close_window(move |_, window, cx| {
-                if workspace.update(cx, |this, cx| this.prepare_to_close(window, cx)) {
-                    window.remove_window();
-                }
+        let nav_buttons = h_flex()
+            .gap_0p5()
+            .items_center()
+            .flex_shrink_0()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Button::new("title-nav-back")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::ArrowLeft)
+                    .tooltip(self.tr("Back", "Tilbake"))
+                    .disabled(!can_back)
+                    .on_click(cx.listener(|this, _, window, cx| this.nav_back(window, cx))),
+            )
+            .child(
+                Button::new("title-nav-forward")
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::ArrowRight)
+                    .tooltip(self.tr("Forward", "Frem"))
+                    .disabled(!can_forward)
+                    .on_click(cx.listener(|this, _, window, cx| this.nav_forward(window, cx))),
+            );
+
+        let left_controls = h_flex()
+            .h_full()
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .when(sidebar_visible, |row| {
+                row.w(px(sidebar_slot_width)).justify_between().pr_2()
             })
+            .when(!sidebar_visible, |row| row.pr_2())
+            .on_prepaint(move |bounds, _, _| {
+                titlebar_left_x.set(Some(f32::from(bounds.origin.x)));
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 h_flex()
-                    .gap_1()
+                    .gap_1p5()
                     .items_center()
                     .child(
                         Button::new("toggle-sidebar")
                             .ghost()
-                            .small()
+                            .xsmall()
                             .tooltip(self.tr("Toggle sidebar", "Vis/skjul sidepanel"))
                             .icon(if collapsed {
                                 assets::IconName::PanelLeftOpen
@@ -11721,85 +12551,177 @@ impl Workspace {
                                 this.on_toggle_sidebar(&ToggleSidebar, window, cx);
                             })),
                     )
-                    .when(self.vault.read(cx).is_open(), |this| {
+                    // When the sidebar is collapsed, keep the vault switcher accessible here.
+                    .when(vault_open && !sidebar_visible, |this| {
                         this.child(
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .font_medium()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(vault_name),
+                            h_flex()
+                                .id("title-vault-switcher")
+                                .gap_1p5()
+                                .items_center()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.settings.recent_vaults.len() > 1 {
+                                        this.show_recent_vaults(window, cx);
+                                    } else {
+                                        this.on_open_folder(&OpenFolder, window, cx);
+                                    }
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(18.))
+                                        .h(px(18.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(5.))
+                                        .bg(theme.magenta.opacity(0.18))
+                                        .text_size(px(9.))
+                                        .font_semibold()
+                                        .text_color(theme.magenta)
+                                        .child(monogram),
+                                )
+                                .child(
+                                    div()
+                                        .max_w(px(140.))
+                                        .truncate()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(theme.foreground.opacity(0.88))
+                                        .child(vault_name),
+                                ),
                         )
                     }),
             )
+            .when(has_workspace, |row| row.child(nav_buttons));
+
+        let center_tabs = if has_workspace && self.single_editor_group() {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .child(self.render_pill_tab_strip(self.layout.focused(), true, cx))
+                .into_any_element()
+        } else {
+            div().flex_1().min_w_0().into_any_element()
+        };
+
+        let right_controls = h_flex()
+            .h_full()
+            .flex_shrink_0()
+            .gap_0p5()
+            .items_center()
+            // Inset the right edge — the platform titlebar only
+            // pads the left (traffic lights), so icons here sat
+            // flush against the window corner.
+            .pl_2()
+            .pr_3()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                Button::new("title-local-graph")
+                    .ghost()
+                    .xsmall()
+                    .selected(self.settings.graph_dock_open)
+                    .tooltip(self.tr("Toggle local graph", "Vis/skjul lokal graf"))
+                    .icon(assets::IconName::Waypoints)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.on_toggle_local_graph_panel(&ToggleLocalGraphPanel, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("title-agent-panel")
+                    .ghost()
+                    .xsmall()
+                    .selected(self.settings.agent_open)
+                    .tooltip(self.tr("Toggle agent panel", "Vis/skjul agentpanel"))
+                    .icon(assets::IconName::MessageSquareQuote)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.on_toggle_agent_panel(&ToggleAgentPanel, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("toggle-inspector")
+                    .ghost()
+                    .xsmall()
+                    .selected(self.settings.inspector_open)
+                    .tooltip(self.tr("Toggle inspector", "Vis/skjul inspektør"))
+                    .icon(assets::IconName::TableProperties)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settings.inspector_open = !this.settings.inspector_open;
+                        this.persist_settings(cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("palette")
+                    .ghost()
+                    .xsmall()
+                    .tooltip(search_tip)
+                    .icon(assets::IconName::Search)
+                    .label(PALETTE_SHORTCUT)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_palette(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("workspace-layouts")
+                    .ghost()
+                    .xsmall()
+                    .tooltip(self.tr("Workspace layouts", "Arbeidsområdeoppsett"))
+                    .icon(assets::IconName::LayoutDashboard)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_workspace_picker(PaletteCmd::LoadWorkspace, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("theme")
+                    .ghost()
+                    .xsmall()
+                    .tooltip(self.tr("Toggle appearance", "Bytt utseende"))
+                    .icon(if dark {
+                        assets::IconName::Sun
+                    } else {
+                        assets::IconName::Moon
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.on_toggle_theme(&ToggleTheme, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("settings")
+                    .ghost()
+                    .xsmall()
+                    .tooltip(self.tr("Settings", "Innstillinger"))
+                    .icon(assets::IconName::Settings)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.on_open_settings(&OpenSettings, window, cx);
+                    })),
+            );
+
+        let workspace = cx.entity();
+        TitleBar::new()
+            .h(px(38.))
+            .border_0()
+            // Linux client-side decorations: the title bar's close button would
+            // otherwise remove the window without saving (see prepare_to_close).
+            .on_close_window(move |_, window, cx| {
+                if workspace.update(cx, |this, cx| this.prepare_to_close(window, cx)) {
+                    window.remove_window();
+                }
+            })
             .child(
                 h_flex()
-                    .gap_1()
+                    .size_full()
                     .items_center()
-                    // Inset the right edge — the platform titlebar only
-                    // pads the left (traffic lights), so icons here sat
-                    // flush against the window corner.
-                    .pr_3()
-                    // The local graph and agent toggles live in the status bar.
-                    .child(
-                        Button::new("toggle-inspector")
-                            .ghost()
-                            .small()
-                            .tooltip(self.tr("Toggle inspector", "Vis/skjul inspektør"))
-                            .icon(assets::IconName::TableProperties)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings.inspector_open = !this.settings.inspector_open;
-                                this.persist_settings(cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("palette")
-                            .ghost()
-                            .small()
-                            .tooltip(
-                                self.tr("Search commands and notes", "Søk i kommandoer og notater"),
-                            )
-                            .icon(assets::IconName::Search)
-                            .label(PALETTE_SHORTCUT)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_palette(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("workspace-layouts")
-                            .ghost()
-                            .small()
-                            .tooltip(self.tr("Workspace layouts", "Arbeidsområdeoppsett"))
-                            .icon(assets::IconName::LayoutDashboard)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_workspace_picker(PaletteCmd::LoadWorkspace, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("theme")
-                            .ghost()
-                            .small()
-                            .tooltip(self.tr("Toggle appearance", "Bytt utseende"))
-                            .icon(if dark {
-                                assets::IconName::Sun
-                            } else {
-                                assets::IconName::Moon
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_toggle_theme(&ToggleTheme, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("settings")
-                            .ghost()
-                            .small()
-                            .tooltip(self.tr("Settings", "Innstillinger"))
-                            .icon(assets::IconName::Settings)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_open_settings(&OpenSettings, window, cx);
-                            })),
-                    ),
+                    .child(left_controls)
+                    .child(center_tabs)
+                    .child(right_controls),
             )
     }
 
@@ -11850,19 +12772,29 @@ impl Workspace {
                     })),
             )
             .when(self.outline_open, |this| {
+                let can_edit_outline = self
+                    .active_doc()
+                    .is_some_and(|d| !d.read(cx).is_read_only() && !d.read(cx).is_canvas);
+                let up_tip = self.tr("Move section up", "Flytt seksjon opp");
+                let down_tip = self.tr("Move section down", "Flytt seksjon ned");
                 let rows = v_flex().w_full().children(headings.iter().enumerate().map(
                     |(ix, (line, level, text))| {
                         let (line, level, text) = (*line, *level, text.clone());
-                        div()
+                        h_flex()
                             .id(("outline-side", ix))
                             .w_full()
                             .px_2()
                             .pl(px(8. + 10. * (level as f32 - 1.)))
                             .py_0p5()
+                            .gap_1()
+                            .items_center()
+                            .rounded(px(4.))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.muted.opacity(0.5)))
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .text_sm()
                                     .truncate()
                                     .text_color(if level == 1 {
@@ -11872,16 +12804,83 @@ impl Workspace {
                                     })
                                     .child(text),
                             )
+                            .when(can_edit_outline && headings.len() > 1, |row| {
+                                row.child(
+                                    h_flex()
+                                        .flex_shrink_0()
+                                        .gap_0p5()
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .child(
+                                            Button::new(("outline-move-up", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(assets::IconName::ArrowUp)
+                                                .tooltip(up_tip)
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        if let Some(doc) =
+                                                            this.active_doc().cloned()
+                                                        {
+                                                            doc.update(cx, |doc, cx| {
+                                                                doc.move_heading_section_in_editor(
+                                                                    line, false, window, cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new(("outline-move-down", ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(assets::IconName::ArrowDown)
+                                                .tooltip(down_tip)
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        if let Some(doc) =
+                                                            this.active_doc().cloned()
+                                                        {
+                                                            doc.update(cx, |doc, cx| {
+                                                                doc.move_heading_section_in_editor(
+                                                                    line, true, window, cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    },
+                                                )),
+                                        ),
+                                )
+                            })
                             .on_click(cx.listener(move |this, _, window, cx| {
+                                if this.settings.view_mode == ViewMode::Live {
+                                    if let Some(live) = this
+                                        .active
+                                        .and_then(|i| this.docs.get(i))
+                                        .and_then(|d| d.live.clone())
+                                    {
+                                        live.update(cx, |lv, cx| {
+                                            lv.focus_block_for_line(line, window, cx);
+                                        });
+                                        return;
+                                    }
+                                }
                                 if let Some(doc) = this.active_doc().cloned() {
-                                    doc.update(cx, |doc, cx| doc.jump_to_line(line, window, cx));
+                                    doc.update(cx, |doc, cx| {
+                                        doc.jump_to_line(line, window, cx);
+                                        doc.reveal_preview_line(line.saturating_sub(1), cx);
+                                    });
                                 }
                             }))
                     },
                 ));
                 this.child(
                     gpui_kit::component::scroll::ScrollableElement::overflow_y_scrollbar(
-                        rows.max_h(px(160.)),
+                        rows.max_h(px(180.)),
                     ),
                 )
             })
@@ -12276,9 +13275,10 @@ impl Workspace {
             })
     }
 
-    /// Month-grid mini-calendar — the Calendar plugin. Days
-    /// with a `YYYY-MM-DD.md` daily note render accent+bold; today is
-    /// ringed; click opens (or templates) that day's note.
+    /// Month-grid mini-calendar docked at the bottom of the left sidebar.
+    /// Days with a daily note show a tiny accent dot below the number;
+    /// today and the active daily note are highlighted; click opens (or
+    /// templates) that day's note.
     fn render_calendar_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use chrono::Datelike;
         let theme = cx.theme();
@@ -12287,6 +13287,12 @@ impl Workspace {
             return v_flex();
         };
         let today = chrono::Local::now().date_naive();
+        let active_stem = self.active_doc().and_then(|d| {
+            d.read(cx)
+                .path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+        });
         let days_in_month = if month == 12 {
             NaiveDate::from_ymd_opt(year + 1, 1, 1)
         } else {
@@ -12303,6 +13309,9 @@ impl Workspace {
         } else {
             first.weekday().num_days_from_monday()
         } as usize;
+        let total_cells = (lead + days_in_month as usize).div_ceil(7) * 7;
+        let grid_start = first - chrono::Duration::days(lead as i64);
+
         // Which days have a daily note in the daily-note folder.
         let root = self.vault.read(cx).root.clone().unwrap_or_default();
         let daily_root = root.join(&self.settings.daily_dir);
@@ -12315,31 +13324,56 @@ impl Workspace {
             .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
             .collect();
         let month_name = first.format("%B %Y").to_string();
+        let is_current_month = year == today.year() && month == today.month();
 
-        let day_cell = |day: u32| {
-            let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+        let day_cell = |idx: usize, date: NaiveDate| {
+            let in_month = date.month() == month && date.year() == year;
             let stamp = date.format("%Y-%m-%d").to_string();
             let has_note = have.contains(&stamp);
             let is_today = date == today;
+            let is_active_note = active_stem.as_deref() == Some(stamp.as_str());
+            let dot_color = if is_today || is_active_note {
+                theme.red.opacity(0.95)
+            } else {
+                theme.red.opacity(0.75)
+            };
             div()
-                .id(("cal-day", day as usize))
-                .w(px(26.))
-                .h(px(20.))
+                .id(("cal-day", idx))
+                .flex_1()
+                .h(px(26.))
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
-                .rounded(px(3.))
+                .gap(px(2.))
+                .rounded(px(5.))
                 .cursor_pointer()
-                .text_xs()
-                .text_color(if has_note {
-                    theme.info
-                } else {
+                .text_size(px(11.))
+                .line_height(px(12.))
+                .text_color(if is_today || is_active_note {
                     theme.foreground
+                } else if in_month {
+                    theme.sidebar_foreground
+                } else {
+                    theme.muted_foreground.opacity(0.35)
                 })
-                .when(has_note, |d| d.font_semibold())
-                .when(is_today, |d| d.bg(theme.muted))
-                .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                .child(day.to_string())
+                .when(is_today || is_active_note, |d| {
+                    d.font_semibold()
+                        .bg(theme.muted.opacity(0.85))
+                        .border_1()
+                        .border_color(theme.border.opacity(0.7))
+                })
+                .when(!is_today && !is_active_note, |d| {
+                    d.hover(|s| s.bg(theme.muted.opacity(0.45)))
+                })
+                .child(date.day().to_string())
+                .child(
+                    div()
+                        .w(px(3.))
+                        .h(px(3.))
+                        .rounded_full()
+                        .when(has_note, |dot| dot.bg(dot_color)),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_daily_at(date, window, cx);
                 }))
@@ -12348,26 +13382,27 @@ impl Workspace {
         // Week-number column: click opens that row's weekly note.
         let week_token = if sunday_first { "w" } else { "W" };
         let week_cell = |row: usize| {
-            let start =
-                first - chrono::Duration::days(lead as i64) + chrono::Duration::weeks(row as i64);
+            let start = grid_start + chrono::Duration::weeks(row as i64);
             let has_note = self
                 .period_path(Period::Week, start, cx)
                 .is_some_and(|p| p.exists());
             div()
                 .id(("cal-week", row))
-                .w(px(18.))
-                .h(px(20.))
+                .w(px(22.))
+                .h(px(26.))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(3.))
+                .rounded(px(4.))
                 .cursor_pointer()
+                .text_size(px(10.))
                 .text_color(if has_note {
                     theme.info
                 } else {
-                    theme.muted_foreground
+                    theme.muted_foreground.opacity(0.45)
                 })
-                .hover(|s| s.bg(theme.muted.opacity(0.5)))
+                .hover(|s| s.bg(theme.muted.opacity(0.45)))
                 .child(crate::bases::format_moment(
                     start.and_hms_opt(0, 0, 0).unwrap_or_default(),
                     week_token,
@@ -12377,32 +13412,30 @@ impl Workspace {
                 }))
         };
 
-        let mut weeks: Vec<Div> = Vec::new();
-        let mut week = h_flex().gap_0p5().child(week_cell(0));
-        for _ in 0..lead {
-            week = week.child(div().w(px(26.)).h(px(20.)));
-        }
-        let mut slot = lead;
-        for day in 1..=days_in_month {
-            week = week.child(day_cell(day));
-            slot += 1;
-            if slot.is_multiple_of(7) {
-                weeks.push(week);
-                week = h_flex().gap_0p5().child(week_cell(weeks.len()));
+        let row_count = total_cells / 7;
+        let weeks = (0..row_count).map(|row| {
+            let mut line = h_flex().w_full().gap_0p5().child(week_cell(row));
+            for col in 0..7 {
+                let idx = row * 7 + col;
+                let date = grid_start + chrono::Duration::days(idx as i64);
+                line = line.child(day_cell(idx, date));
             }
-        }
-        if !slot.is_multiple_of(7) {
-            weeks.push(week);
-        }
+            line
+        });
 
         let nav = |icon: assets::IconName, delta: i32| {
             div()
                 .id(("cal-nav", (delta + 1) as usize))
-                .px_1()
+                .w(px(20.))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
                 .cursor_pointer()
-                .rounded(px(3.))
-                .hover(|s| s.bg(theme.muted.opacity(0.5)))
-                .child(Icon::new(icon).size_3().text_color(theme.muted_foreground))
+                .rounded(px(4.))
+                .text_color(theme.muted_foreground)
+                .hover(|s| s.bg(theme.muted.opacity(0.5)).text_color(theme.foreground))
+                .child(Icon::new(icon).size_3())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     let (mut y, mut m) = this.cal_month;
@@ -12421,65 +13454,143 @@ impl Workspace {
 
         v_flex()
             .w_full()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(theme.border.opacity(0.28))
+            .px_2p5()
+            .pt_2()
+            .pb_2()
             .child(
-                div()
-                    .id("cal-toggle")
+                h_flex()
                     .w_full()
-                    .px_2()
-                    .py_1p5()
+                    .pb_1()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .id("cal-toggle")
+                            .px_1()
+                            .py_0p5()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.45)))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(theme.foreground.opacity(0.9))
+                                            .child(month_name),
+                                    )
+                                    .child(
+                                        Icon::new(if self.cal_open {
+                                            assets::IconName::ChevronDown
+                                        } else {
+                                            assets::IconName::ChevronRight
+                                        })
+                                        .size_3()
+                                        .text_color(theme.muted_foreground),
+                                    ),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cal_open = !this.cal_open;
+                                this.settings.panes.calendar = this.cal_open;
+                                this.persist_settings(cx);
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         h_flex()
-                            .gap_1p5()
+                            .gap_0p5()
                             .items_center()
-                            .child(
-                                Icon::new(if self.cal_open {
-                                    assets::IconName::ChevronDown
-                                } else {
-                                    assets::IconName::ChevronRight
-                                })
-                                .size_4()
-                                .text_color(theme.muted_foreground),
-                            )
+                            .child(nav(assets::IconName::ChevronLeft, -1))
+                            .child(nav(assets::IconName::ChevronRight, 1))
+                            .when(!is_current_month, |row| {
+                                row.child(
+                                    div()
+                                        .id("cal-reset-month")
+                                        .w(px(20.))
+                                        .h(px(20.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .rounded(px(4.))
+                                        .text_color(theme.muted_foreground)
+                                        .hover(|s| {
+                                            s.bg(theme.muted.opacity(0.5))
+                                                .text_color(theme.foreground)
+                                        })
+                                        .child(Icon::new(assets::IconName::RotateCcw).size_3())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.cal_month = (today.year(), today.month());
+                                            cx.notify();
+                                        })),
+                                )
+                            })
                             .child(
                                 div()
-                                    .flex_1()
-                                    .text_xs()
+                                    .id("cal-open-today")
+                                    .w(px(20.))
+                                    .h(px(20.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
                                     .text_color(theme.muted_foreground)
-                                    .child(format!("Calendar · {month_name}")),
-                            )
-                            .child(nav(assets::IconName::ChevronLeft, -1))
-                            .child(nav(assets::IconName::ChevronRight, 1)),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.cal_open = !this.cal_open;
-                        this.settings.panes.calendar = this.cal_open;
-                        this.persist_settings(cx);
-                        cx.notify();
-                    })),
+                                    .hover(|s| {
+                                        s.bg(theme.muted.opacity(0.5)).text_color(theme.foreground)
+                                    })
+                                    .child(Icon::new(assets::IconName::CalendarDays).size_3())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.cal_month = (today.year(), today.month());
+                                        this.open_daily_at(today, window, cx);
+                                    })),
+                            ),
+                    ),
             )
             .when(self.cal_open, |this| {
                 let days = if sunday_first {
-                    ["S", "M", "T", "W", "T", "F", "S"]
+                    ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
                 } else {
-                    ["M", "T", "W", "T", "F", "S", "S"]
+                    ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
                 };
                 let head = h_flex()
+                    .w_full()
+                    .pb_1()
                     .gap_0p5()
-                    .child(div().w(px(18.)))
-                    .children(days.iter().map(|d| {
+                    .child(
                         div()
-                            .w(px(26.))
+                            .w(px(22.))
+                            .flex_shrink_0()
                             .flex()
                             .justify_center()
-                            .text_color(theme.muted_foreground)
-                            .child(d.to_string())
+                            .text_size(px(10.))
+                            .text_color(theme.muted_foreground.opacity(0.55))
+                            .child("WN"),
+                    )
+                    .children(days.iter().map(|d| {
+                        div()
+                            .flex_1()
+                            .flex()
+                            .justify_center()
+                            .text_size(px(10.))
+                            .font_medium()
+                            .text_color(theme.muted_foreground.opacity(0.7))
+                            .child((*d).to_string())
                             .into_any_element()
                     }));
                 this.child(
                     v_flex()
-                        .px_2()
-                        .pb_1p5()
-                        .text_xs()
+                        .w_full()
+                        .gap_0p5()
+                        .pt_0p5()
                         .child(head)
                         .children(weeks),
                 )
@@ -12826,23 +13937,184 @@ impl Workspace {
             })
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn show_notes_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_file_menu();
         let view = cx.entity();
-        let tree_state = self.vault.read(cx).tree.clone();
+        let language = self.settings.language;
+        let current_sort = self.settings.tree_sort;
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.item(
+                PopupMenuItem::new(language.text("New note", "Nytt notat"))
+                    .icon(assets::IconName::FilePlus)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.on_new_file(&NewFile, window, cx))
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(language.text("New folder", "Ny mappe"))
+                    .icon(assets::IconName::FolderPlus)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.on_new_folder(&NewFolder, window, cx))
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(language.text("New canvas", "Nytt lerret"))
+                    .icon(assets::IconName::LayoutDashboard)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.on_new_canvas(&NewCanvas, window, cx))
+                        }
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(format!(
+                    "{}{}",
+                    language.text("Sort: Name", "Sorter: Navn"),
+                    if current_sort == TreeSort::Name {
+                        " ✓"
+                    } else {
+                        ""
+                    }
+                ))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| this.set_tree_sort(TreeSort::Name, cx))
+                    }
+                }),
+            )
+            .item(
+                PopupMenuItem::new(format!(
+                    "{}{}",
+                    language.text("Sort: Modified", "Sorter: Endret"),
+                    if current_sort == TreeSort::Modified {
+                        " ✓"
+                    } else {
+                        ""
+                    }
+                ))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| this.set_tree_sort(TreeSort::Modified, cx))
+                    }
+                }),
+            )
+            .item(
+                PopupMenuItem::new(format!(
+                    "{}{}",
+                    language.text("Sort: Type", "Sorter: Type"),
+                    if current_sort == TreeSort::Type {
+                        " ✓"
+                    } else {
+                        ""
+                    }
+                ))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| this.set_tree_sort(TreeSort::Type, cx))
+                    }
+                }),
+            )
+            .item(
+                PopupMenuItem::new(format!(
+                    "{}{}",
+                    language.text("Sort: Size", "Sorter: Størrelse"),
+                    if current_sort == TreeSort::Size {
+                        " ✓"
+                    } else {
+                        ""
+                    }
+                ))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| this.set_tree_sort(TreeSort::Size, cx))
+                    }
+                }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(language.text("Reveal active file", "Vis aktiv fil"))
+                    .icon(assets::IconName::Locate)
+                    .on_click({
+                        let view = view.clone();
+                        move |_, _, cx| view.update(cx, |this, cx| this.reveal_active_file(cx))
+                    }),
+            )
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        self.file_menu_sub = Some(cx.subscribe(
+            &menu,
+            |this, _menu, _: &gpui_kit::DismissEvent, cx| {
+                this.file_menu = None;
+                this.file_menu_sub = None;
+                cx.notify();
+            },
+        ));
+        self.file_menu = Some((menu, window.mouse_position()));
+        cx.notify();
+    }
+
+    fn set_tree_sort(&mut self, sort: TreeSort, cx: &mut Context<Self>) {
+        self.settings.tree_sort = sort;
+        self.persist_settings(cx);
+        self.vault.update(cx, |vault, cx| {
+            vault.tree_sort = sort;
+            vault.refresh(cx);
+        });
+        cx.notify();
+    }
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().colors;
+        let view = cx.entity();
+        let (tree_state, vault_root, filter_active) = {
+            let vault = self.vault.read(cx);
+            (
+                vault.tree.clone(),
+                vault.root.clone(),
+                !vault.explorer_query.is_empty()
+                    || vault.explorer_filter != crate::explorer::FileFilter::All,
+            )
+        };
         let tree_scroll = tree_state.read(cx).scroll_handle().clone();
+        let vault_name = vault_root
+            .as_ref()
+            .and_then(|r| r.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "Rísta".to_string());
+        let monogram = vault_monogram(&vault_name);
+        let inbox_count = self.inbox_count(cx);
+        let home_active = self
+            .folder
+            .as_ref()
+            .zip(vault_root.as_ref())
+            .is_some_and(|(page, root)| &page.path == root);
+        let show_controls =
+            self.explorer_search_open || filter_active || !self.move_undo.is_empty();
 
         v_flex()
             .size_full()
+            // ── Vault Identity Header (aligned flush with sidebar sections; drop zone for vault root) ──
             .child(
                 h_flex()
                     .w_full()
-                    .h_11()
+                    .h(px(38.))
                     .flex_shrink_0()
                     .items_center()
                     .justify_between()
                     .px_3()
-                    // Drop zone for "move to vault root" — the header is
-                    // the only always-visible non-folder target.
+                    .pt_1()
+                    .gap_2()
                     .drag_over::<PathBuf>(|style, _, _, cx| {
                         style.bg(cx.theme().accent.opacity(0.2))
                     })
@@ -12873,45 +14145,249 @@ impl Workspace {
                         }
                     })
                     .child(
-                        Button::new("vault-home").ghost().xsmall()
-                            .icon(assets::IconName::House)
-                            .label(self.tr("Home", "Hjem"))
+                        h_flex()
+                            .id("sidebar-vault-switcher")
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .items_center()
+                            .px_1()
+                            .py_0p5()
+                            .ml(px(-4.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.muted.opacity(0.45)))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(root) = this.vault.read(cx).root.clone() {
-                                    this.open_folder_page(root, window, cx);
+                                if this.settings.recent_vaults.len() > 1 {
+                                    this.show_recent_vaults(window, cx);
+                                } else {
+                                    this.on_open_folder(&OpenFolder, window, cx);
                                 }
+                            }))
+                            .child(
+                                div()
+                                    .w(px(21.))
+                                    .h(px(21.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(6.))
+                                    .bg(theme.magenta.opacity(0.18))
+                                    .border_1()
+                                    .border_color(theme.magenta.opacity(0.32))
+                                    .text_size(px(10.))
+                                    .font_semibold()
+                                    .text_color(theme.magenta)
+                                    .child(monogram),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .text_color(theme.foreground)
+                                    .child(vault_name),
+                            )
+                            .child(
+                                Icon::new(assets::IconName::ChevronDown)
+                                    .size_3()
+                                    .flex_shrink_0()
+                                    .text_color(theme.muted_foreground),
+                            ),
+                    )
+                    .child(
+                        Button::new("sidebar-quick-search")
+                            .ghost()
+                            .xsmall()
+                            .icon(assets::IconName::Search)
+                            .tooltip(self.tr("Quick open (⌘K)", "Hurtigåpning (⌘K)"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_palette(window, cx);
                             })),
+                    ),
+            )
+            // ── Workspace Quick-Action Strip ──
+            .child(
+                v_flex()
+                    .w_full()
+                    .flex_shrink_0()
+                    .pb_1()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px_3()
+                            .pt_1()
+                            .pb_1()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(theme.muted_foreground.opacity(0.8))
+                                    .child(self.tr("Workspace", "Arbeidsområde")),
+                            )
+                            .child(
+                                Button::new("sidebar-workspace-more")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::Ellipsis)
+                                    .tooltip(self.tr("Workspace layouts", "Arbeidsområdeoppsett"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_workspace_picker(
+                                            PaletteCmd::LoadWorkspace,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px_2p5()
+                            .pb_1()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new("vault-home")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(home_active)
+                                    .icon(assets::IconName::House)
+                                    .tooltip(self.tr("Home dashboard", "Hjem-oversikt"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(root) = this.vault.read(cx).root.clone() {
+                                            this.open_folder_page(root, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("workspace-daily-note")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::CalendarDays)
+                                    .tooltip(self.tr("Today's daily note", "Dagens notat"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_open_daily(&OpenDailyNote, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("workspace-inbox")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::Inbox)
+                                    .when(inbox_count > 0, |btn| btn.label(inbox_count.to_string()))
+                                    .tooltip(self.tr("Inbox", "Innboks"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_open_inbox(&OpenInbox, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("workspace-tasks")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::ListTodo)
+                                    .tooltip(self.tr("Tasks", "Oppgaver"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings.inspector_open = true;
+                                        this.tasks_open = true;
+                                        this.settings.panes.tasks = true;
+                                        this.persist_settings(cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("workspace-graph")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.graph.is_some())
+                                    .icon(assets::IconName::Waypoints)
+                                    .tooltip(self.tr("Graph view", "Grafvisning"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_open_graph(&OpenGraph, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("workspace-capture")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::SquarePen)
+                                    .tooltip(self.tr("Quick capture", "Hurtignotat"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_quick_capture(&QuickCapture, window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            // ── Pinned / Bookmarks ──
+            .child(self.render_starred(cx))
+            // ── Notes Section Header ──
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_shrink_0()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .text_color(theme.muted_foreground.opacity(0.8))
+                            .child(self.tr("Notes", "Notater")),
                     )
                     .child(
                         h_flex()
                             .gap_0p5()
+                            .items_center()
+                            .child(
+                                Button::new("notes-filter-toggle")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(show_controls)
+                                    .icon(assets::IconName::Search)
+                                    .tooltip(self.tr("Filter files", "Filtrer filer"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.explorer_search_open = !this.explorer_search_open;
+                                        if this.explorer_search_open {
+                                            this.explorer_search
+                                                .update(cx, |input, cx| input.focus(window, cx));
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
                                 Button::new("new-file")
                                     .ghost()
                                     .xsmall()
-                                    .icon(assets::IconName::FilePlus)
-                                    .tooltip(self.tr("New file", "Ny fil"))
+                                    .icon(assets::IconName::Plus)
+                                    .tooltip(self.tr("New note", "Nytt notat"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.on_new_file(&NewFile, window, cx);
                                     })),
                             )
                             .child(
-                                Button::new("new-folder")
+                                Button::new("notes-more-menu")
                                     .ghost()
                                     .xsmall()
-                                    .icon(assets::IconName::FolderPlus)
-                                    .tooltip(self.tr("New folder", "Ny mappe"))
+                                    .icon(assets::IconName::Ellipsis)
+                                    .tooltip(self.tr("Notes actions", "Notathandlinger"))
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_new_folder(&NewFolder, window, cx);
+                                        this.show_notes_menu(window, cx);
                                     })),
-                            )
+                            ),
                     ),
             )
-            .child(self.render_explorer_controls(cx))
-            .children(self.render_inbox_link(cx))
-            // The header stays even when empty: its "+" menu is the only way to
-            // bookmark a heading or view, make a group, or import bookmarks.
-            .child(self.render_starred(cx))
+            .when(show_controls, |this| {
+                this.child(self.render_explorer_controls(cx))
+            })
+            // ── Scrollable File Tree ──
             .child(
                 div()
                     .relative()
@@ -12924,89 +14400,218 @@ impl Workspace {
                                 let starred_rows = self.settings.starred.clone();
                                 move |ix, entry, entry_state, _window, cx| {
                                     render_view.update(cx, |this, cx| {
+                                        let theme = cx.theme();
                                         let item = entry.item();
                                         let path = PathBuf::from(item.id.as_str());
                                         let is_folder = path.is_dir();
                                         let is_file = !is_folder;
+                                        let depth = entry.depth();
                                         let is_starred = is_file
                                             && starred_rows.iter().any(|s| s == item.id.as_str());
-                                        // The open note stays lit even when the
-                                        // tree's own selection moved (nav via
-                                        // wikilinks, palette, tabs…).
-                                        let is_active = this.folder.as_ref().is_some_and(|page| page.path == path)
-                                            || (is_file && this
-                                                .active_doc()
-                                                .map(|d| d.read(cx).path == path)
-                                                .unwrap_or(false));
-                                        let icon: assets::IconName = if !is_file {
-                                            if entry.is_expanded() {
-                                                assets::IconName::FolderOpen
-                                            } else {
-                                                assets::IconName::FolderClosed
-                                            }
+                                        let is_active = this
+                                            .folder
+                                            .as_ref()
+                                            .is_some_and(|page| page.path == path)
+                                            || (is_file
+                                                && this
+                                                    .active_doc()
+                                                    .map(|d| d.read(cx).path == path)
+                                                    .unwrap_or(false));
+                                        let ext = path
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .map(|e| e.to_lowercase());
+                                        let display_label: SharedString = if is_file
+                                            && ext.as_deref() == Some("md")
+                                        {
+                                            item.label
+                                                .strip_suffix(".md")
+                                                .or_else(|| item.label.strip_suffix(".MD"))
+                                                .map(|s| SharedString::from(s.to_string()))
+                                                .unwrap_or_else(|| item.label.clone())
                                         } else {
-                                            match path
-                                                .extension()
-                                                .and_then(|e| e.to_str())
-                                                .map(|e| e.to_lowercase())
-                                                .as_deref()
-                                            {
-                                                Some("base") => assets::IconName::Database,
-                                                Some(e) if IMAGE_EXTS.contains(&e) => {
-                                                    assets::IconName::FileImage
-                                                }
-                                                _ => assets::IconName::FileText,
+                                            item.label.clone()
+                                        };
+                                        let folder_count = is_folder
+                                            .then(|| folder_note_count(item))
+                                            .filter(|&n| n > 0);
+                                        let folder_icon_color = if depth == 0 {
+                                            folder_accent_color(item.label.as_ref(), theme)
+                                        } else {
+                                            theme.muted_foreground.opacity(0.8)
+                                        };
+                                        let file_icon: Option<(assets::IconName, Hsla)> = if is_folder
+                                        {
+                                            Some((
+                                                if entry.is_expanded() {
+                                                    assets::IconName::FolderOpen
+                                                } else {
+                                                    assets::IconName::FolderClosed
+                                                },
+                                                folder_icon_color,
+                                            ))
+                                        } else {
+                                            match ext.as_deref() {
+                                                Some("base") => Some((
+                                                    assets::IconName::Database,
+                                                    theme.cyan.opacity(0.85),
+                                                )),
+                                                Some("canvas") => Some((
+                                                    assets::IconName::LayoutDashboard,
+                                                    theme.magenta.opacity(0.85),
+                                                )),
+                                                Some(e) if IMAGE_EXTS.contains(&e) => Some((
+                                                    assets::IconName::FileImage,
+                                                    theme.green.opacity(0.85),
+                                                )),
+                                                _ if depth == 0 => Some((
+                                                    assets::IconName::FileText,
+                                                    theme.muted_foreground.opacity(0.65),
+                                                )),
+                                                _ => None,
                                             }
                                         };
                                         let row = ListItem::new(ix)
                                             .w_full()
-                                            .rounded(cx.theme().radius)
-                                            .py_0p5()
+                                            .h(px(25.))
+                                            .rounded(px(6.))
+                                            .py_0()
                                             .px_2()
-                                            .pl(px(16.) * entry.depth() + px(8.))
+                                            .text_size(px(12.))
+                                            .text_color(if is_active {
+                                                theme.foreground
+                                            } else if is_folder {
+                                                theme.foreground.opacity(0.88)
+                                            } else {
+                                                theme.sidebar_foreground
+                                            })
+                                            .when(is_active, |el| el.font_medium())
                                             .selected(entry_state.is_selected() || is_active)
                                             .secondary_selected(entry_state.is_right_clicked())
                                             .disabled(entry.is_disabled())
                                             .child(
                                                 h_flex()
                                                     .w_full()
+                                                    .h_full()
                                                     .items_center()
-                                                    .gap_2()
-                                                    .child(
-                                                        div().w_3().flex_shrink_0().when(entry.is_folder(), |d| {
-                                                            d.child(Icon::new(if entry.is_expanded() {
-                                                                assets::IconName::ChevronDown
-                                                            } else { assets::IconName::ChevronRight }).size_3())
-                                                        })
-                                                    )
-                                                    .child(Icon::new(icon).size_4())
+                                                    .children((0..depth).map(|_| {
+                                                        div()
+                                                            .w(px(12.))
+                                                            .h_full()
+                                                            .flex_shrink_0()
+                                                            .flex()
+                                                            .justify_center()
+                                                            .child(
+                                                                div()
+                                                                    .w(px(1.))
+                                                                    .h_full()
+                                                                    .bg(theme.border.opacity(0.28)),
+                                                            )
+                                                    }))
+                                                    .when(entry.is_folder(), |row| {
+                                                        row.child(
+                                                            div()
+                                                                .w(px(14.))
+                                                                .flex_shrink_0()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .child(
+                                                                    Icon::new(
+                                                                        if entry.is_expanded() {
+                                                                            assets::IconName::ChevronDown
+                                                                        } else {
+                                                                            assets::IconName::ChevronRight
+                                                                        },
+                                                                    )
+                                                                    .size(px(11.))
+                                                                    .text_color(
+                                                                        theme
+                                                                            .muted_foreground
+                                                                            .opacity(0.65),
+                                                                    ),
+                                                                ),
+                                                        )
+                                                    })
+                                                    .when_some(file_icon, |row, (icon, tint)| {
+                                                        row.child(
+                                                            div()
+                                                                .pr_1p5()
+                                                                .flex_shrink_0()
+                                                                .flex()
+                                                                .items_center()
+                                                                .child(
+                                                                    Icon::new(icon)
+                                                                        .size_3p5()
+                                                                        .text_color(tint),
+                                                                ),
+                                                        )
+                                                    })
                                                     .child(
                                                         div()
                                                             .id(("folder-label", ix))
                                                             .flex_1()
+                                                            .min_w_0()
                                                             .truncate()
                                                             .when(is_folder, |label| {
                                                                 let path = path.clone();
-                                                                let drag_label = item.label.clone();
-                                                                label.cursor_pointer()
-                                                                    .on_drag(path.clone(), move |_, _, _, cx| {
-                                                                        cx.new(|_| TreeDragPreview {
-                                                                            label: drag_label.clone(),
-                                                                        })
-                                                                    })
-                                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                                        cx.stop_propagation();
-                                                                        this.open_folder_page(path.clone(), window, cx);
-                                                                    }))
+                                                                let drag_label =
+                                                                    display_label.clone();
+                                                                label
+                                                                    .cursor_pointer()
+                                                                    .on_drag(
+                                                                        path.clone(),
+                                                                        move |_, _, _, cx| {
+                                                                            cx.new(|_| {
+                                                                                TreeDragPreview {
+                                                                                    label: drag_label
+                                                                                        .clone(),
+                                                                                }
+                                                                            })
+                                                                        },
+                                                                    )
+                                                                    .on_mouse_down(
+                                                                        MouseButton::Left,
+                                                                        |_, _, cx| {
+                                                                            cx.stop_propagation()
+                                                                        },
+                                                                    )
+                                                                    .on_click(cx.listener(
+                                                                        move |this, _, window, cx| {
+                                                                            cx.stop_propagation();
+                                                                            this.open_folder_page(
+                                                                                path.clone(),
+                                                                                window,
+                                                                                cx,
+                                                                            );
+                                                                        },
+                                                                    ))
                                                             })
-                                                            .child(item.label.clone()),
+                                                            .child(display_label.clone()),
                                                     )
                                                     .when(is_starred, |h| {
                                                         h.child(
                                                             Icon::new(assets::IconName::StarFill)
-                                                                .size_3()
-                                                                .text_color(cx.theme().info),
+                                                                .size(px(10.))
+                                                                .flex_shrink_0()
+                                                                .text_color(
+                                                                    theme
+                                                                        .muted_foreground
+                                                                        .opacity(0.45),
+                                                                ),
+                                                        )
+                                                    })
+                                                    .when_some(folder_count, |h, count| {
+                                                        h.child(
+                                                            div()
+                                                                .pl_1()
+                                                                .flex_shrink_0()
+                                                                .text_size(px(11.))
+                                                                .text_color(
+                                                                    theme.muted_foreground
+                                                                        .opacity(0.6),
+                                                                )
+                                                                .child(count.to_string()),
                                                         )
                                                     }),
                                             )
@@ -13027,13 +14632,17 @@ impl Workspace {
                                                                 cx,
                                                             );
                                                         } else {
-                                                            this.preview_document(path.clone(), window, cx);
+                                                            this.preview_document(
+                                                                path.clone(),
+                                                                window,
+                                                                cx,
+                                                            );
                                                         }
                                                     }
                                                 }
                                             }))
                                             .on_drag(path.clone(), {
-                                                let label = item.label.clone();
+                                                let label = display_label.clone();
                                                 move |_, _, _, cx| {
                                                     cx.new(|_| TreeDragPreview {
                                                         label: label.clone(),
@@ -13088,7 +14697,9 @@ impl Workspace {
                                                     let src = src.clone();
                                                     let dest_dir = dest_dir.clone();
                                                     view.update(cx, |this, cx| {
-                                                        this.move_tree_entry(src, dest_dir, window, cx);
+                                                        this.move_tree_entry(
+                                                            src, dest_dir, window, cx,
+                                                        );
                                                     });
                                                 }
                                             })
@@ -13114,6 +14725,7 @@ impl Workspace {
                                         };
                                         div()
                                             .id(SharedString::from(format!("file-row-{}", item.id)))
+                                            .px_2()
                                             .child(row)
                                             .on_mouse_down(gpui::MouseButton::Right, {
                                                 let path = path.clone();
@@ -13139,10 +14751,11 @@ impl Workspace {
                             .relative()
                             .size_full(),
                     )
-                    .p_1()
-                    .text_sm()
+                    .py_0p5()
                     .vertical_scrollbar(&tree_scroll),
             )
+            // ── Docked Mini-Calendar at Sidebar Bottom ──
+            .child(self.render_calendar_pane(cx))
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -13199,6 +14812,8 @@ impl Workspace {
             images: Some(images.clone()),
             doc_path: Some(doc_path),
             depth: 0,
+            line_offset: 0,
+            live_mode: false,
             style,
             catalog: cx
                 .try_global::<crate::style_snippets::StyleSnippetCatalog>()
@@ -13206,7 +14821,6 @@ impl Workspace {
             enabled_style_snippets: self.settings.enabled_style_snippets.clone(),
         };
         let theme = cx.theme();
-        let footer_colors = (theme.foreground, theme.muted_foreground);
         let note_classes = doc.read(cx).css_classes.clone();
         let readable = if note_classes.iter().any(|class| class == "wide") {
             false
@@ -13220,9 +14834,24 @@ impl Workspace {
             self.settings.readable_width
         };
         let readable_width = base_ctx.style.readable_width.unwrap_or(READABLE_WIDTH);
+        let headings = {
+            let raw = doc.read(cx).editor.read(cx).value().to_string();
+            preview::headings(&raw)
+        };
+        let show_toc_rail = headings.len() >= 2 && self.settings.view_mode == ViewMode::Preview;
+        let toc_doc = doc.clone();
+        let preview_group = self.layout.focused();
         v_flex()
             .track_focus(&doc.read(cx).preview_focus)
             .key_context("RistaPreview")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    if ev.click_count == 2 && this.settings.view_mode == ViewMode::Preview {
+                        this.set_pane_view_mode(preview_group, PaneMode::Live, window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(move |this, _: &input::Undo, _, cx| {
                 this.pending_preview_history
                     .push((undo_doc.clone(), Box::new(input::Undo)));
@@ -13234,6 +14863,7 @@ impl Workspace {
                 cx.notify();
             }))
             .size_full()
+            .relative()
             .overflow_hidden()
             .when_some(
                 base_ctx.style.colors.get("background").copied(),
@@ -13249,16 +14879,17 @@ impl Workspace {
                         div()
                             .id("properties-empty")
                             .w_full()
+                            .when(readable, |el| el.max_w(px(readable_width)).mx_auto())
                             .px_6()
                             .py_1()
-                            .my_2()
+                            .mt_1()
                             .cursor_pointer()
-                            .rounded(theme.radius)
-                            .hover(|row| row.bg(theme.accent.opacity(0.4)))
+                            .rounded(px(6.))
+                            .hover(|row| row.bg(theme.muted.opacity(0.35)))
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(theme.muted_foreground)
+                                    .text_color(theme.muted_foreground.opacity(0.75))
                                     .child(self.tr("+ Add property", "+ Legg til egenskap")),
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -13268,66 +14899,132 @@ impl Workspace {
                 },
             )
             .child(
-                gpui_kit::base::TextView::new(&state)
-                    .style(preview::text_style(&base_ctx, cx))
-                    .when_some(base_ctx.style.typography.body_font.clone(), |this, font| {
-                        this.font_family(font)
-                    })
-                    .text_size(px(base_ctx
-                        .style
-                        .typography
-                        .body_size
-                        .unwrap_or(self.settings.ui_font_size + PREVIEW_BODY_STEP)))
-                    .when_some(base_ctx.style.typography.line_height, |this, height| {
-                        this.line_height(relative(height))
-                    })
-                    .markdown_extensions(preview::extensions(&folds, Some(&base_ctx), true))
-                    .selectable(true)
-                    .scrollable(true)
-                    .on_link_click({
-                        let view = view.clone();
-                        move |link, _event, window, cx| {
-                            let url = link.to_string();
-                            if let Some(target) = url.strip_prefix("wiki:") {
-                                let target = target.to_string();
-                                view.update(cx, |this, cx| {
-                                    this.open_wikilink(&target, window, cx);
-                                });
-                            } else if let Some(target) = url.strip_prefix("missing:") {
-                                // Unresolved `![[file]]` embed — not a note.
-                                let target = target.to_string();
-                                view.update(cx, |this, cx| {
-                                    this.note_status(format!("No file named “{}”", target), cx);
-                                });
-                            } else if let Some(tag) = url.strip_prefix("tag:") {
-                                // `#tag` in the note — project search for it,
-                                // same as the sidebar tag pane.
-                                let query = format!("#{tag}");
-                                let view = view.clone();
-                                crate::search::open_project_search_for(
-                                    view,
-                                    Some(query.as_str()),
-                                    window,
-                                    cx,
-                                );
-                            } else {
-                                cx.open_url(&url);
-                            }
-                        }
-                    })
+                div()
+                    .relative()
                     .w_full()
                     .flex_1()
                     .min_h_0()
-                    .when(readable, |this| this.max_w(px(readable_width)).mx_auto())
-                    .px_6()
-                    .py_4(),
+                    .child(
+                        gpui_kit::base::TextView::new(&state)
+                            .style(preview::text_style(&base_ctx, cx))
+                            .when_some(base_ctx.style.typography.body_font.clone(), |this, font| {
+                                this.font_family(font)
+                            })
+                            .text_size(px(base_ctx
+                                .style
+                                .typography
+                                .body_size
+                                .unwrap_or(self.settings.ui_font_size + PREVIEW_BODY_STEP)))
+                            .when_some(base_ctx.style.typography.line_height, |this, height| {
+                                this.line_height(relative(height))
+                            })
+                            .markdown_extensions(preview::extensions(&folds, Some(&base_ctx), true))
+                            .selectable(true)
+                            .scrollable(true)
+                            .on_link_click({
+                                let view = view.clone();
+                                move |link, _event, window, cx| {
+                                    let url = link.to_string();
+                                    if let Some(target) = url.strip_prefix("wiki:") {
+                                        let target = target.to_string();
+                                        view.update(cx, |this, cx| {
+                                            this.open_wikilink(&target, window, cx);
+                                        });
+                                    } else if let Some(target) = url.strip_prefix("missing:") {
+                                        // Unresolved `![[file]]` embed — not a note.
+                                        let target = target.to_string();
+                                        view.update(cx, |this, cx| {
+                                            this.note_status(
+                                                format!("No file named “{}”", target),
+                                                cx,
+                                            );
+                                        });
+                                    } else if let Some(tag) = url.strip_prefix("tag:") {
+                                        // `#tag` in the note — project search for it,
+                                        // same as the sidebar tag pane.
+                                        let query = format!("#{tag}");
+                                        let view = view.clone();
+                                        crate::search::open_project_search_for(
+                                            view,
+                                            Some(query.as_str()),
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        cx.open_url(&url);
+                                    }
+                                }
+                            })
+                            .w_full()
+                            .h_full()
+                            .when(readable, |this| this.max_w(px(readable_width)).mx_auto())
+                            .px_6()
+                            .py_4(),
+                    )
+                    .when(show_toc_rail, |container| {
+                        let ticks =
+                            headings
+                                .iter()
+                                .take(24)
+                                .enumerate()
+                                .map(|(ix, (line, level, _))| {
+                                    let line = *line;
+                                    let tick_w = match *level {
+                                        1 => px(14.),
+                                        2 => px(10.),
+                                        _ => px(6.),
+                                    };
+                                    let tick_color = if ix == 0 {
+                                        theme.red.opacity(0.75)
+                                    } else {
+                                        theme.muted_foreground.opacity(0.32)
+                                    };
+                                    let doc = toc_doc.clone();
+                                    div()
+                                        .id(("preview-toc-tick", ix))
+                                        .w(px(18.))
+                                        .h(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .cursor_pointer()
+                                        .on_click(move |_, window, cx| {
+                                            doc.update(cx, |doc, cx| {
+                                                doc.jump_to_line(line, window, cx)
+                                            });
+                                        })
+                                        .child(
+                                            div()
+                                                .w(tick_w)
+                                                .h(px(1.5))
+                                                .rounded_full()
+                                                .bg(tick_color)
+                                                .hover(|s| s.bg(theme.foreground)),
+                                        )
+                                });
+                        container.child(
+                            v_flex()
+                                .absolute()
+                                .right_3()
+                                .top(px(72.))
+                                .gap(px(1.))
+                                .items_end()
+                                .children(ticks),
+                        )
+                    }),
             )
             .when(!mentions.is_empty(), |this| {
                 this.child(render_linked_mentions(
                     doc.clone(),
                     mentions,
                     mentions_open,
-                    footer_colors,
+                    (
+                        theme.foreground,
+                        theme.muted_foreground,
+                        theme.border,
+                        theme.muted,
+                    ),
+                    readable.then_some(readable_width),
                     self.vault.read(cx).root.clone().unwrap_or_default(),
                     view.clone(),
                 ))
@@ -13347,7 +15044,9 @@ impl Workspace {
             let page = self.render_folder_page(page, cx);
             return v_flex()
                 .size_full()
-                .when(!self.zen, |this| this.child(self.render_tab_bar(cx)))
+                .when(!self.zen && !self.single_editor_group(), |this| {
+                    this.child(self.render_tab_bar(cx))
+                })
                 .child(div().flex_1().min_h_0().child(page))
                 .into_any_element();
         }
@@ -13401,15 +15100,28 @@ impl Workspace {
     }
 
     fn render_group_tab_bar(&self, group: GroupId, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .w_full()
+            .h(px(36.))
+            .flex_shrink_0()
+            .px_2()
+            .pt_1()
+            .items_center()
+            .child(self.render_pill_tab_strip(group, false, cx))
+            .into_any_element()
+    }
+
+    fn render_pill_tab_strip(
+        &self,
+        group: GroupId,
+        floating_in_title_bar: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
         let tokens = self.layout.group_tokens(group);
         let selected = self.layout.selected(group);
-        let mode = self
-            .layout
-            .group_specs()
-            .into_iter()
-            .find(|(id, _, _, _)| *id == group)
-            .map(|(_, _, _, mode)| mode)
-            .unwrap_or_default();
+        let showing_overlay =
+            floating_in_title_bar && (self.folder.is_some() || self.graph.is_some());
         let tabs = tokens
             .iter()
             .filter_map(|token| {
@@ -13429,202 +15141,243 @@ impl Workspace {
             };
             *title_counts.entry(title).or_insert(0usize) += 1;
         }
-        let selected_index = tabs
-            .iter()
-            .position(|(token, _)| Some(*token) == selected)
-            .unwrap_or(0);
-        let group_tokens = tabs.iter().map(|(token, _)| *token).collect::<Vec<_>>();
-        // Source/Split/Preview only means something for a text document.
-        let group_mode_control = if self.folder.is_some()
-            || selected
-                .and_then(|token| self.doc_tokens.iter().position(|item| *item == token))
-                .and_then(|ix| self.docs.get(ix))
-                .is_none_or(|doc| {
-                    let doc = doc.entity.read(cx);
-                    doc.is_read_only() || doc.canvas_view.is_some()
-                }) {
-            div().into_any_element()
-        } else {
-            let compact = self.compact_mode_panes.contains(&group);
-            self.render_pane_view_mode_tabs(group, mode, compact, cx)
-                .into_any_element()
-        };
-        let tab_bar = TabBar::new(("pane-tabs", group.value()))
-            .segmented()
-            .small()
-            .bg(cx.theme().transparent)
-            .selected_index(selected_index)
-            .children(tabs.into_iter().enumerate().map(|(index, (token, ix))| {
-                let (mut title, dirty, icon) = {
-                    let doc = self.docs[ix].entity.read(cx);
-                    let title = if doc.is_read_only()
-                        || doc.path.extension().and_then(|ext| ext.to_str()) == Some("base")
-                    {
-                        doc.file_name()
-                    } else {
-                        doc.title()
-                    };
-                    let icon = match doc
-                        .path
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(str::to_ascii_lowercase)
-                        .as_deref()
-                    {
-                        Some("base") => assets::IconName::Database,
-                        Some(ext) if IMAGE_EXTS.contains(&ext) => assets::IconName::FileImage,
-                        _ => assets::IconName::FileText,
-                    };
-                    (title, doc.dirty, icon)
-                };
-                if title_counts.get(&title).copied().unwrap_or(0) > 1 {
-                    if let Some(parent) = self.docs[ix]
-                        .entity
-                        .read(cx)
-                        .path
-                        .parent()
-                        .and_then(Path::file_name)
-                        .map(|name| name.to_string_lossy().to_string())
-                    {
-                        title = format!("{title} · {parent}");
-                    }
-                }
-                let label = if dirty {
-                    format!("{title} •")
-                } else {
-                    title.clone()
-                };
-                let preview = self.docs[ix].preview;
-                let pinned = self.docs[ix].entity.read(cx).path.display().to_string();
-                let pinned = self.settings.pinned_tabs.contains(&pinned);
-                let view = cx.entity();
-                let tab = Self::content_tab(label.clone(), icon)
-                    .when(preview, |tab| tab.italic())
-                    .selected(Some(token) == selected)
-                    .suffix(if pinned {
-                        Icon::new(assets::IconName::Pin)
-                            .size_3p5()
-                            .text_color(cx.theme().muted_foreground)
-                            .into_any_element()
-                    } else {
-                        Button::new(("pane-close-tab", token.value()))
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::Close)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_tab_token(token, window, cx);
-                            }))
-                            .into_any_element()
-                    })
-                    .on_drag(DraggedTab(token), {
-                        let label = title.clone();
-                        move |_, _, _, cx| {
-                            cx.new(|_| TreeDragPreview {
-                                label: label.clone().into(),
-                            })
-                        }
-                    })
-                    .drag_over::<DraggedTab>(|style, _, _, cx| {
-                        style.bg(cx.theme().accent.opacity(0.15))
-                    })
-                    .on_drop::<DraggedTab>({
-                        let view = view.clone();
-                        move |source, window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.move_tab_to_group(source.0, group, index, window, cx);
-                            });
-                        }
-                    })
-                    .on_mouse_up(gpui::MouseButton::Left, {
-                        let view = view.clone();
-                        move |event, _, cx| {
-                            if event.click_count == 2 {
-                                view.update(cx, |this, cx| {
-                                    if let Some(doc) = this
-                                        .doc_index_for_token(token)
-                                        .and_then(|index| this.docs.get_mut(index))
-                                    {
-                                        doc.preview = false;
-                                    }
-                                    this.persist_tabs(cx);
-                                });
-                            }
-                        }
-                    })
-                    .on_mouse_down(gpui::MouseButton::Middle, {
-                        let view = view.clone();
-                        move |_, window, cx| {
-                            view.update(cx, |this, cx| this.close_tab_token(token, window, cx));
-                        }
-                    })
-                    .on_mouse_down(gpui::MouseButton::Right, {
-                        let view = view.clone();
-                        move |_, window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.tab_menu_token = Some(token);
-                                this.activate_pane(group, token, window, cx);
-                            });
-                        }
-                    });
-                tab
-            }))
-            .on_click(cx.listener(move |this, &index, window, cx| {
-                if let Some(token) = group_tokens.get(index).copied() {
-                    this.activate_pane(group, token, window, cx);
-                }
-            }));
-        let can_back = self.nav_pos > 0;
-        let can_forward = self.nav_pos + 1 < self.nav_stack.len();
         let view = cx.entity();
+        let tab_pills = tabs.into_iter().enumerate().map(|(index, (token, ix))| {
+            let (mut title, dirty, icon, icon_tint) = {
+                let doc = self.docs[ix].entity.read(cx);
+                let title = if doc.is_read_only()
+                    || doc.path.extension().and_then(|ext| ext.to_str()) == Some("base")
+                {
+                    doc.file_name()
+                } else {
+                    doc.title()
+                };
+                let stem = doc
+                    .path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default();
+                let is_daily = NaiveDate::parse_from_str(stem, "%Y-%m-%d").is_ok();
+                let ext = doc
+                    .path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase);
+                let (icon, tint) = if doc.is_canvas {
+                    (assets::IconName::LayoutDashboard, Some(theme.magenta))
+                } else if is_daily {
+                    (assets::IconName::CalendarDays, Some(theme.yellow))
+                } else {
+                    match ext.as_deref() {
+                        Some("base") => (assets::IconName::Database, Some(theme.cyan)),
+                        Some(ext) if IMAGE_EXTS.contains(&ext) => {
+                            (assets::IconName::FileImage, Some(theme.green))
+                        }
+                        _ => (assets::IconName::FileText, None),
+                    }
+                };
+                (title, doc.dirty, icon, tint)
+            };
+            if title_counts.get(&title).copied().unwrap_or(0) > 1 {
+                if let Some(parent) = self.docs[ix]
+                    .entity
+                    .read(cx)
+                    .path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|name| name.to_string_lossy().to_string())
+                {
+                    title = format!("{title} · {parent}");
+                }
+            }
+            let preview = self.docs[ix].preview;
+            let pinned_path = self.docs[ix].entity.read(cx).path.display().to_string();
+            let pinned = self.settings.pinned_tabs.contains(&pinned_path);
+            let is_selected = !showing_overlay && Some(token) == selected;
+            let icon_color = if is_selected {
+                icon_tint
+                    .map(|c| c.opacity(0.9))
+                    .unwrap_or(theme.foreground.opacity(0.85))
+            } else {
+                icon_tint
+                    .map(|c| c.opacity(0.65))
+                    .unwrap_or(theme.muted_foreground.opacity(0.75))
+            };
+            let (tab_bg, tab_border, hover_bg) = if floating_in_title_bar {
+                if is_selected {
+                    (theme.group_box, theme.border.opacity(0.72), theme.group_box)
+                } else {
+                    (
+                        theme
+                            .group_box
+                            .opacity(if theme.is_dark() { 0.45 } else { 0.65 }),
+                        theme.border.opacity(0.38),
+                        theme.group_box.opacity(0.85),
+                    )
+                }
+            } else if is_selected {
+                (
+                    theme.background.opacity(0.8),
+                    theme.border.opacity(0.65),
+                    theme.background.opacity(0.85),
+                )
+            } else {
+                (theme.group_box, theme.group_box, theme.muted.opacity(0.45))
+            };
+            h_flex()
+                .id(("pane-tab", token.value()))
+                .h(px(27.))
+                .max_w(px(210.))
+                .min_w(px(72.))
+                .flex_shrink_0()
+                .items_center()
+                .gap_1p5()
+                .pl_2p5()
+                .pr_1p5()
+                .rounded(px(7.))
+                .bg(tab_bg)
+                .border_1()
+                .border_color(tab_border)
+                .text_xs()
+                .text_color(if is_selected {
+                    theme.tab_active_foreground
+                } else {
+                    theme.muted_foreground
+                })
+                .when(is_selected, |el| el.font_medium())
+                .when(preview, |el| el.italic())
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover_bg).text_color(theme.foreground))
+                .child(
+                    Icon::new(icon)
+                        .size_3p5()
+                        .flex_shrink_0()
+                        .text_color(icon_color),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(title.clone()))
+                .when(dirty, |row| {
+                    row.child(
+                        div()
+                            .w(px(5.))
+                            .h(px(5.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(theme.info),
+                    )
+                })
+                .child(if pinned {
+                    div()
+                        .px_0p5()
+                        .flex()
+                        .items_center()
+                        .child(
+                            Icon::new(assets::IconName::Pin)
+                                .size_3()
+                                .text_color(theme.muted_foreground.opacity(0.8)),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .id(("pane-close-tab", token.value()))
+                        .w(px(18.))
+                        .h(px(18.))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .text_color(theme.muted_foreground.opacity(if is_selected {
+                            0.8
+                        } else {
+                            0.45
+                        }))
+                        .hover(|s| s.bg(theme.muted).text_color(theme.foreground))
+                        .child(Icon::new(assets::IconName::Close).size_3())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_tab_token(token, window, cx);
+                        }))
+                        .into_any_element()
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                    this.activate_pane(group, token, window, cx);
+                    if ev.click_count() == 2 {
+                        if let Some(doc) = this
+                            .doc_index_for_token(token)
+                            .and_then(|index| this.docs.get_mut(index))
+                        {
+                            doc.preview = false;
+                        }
+                        this.persist_tabs(cx);
+                        cx.notify();
+                    }
+                }))
+                .on_drag(DraggedTab(token), {
+                    let label = title.clone();
+                    move |_, _, _, cx| {
+                        cx.new(|_| TreeDragPreview {
+                            label: label.clone().into(),
+                        })
+                    }
+                })
+                .drag_over::<DraggedTab>(|style, _, _, cx| style.border_color(cx.theme().info))
+                .on_drop::<DraggedTab>({
+                    let view = view.clone();
+                    move |source, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.move_tab_to_group(source.0, group, index, window, cx);
+                        });
+                    }
+                })
+                .on_mouse_down(gpui::MouseButton::Middle, {
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        cx.stop_propagation();
+                        view.update(cx, |this, cx| this.close_tab_token(token, window, cx));
+                    }
+                })
+                .on_mouse_down(gpui::MouseButton::Right, {
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.tab_menu_token = Some(token);
+                            this.activate_pane(group, token, window, cx);
+                        });
+                    }
+                })
+        });
+
+        let new_tab_btn = div()
+            .id(("pane-new-tab", group.value()))
+            .w(px(24.))
+            .h(px(24.))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .cursor_pointer()
+            .text_color(theme.muted_foreground)
+            .hover(|s| s.bg(theme.muted.opacity(0.6)).text_color(theme.foreground))
+            .child(Icon::new(assets::IconName::Plus).size_3p5())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.layout.focus(group);
+                this.on_new_file(&NewFile, window, cx);
+            }));
+
         h_flex()
             .id(("pane-tab-strip", group.value()))
             .w_full()
-            .h_11()
-            .flex_shrink_0()
-            .gap_2()
+            .h_full()
+            .when(!floating_in_title_bar, |row| row.px_2())
+            .gap_1p5()
             .items_center()
-            .child(
-                h_flex()
-                    .pl_3()
-                    .child(
-                        Button::new(("pane-nav-back", group.value()))
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::ChevronLeft)
-                            .disabled(!can_back)
-                            .on_click(cx.listener(|this, _, window, cx| this.nav_back(window, cx))),
-                    )
-                    .child(
-                        Button::new(("pane-nav-forward", group.value()))
-                            .ghost()
-                            .xsmall()
-                            .icon(assets::IconName::ChevronRight)
-                            .disabled(!can_forward)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.nav_forward(window, cx);
-                            })),
-                    ),
-            )
-            .child(div().flex_1().min_w_0().child(tab_bar))
-            .child(div().flex_shrink_0().pr_3().child(group_mode_control))
-            .on_prepaint({
-                let view = view.clone();
-                move |bounds, _, cx| {
-                    // Labels need room beside the tabs; narrow split panes
-                    // fall back to icons so the tabs stay visible.
-                    let compact = bounds.size.width < PANE_MODE_LABELS_MIN_WIDTH;
-                    view.update(cx, |this, cx| {
-                        let changed = if compact {
-                            this.compact_mode_panes.insert(group)
-                        } else {
-                            this.compact_mode_panes.remove(&group)
-                        };
-                        if changed {
-                            cx.notify();
-                        }
-                    });
-                }
-            })
+            .overflow_x_scroll()
+            .children(tab_pills)
+            .child(new_tab_btn)
             .drag_over::<PathBuf>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.15)))
             .on_drop::<PathBuf>({
                 let view = view.clone();
@@ -13821,8 +15574,10 @@ impl Workspace {
             .and_then(|ix| self.docs.get(ix))
             .map(|doc| {
                 self.render_document_pane(
+                    group,
                     &doc.entity,
                     match mode {
+                        PaneMode::Live => ViewMode::Live,
                         PaneMode::Source => ViewMode::Source,
                         PaneMode::Split => ViewMode::Split,
                         PaneMode::Preview => ViewMode::Preview,
@@ -13863,7 +15618,7 @@ impl Workspace {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .when(!self.zen, |this| {
+            .when(!self.zen && !self.single_editor_group(), |this| {
                 this.child(self.render_group_tab_bar(group, cx))
             })
             .child(
@@ -13914,52 +15669,6 @@ impl Workspace {
         }
     }
 
-    fn render_pane_view_mode_tabs(
-        &self,
-        group: GroupId,
-        mode: PaneMode,
-        compact: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        TabBar::new(("pane-mode", group.value()))
-            .segmented()
-            .small()
-            .flex_shrink_0()
-            .selected_index(match mode {
-                PaneMode::Source => 0,
-                PaneMode::Split => 1,
-                PaneMode::Preview => 2,
-            })
-            .children(
-                [
-                    (assets::IconName::SquarePen, self.tr("Source", "Kilde")),
-                    (
-                        assets::IconName::SquareSplitHorizontal,
-                        self.tr("Split", "Delt"),
-                    ),
-                    (assets::IconName::Eye, self.tr("Preview", "Forhåndsvisning")),
-                ]
-                .map(|(icon, label)| {
-                    if compact {
-                        Tab::new()
-                            .icon(icon)
-                            .aria_label(label)
-                            .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
-                    } else {
-                        Tab::new().label(label)
-                    }
-                }),
-            )
-            .on_click(cx.listener(move |this, &index, window, cx| {
-                let mode = match index {
-                    0 => PaneMode::Source,
-                    1 => PaneMode::Split,
-                    _ => PaneMode::Preview,
-                };
-                this.set_pane_view_mode(group, mode, window, cx);
-            }))
-    }
-
     fn focus_pane(&mut self, group: GroupId, cx: &mut Context<Self>) {
         let next_active = self
             .layout
@@ -13971,6 +15680,7 @@ impl Workspace {
             .into_iter()
             .find(|(id, _, _, _)| *id == group)
             .map(|(_, _, _, mode)| match mode {
+                PaneMode::Live => ViewMode::Live,
                 PaneMode::Source => ViewMode::Source,
                 PaneMode::Split => ViewMode::Split,
                 PaneMode::Preview => ViewMode::Preview,
@@ -14034,6 +15744,7 @@ impl Workspace {
 
     fn render_document_pane(
         &self,
+        group: GroupId,
         doc: &Entity<Document>,
         mode: ViewMode,
         cx: &mut Context<Self>,
@@ -14121,14 +15832,25 @@ impl Workspace {
             return self.render_file_preview(doc, cx);
         }
 
-        // `.base` files render their live view in Preview/Split; Source
+        // `.base` files render their live view in Live/Preview/Split; Source
         // stays the raw YAML so the spec stays editable.
-        let base = self
+        let (base, live) = self
             .docs
             .iter()
             .find(|open| open.entity == *doc)
-            .and_then(|d| d.base.clone());
+            .map(|d| (d.base.clone(), d.live.clone()))
+            .unwrap_or((None, None));
         let content = match mode {
+            ViewMode::Live if base.is_some() => {
+                div().size_full().child(base.unwrap()).into_any_element()
+            }
+            ViewMode::Live => match live {
+                Some(live_view) => div().size_full().child(live_view).into_any_element(),
+                None => div()
+                    .size_full()
+                    .child(self.render_preview(doc, cx))
+                    .into_any_element(),
+            },
             ViewMode::Source => self.editor_container(doc, cx).into_any_element(),
             ViewMode::Preview if base.is_some() => {
                 div().size_full().child(base.unwrap()).into_any_element()
@@ -14168,10 +15890,10 @@ impl Workspace {
                 )
                 .into_any_element(),
         };
-        let content = match self.render_breadcrumb(doc, mode == ViewMode::Split, cx) {
-            Some(crumb) => v_flex()
+        let content = match self.render_document_header(Some((group, mode)), doc, cx) {
+            Some(header) => v_flex()
                 .size_full()
-                .child(crumb)
+                .child(header)
                 .child(div().flex_1().min_h_0().child(content))
                 .into_any_element(),
             None => content,
@@ -14181,6 +15903,7 @@ impl Workspace {
         }
 
         let reload_doc = doc.clone();
+        let diff_doc = doc.clone();
         let banner = h_flex()
             .w_full()
             .min_h(px(36.))
@@ -14208,6 +15931,15 @@ impl Workspace {
                     .flex_wrap()
                     .items_center()
                     .gap_1()
+                    .child(
+                        Button::new("conflict-compare")
+                            .primary()
+                            .xsmall()
+                            .label(self.tr("Compare changes…", "Sammenlign endringer…"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.show_conflict_diff_dialog(diff_doc.clone(), window, cx);
+                            })),
+                    )
                     .child(
                         Button::new("conflict-save-copy")
                             .ghost()
@@ -14354,7 +16086,7 @@ impl Workspace {
         v_flex()
             .size_full()
             .overflow_hidden()
-            .when_some(self.render_breadcrumb(doc, false, cx), |this, crumb| {
+            .when_some(self.render_document_header(None, doc, cx), |this, crumb| {
                 this.child(crumb)
             })
             .child(div().flex_1().min_h_0().child(picture))
@@ -14369,35 +16101,27 @@ impl Workspace {
             )
     }
 
-    /// Breadcrumb row above the editor: `folder / sub / name` — each
-    /// folder segment opens its dashboard; the filename
-    /// opens the rename dialog, like the inline title.
-    fn render_breadcrumb(
+    /// Compact document header: quiet breadcrumb on the left and a
+    /// bordered segmented action pill (Source/Split/Preview, linked mentions,
+    /// readable-width toggle, properties) on the right, aligned with the
+    /// readable text column in single-column views.
+    fn render_document_header(
         &self,
+        pane: Option<(GroupId, ViewMode)>,
         doc: &Entity<Document>,
-        split: bool,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let path = doc.read(cx).path.clone();
-        let root = self.vault.read(cx).root.clone()?;
-        let rel = path
-            .strip_prefix(&root)
-            .ok()?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let mut segs: Vec<&str> = rel.split('/').collect();
-        let name = segs.pop()?;
-        let stem = std::path::Path::new(name)
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| name.to_string());
-        let view = cx.entity();
-        // Zen mode centres the text column; use the same readable-width
-        // rule so the crumbs start where the text does.
-        let (classes, style) = {
+        let theme = cx.theme().colors;
+        let (path, classes, style, mentions_count) = {
             let doc = doc.read(cx);
-            (doc.css_classes.clone(), doc.resolved_style.clone())
+            (
+                doc.path.clone(),
+                doc.css_classes.clone(),
+                doc.resolved_style.clone(),
+                doc.linked_mentions.len(),
+            )
         };
+        let split = pane.is_some_and(|(_, mode)| mode == ViewMode::Split);
         let readable = if classes.iter().any(|c| c == "wide") {
             false
         } else if classes.iter().any(|c| c == "narrow" || c == "readable")
@@ -14408,84 +16132,244 @@ impl Workspace {
             self.settings.readable_width
         };
         let readable_width = style.readable_width.unwrap_or(READABLE_WIDTH);
-        let mut row = h_flex()
-            .h_8()
-            .flex_shrink_0()
-            .w_full()
-            // Split shows two columns, so there is no single one to centre on.
-            .when(self.zen && readable && !split, |this| {
-                this.max_w(px(readable_width)).mx_auto()
-            })
-            // Same left edge as the preview text column (px_6).
-            .px_6()
+        let view = cx.entity();
+
+        let mut crumbs = h_flex()
+            .flex_1()
+            .min_w_0()
             .gap_1()
             .items_center()
+            .overflow_hidden()
             .text_xs()
-            .text_color(cx.theme().muted_foreground);
-        let root_target = root.clone();
-        let root_siblings = root.clone();
-        row = row
-            .child(
-                div()
-                    .id("crumb-vault")
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(cx.theme().foreground))
-                    .child(
-                        root.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_folder_page(root_target.clone(), window, cx);
-                    })),
-            )
-            .child(self.sibling_button(0, root_siblings, cx))
-            .child(div().child("›"));
-        let mut acc = String::new();
-        for (ix, seg) in segs.iter().enumerate() {
-            if ix > 0 {
-                acc.push('/');
+            .text_color(theme.muted_foreground);
+
+        if let Some(root) = self.vault.read(cx).root.clone() {
+            if let Ok(rel_path) = path.strip_prefix(&root) {
+                let rel = rel_path.to_string_lossy().replace('\\', "/");
+                let mut segs: Vec<&str> = rel.split('/').collect();
+                if let Some(name) = segs.pop() {
+                    let stem = std::path::Path::new(name)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| name.to_string());
+                    if segs.is_empty() {
+                        let root_target = root.clone();
+                        crumbs = crumbs
+                            .child(
+                                div()
+                                    .id("crumb-vault")
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme.foreground))
+                                    .child(
+                                        root.file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy()
+                                            .to_string(),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_folder_page(root_target.clone(), window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.muted_foreground.opacity(0.55))
+                                    .child("›"),
+                            );
+                    } else {
+                        let mut acc = String::new();
+                        for (ix, seg) in segs.iter().enumerate() {
+                            if ix > 0 {
+                                acc.push('/');
+                            }
+                            acc.push_str(seg);
+                            let target = root.join(&acc);
+                            let siblings = target.clone();
+                            let is_last_folder = ix + 1 == segs.len();
+                            crumbs = crumbs
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("crumb-{ix}")))
+                                        .cursor_pointer()
+                                        .hover(|s| s.text_color(theme.foreground))
+                                        .child(seg.to_string())
+                                        .on_click({
+                                            let view = view.clone();
+                                            move |_, window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.open_folder_page(
+                                                        target.clone(),
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            }
+                                        }),
+                                )
+                                .when(is_last_folder, |row| {
+                                    row.child(self.sibling_button(ix + 1, siblings, cx))
+                                })
+                                .child(
+                                    div()
+                                        .text_color(theme.muted_foreground.opacity(0.55))
+                                        .child("›"),
+                                );
+                        }
+                    }
+                    crumbs = crumbs.child(
+                        div()
+                            .id("crumb-name")
+                            .truncate()
+                            .cursor_pointer()
+                            .text_color(theme.foreground.opacity(0.85))
+                            .hover(|s| s.text_color(theme.info))
+                            .child(stem)
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.show_rename_dialog(path.clone(), window, cx);
+                                    });
+                                }
+                            }),
+                    );
+                }
             }
-            acc.push_str(seg);
-            let target = root.join(&acc);
-            let siblings = target.clone();
-            row = row
+        } else {
+            let name = path
+                .file_stem()
+                .or_else(|| path.file_name())
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            crumbs = crumbs.child(
+                div()
+                    .truncate()
+                    .text_color(theme.foreground.opacity(0.85))
+                    .child(name),
+            );
+        }
+
+        let action_pill = pane.map(|(group, mode)| {
+            let mode_btn = |id: &'static str,
+                            target: PaneMode,
+                            active: bool,
+                            icon: assets::IconName,
+                            tip: &'static str| {
+                Button::new((id, group.value()))
+                    .ghost()
+                    .xsmall()
+                    .selected(active)
+                    .icon(icon)
+                    .tooltip(tip)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_pane_view_mode(group, target, window, cx);
+                    }))
+            };
+            h_flex()
+                .flex_shrink_0()
+                .h(px(28.))
+                .px_1()
+                .gap_0p5()
+                .items_center()
+                .rounded(px(7.))
+                .bg(theme.background.opacity(0.7))
+                .border_1()
+                .border_color(theme.border.opacity(0.7))
+                .child(mode_btn(
+                    "doc-mode-live",
+                    PaneMode::Live,
+                    mode == ViewMode::Live,
+                    assets::IconName::SquarePen,
+                    self.tr("Live preview (WYSIWYG)", "Direkteforhåndsvisning"),
+                ))
+                .child(mode_btn(
+                    "doc-mode-source",
+                    PaneMode::Source,
+                    mode == ViewMode::Source,
+                    assets::IconName::Code,
+                    self.tr("Source mode", "Kildemodus"),
+                ))
+                .child(mode_btn(
+                    "doc-mode-split",
+                    PaneMode::Split,
+                    mode == ViewMode::Split,
+                    assets::IconName::SquareSplitHorizontal,
+                    self.tr("Split mode", "Delt modus"),
+                ))
+                .child(mode_btn(
+                    "doc-mode-preview",
+                    PaneMode::Preview,
+                    mode == ViewMode::Preview,
+                    assets::IconName::Eye,
+                    self.tr("Preview mode", "Forhåndsvisning"),
+                ))
                 .child(
                     div()
-                        .id(SharedString::from(format!("crumb-{ix}")))
-                        .cursor_pointer()
-                        .hover(|s| s.text_color(cx.theme().foreground))
-                        .child(seg.to_string())
-                        .on_click({
-                            let view = view.clone();
-                            move |_, window, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.open_folder_page(target.clone(), window, cx)
-                                });
-                            }
-                        }),
+                        .w(px(1.))
+                        .h(px(14.))
+                        .mx_0p5()
+                        .bg(theme.border.opacity(0.55)),
                 )
-                .child(self.sibling_button(ix + 1, siblings, cx))
-                .child(div().child("›"));
-        }
+                .child(
+                    Button::new(("doc-backlinks", group.value()))
+                        .ghost()
+                        .xsmall()
+                        .icon(assets::IconName::Link2)
+                        .when(mentions_count > 0, |btn| {
+                            btn.label(mentions_count.to_string())
+                        })
+                        .tooltip(self.tr("Linked mentions", "Tilkoblede omtaler"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings.inspector_open = true;
+                            this.backlinks_open = true;
+                            this.settings.panes.backlinks = true;
+                            this.persist_settings(cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new(("doc-width", group.value()))
+                        .ghost()
+                        .xsmall()
+                        .selected(!self.settings.readable_width)
+                        .icon(if self.settings.readable_width {
+                            assets::IconName::Maximize2
+                        } else {
+                            assets::IconName::Minimize2
+                        })
+                        .tooltip(self.tr("Toggle readable width", "Bytt lesebredde"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings.readable_width = !this.settings.readable_width;
+                            this.persist_settings(cx);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new(("doc-properties", group.value()))
+                        .ghost()
+                        .xsmall()
+                        .icon(assets::IconName::SlidersHorizontal)
+                        .tooltip(self.tr("Edit properties", "Rediger egenskaper"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_properties(window, cx);
+                        })),
+                )
+        });
+
         Some(
-            row.child(
-                div()
-                    .id("crumb-name")
-                    .cursor_pointer()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.text_color(cx.theme().info))
-                    .child(stem)
-                    .on_click({
-                        let view = view.clone();
-                        move |_, window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.show_rename_dialog(path.clone(), window, cx);
-                            });
-                        }
-                    }),
-            ),
+            h_flex()
+                .w_full()
+                .flex_shrink_0()
+                .h(px(40.))
+                .when(readable && !split, |this| {
+                    this.max_w(px(readable_width)).mx_auto()
+                })
+                .px_6()
+                .pt_2()
+                .gap_3()
+                .items_center()
+                .justify_between()
+                .child(crumbs)
+                .when_some(action_pill, |row, pill| row.child(pill)),
         )
     }
 
@@ -14511,11 +16395,27 @@ impl Workspace {
             // document editor is focused, so dialog/search inputs keep the
             // plain characters.
             .key_context("RistaEditor")
-            .capture_any_mouse_down(move |event, _window, cx| {
+            .capture_any_mouse_down(cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                 if event.button == MouseButton::Right {
                     context_doc.update(cx, |doc, cx| doc.prepare_spell_menu(event.position, cx));
+                } else if event.button == MouseButton::Left && event.modifiers.platform {
+                    // ⌘+click in Source mode follows [[wikilinks]] and URLs under the clicked offset.
+                    let doc = context_doc.clone();
+                    let view = cx.entity();
+                    window.defer(cx, move |window, cx| {
+                        let target = doc.update(cx, |doc, cx| doc.link_at_cursor(cx));
+                        if let Some(target) = target {
+                            view.update(cx, |ws, cx| match target {
+                                crate::document::LinkTarget::Url(url) => cx.open_url(&url),
+                                crate::document::LinkTarget::Note(name) => {
+                                    ws.open_wikilink(&name, window, cx);
+                                }
+                            });
+                        }
+                    });
                 }
-            })
+                let _ = this;
+            }))
             .on_action(cx.listener(Self::on_pair_insert))
             .on_action(cx.listener(Self::on_set_highlight_color))
             .on_action(cx.listener(Self::on_pair_close))
@@ -14815,6 +16715,130 @@ impl Workspace {
                     self.settings.readable_width
                 };
                 let readable_width = note_style.readable_width.unwrap_or(READABLE_WIDTH);
+                let sel_range = doc.read(cx).editor.read(cx).selected_range();
+                let source_selection_bar = (!sel_range.is_empty()).then(|| {
+                    let selected_text = {
+                        let v = doc.read(cx).editor.read(cx).value();
+                        v.as_ref()
+                            .get(sel_range.clone())
+                            .map(str::to_string)
+                            .unwrap_or_default()
+                    };
+                    let theme = cx.theme().colors;
+                    let fmt_doc_link = doc.clone();
+                    h_flex()
+                        .mb_2()
+                        .px_1p5()
+                        .py_0p5()
+                        .gap_0p5()
+                        .items_center()
+                        .self_start()
+                        .rounded(px(8.))
+                        .bg(theme.popover)
+                        .border_1()
+                        .border_color(theme.border.opacity(0.8))
+                        .shadow_sm()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Button::new("src-fmt-bold")
+                                .ghost()
+                                .xsmall()
+                                .label("B")
+                                .tooltip(language.text("Bold", "Fet"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.wrap("**", window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("src-fmt-italic")
+                                .ghost()
+                                .xsmall()
+                                .label("I")
+                                .tooltip(language.text("Italic", "Kursiv"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.wrap("*", window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("src-fmt-strike")
+                                .ghost()
+                                .xsmall()
+                                .label("S")
+                                .tooltip(language.text("Strikethrough", "Gjennomstreking"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.wrap("~~", window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("src-fmt-code")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::Code)
+                                .tooltip(language.text("Inline code", "Kode"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.wrap("`", window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("src-fmt-highlight")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::Highlighter)
+                                .tooltip(language.text("Highlight", "Utheving"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.wrap("==", window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("src-fmt-link")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::Link2)
+                                .tooltip(language.text("Wikilink", "Wikilenke"))
+                                .on_click(move |_, window, cx| {
+                                    fmt_doc_link.update(cx, |doc, cx| {
+                                        doc.editor.update(cx, |ed, cx| {
+                                            let r = ed.selected_range();
+                                            if !r.is_empty() {
+                                                let s = ed.value().as_ref().get(r).unwrap_or("").to_string();
+                                                ed.replace(format!("[[{s}]]"), window, cx);
+                                            }
+                                        });
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("src-fmt-h2")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::Heading2)
+                                .tooltip(language.text("Heading 2", "Overskrift 2"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.heading_toggle(2, cx, window);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .w(px(1.))
+                                .h(px(14.))
+                                .mx_0p5()
+                                .bg(theme.border.opacity(0.6)),
+                        )
+                        .child(
+                            Button::new("src-fmt-agent")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::MessageSquareQuote)
+                                .label(language.text("Ask Agent", "Spør agent"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.ask_agent_about_selection(selected_text.clone(), window, cx);
+                                })),
+                        )
+                });
+                let editor_body = v_flex()
+                    .size_full()
+                    .when_some(source_selection_bar, |col, bar| col.child(bar))
+                    .child(div().flex_1().min_h_0().w_full().child(editor));
                 if readable {
                     // Readable line length: cap the text column and
                     // center it (the editor setting).
@@ -14827,11 +16851,11 @@ impl Workspace {
                                 .h_full()
                                 .w(px(readable_width))
                                 .max_w_full()
-                                .child(editor),
+                                .child(editor_body),
                         )
                         .into_any_element()
                 } else {
-                    editor.into_any_element()
+                    editor_body.into_any_element()
                 }
             })
     }
@@ -15204,7 +17228,7 @@ impl Workspace {
     fn render_graph_dock_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
-            .bg(cx.theme().sidebar)
+            .bg(cx.theme().group_box)
             .rounded(cx.theme().radius_lg)
             .overflow_hidden()
             .child(
@@ -15255,6 +17279,7 @@ impl Workspace {
             window.viewport_size().width < px(960.) && (self.status_note.is_some() || conflict);
 
         let mode_label = match self.settings.view_mode {
+            ViewMode::Live => self.tr("Live", "Direkte"),
             ViewMode::Source => "Source",
             ViewMode::Split => "Split",
             ViewMode::Preview => "Preview",
@@ -15262,7 +17287,7 @@ impl Workspace {
 
         StatusBar::new()
             .px_4()
-            .py_2()
+            .py_1p5()
             .flex_shrink_0()
             .left(
                 h_flex()
@@ -15337,9 +17362,21 @@ impl Workspace {
                         )
                         .child(
                             div()
+                                .id("status-mode-cycle")
                                 .text_xs()
+                                .cursor_pointer()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(mode_label),
+                                .hover(|s| s.text_color(cx.theme().foreground))
+                                .child(mode_label)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let next = match this.settings.view_mode {
+                                        ViewMode::Live => ViewMode::Source,
+                                        ViewMode::Source => ViewMode::Split,
+                                        ViewMode::Split => ViewMode::Preview,
+                                        ViewMode::Preview => ViewMode::Live,
+                                    };
+                                    this.set_view_mode(next, window, cx);
+                                })),
                         )
                     })
                     .when(
@@ -15513,15 +17550,31 @@ impl Render for Workspace {
                 && self.active_doc() == Some(&document)
                 && !document.read(cx).is_read_only()
             {
-                document.update(cx, |document, cx| {
-                    if let Some(line) = line {
-                        document.jump_to_line(line, window, cx);
-                    } else {
-                        document
-                            .editor
-                            .update(cx, |editor, cx| editor.focus(window, cx));
+                if self.settings.view_mode == ViewMode::Live {
+                    if let Some(live) = self
+                        .active
+                        .and_then(|i| self.docs.get(i))
+                        .and_then(|d| d.live.clone())
+                    {
+                        live.update(cx, |lv, cx| {
+                            if let Some(line) = line {
+                                lv.focus_block_for_line(line, window, cx);
+                            } else {
+                                lv.focus_active_or_first(window, cx);
+                            }
+                        });
                     }
-                });
+                } else {
+                    document.update(cx, |document, cx| {
+                        if let Some(line) = line {
+                            document.jump_to_line(line, window, cx);
+                        } else {
+                            document
+                                .editor
+                                .update(cx, |editor, cx| editor.focus(window, cx));
+                        }
+                    });
+                }
             }
         }
 
@@ -15543,14 +17596,15 @@ impl Render for Workspace {
         }
 
         let vault_open = self.vault.read(cx).is_open();
-        let preview_history_host = (self.settings.view_mode == ViewMode::Preview)
-            .then(|| {
-                self.pending_preview_history
-                    .first()
-                    .map(|(doc, _)| doc.clone())
-            })
-            .flatten()
-            .filter(|doc| self.active_doc() == Some(doc));
+        let preview_history_host =
+            matches!(self.settings.view_mode, ViewMode::Preview | ViewMode::Live)
+                .then(|| {
+                    self.pending_preview_history
+                        .first()
+                        .map(|(doc, _)| doc.clone())
+                })
+                .flatten()
+                .filter(|doc| self.active_doc() == Some(doc));
         if !self.pending_preview_history.is_empty() && !self.preview_history_scheduled {
             self.preview_history_scheduled = true;
             let workspace = cx.weak_entity();
@@ -15617,6 +17671,38 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_folder))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))
+            .on_action(cx.listener(|this, _: &input::Undo, window, cx| {
+                if window.has_active_dialog(cx) || this.folder.is_some() || this.graph.is_some() {
+                    return;
+                }
+                if this.settings.view_mode == ViewMode::Live {
+                    if let Some(live) = this.active.and_then(|ix| this.docs[ix].live.clone()) {
+                        live.update(cx, |lv, cx| lv.perform_undo(window, cx));
+                    }
+                } else if this.settings.view_mode == ViewMode::Preview {
+                    if let Some(doc) = this.active_doc().cloned() {
+                        this.pending_preview_history
+                            .push((doc, Box::new(input::Undo)));
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_action(cx.listener(|this, _: &input::Redo, window, cx| {
+                if window.has_active_dialog(cx) || this.folder.is_some() || this.graph.is_some() {
+                    return;
+                }
+                if this.settings.view_mode == ViewMode::Live {
+                    if let Some(live) = this.active.and_then(|ix| this.docs[ix].live.clone()) {
+                        live.update(cx, |lv, cx| lv.perform_redo(window, cx));
+                    }
+                } else if this.settings.view_mode == ViewMode::Preview {
+                    if let Some(doc) = this.active_doc().cloned() {
+                        this.pending_preview_history
+                            .push((doc, Box::new(input::Redo)));
+                        cx.notify();
+                    }
+                }
+            }))
             .on_action(cx.listener(Self::on_move_line_up))
             .on_action(cx.listener(Self::on_move_line_down))
             .on_action(cx.listener(Self::on_toggle_checkbox))
@@ -15634,6 +17720,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_follow_link))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_zen))
+            .on_action(cx.listener(Self::on_view_live))
             .on_action(cx.listener(Self::on_view_source))
             .on_action(cx.listener(Self::on_view_split))
             .on_action(cx.listener(Self::on_view_preview))
@@ -15667,8 +17754,7 @@ impl Render for Workspace {
         let root = root.on_action(cx.listener(Self::on_install_cli));
         #[cfg(not(target_os = "macos"))]
         let root = root.on_action(cx.listener(Self::on_about));
-        root
-            .on_action(cx.listener(Self::on_check_for_updates))
+        root.on_action(cx.listener(Self::on_check_for_updates))
             .when(!self.zen || self.hotkey_warning.is_some(), |this| {
                 this.child(self.render_title_bar(window, cx))
             })
@@ -15685,256 +17771,336 @@ impl Render for Workspace {
                         .child(notice.startup_message(self.settings.language)),
                 )
             })
-            .child(
+            .child(div().flex_1().min_h_0().px_1().child(if !has_workspace {
                 div()
-                    .flex_1()
-                    .min_h_0()
-                    .px_1()
-                    .py_1()
-                    .child(if !has_workspace {
+                    .size_full()
+                    .p_1()
+                    .child(
                         div()
                             .size_full()
-                            .child(self.render_empty_editor(cx))
-                            .into_any_element()
-                    } else {
-                        let workspace_view = cx.entity();
-                        let dock_view = workspace_view.clone();
-                        let epoch = self.layout_epoch;
-                        let dock_names = [
-                            ("graph", self.settings.graph_dock_open),
-                            ("agent", self.settings.agent_open),
-                            ("inspector", self.settings.inspector_open),
-                        ].into_iter().filter_map(|(name, visible)| visible.then_some(name)).collect::<Vec<_>>();
-                        let panel_group_id = SharedString::from(format!(
-                            "workspace-{sidebar_visible}-{dock_visible}-{epoch}"
-                        ));
-                        canvas_panels(panel_group_id, Axis::Horizontal)
-                            .when(sidebar_visible, |this| {
-                                this.child(
-                                    resizable_panel()
-                                        .flex_none()
-                                        .size(px(
-                                            self.settings
-                                                .sidebar_width
-                                                .filter(|width| {
-                                                    crate::settings::valid_sidebar_width(*width)
+                            .bg(cx.theme().group_box)
+                            .rounded(cx.theme().radius_lg)
+                            .overflow_hidden()
+                            .child(self.render_empty_editor(cx)),
+                    )
+                    .into_any_element()
+            } else {
+                let workspace_view = cx.entity();
+                let dock_view = workspace_view.clone();
+                let epoch = self.layout_epoch;
+                let dock_names = [
+                    ("graph", self.settings.graph_dock_open),
+                    ("agent", self.settings.agent_open),
+                    ("inspector", self.settings.inspector_open),
+                ]
+                .into_iter()
+                .filter_map(|(name, visible)| visible.then_some(name))
+                .collect::<Vec<_>>();
+                let panel_group_id = SharedString::from(format!(
+                    "workspace-{sidebar_visible}-{dock_visible}-{epoch}"
+                ));
+                let sidebar_width = self.effective_sidebar_width();
+                let dock_width = self
+                    .settings
+                    .dock_width
+                    .filter(|width| crate::settings::valid_dock_width(*width))
+                    .unwrap_or(320.);
+                canvas_panels(panel_group_id, Axis::Horizontal)
+                    .when(sidebar_visible, |this| {
+                        this.child(
+                            resizable_panel()
+                                .flex_none()
+                                .size(px(sidebar_width))
+                                .size_range(px(200.)..px(420.))
+                                .child(
+                                    div().size_full().p_1().child(
+                                        div()
+                                            .size_full()
+                                            .bg(cx.theme().sidebar)
+                                            .rounded(cx.theme().radius_lg)
+                                            .overflow_hidden()
+                                            .child(self.render_sidebar(cx)),
+                                    ),
+                                ),
+                        )
+                    })
+                    .child(
+                        resizable_panel().child(
+                            canvas_panels("editor-terminal", Axis::Vertical)
+                                .child(
+                                    resizable_panel().child(
+                                        div().size_full().p_1().child(
+                                            v_flex()
+                                                .size_full()
+                                                .bg(cx.theme().group_box)
+                                                .rounded(cx.theme().radius_lg)
+                                                .overflow_hidden()
+                                                .on_prepaint({
+                                                    let view = workspace_view.clone();
+                                                    let title_x = self.titlebar_left_x.clone();
+                                                    let prev = self.measured_tab_inset;
+                                                    move |bounds, window, _cx| {
+                                                        if !sidebar_visible {
+                                                            return;
+                                                        }
+                                                        let Some(tx) = title_x.get() else {
+                                                            return;
+                                                        };
+                                                        let inset = (f32::from(bounds.origin.x)
+                                                            - tx)
+                                                            .max(96.);
+                                                        if prev.is_none_or(|old| {
+                                                            (old - inset).abs() > 0.5
+                                                        }) {
+                                                            let view = view.clone();
+                                                            window.on_next_frame(move |_, cx| {
+                                                                view.update(cx, |this, cx| {
+                                                                    if this
+                                                                        .measured_tab_inset
+                                                                        .is_none_or(|old| {
+                                                                            (old - inset).abs()
+                                                                                > 0.5
+                                                                        })
+                                                                    {
+                                                                        this.measured_tab_inset =
+                                                                            Some(inset);
+                                                                        cx.notify();
+                                                                    }
+                                                                });
+                                                            });
+                                                        }
+                                                    }
                                                 })
-                                                .unwrap_or(260.),
-                                        ))
-                                        .size_range(px(200.)..px(420.))
-                                        .child(
-                                            div().size_full().p_1().child(
+                                                .child(div().flex_1().min_h_0().child({
+                                                    if let Some(graph) = self.graph.clone() {
+                                                        let graph = graph
+                                                            .cached(
+                                                                StyleRefinement::default()
+                                                                    .size_full(),
+                                                            )
+                                                            .into_any_element();
+                                                        if self.zen || self.single_editor_group() {
+                                                            graph
+                                                        } else {
+                                                            v_flex()
+                                                                .size_full()
+                                                                .child(self.render_tab_bar(cx))
+                                                                .child(
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .min_h_0()
+                                                                        .child(graph),
+                                                                )
+                                                                .into_any_element()
+                                                        }
+                                                    } else {
+                                                        let content = self.render_editor_panes(cx);
+                                                        if self.zen {
+                                                            h_flex()
+                                                                .size_full()
+                                                                .justify_center()
+                                                                .child(
+                                                                    div()
+                                                                        .h_full()
+                                                                        .w_full()
+                                                                        .max_w(px(920.))
+                                                                        .child(content),
+                                                                )
+                                                                .into_any_element()
+                                                        } else {
+                                                            content
+                                                        }
+                                                    }
+                                                })),
+                                        ),
+                                    ),
+                                )
+                                .when(self.terminal_visible && !self.zen, |panels| {
+                                    panels.child(
+                                        resizable_panel()
+                                            .size(px(270.))
+                                            .size_range(px(140.)..px(600.))
+                                            .child(
                                                 div()
                                                     .size_full()
-                                                    .bg(cx.theme().sidebar)
-                                                    .rounded(cx.theme().radius_lg)
-                                                    .overflow_hidden()
-                                                    .child(self.render_sidebar(cx)),
+                                                    .p_1()
+                                                    .child(self.render_terminal_panel(cx)),
                                             ),
-                                        ),
-                                )
-                            })
-                            .child(
-                                resizable_panel().child(
-                                    canvas_panels("editor-terminal", Axis::Vertical)
-                                        .child(
-                                            resizable_panel().child(
-                                                div().size_full().p_1().child(
-                                                    v_flex()
-                                                        .size_full()
-                                                        .bg(cx.theme().group_box)
-                                                        .rounded(cx.theme().radius_lg)
-                                                        .overflow_hidden()
-                                                        .child(div().flex_1().min_h_0().child({
-                                                            if let Some(graph) = self.graph.clone()
-                                                            {
-                                                                let graph = graph
-                                                                    .cached(
-                                                                        StyleRefinement::default()
-                                                                            .size_full(),
-                                                                    )
-                                                                    .into_any_element()
-                                                                ;
-                                                                if self.zen {
-                                                                    graph
-                                                                } else {
-                                                                    v_flex()
-                                                                        .size_full()
-                                                                        .child(self.render_tab_bar(cx))
-                                                                        .child(
-                                                                            div()
-                                                                                .flex_1()
-                                                                                .min_h_0()
-                                                                                .child(graph),
-                                                                        )
-                                                                        .into_any_element()
-                                                                }
-                                                            } else {
-                                                                let content = self.render_editor_panes(cx);
-                                                                if self.zen {
-                                                                    h_flex()
-                                                                        .size_full()
-                                                                        .justify_center()
-                                                                        .child(
-                                                                            div()
-                                                                                .h_full()
-                                                                                .w_full()
-                                                                                .max_w(px(920.))
-                                                                                .child(content),
-                                                                        )
-                                                                        .into_any_element()
-                                                                } else {
-                                                                    content
-                                                                }
-                                                            }
-                                                        })),
-                                                ),
-                                            ),
+                                    )
+                                }),
+                        ),
+                    )
+                    .when(dock_visible, |columns| {
+                        columns.child(
+                            resizable_panel()
+                                .flex_none()
+                                .size(px(dock_width))
+                                .size_range(px(220.)..px(520.))
+                                .child(
+                                    div().size_full().child(
+                                        canvas_panels(
+                                            SharedString::from(format!(
+                                                "right-dock-{}",
+                                                dock_names.join("-")
+                                            )),
+                                            Axis::Vertical,
                                         )
-                                        .when(self.terminal_visible && !self.zen, |panels| {
-                                            panels.child(
+                                        .when(self.settings.graph_dock_open, |panes| {
+                                            panes.child(
                                                 resizable_panel()
-                                                    .size(px(270.))
-                                                    .size_range(px(140.)..px(600.))
+                                                    .when(
+                                                        self.settings.agent_open
+                                                            || self.settings.inspector_open,
+                                                        |panel| panel.size(px(220.)),
+                                                    )
+                                                    .when_some(
+                                                        self.saved_dock_height("graph"),
+                                                        |panel, height| panel.size(height),
+                                                    )
+                                                    .size_range(px(150.)..Pixels::MAX)
                                                     .child(
-                                                        div()
-                                                            .size_full()
-                                                            .p_1()
-                                                            .child(self.render_terminal_panel(cx)),
+                                                        div().size_full().p_1().child(
+                                                            self.render_graph_dock_panel(cx),
+                                                        ),
                                                     ),
                                             )
-                                        }),
-                                ),
-                            )
-                            .when(
-                                dock_visible,
-                                |columns| {
-                                columns.child(
-                                    resizable_panel()
-                                        .flex_none()
-                                        .size(px(self.settings.dock_width.filter(|width| crate::settings::valid_dock_width(*width)).unwrap_or(310.)))
-                                        .size_range(px(220.)..px(520.))
-                                        .child(
-                                            div().size_full().child(
-                                                canvas_panels(SharedString::from(format!("right-dock-{}", dock_names.join("-"))), Axis::Vertical)
-                                                    .when(self.settings.graph_dock_open, |panes| {
-                                                        panes.child(
-                                                            resizable_panel()
-                                                                .when(self.settings.agent_open || self.settings.inspector_open, |panel| panel.size(px(220.)))
-                                                                .when_some(self.saved_dock_height("graph"), |panel, height| panel.size(height))
-                                                                .size_range(px(150.)..Pixels::MAX)
-                                                                .child(
-                                                                    div()
-                                                                        .size_full()
-                                                                        .p_1()
-                                                                        .child(self.render_graph_dock_panel(cx)),
-                                                                ),
-                                                        )
+                                        })
+                                        .when(self.settings.agent_open, |panes| {
+                                            panes.child(
+                                                resizable_panel()
+                                                    .when(self.settings.inspector_open, |panel| {
+                                                        panel.size(px(300.))
                                                     })
-                                                    .when(self.settings.agent_open, |panes| {
-                                                        panes.child(
-                                                            resizable_panel()
-                                                                .when(self.settings.inspector_open, |panel| panel.size(px(300.)))
-                                                                .when_some(self.saved_dock_height("agent"), |panel, height| panel.size(height))
-                                                                .size_range(px(220.)..Pixels::MAX)
+                                                    .when_some(
+                                                        self.saved_dock_height("agent"),
+                                                        |panel, height| panel.size(height),
+                                                    )
+                                                    .size_range(px(220.)..Pixels::MAX)
+                                                    .child(
+                                                        div().size_full().p_1().child(
+                                                            div()
+                                                                .size_full()
+                                                                .bg(cx.theme().group_box)
+                                                                .rounded(cx.theme().radius_lg)
+                                                                .overflow_hidden()
+                                                                // Cached so streamed agent output
+                                                                // redraws only this panel.
                                                                 .child(
-                                                                    div()
-                                                                        .size_full()
-                                                                        .p_1()
-                                                                        .child(
-                                                                            div()
-                                                                                .size_full()
-                                                                                .bg(cx.theme().sidebar)
-                                                                                .rounded(cx.theme().radius_lg)
-                                                                                .overflow_hidden()
-                                                                                // Cached so streamed agent output
-                                                                                // redraws only this panel.
-                                                                                .child(
-                                                                                    self.agent_panel
-                                                                                        .clone()
-                                                                                        .cached(StyleRefinement::default().size_full()),
-                                                                                ),
-                                                                        ),
+                                                                    self.agent_panel
+                                                                        .clone()
+                                                                        .cached(
+                                                                        StyleRefinement::default()
+                                                                            .size_full(),
+                                                                    ),
                                                                 ),
-                                                        )
-                                                    })
-                                                    .when(self.settings.inspector_open, |panes| {
-                                                        panes.child(
-                                                            resizable_panel()
-                                                                .when_some(self.saved_dock_height("inspector"), |panel, height| panel.size(height))
-                                                                .size_range(px(170.)..Pixels::MAX)
-                                                                .child(
-                                                                    div()
-                                                                        .size_full()
-                                                                        .p_1()
-                                                                        .child(
-                                                                            div()
-                                                                                .size_full()
-                                                                                .bg(cx.theme().sidebar)
-                                                                                .rounded(cx.theme().radius_lg)
-                                                                                .overflow_hidden()
-                                                                                .child(self.render_inspector(cx)),
-                                                                        ),
-                                                                ),
-                                                        )
-                                                    })
-                                                    .on_resize(move |state, _, cx| {
-                                                        let heights = state.read(cx).sizes().iter().copied().map(f32::from).collect::<Vec<_>>();
-                                                        dock_view.update(cx, |this, cx| {
-                                                            if this.layout_epoch != epoch || this.restoring_session { return; }
-                                                            let mut changed = false;
-                                                            for (name, height) in dock_names.iter().zip(heights) {
-                                                                if height.is_finite() && height > 0. && this.settings.dock_heights.get(*name) != Some(&height) {
-                                                                    this.settings.dock_heights.insert((*name).into(), height);
-                                                                    changed = true;
-                                                                }
-                                                            }
-                                                            if changed { this.persist_settings(cx); }
-                                                        });
-                                                    }),
-                                            ),
+                                                        ),
+                                                    ),
+                                            )
+                                        })
+                                        .when(self.settings.inspector_open, |panes| {
+                                            panes.child(
+                                                resizable_panel()
+                                                    .when_some(
+                                                        self.saved_dock_height("inspector"),
+                                                        |panel, height| panel.size(height),
+                                                    )
+                                                    .size_range(px(170.)..Pixels::MAX)
+                                                    .child(
+                                                        div().size_full().p_1().child(
+                                                            div()
+                                                                .size_full()
+                                                                .bg(cx.theme().group_box)
+                                                                .rounded(cx.theme().radius_lg)
+                                                                .overflow_hidden()
+                                                                .child(self.render_inspector(cx)),
+                                                        ),
+                                                    ),
+                                            )
+                                        })
+                                        .on_resize(
+                                            move |state, _, cx| {
+                                                let heights = state
+                                                    .read(cx)
+                                                    .sizes()
+                                                    .iter()
+                                                    .copied()
+                                                    .map(f32::from)
+                                                    .collect::<Vec<_>>();
+                                                dock_view.update(cx, |this, cx| {
+                                                    if this.layout_epoch != epoch
+                                                        || this.restoring_session
+                                                    {
+                                                        return;
+                                                    }
+                                                    let mut changed = false;
+                                                    for (name, height) in
+                                                        dock_names.iter().zip(heights)
+                                                    {
+                                                        if height.is_finite()
+                                                            && height > 0.
+                                                            && this.settings.dock_heights.get(*name)
+                                                                != Some(&height)
+                                                        {
+                                                            this.settings
+                                                                .dock_heights
+                                                                .insert((*name).into(), height);
+                                                            changed = true;
+                                                        }
+                                                    }
+                                                    if changed {
+                                                        this.persist_settings(cx);
+                                                    }
+                                                });
+                                            },
                                         ),
-                                )
-                            },
-                            )
-                            .on_resize(move |state, _, cx| {
-                                let dock_width = state.read(cx).sizes().last().copied().map(f32::from);
-                                let width = state
-                                    .read(cx)
-                                    .sizes()
-                                    .first()
-                                    .copied()
-                                    .map(f32::from);
-                                if let Some(width) = width {
-                                    let manager = cx.global::<crate::windows::WindowManager>();
-                                    if manager.restoring || manager.quitting {
-                                        return;
-                                    }
-                                    workspace_view.update(cx, |workspace, cx| {
-                                        if workspace.layout_epoch != epoch || workspace.restoring_session { return; }
-                                        let dock_visible = !workspace.zen && (workspace.settings.graph_dock_open || workspace.settings.agent_open || workspace.settings.inspector_open);
-                                        if let Some(width) = dock_width.filter(|width| dock_visible && crate::settings::valid_dock_width(*width)) {
-                                            if workspace.settings.dock_width != Some(width) {
-                                                workspace.settings.dock_width = Some(width);
-                                                workspace.persist_settings(cx);
-                                            }
-                                        }
-                                        let visible = workspace.vault.read(cx).is_open()
-                                            && !workspace.settings.sidebar_collapsed
-                                            && !workspace.zen;
-                                        if visible
-                                            && crate::settings::valid_sidebar_width(width)
-                                            && workspace.settings.sidebar_width != Some(width)
-                                        {
-                                            workspace.settings.sidebar_width = Some(width);
-                                            workspace.persist_settings(cx);
-                                        }
-                                    });
+                                    ),
+                                ),
+                        )
+                    })
+                    .on_resize(move |state, _, cx| {
+                        let dock_width = state.read(cx).sizes().last().copied().map(f32::from);
+                        let width = state.read(cx).sizes().first().copied().map(f32::from);
+                        if let Some(width) = width {
+                            let manager = cx.global::<crate::windows::WindowManager>();
+                            if manager.restoring || manager.quitting {
+                                return;
+                            }
+                            workspace_view.update(cx, |workspace, cx| {
+                                if workspace.layout_epoch != epoch || workspace.restoring_session {
+                                    return;
                                 }
-                            })
-                            .into_any_element()
-                    }),
-            )
+                                let dock_visible = !workspace.zen
+                                    && (workspace.settings.graph_dock_open
+                                        || workspace.settings.agent_open
+                                        || workspace.settings.inspector_open);
+                                let mut resized = false;
+                                if let Some(width) = dock_width.filter(|width| {
+                                    dock_visible && crate::settings::valid_dock_width(*width)
+                                }) {
+                                    if workspace.settings.dock_width != Some(width) {
+                                        workspace.settings.dock_width = Some(width);
+                                        resized = true;
+                                    }
+                                }
+                                let visible = workspace.vault.read(cx).is_open()
+                                    && !workspace.settings.sidebar_collapsed
+                                    && !workspace.zen;
+                                if visible
+                                    && crate::settings::valid_sidebar_width(width)
+                                    && workspace.settings.sidebar_width != Some(width)
+                                {
+                                    workspace.settings.sidebar_width = Some(width);
+                                    resized = true;
+                                }
+                                if resized {
+                                    workspace.persist_settings(cx);
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .into_any_element()
+            }))
             .when(!self.zen && has_workspace, |this| {
                 this.child(self.render_status_bar(window, cx))
             })
@@ -16049,7 +18215,11 @@ impl Workspace {
 
 /// The frontmatter banner rendered above the preview: a 160px cover strip
 /// cropped to `banner_y`, with an optional `banner_icon` overlay.
-fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
+pub(crate) fn render_banner_pub(banner: &preview::BannerSpec) -> Div {
+    render_banner(banner)
+}
+
+fn render_banner(banner: &preview::BannerSpec) -> Div {
     let source: ImageSource = match &banner.source {
         preview::BannerSource::File(path) => path.clone().into(),
         preview::BannerSource::Remote(url) => url.clone().into(),
@@ -16080,6 +18250,59 @@ fn render_banner(banner: &preview::BannerSpec) -> impl IntoElement {
         })
 }
 
+fn vault_monogram(name: &str) -> String {
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect();
+    let initials: String = if words.len() >= 2 {
+        words
+            .iter()
+            .take(2)
+            .filter_map(|w| w.chars().next())
+            .collect()
+    } else {
+        words
+            .first()
+            .map(|w| w.chars().take(2).collect())
+            .unwrap_or_else(|| "R".to_string())
+    };
+    let upper = initials.to_uppercase();
+    if upper.is_empty() {
+        "R".to_string()
+    } else {
+        upper
+    }
+}
+
+fn folder_note_count(item: &gpui_kit::component::tree::TreeItem) -> usize {
+    item.children
+        .iter()
+        .map(|child| {
+            if child.children.is_empty() && !Path::new(child.id.as_str()).is_dir() {
+                1
+            } else {
+                folder_note_count(child)
+            }
+        })
+        .sum()
+}
+
+fn folder_accent_color(name: &str, theme: &gpui_kit::component::ThemeColor) -> Hsla {
+    let palette = [
+        theme.red,
+        theme.yellow,
+        theme.cyan,
+        theme.magenta,
+        theme.blue,
+        theme.green,
+    ];
+    let hash = name.bytes().fold(5381usize, |acc, byte| {
+        acc.wrapping_mul(33) ^ (byte as usize)
+    });
+    palette[hash % palette.len()].opacity(0.85)
+}
+
 /// The preview's linked-mentions footer — the "Linked mentions"
 /// section pinned under the note: a count header that expands into rows,
 /// each opening the note that links here.
@@ -16087,11 +18310,12 @@ fn render_linked_mentions(
     doc: Entity<Document>,
     mentions: Vec<PathBuf>,
     open: bool,
-    colors: (gpui::Hsla, gpui::Hsla),
+    colors: (gpui::Hsla, gpui::Hsla, gpui::Hsla, gpui::Hsla),
+    readable_width: Option<f32>,
     root: PathBuf,
     view: Entity<Workspace>,
 ) -> impl IntoElement {
-    let (fg, muted) = colors;
+    let (fg, muted, border, hover_bg) = colors;
     let count = mentions.len();
     let chevron = if open {
         assets::IconName::ChevronDown
@@ -16102,76 +18326,84 @@ fn render_linked_mentions(
     v_flex()
         .w_full()
         .flex_none()
+        .border_t_1()
+        .border_color(border.opacity(0.5))
         .child(
-            div()
-                .id("mentions-toggle")
+            v_flex()
                 .w_full()
-                .px_6()
-                .py_1p5()
-                .cursor_pointer()
-                .hover(|s| s.bg(muted.opacity(0.5)))
+                .when_some(readable_width, |el, w| el.max_w(px(w)).mx_auto())
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(Icon::new(chevron).size_3p5())
-                        .child(format!(
-                            "{count} linked mention{}",
-                            if count == 1 { "" } else { "s" }
-                        )),
+                    div()
+                        .id("mentions-toggle")
+                        .w_full()
+                        .px_6()
+                        .py_2()
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover_bg.opacity(0.35)))
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(Icon::new(chevron).size_3p5())
+                                .child(format!(
+                                    "{count} linked mention{}",
+                                    if count == 1 { "" } else { "s" }
+                                )),
+                        )
+                        .on_click(move |_, _window, cx| {
+                            doc.update(cx, |doc, cx| {
+                                doc.mentions_open = !doc.mentions_open;
+                                cx.notify();
+                            });
+                            // The toggle lives on Document but the strip is rendered
+                            // by the workspace — notify it or nothing repaints.
+                            toggle_view.update(cx, |_, cx| cx.notify());
+                        }),
                 )
-                .on_click(move |_, _window, cx| {
-                    doc.update(cx, |doc, cx| {
-                        doc.mentions_open = !doc.mentions_open;
-                        cx.notify();
-                    });
-                    // The toggle lives on Document but the strip is rendered
-                    // by the workspace — notify it or nothing repaints.
-                    toggle_view.update(cx, |_, cx| cx.notify());
+                .when(open, |this| {
+                    this.child(v_flex().pb_2().px_4().gap_0p5().children(
+                        mentions.iter().enumerate().map(|(ix, path)| {
+                            let title = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let rel = path
+                                .parent()
+                                .and_then(|p| p.strip_prefix(&root).ok())
+                                .map(|p| p.to_string_lossy().to_string())
+                                .filter(|s| !s.is_empty());
+                            let open_path = path.clone();
+                            let view = view.clone();
+                            div()
+                                .id(("mention-row", ix))
+                                .w_full()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover_bg.opacity(0.45)))
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(div().text_sm().text_color(fg).child(title))
+                                        .when_some(rel, |this, rel| {
+                                            this.child(div().text_xs().text_color(muted).child(rel))
+                                        }),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    let open_path = open_path.clone();
+                                    view.update(cx, |ws, cx| {
+                                        ws.open_document_pub(open_path, window, cx);
+                                    });
+                                })
+                        }),
+                    ))
                 }),
         )
-        .when(open, |this| {
-            this.child(
-                v_flex()
-                    .pb_1()
-                    .children(mentions.iter().enumerate().map(|(ix, path)| {
-                        let title = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let rel = path
-                            .parent()
-                            .and_then(|p| p.strip_prefix(&root).ok())
-                            .map(|p| p.to_string_lossy().to_string())
-                            .filter(|s| !s.is_empty());
-                        let open_path = path.clone();
-                        let view = view.clone();
-                        div()
-                            .id(("mention-row", ix))
-                            .w_full()
-                            .px_6()
-                            .py_1()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(muted.opacity(0.5)))
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .child(div().text_sm().text_color(fg).child(title))
-                                    .when_some(rel, |this, rel| {
-                                        this.child(div().text_xs().text_color(muted).child(rel))
-                                    }),
-                            )
-                            .on_click(move |_, window, cx| {
-                                let open_path = open_path.clone();
-                                view.update(cx, |ws, cx| {
-                                    ws.open_document_pub(open_path, window, cx);
-                                });
-                            })
-                    })),
-            )
-        })
 }
 
 /// Open `path`'s containing folder in the OS file manager, with the
@@ -16572,6 +18804,25 @@ mod standalone_fs_check_tests {
             Some(recreated)
         ));
     }
+
+    #[test]
+    fn preview_snippet_skips_frontmatter_and_markdown_prefixes() {
+        let raw = "---\ntitle: Test\ntags: [work]\n---\n\n\n# Website relaunch\n\n> [!info] Launch Scope\n> Launch target is **November 30**.\n";
+        assert_eq!(
+            super::extract_note_preview_snippet(raw, Some("Website relaunch")).as_deref(),
+            Some("Launch target is November 30.")
+        );
+        let heading_only = "# Heading Title\n";
+        assert_eq!(
+            super::extract_note_preview_snippet(heading_only, None).as_deref(),
+            Some("Heading Title")
+        );
+        let task = "- [ ] Ship [[Live Preview]]\n";
+        assert_eq!(
+            super::extract_note_preview_snippet(task, None).as_deref(),
+            Some("Ship Live Preview")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -16728,5 +18979,46 @@ mod import_tests {
 
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn vault_monogram_extracts_initials_and_handles_edge_cases() {
+        assert_eq!(super::vault_monogram("Fjord Studio"), "FS");
+        assert_eq!(super::vault_monogram("rista-demo-vault"), "RD");
+        assert_eq!(super::vault_monogram("Notes"), "NO");
+        assert_eq!(super::vault_monogram("x"), "X");
+        assert_eq!(super::vault_monogram("   "), "R");
+    }
+
+    #[test]
+    fn folder_note_count_counts_nested_leaf_items_recursively() {
+        use gpui_kit::component::tree::TreeItem;
+
+        let leaf_a = TreeItem::new("/nonexistent/a.md", "a.md");
+        let leaf_b = TreeItem::new("/nonexistent/b.md", "b.md");
+        let leaf_c = TreeItem::new("/nonexistent/c.md", "c.md");
+        let sub = TreeItem::new("/nonexistent/sub", "sub").children([leaf_a, leaf_b]);
+        let root = TreeItem::new("/nonexistent/root", "root").children([sub, leaf_c]);
+        assert_eq!(super::folder_note_count(&root), 3);
+    }
+
+    #[test]
+    fn command_palette_keywords_support_gt_prefix_and_word_suffixes() {
+        let keywords = super::command_palette_keywords(
+            "Toggle local graph panel",
+            "Vis lokal graf",
+            &["dock", "graph"],
+        );
+        let matches = |query: &str| {
+            let q = query.to_lowercase();
+            keywords.iter().any(|kw| kw.to_lowercase().contains(&q))
+        };
+        assert!(matches(">"));
+        assert!(matches(">local graph"));
+        assert!(matches("> local graph"));
+        assert!(matches(">graph"));
+        assert!(matches(">lokal graf"));
+        assert!(matches(">dock"));
+        assert!(matches("local graph"));
     }
 }

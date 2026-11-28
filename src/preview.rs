@@ -44,6 +44,13 @@ pub struct PreviewCtx {
     /// embeds. Transclusions re-bind it to the embedded file.
     pub doc_path: Option<PathBuf>,
     pub depth: usize,
+    /// 0-based line offset added to parsed line numbers when rendering a
+    /// sub-slice of a document (used by Live Preview blocks so clickable tasks
+    /// and table edits still target exact canonical buffer lines).
+    pub line_offset: usize,
+    /// True when rendering inactive blocks inside Live Preview so nested
+    /// `TextView` fragments disable drag-selection and let clicks enter editing.
+    pub live_mode: bool,
     pub style: std::sync::Arc<crate::style_snippets::ResolvedStyle>,
     pub catalog: Option<std::sync::Arc<crate::style_snippets::Catalog>>,
     pub enabled_style_snippets: Vec<String>,
@@ -146,6 +153,7 @@ pub fn styled_text_view(
     if let Some(ctx) = ctx {
         gpui_kit::base::TextView::markdown(id, markdown)
             .style(text_style(ctx, cx))
+            .selectable(!ctx.live_mode)
             .when_some(ctx.style.typography.body_font.clone(), |view, font| {
                 view.font_family(font)
             })
@@ -1361,7 +1369,9 @@ impl MarkdownPlugin for LocalImagePlugin {
         }
         Some(InlineElement::new(
             div()
-                .rounded(cx.theme().radius)
+                .rounded(px(8.))
+                .border_1()
+                .border_color(cx.theme().border.opacity(0.45))
                 .overflow_hidden()
                 .child(element),
         ))
@@ -1771,6 +1781,10 @@ impl MarkdownPlugin for PropertiesPlugin {
                             {
                                 let mut chip = div()
                                     .id(("property-tag", ix * 100 + jx))
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(px(4.))
+                                    .bg(tag_color.opacity(0.12))
                                     .text_color(tag_color)
                                     .child(format!("#{tag}"));
                                 if let Some(workspace) = edit_ctx.clone() {
@@ -1871,9 +1885,10 @@ impl MarkdownPlugin for PropertiesPlugin {
         v_flex()
             .w_full()
             .my_2()
+            .bg(theme.background.opacity(0.45))
             .border_1()
-            .border_color(theme.border)
-            .rounded(theme.radius)
+            .border_color(theme.border.opacity(0.65))
+            .rounded(px(8.))
             .overflow_hidden()
             .child(
                 h_flex()
@@ -2094,9 +2109,7 @@ impl MarkdownPlugin for CalloutPlugin {
 
     fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let callout = node.data::<Callout>().expect("callout node data");
-        let theme = cx.theme();
         let accent = callout_accent(&callout.kind, self.ctx.as_ref(), cx);
-        let callout_surface = semantic_color("accent.background", self.ctx.as_ref(), cx);
         let foreground = semantic_color("foreground", self.ctx.as_ref(), cx);
         let folded = callout
             .foldable
@@ -2108,8 +2121,9 @@ impl MarkdownPlugin for CalloutPlugin {
         let mut header = h_flex()
             .id(("callout-header", key))
             .w_full()
-            .px_3()
-            .py_2()
+            .px_3p5()
+            .pt_2p5()
+            .pb_1p5()
             .gap_2()
             .items_center();
         if callout.foldable.is_some() {
@@ -2125,7 +2139,7 @@ impl MarkdownPlugin for CalloutPlugin {
                     } else {
                         gpui_kit::component::IconName::ChevronDown
                     })
-                    .size_4()
+                    .size_3p5()
                     .text_color(accent),
                 );
         }
@@ -2137,32 +2151,43 @@ impl MarkdownPlugin for CalloutPlugin {
             )
             .child(
                 div()
+                    .text_sm()
                     .font_semibold()
                     .text_color(accent)
                     .child(callout.title.clone()),
             );
 
+        let is_dark = cx.theme().is_dark();
         v_flex()
             .w_full()
-            .rounded(theme.radius)
-            .bg(callout_surface)
+            .my_2()
+            .rounded(px(8.))
+            .bg(accent.opacity(if is_dark { 0.11 } else { 0.07 }))
+            .border_1()
+            .border_color(accent.opacity(if is_dark { 0.26 } else { 0.22 }))
             .overflow_hidden()
             .child(header)
             .when(!folded && !callout.body.trim().is_empty(), |this| {
                 this.child(
-                    div().w_full().px_3().pb_2().text_color(foreground).child(
-                        styled_text_view(
-                            "callout-body",
-                            callout.body.clone(),
-                            self.ctx.as_ref(),
-                            cx,
-                        )
-                        .markdown_extensions(extensions(
-                            &self.folds,
-                            self.ctx.as_ref(),
-                            false,
-                        )),
-                    ),
+                    div()
+                        .w_full()
+                        .px_3p5()
+                        .pb_2p5()
+                        .text_sm()
+                        .text_color(foreground)
+                        .child(
+                            styled_text_view(
+                                "callout-body",
+                                callout.body.clone(),
+                                self.ctx.as_ref(),
+                                cx,
+                            )
+                            .markdown_extensions(extensions(
+                                &self.folds,
+                                self.ctx.as_ref(),
+                                false,
+                            )),
+                        ),
                 )
             })
     }
@@ -2253,16 +2278,26 @@ fn callout_icon(kind: &str) -> gpui_kit::component::IconName {
 }
 
 fn callout_accent(kind: &str, ctx: Option<&PreviewCtx>, cx: &App) -> gpui_kit::Hsla {
-    let role = ctx
+    let custom_role = ctx
         .and_then(|ctx| ctx.style.callout_tokens.get(kind))
-        .map(String::as_str)
-        .unwrap_or_else(|| match kind {
-            "warning" | "caution" | "attention" => "warning",
-            "failure" | "fail" | "missing" | "danger" | "error" | "bug" => "danger",
-            "success" | "check" | "done" | "tip" | "hint" | "important" => "success",
-            _ => "info.background",
-        });
-    semantic_color(role, ctx, cx)
+        .map(String::as_str);
+    let role = custom_role.unwrap_or(match kind {
+        "warning" | "caution" | "attention" => "warning",
+        "failure" | "fail" | "missing" | "danger" | "error" | "bug" => "danger",
+        "success" | "check" | "done" | "tip" | "hint" | "important" => "success",
+        _ => "info.background",
+    });
+    let color = semantic_color(role, ctx, cx);
+    let has_snippet_color = ctx.is_some_and(|ctx| {
+        let token = crate::style_snippets::color_token_for_role(role);
+        ctx.style.colors.contains_key(token)
+    });
+    let chroma = (1.0 - (2.0 * color.l - 1.0).abs()) * color.s;
+    if custom_role.is_none() && !has_snippet_color && role == "info.background" && chroma < 0.08 {
+        cx.theme().blue
+    } else {
+        color
+    }
 }
 
 fn semantic_color(role: &str, ctx: Option<&PreviewCtx>, cx: &App) -> Hsla {
@@ -3055,23 +3090,24 @@ impl MarkdownPlugin for TablePlugin {
             theme.table_head_foreground,
         );
         let last = table.rows.len().saturating_sub(1);
+        let row_border = theme.border.opacity(0.5);
         let mut tbl = v_flex()
             .w_full()
-            .my_2()
+            .my_3()
             .border_1()
-            .border_color(theme.border)
+            .border_color(row_border)
             .rounded(theme.radius)
             .overflow_hidden();
         for (rix, row) in table.rows.iter().enumerate() {
-            let mut r = h_flex().w_full();
+            let mut r = h_flex().w_full().items_stretch();
             if rix == 0 {
                 r = r.bg(table_head_background);
             }
             if rix < last {
-                r = r.border_b_1().border_color(theme.border);
+                r = r.border_b_1().border_color(row_border);
             }
             for (cix, cell) in row.iter().enumerate() {
-                let line = cell.line;
+                let line = cell.line + self.ctx.line_offset;
                 let col = cell.col;
                 let workspace = self.ctx.workspace.clone();
                 // Header cells render their raw text bolded through the
@@ -3086,8 +3122,8 @@ impl MarkdownPlugin for TablePlugin {
                         .id(("table-cell", rix * 4096 + cix))
                         .flex_1()
                         .min_w_0()
-                        .px_2()
-                        .py_1()
+                        .px_3()
+                        .py_2()
                         .text_sm()
                         .map(|cell| match table.align.get(cix) {
                             Some(mdast::AlignKind::Right) => cell.text_right(),
@@ -3095,8 +3131,9 @@ impl MarkdownPlugin for TablePlugin {
                             _ => cell,
                         })
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                        .hover(|s| s.bg(theme.muted.opacity(0.35)))
                         .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
                             let _ = workspace.update(cx, |ws, cx| {
                                 ws.show_table_cell_dialog(line, col, window, cx)
                             });
@@ -3126,18 +3163,22 @@ impl MarkdownPlugin for TablePlugin {
                 // Trailing "+" cell on the header — appends an empty
                 // column (sep row gets `---`).
                 let workspace = self.ctx.workspace.clone();
-                let (start, end) = (table.start, table.end);
+                let (start, end) = (
+                    table.start + self.ctx.line_offset,
+                    table.end + self.ctx.line_offset,
+                );
                 r = r.child(
                     div()
                         .id("table-add-col")
-                        .w(px(26.))
+                        .w(px(28.))
                         .flex_none()
-                        .px_1()
-                        .py_1()
-                        .text_sm()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
                         .text_color(theme.muted_foreground)
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                        .hover(|s| s.bg(theme.muted.opacity(0.35)))
                         .child("+")
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
@@ -3147,7 +3188,7 @@ impl MarkdownPlugin for TablePlugin {
                 );
             } else {
                 // Matches the header's "+" cell so columns line up.
-                r = r.child(div().w(px(26.)).flex_none());
+                r = r.child(div().w(px(28.)).flex_none());
             }
             tbl = tbl.child(r);
         }
@@ -3155,21 +3196,22 @@ impl MarkdownPlugin for TablePlugin {
         // last source line.
         {
             let workspace = self.ctx.workspace.clone();
-            let (end, cols) = (table.end, table.cols);
+            let (end, cols) = (table.end + self.ctx.line_offset, table.cols);
             tbl = tbl.child(
                 div()
                     .id("table-add-row")
                     .w_full()
-                    .px_2()
-                    .py_1()
+                    .px_3()
+                    .py_1p5()
                     .border_t_1()
-                    .border_color(theme.border)
+                    .border_color(row_border)
                     .text_xs()
-                    .text_color(theme.muted_foreground)
+                    .text_color(theme.muted_foreground.opacity(0.8))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.muted.opacity(0.4)))
+                    .hover(|s| s.bg(theme.muted.opacity(0.35)).text_color(theme.foreground))
                     .child("+ New row")
                     .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
                         let _ =
                             workspace.update(cx, |ws, cx| ws.add_table_row(end, cols, window, cx));
                     }),
@@ -3431,6 +3473,7 @@ impl MarkdownPlugin for TranscludePlugin {
             (true, Some(content)) => {
                 let mut nested = self.ctx.clone();
                 nested.depth += 1;
+                nested.line_offset = 0;
                 if let Some(catalog) = &nested.catalog {
                     nested.style = std::sync::Arc::new(crate::style_snippets::resolve(
                         catalog,
@@ -4435,10 +4478,12 @@ impl MarkdownPlugin for TaskListPlugin {
                         cb = cb.border_color(theme.muted_foreground);
                     }
                     if let Some(ctx) = ctx {
+                        let actual_line = line + ctx.line_offset;
                         cb = cb.cursor_pointer().on_click(move |_, window, cx| {
+                            cx.stop_propagation();
                             let _ = ctx
                                 .workspace
-                                .update(cx, |ws, cx| ws.toggle_task_pub(line, window, cx));
+                                .update(cx, |ws, cx| ws.toggle_task_pub(actual_line, window, cx));
                         });
                     }
                     cb.into_any_element()

@@ -49,6 +49,7 @@ actions!(
         ToggleSidebar,
         ToggleZen,
         // View
+        ViewLive,
         ViewSource,
         ViewSplit,
         ViewPreview,

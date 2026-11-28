@@ -26,6 +26,46 @@ pub struct SearchHit {
     pub count: usize,
     pub sample: String,
     pub first_line: Option<usize>,
+    pub snippet: Option<String>,
+}
+
+/// Read a compact snippet around `line` (1-based) plus context lines for the
+/// right-hand search preview pane.
+fn load_hit_context(
+    path: &std::path::Path,
+    focus_line: Option<usize>,
+) -> (Option<String>, Vec<(usize, String)>) {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return (None, Vec::new());
+    };
+    let lines: Vec<&str> = raw.lines().collect();
+    if lines.is_empty() {
+        return (None, Vec::new());
+    }
+    let target_ix = focus_line
+        .map(|l| l.saturating_sub(1).min(lines.len().saturating_sub(1)))
+        .unwrap_or(0);
+    let snippet = lines
+        .get(target_ix)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.chars().count() > 96 {
+                let mut out: String = s.chars().take(95).collect();
+                out.push('…');
+                out
+            } else {
+                s.to_string()
+            }
+        });
+    let start = target_ix.saturating_sub(4);
+    let end = (target_ix + 10).min(lines.len());
+    let context = lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| (start + offset + 1, (*line).to_string()))
+        .collect();
+    (snippet, context)
 }
 
 pub struct ProjectSearch {
@@ -185,11 +225,15 @@ impl ProjectSearch {
                         search.results = response
                             .results
                             .into_iter()
-                            .map(|hit| SearchHit {
-                                sample: hit.relative_path.clone(),
-                                path: hit.path,
-                                count: hit.count,
-                                first_line: hit.first_line,
+                            .map(|hit| {
+                                let (snippet, _) = load_hit_context(&hit.path, hit.first_line);
+                                SearchHit {
+                                    sample: hit.relative_path.clone(),
+                                    path: hit.path,
+                                    count: hit.count,
+                                    first_line: hit.first_line,
+                                    snippet,
+                                }
                             })
                             .collect();
                         search.total = response.total;
@@ -308,6 +352,83 @@ impl Render for ProjectSearch {
             .w_full()
             .gap_2()
             .child(Input::new(&self.query_input).appearance(true))
+            .child(
+                // One-click search operator filter chips — styled as tactile mineral
+                // pills distinct from the action bar below.
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1p5()
+                    .pb_1()
+                    .children(
+                        [
+                            ("tag:", if norwegian { "emneknagg" } else { "tag" }),
+                            ("path:", if norwegian { "mappe" } else { "folder" }),
+                            ("file:", if norwegian { "filnavn" } else { "file" }),
+                            ("task:", if norwegian { "oppgave" } else { "task" }),
+                            ("-", if norwegian { "utelat" } else { "exclude" }),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, (op, hint))| {
+                            let active = query.contains(op);
+                            let theme = cx.theme();
+                            div()
+                                .id(("search-chip", ix))
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(px(5.))
+                                .border_1()
+                                .border_color(if active {
+                                    theme.accent.opacity(0.6)
+                                } else {
+                                    theme.border.opacity(0.6)
+                                })
+                                .bg(if active {
+                                    theme.accent.opacity(0.16)
+                                } else {
+                                    theme.muted.opacity(0.5)
+                                })
+                                .hover(|s| s.bg(theme.muted.opacity(0.85)))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_family(theme.mono_font_family.clone())
+                                        .text_color(if active {
+                                            theme.accent
+                                        } else {
+                                            theme.foreground
+                                        })
+                                        .child(op),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(hint),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let current = this.query_input.read(cx).value().to_string();
+                                    let trimmed = current.trim_end();
+                                    let next = if trimmed.is_empty() {
+                                        op.to_string()
+                                    } else {
+                                        format!("{trimmed} {op}")
+                                    };
+                                    this.query_input.update(cx, |input, cx| {
+                                        input.set_value(next, window, cx);
+                                        input.focus(window, cx);
+                                    });
+                                    this.schedule_search(cx);
+                                }))
+                        }),
+                    ),
+            )
             .child(
                 h_flex()
                     .gap_1()
@@ -614,60 +735,218 @@ impl Render for ProjectSearch {
                         }),
                 )
             })
-            .child(
-                v_flex()
-                    .id("project-search-results")
+            .child({
+                let selected_hit = results.get(selected_index).cloned();
+                let preview_pane = selected_hit.as_ref().map(|hit| {
+                    let (_, ctx_lines) = load_hit_context(&hit.path, hit.first_line);
+                    let focus_line = hit.first_line;
+                    let note_title = hit
+                        .path
+                        .file_stem()
+                        .or_else(|| hit.path.file_name())
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let open_hit_btn = hit.clone();
+                    let open_this = this.clone();
+                    let theme = cx.theme();
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(360.))
+                        .rounded(theme.radius)
+                        .bg(theme.muted.opacity(0.28))
+                        .border_1()
+                        .border_color(theme.border.opacity(0.6))
+                        .overflow_hidden()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .px_3()
+                                .py_2()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .border_b_1()
+                                .border_color(theme.border.opacity(0.5))
+                                .child(
+                                    v_flex()
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .truncate()
+                                                .text_color(theme.foreground)
+                                                .child(note_title),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .truncate()
+                                                .text_color(theme.muted_foreground)
+                                                .child(hit.sample.clone()),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("search-preview-open")
+                                        .outline()
+                                        .xsmall()
+                                        .label(if let Some(line) = focus_line {
+                                            if norwegian {
+                                                format!("Åpne L{line}")
+                                            } else {
+                                                format!("Open L{line}")
+                                            }
+                                        } else if norwegian {
+                                            "Åpne".to_string()
+                                        } else {
+                                            "Open".to_string()
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            open_this.update(cx, |search, cx| {
+                                                search.open_hit(&open_hit_btn, window, cx);
+                                            });
+                                        }),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .id("search-preview-lines")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .p_2()
+                                .gap_0p5()
+                                .children(ctx_lines.into_iter().map(|(line_no, line_text)| {
+                                    let is_match = focus_line == Some(line_no);
+                                    h_flex()
+                                        .w_full()
+                                        .px_2()
+                                        .py_0p5()
+                                        .gap_2()
+                                        .rounded(px(4.))
+                                        .when(is_match, |row| row.bg(theme.accent.opacity(0.24)))
+                                        .child(
+                                            div()
+                                                .w(px(28.))
+                                                .flex_shrink_0()
+                                                .text_xs()
+                                                .text_color(theme.muted_foreground.opacity(0.65))
+                                                .child(format!("{line_no}")),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_xs()
+                                                .text_color(if is_match {
+                                                    theme.foreground
+                                                } else {
+                                                    theme.muted_foreground
+                                                })
+                                                .child(if line_text.is_empty() {
+                                                    " ".to_string()
+                                                } else {
+                                                    line_text
+                                                }),
+                                        )
+                                })),
+                        )
+                });
+                h_flex()
                     .w_full()
-                    .track_scroll(&self.results_scroll)
-                    .children(results.iter().enumerate().map(|(ix, hit)| {
-                        let name = hit
-                            .path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        ListItem::new(ix)
-                            .w_full()
-                            .px_2()
-                            .py_1()
-                            .rounded(cx.theme().radius)
-                            .when(ix == selected_index, |this| this.bg(cx.theme().secondary))
-                            .child(
-                                v_flex()
+                    .items_start()
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .id("project-search-results")
+                            .when(preview_pane.is_some(), |col| {
+                                col.w(px(320.)).flex_shrink_0()
+                            })
+                            .when(preview_pane.is_none(), |col| col.w_full())
+                            .track_scroll(&self.results_scroll)
+                            .gap_0p5()
+                            .children(results.iter().enumerate().map(|(ix, hit)| {
+                                let name = hit
+                                    .path
+                                    .file_stem()
+                                    .or_else(|| hit.path.file_name())
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let theme = cx.theme();
+                                let subtitle = match (&hit.snippet, hit.first_line) {
+                                    (Some(snip), Some(line)) => format!("L{line} · {snip}"),
+                                    (Some(snip), None) => snip.clone(),
+                                    (None, _) => hit.sample.clone(),
+                                };
+                                ListItem::new(ix)
                                     .w_full()
+                                    .px_2p5()
+                                    .py_1p5()
+                                    .rounded(theme.radius)
+                                    .when(ix == selected_index, |this| this.bg(theme.secondary))
                                     .child(
-                                        h_flex()
+                                        v_flex()
                                             .w_full()
-                                            .justify_between()
-                                            .child(div().text_sm().child(name))
+                                            .gap_0p5()
+                                            .child(
+                                                h_flex()
+                                                    .w_full()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .gap_2()
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .truncate()
+                                                            .text_color(theme.foreground)
+                                                            .child(name),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .px_1p5()
+                                                            .py(px(1.))
+                                                            .rounded(px(999.))
+                                                            .bg(theme.muted.opacity(0.65))
+                                                            .text_xs()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(format!("{}", hit.count)),
+                                                    ),
+                                            )
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(format!("{}", hit.count)),
+                                                    .text_color(theme.muted_foreground)
+                                                    .truncate()
+                                                    .child(subtitle),
                                             ),
                                     )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .truncate()
-                                            .child(hit.sample.clone()),
-                                    ),
-                            )
-                            .on_click({
-                                let this = this.clone();
-                                let hit = hit.clone();
-                                move |_, window, cx| {
-                                    this.update(cx, |search, cx| {
-                                        search.open_hit(&hit, window, cx);
-                                    });
-                                }
-                            })
-                            .into_any_element()
-                    }))
-                    .max_h(px(360.))
-                    .overflow_y_scroll(),
-            )
+                                    .on_click({
+                                        let this = this.clone();
+                                        let hit = hit.clone();
+                                        move |ev, window, cx| {
+                                            if ev.click_count() >= 2 {
+                                                this.update(cx, |search, cx| {
+                                                    search.open_hit(&hit, window, cx);
+                                                });
+                                            } else {
+                                                this.update(cx, |search, cx| {
+                                                    if search.selected_index == ix {
+                                                        search.open_hit(&hit, window, cx);
+                                                    } else {
+                                                        search.selected_index = ix;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    })
+                                    .into_any_element()
+                            }))
+                            .max_h(px(360.))
+                            .overflow_y_scroll(),
+                    )
+                    .when_some(preview_pane, |row, pane| row.child(pane))
+            })
     }
 }
 
@@ -726,7 +1005,7 @@ fn show_project_search(
             } else {
                 "Find in project"
             })
-            .w(px(560.))
+            .w(px(780.))
             .overlay_closable(true)
             // PressEnter opens the hit; the dialog must not also restore its old focus.
             .on_ok(|_, _, _| false)
