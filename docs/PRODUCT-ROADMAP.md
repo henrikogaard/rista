@@ -10,6 +10,15 @@ The package was tested on Apple Silicon macOS and declares macOS 13 as its minim
 
 The verified native baseline does not include WYSIWYG editing, PDF/DOCX export, a terminal, AI features, or cloud services.
 
+## Shipped in v0.4.0
+
+Released in v0.4.0 on 2026-11-28:
+
+- Native Live Preview (WYSIWYG) Markdown editor as the default view mode, with full document Undo/Redo and an elevated floating selection toolbar.
+- Nordic workspace UI refresh: flush tab strip, collapsible properties card, floating editor mode pill, and heading minimap.
+- Quick Switcher body-prose snippets and `>` command filtering.
+- Global Search mineral filter pills and widened Settings sheet.
+
 ## Shipped in v0.3.0
 
 Released in v0.3.0 on 2026-11-22:

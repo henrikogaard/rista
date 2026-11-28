@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0 — 2026-11-28
+
+- Add a native **Live Preview (WYSIWYG)** Markdown editor (`ViewMode::Live`, now the default view mode) with borderless inline block editing, live heading/task/list/blockquote/callout/table rendering, blank-line insertion, `Backspace` block merging, and exact left-edge alignment between active and rendered text.
+- Add document-level **Undo / Redo** (`⌘Z` / `⌘⇧Z` and `Ctrl+Z` / `Ctrl+Y`) in Live Preview with typing-burst coalescing, structural checkpoints, and cursor/block restoration.
+- Add an elevated floating inline formatting toolbar on text selection (`B`, `I`, `S`, `Code`, `Highlight`, `Wikilink`, `H2`, `Ask Agent`) with zero layout jump and UTF-8 safe delimiter toggling.
+- Refresh the Nordic workspace chrome: flush tab bar aligned over the editor canvas, collapsible properties card, floating editor mode pill, and heading minimap.
+- Show real body-prose snippets in the Quick Switcher (skipping frontmatter, callout headers, and redundant title headings) and support `>` command filtering (`>local graph`, `>toggle agent`, `>view: split`, `>settings`) without duplicate Create buttons.
+- Style Global Search (`⌘⇧F`) filter operators (`tag:`, `path:`, `file:`, `task:`, `-`) as mineral pills and border the preview `Open L#` button.
+- Widen the Settings sheet so `Default view` and all segmented controls render cleanly without truncation in both Dark and Light themes.
+- Preserve document-level link and image reference definitions across Live Preview fragments and strip Setext heading underlines cleanly during inline editing.
+- Release-candidate builds were tested on Apple Silicon with macOS 27; the published update path is checked after release. macOS 13 remains the declared minimum but is not tested.
+
 ## v0.3.0 — 2026-11-22
 
 - Add Quick Capture (`⌘⇧I`) and an Inbox view to triage captured notes. `rista inbox` captures from the command line.
