@@ -817,6 +817,20 @@ impl Document {
             .to_string()
     }
 
+    /// Replace the canonical buffer text from Live Preview history restoration
+    /// without pushing the full-buffer replacement onto `editor`'s native undo stack.
+    pub(crate) fn replace_without_history(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |ed, cx| {
+            ed.set_value(text, window, cx);
+        });
+        self.on_edited(window, cx);
+    }
+
     fn on_edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.reloading || self.is_read_only() {
             return;

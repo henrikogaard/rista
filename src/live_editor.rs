@@ -114,6 +114,9 @@ pub struct LiveDocument {
     pub frontmatter: Option<(Range<usize>, String)>,
     pub body_start: usize,
     pub blocks: Vec<LiveBlock>,
+    /// Link/image reference definitions (`[id]: url`) collected across the note so
+    /// individually rendered block fragments resolve reference links and images.
+    pub reference_definitions: String,
 }
 
 /// A visible block index plus how many subsequent blocks are folded beneath it.
@@ -276,6 +279,7 @@ pub fn parse_live_document(raw: &str) -> LiveDocument {
     };
 
     let mut blocks = Vec::new();
+    let mut reference_defs: Vec<&str> = Vec::new();
     if let Ok(mdast::Node::Root(root)) = markdown::to_mdast(body, &options) {
         for child in root.children {
             let Some(pos) = child.position() else {
@@ -289,6 +293,9 @@ pub fn parse_live_document(raw: &str) -> LiveDocument {
             if matches!(&child, mdast::Node::List(_)) {
                 blocks.extend(split_list_blocks(raw, start, end));
                 continue;
+            }
+            if matches!(&child, mdast::Node::Definition(_)) {
+                reference_defs.push(&raw[start..end]);
             }
             let source = raw[start..end].to_string();
             let kind = match &child {
@@ -315,21 +322,56 @@ pub fn parse_live_document(raw: &str) -> LiveDocument {
         frontmatter,
         body_start,
         blocks,
+        reference_definitions: reference_defs.join("\n"),
     }
 }
 
-/// Strip block-level Markdown syntax prefixes (`# `, `- [ ] `, `- `, `1. `, `> `)
+/// Append document-level reference definitions (`[id]: url`) to a standalone block
+/// fragment so reference-style links (`[text][id]`) and images (`![alt][id]`) resolve.
+pub fn with_reference_definitions(fragment: &str, defs: &str) -> String {
+    if defs.is_empty() || !fragment.contains('[') {
+        return fragment.to_string();
+    }
+    format!("{fragment}\n\n{defs}")
+}
+
+/// Extract clean editable heading text from either ATX (`## Title`, `## Title ##`)
+/// or Setext (`Title\n=====`, `Sub\n-----`) heading source.
+fn strip_heading_syntax(source: &str) -> String {
+    let trimmed = source.trim_start();
+    if trimmed.starts_with('#') {
+        let after_hashes = trimmed.trim_start_matches('#');
+        let body = after_hashes.strip_prefix(' ').unwrap_or(after_hashes);
+        let trimmed_end = body.trim_end();
+        let without_hashes = trimmed_end.trim_end_matches('#');
+        if without_hashes.len() < trimmed_end.len()
+            && (without_hashes.is_empty() || without_hashes.ends_with([' ', '\t']))
+        {
+            return without_hashes.trim_end().to_string();
+        }
+        return body.to_string();
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.len() >= 2 {
+        let last = lines[lines.len() - 1].trim();
+        let is_setext_underline = !last.is_empty()
+            && (last.bytes().all(|b| b == b'=') || last.bytes().all(|b| b == b'-'));
+        if is_setext_underline {
+            return lines[..lines.len() - 1]
+                .iter()
+                .map(|line| line.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    }
+    source.to_string()
+}
+
+/// Strip block-level Markdown syntax prefixes (`# `, Setext underlines, `- [ ] `, `- `, `1. `, `> `)
 /// so the user edits clean WYSIWYG text directly without seeing raw prefix syntax.
 pub fn block_editable_body(kind: &BlockKind, source: &str) -> String {
     match kind {
-        BlockKind::Heading(_) => {
-            let trimmed = source.trim_start();
-            let after_hashes = trimmed.trim_start_matches('#');
-            after_hashes
-                .strip_prefix(' ')
-                .unwrap_or(after_hashes)
-                .to_string()
-        }
+        BlockKind::Heading(_) => strip_heading_syntax(source),
         BlockKind::BulletItem { .. }
         | BlockKind::OrderedItem { .. }
         | BlockKind::TaskItem { .. } => {
@@ -758,13 +800,19 @@ pub fn toggle_wrap_selection(
     sel: Range<usize>,
     marker: &str,
 ) -> (String, Range<usize>) {
-    let start = sel.start.min(text.len());
-    let end = sel.end.min(text.len());
+    let mut start = sel.start.min(text.len());
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = sel.end.min(text.len()).max(start);
+    while end < text.len() && !text.is_char_boundary(end) {
+        end += 1;
+    }
     let m = marker.len();
     if start >= m
         && end + m <= text.len()
-        && &text[start - m..start] == marker
-        && &text[end..end + m] == marker
+        && text.get(start - m..start) == Some(marker)
+        && text.get(end..end + m) == Some(marker)
     {
         let mut out = String::with_capacity(text.len() - 2 * m);
         out.push_str(&text[..start - m]);
@@ -892,6 +940,9 @@ pub struct LiveView {
     history: LiveHistory,
     /// Suppresses re-recording into `history` while a fallback `Document::editor` undo/redo runs.
     applying_fallback_history: bool,
+    /// True once Live Preview has written edits or restored snapshots into `Document::editor`,
+    /// preventing fallback undo/redo from reversing into out-of-sync native editor history.
+    canonical_history_diverged: bool,
     title_input: Entity<InputState>,
     editing_title: bool,
     folded_headings: BTreeSet<usize>,
@@ -1022,6 +1073,7 @@ impl LiveView {
             last_block_text: String::new(),
             history: LiveHistory::default(),
             applying_fallback_history: false,
+            canonical_history_diverged: false,
             title_input,
             editing_title: false,
             folded_headings: BTreeSet::new(),
@@ -1053,6 +1105,7 @@ impl LiveView {
             });
         });
         self.last_doc_text = self.doc.read(cx).editor.read(cx).value().to_string();
+        self.canonical_history_diverged = true;
         new_range
     }
 
@@ -1161,8 +1214,11 @@ impl LiveView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let current_len = self.doc.read(cx).editor.read(cx).value().len();
-        self.write_doc_range(0..current_len, snap.doc_text.clone(), window, cx);
+        self.last_doc_text = snap.doc_text.clone();
+        self.canonical_history_diverged = true;
+        self.doc.update(cx, |doc, cx| {
+            doc.replace_without_history(snap.doc_text.clone(), window, cx);
+        });
         let max_len = snap.doc_text.len();
         let restored_range = snap.active_range.map(|r| {
             let s = r.start.min(max_len);
@@ -1198,6 +1254,9 @@ impl LiveView {
             self.restore_snapshot(prev, window, cx);
             return;
         }
+        if self.canonical_history_diverged {
+            return;
+        }
         if let Some(ws) = self.workspace.upgrade() {
             self.applying_fallback_history = true;
             let doc = self.doc.clone();
@@ -1209,6 +1268,9 @@ impl LiveView {
         let current = self.current_snapshot(cx);
         if let Some(next) = self.history.redo(current) {
             self.restore_snapshot(next, window, cx);
+            return;
+        }
+        if self.canonical_history_diverged {
             return;
         }
         if let Some(ws) = self.workspace.upgrade() {
@@ -2664,8 +2726,10 @@ impl Render for LiveView {
                     }
                     _ => raw_body,
                 };
+                let display_with_defs =
+                    with_reference_definitions(&display_body, &parsed.reference_definitions);
                 let preprocessed = preview::preprocess(
-                    &display_body,
+                    &display_with_defs,
                     &doc_path,
                     vault_root.as_deref(),
                     &image_resolver,
@@ -2701,8 +2765,14 @@ impl Render for LiveView {
                     .child(div().flex_1().min_w_0().child(text_el))
                     .into_any_element()
             } else {
+                let source_for_render =
+                    if matches!(block.kind, BlockKind::Code | BlockKind::ThematicBreak) {
+                        block.source.clone()
+                    } else {
+                        with_reference_definitions(&block.source, &parsed.reference_definitions)
+                    };
                 let preprocessed = preview::preprocess(
-                    &block.source,
+                    &source_for_render,
                     &doc_path,
                     vault_root.as_deref(),
                     &image_resolver,
@@ -3365,5 +3435,86 @@ mod tests {
         let back = h.undo(r3).unwrap();
         h.record_before_edit(back, EditGroup::Typing, t0 + Duration::from_secs(2));
         assert!(h.redo(snap("abc\n\nz", 5..6, 1)).is_none());
+    }
+
+    #[test]
+    fn toggle_wrap_selection_handles_multibyte_utf8_neighbors_without_panicking() {
+        let (wrapped, sel) = toggle_wrap_selection("你好世界", 3..9, "*");
+        assert_eq!(wrapped, "你*好世*界");
+        assert_eq!(sel, 4..10);
+
+        let (unwrapped, sel2) = toggle_wrap_selection(&wrapped, sel, "*");
+        assert_eq!(unwrapped, "你好世界");
+        assert_eq!(sel2, 3..9);
+
+        // Two-byte ASCII marker next to 3-byte / 4-byte UTF-8 chars also stays safe.
+        let (bolded, sel3) = toggle_wrap_selection("🎉你好🎉", 4..10, "**");
+        assert_eq!(bolded, "🎉**你好**🎉");
+        assert_eq!(sel3, 6..12);
+    }
+
+    #[test]
+    fn block_editable_body_strips_setext_heading_underlines_and_closing_hashes() {
+        let raw = "Main Title\n=====\n\nSubheading\n-----\n\n## ATX Closed ##";
+        let doc = parse_live_document(raw);
+        assert_eq!(doc.blocks.len(), 3);
+        assert_eq!(doc.blocks[0].kind, BlockKind::Heading(1));
+        assert_eq!(
+            block_editable_body(&doc.blocks[0].kind, &doc.blocks[0].source),
+            "Main Title"
+        );
+        assert_eq!(
+            serialize_block_markdown(&doc.blocks[0].kind, "Main Title!"),
+            "# Main Title!"
+        );
+
+        assert_eq!(doc.blocks[1].kind, BlockKind::Heading(2));
+        assert_eq!(
+            block_editable_body(&doc.blocks[1].kind, &doc.blocks[1].source),
+            "Subheading"
+        );
+
+        assert_eq!(doc.blocks[2].kind, BlockKind::Heading(2));
+        assert_eq!(
+            block_editable_body(&doc.blocks[2].kind, &doc.blocks[2].source),
+            "ATX Closed"
+        );
+    }
+
+    #[test]
+    fn reference_definitions_are_preserved_for_fragment_rendering() {
+        let raw = "See [Read more][guide] and ![Diagram][fig].\n\n[guide]: https://example.com\n[fig]: https://example.com/fig.png";
+        let doc = parse_live_document(raw);
+        assert!(doc
+            .reference_definitions
+            .contains("[guide]: https://example.com"));
+        assert!(doc
+            .reference_definitions
+            .contains("[fig]: https://example.com/fig.png"));
+
+        let fragment =
+            super::with_reference_definitions(&doc.blocks[0].source, &doc.reference_definitions);
+        let ast = markdown::to_mdast(&fragment, &markdown::ParseOptions::gfm()).unwrap();
+        let markdown::mdast::Node::Root(root) = ast else {
+            panic!("expected root");
+        };
+        let markdown::mdast::Node::Paragraph(para) = &root.children[0] else {
+            panic!("expected paragraph");
+        };
+        assert!(para
+            .children
+            .iter()
+            .any(|n| matches!(n, markdown::mdast::Node::LinkReference(_))));
+        assert!(para
+            .children
+            .iter()
+            .any(|n| matches!(n, markdown::mdast::Node::ImageReference(_))));
+        assert!(root.children.iter().any(
+            |n| matches!(n, markdown::mdast::Node::Definition(d) if d.url == "https://example.com")
+        ));
+        assert!(root.children.iter().any(|n| matches!(
+            n,
+            markdown::mdast::Node::Definition(d) if d.url == "https://example.com/fig.png"
+        )));
     }
 }
